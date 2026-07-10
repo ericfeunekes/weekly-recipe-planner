@@ -182,8 +182,8 @@ export interface ChatPersistencePort<Transaction> {
   incrementSyncRevision(transaction: Transaction, updatedAt: number): number;
 }
 
-export interface PlannerReadPort {
-  readInitializedWorkspace(): InitializedWorkspace;
+export interface PlannerReadPort<Transaction = unknown> {
+  readInitializedWorkspace(transaction?: Transaction): InitializedWorkspace;
 }
 
 export interface IdFactory {
