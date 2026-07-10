@@ -1,4 +1,3 @@
-// @ts-expect-error Node's native TypeScript loader requires the source extension.
 import { isDomainCommand, type DomainCommand } from "./planner-command-contract.ts";
 
 export { isDomainCommand };

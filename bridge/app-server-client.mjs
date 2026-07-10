@@ -294,7 +294,6 @@ export class CodexAppServerClient extends EventEmitter {
           }),
         );
       }, timeoutMs);
-      timer.unref?.();
       this.pending.set(id, { resolve, reject, timer });
       try {
         this.#writeMessage({ id, method, params });
@@ -388,7 +387,6 @@ export class CodexAppServerClient extends EventEmitter {
           }),
         );
       }, timeoutMs);
-      timer.unref?.();
       record.waiters.push({ resolve, reject, timer });
       if (record.completion) this.#settleTurnRecord(turnId, record);
     });

@@ -40,3 +40,11 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# local planner authority data
+/.planner-data/
+/planner-data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm

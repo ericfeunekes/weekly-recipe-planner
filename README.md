@@ -16,7 +16,7 @@ leftovers, feedback, and recent changes on one shared surface.
 - Checking a step in Prep checks it on the meal day, while removing its prep
   reference leaves the instruction and completion state intact.
 - Timer starts, notes, prep order, and the one shared household transcript
-  survive a browser restart through local storage.
+  survive reopening and project consistently across clients.
 - UI and Codex changes share event history and recent undo.
 - Grocery scope is weekly food only, with farm-box reconciliation.
 - Closeout preserves repeat/modify/drop feedback and a planning lesson.
@@ -26,18 +26,32 @@ threads. **Add note** stores text on an instruction step; **Send to ChatGPT**
 posts the text and stable step context to the global transcript without also
 saving it as a note.
 
-The browser persists its current week and transcript in local storage. A loopback-only Node
-bridge starts Codex app-server over stdio, reuses the Codex CLI's ChatGPT login,
-and asks for a structured planner command. A composite prep-plan command lets
-Codex select and order several canonical steps at once. The browser validates every command
-and applies it through the same domain reducer used by direct UI actions.
+## Implementation Status
+
+The committed baseline still persists its current week, history, and transcript
+in browser local storage and applies commands in React. That baseline is useful
+in one browser but is not the accepted family-ready authority model.
+
+The active implementation contract replaces browser authority with one local
+Node application server and SQLite household workspace, using optimistic
+concurrency, idempotent requests, durable shared chat, and one atomic client
+cutover. See [the family-readiness plan](docs/family-readiness-remediation-plan.md)
+and [functional spine](docs/functional-spine.md). Tailscale exposure and the
+expanded Codex runtime remain separate follow-ups.
+
+The current loopback-only Node bridge starts Codex app-server over stdio, reuses
+the Codex CLI's ChatGPT login, and asks for one structured planner command. A
+composite prep-plan command lets Codex select and order several canonical steps
+at once. The browser validates every command and applies it through the same
+domain reducer used by direct UI actions until the server-authority cutover
+lands.
 
 Codex runs read-only with approvals disabled. OAuth credentials and the raw
 app-server protocol never enter the browser.
 
 ## Run Locally
 
-Requires Node.js `>=22.13.0`, Codex CLI, and a ChatGPT-authenticated Codex
+Requires Node.js `>=22.15.0`, Codex CLI, and a ChatGPT-authenticated Codex
 session.
 
 ```bash

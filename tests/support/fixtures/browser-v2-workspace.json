@@ -1,0 +1,119 @@
+{
+  "data": {
+    "meals": [
+      {
+        "id": "meal-mon",
+        "dayIndex": 0,
+        "title": "Harissa chicken bowls",
+        "subtitle": "Roasted vegetables and yogurt",
+        "venue": "Home",
+        "status": "planned",
+        "protein": "chicken",
+        "prepNote": "Marinate on Sunday",
+        "leftoverNote": "Makes 2 extra portions",
+        "notes": "Keep one portion mild",
+        "ingredients": [
+          "1 1/2 lb boneless chicken thighs",
+          "1 cup basmati rice"
+        ],
+        "instructions": [
+          {
+            "id": "meal-mon-marinate",
+            "inputs": [
+              {
+                "amount": "1 1/2 lb",
+                "ingredient": "boneless chicken thighs"
+              },
+              {
+                "amount": "2 tbsp",
+                "ingredient": "harissa"
+              }
+            ],
+            "instruction": "Coat the chicken with harissa and refrigerate.",
+            "complete": true,
+            "note": "Used the mild jar for the kids."
+          },
+          {
+            "id": "meal-mon-rice",
+            "inputs": [
+              {
+                "amount": "1 cup",
+                "ingredient": "basmati rice"
+              },
+              {
+                "amount": "2 cups",
+                "ingredient": "water"
+              }
+            ],
+            "instruction": "Bring the rice and water to a boil, cover, and simmer.",
+            "complete": false,
+            "timerDurationSeconds": 900,
+            "timerStartedAt": 1783353600000
+          }
+        ]
+      }
+    ],
+    "prep": [
+      {
+        "id": "prep-1",
+        "stepId": "meal-mon-marinate",
+        "due": "Sun, Jul 5",
+        "position": 0
+      }
+    ],
+    "groceries": [
+      {
+        "id": "g-1",
+        "section": "Meat & seafood",
+        "item": "Boneless chicken thighs",
+        "detail": "1.35 kg total",
+        "checked": true,
+        "farmBox": false
+      }
+    ],
+    "leftovers": [
+      {
+        "id": "leftover-mon",
+        "sourceMealId": "meal-mon",
+        "label": "Harissa chicken",
+        "portions": 2,
+        "state": "assigned",
+        "assignedDayIndex": 2,
+        "quality": "good"
+      }
+    ],
+    "farmBoxReconciled": false,
+    "weekArchived": false,
+    "draftReady": false,
+    "feedback": {
+      "meal-mon": "repeat"
+    },
+    "weekLesson": "Pack sauces separately."
+  },
+  "events": [
+    {
+      "id": "event-1783339560000-household",
+      "actor": "Household",
+      "command": "toggleInstructionStep",
+      "summary": "Marked chicken marinated",
+      "target": "meal-mon-marinate",
+      "changes": [
+        "Complete: false to true"
+      ],
+      "occurredAt": 1783339560000
+    }
+  ],
+  "chatMessages": [
+    {
+      "id": "chat-1",
+      "role": "assistant",
+      "text": "I can reshape the active week while keeping prep, groceries, and leftovers linked."
+    },
+    {
+      "id": "chat-2",
+      "role": "user",
+      "text": "Move the rice step into Sunday prep.",
+      "context": "meal-mon"
+    }
+  ]
+}
