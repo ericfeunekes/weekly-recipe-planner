@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { isHouseholdCommand } from "../../lib/household-command-contract.ts";
 import {
+  API_ERROR_CODES,
   PLANNER_API_ROUTES,
   normalizePageRequest,
   type ApiErrorCode,
@@ -219,7 +220,12 @@ function chatDecisionStatus(status: string) {
 
 function mapThrownError(error: unknown): ApiRouteError {
   if (error instanceof ApiRouteError) return error;
-  if (isRecord(error) && typeof error.code === "string" && typeof error.message === "string") {
+  if (
+    isRecord(error) &&
+    typeof error.code === "string" &&
+    API_ERROR_CODES.includes(error.code as ApiErrorCode) &&
+    typeof error.message === "string"
+  ) {
     const code = error.code as ApiErrorCode;
     const status =
       code === "NOT_INITIALIZED" || code === "NOT_FOUND"
