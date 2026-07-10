@@ -160,6 +160,10 @@ export interface ChatPersistencePort<Transaction> {
   insertReceipt(transaction: Transaction, receipt: OperationReceipt): void;
   readRunningTurn(transaction: Transaction): ChatTurn | null;
   readTurn(transaction: Transaction, turnId: string): ChatTurn | null;
+  readTranscriptEntry(
+    transaction: Transaction,
+    entryId: string,
+  ): TranscriptEntry | null;
   readTranscriptTail(transaction: Transaction, limit: number): TranscriptEntry[];
   insertTranscriptEntry(
     transaction: Transaction,
