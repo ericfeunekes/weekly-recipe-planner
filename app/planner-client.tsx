@@ -2,13 +2,14 @@
 
 import {
   Archive,
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   Bot,
   CalendarDays,
   Check,
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   Circle,
   ClipboardCheck,
@@ -17,17 +18,22 @@ import {
   History,
   Home,
   ListChecks,
+  LoaderCircle,
   MapPin,
   MessageCircle,
+  MessageSquareText,
   Minus,
   PackageCheck,
   PencilLine,
+  Play,
   Plus,
   RotateCcw,
   Send,
   ShoppingBasket,
   Sparkles,
   Sprout,
+  StickyNote,
+  Trash2,
   Utensils,
   X,
   type LucideIcon,
@@ -35,30 +41,31 @@ import {
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   executeDomainCommand,
-  isSupportedSalmonMoveIntent,
+  isDomainCommand,
   type DomainCommand,
   type GroceryItem,
+  type InstructionStep,
   type Leftover,
   type Meal,
   type MealStatus,
   type PlannerData,
-  type PrepTask,
+  type PrepReference,
+  resolveInstructionStep,
 } from "@/lib/planner-domain";
+import {
+  formatPlannerEventTime,
+  migrateChatMessages,
+  migrateEventHistory,
+  retainRecoverableEventHistory,
+  type PlannerActor as Actor,
+  type PlannerChatMessage as ChatMessage,
+  type PlannerEventEntry as EventEntry,
+} from "@/lib/planner-history";
+import { buildChatPlannerState } from "@/lib/planner-chat-context";
+import { migrateStoredPlannerData } from "@/lib/planner-persistence";
 
 type View = "week" | "tonight" | "prep" | "groceries" | "closeout";
-type Actor = "You" | "Codex";
 type WeekState = "archived" | "active" | "draft";
-
-type EventEntry = {
-  id: string;
-  actor: Actor;
-  command: string;
-  summary: string;
-  target: string;
-  changes: string[];
-  before?: PlannerData;
-  time: string;
-};
 
 type UndoState = {
   snapshot: PlannerData;
@@ -66,11 +73,11 @@ type UndoState = {
   actor: Actor;
 } | null;
 
-type ChatMessage = {
-  id: string;
-  role: "assistant" | "user";
-  text: string;
-  changes?: string[];
+type BridgeState = "checking" | "ready" | "unavailable" | "wrong-auth";
+
+type BridgeStatus = {
+  state: BridgeState;
+  detail: string;
 };
 
 const DAYS = [
@@ -85,7 +92,38 @@ const DAYS = [
 
 const TODAY_INDEX = 3;
 const ACTIVE_WEEK_ID = "2026-07-06";
-const STORAGE_KEY = "weekly-recipe-planner:v1";
+const STORAGE_KEY = "weekly-recipe-planner:v2";
+const LEGACY_STORAGE_KEY = "weekly-recipe-planner:v1";
+const CODEX_BRIDGE_URL =
+  process.env.NEXT_PUBLIC_CODEX_BRIDGE_URL ?? "http://127.0.0.1:8788";
+
+const PREP_DATES = [
+  "Sun, Jul 5",
+  "Mon, Jul 6",
+  "Tue, Jul 7",
+  "Wed, Jul 8",
+  "Thu, Jul 9",
+  "Fri, Jul 10",
+  "Sat, Jul 11",
+  "Sun, Jul 12",
+] as const;
+
+function recipeStep(
+  id: string,
+  inputs: Array<[amount: string, ingredient: string]>,
+  instruction: string,
+  options: Partial<
+    Pick<InstructionStep, "complete" | "timerDurationSeconds" | "timerStartedAt" | "note">
+  > = {},
+): InstructionStep {
+  return {
+    id,
+    inputs: inputs.map(([amount, ingredient]) => ({ amount, ingredient })),
+    instruction,
+    complete: false,
+    ...options,
+  };
+}
 
 const WEEK_OPTIONS: Array<{
   id: string;
@@ -119,9 +157,36 @@ const INITIAL_DATA: PlannerData = {
         "1 lemon",
       ],
       instructions: [
-        "Roast chicken, peppers, and chickpeas at 220 C for 28 minutes.",
-        "Rest 5 minutes, then finish with lemon and parsley.",
-        "Pack two lunch portions before serving dinner.",
+        recipeStep(
+          "meal-mon-marinate",
+          [["900 g", "boneless chicken thighs"], ["3 tbsp", "harissa paste"], ["1", "lemon"]],
+          "Coat the chicken with harissa and lemon, then refrigerate until cooking.",
+          { complete: true },
+        ),
+        recipeStep(
+          "meal-mon-tray",
+          [["2", "red peppers, sliced"], ["1 x 540 mL can", "chickpeas"]],
+          "Arrange the peppers and chickpeas with the marinated chicken on a sheet pan.",
+          { complete: true },
+        ),
+        recipeStep(
+          "meal-mon-roast",
+          [["1 tray", "prepared chicken, peppers, and chickpeas"]],
+          "Roast at 220 C until the chicken is cooked through.",
+          { complete: true, timerDurationSeconds: 28 * 60 },
+        ),
+        recipeStep(
+          "meal-mon-rest",
+          [["to finish", "lemon and parsley"]],
+          "Rest the tray, then finish with lemon and parsley.",
+          { complete: true, timerDurationSeconds: 5 * 60 },
+        ),
+        recipeStep(
+          "meal-mon-pack",
+          [["2 portions", "traybake"]],
+          "Pack two lunch portions before serving dinner.",
+          { complete: true },
+        ),
       ],
     },
     {
@@ -143,9 +208,30 @@ const INITIAL_DATA: PlannerData = {
         "1 cup lemon yogurt sauce",
       ],
       instructions: [
-        "Slice the chicken and cucumber.",
-        "Pack pitas, filling, and sauce separately in the cooler.",
-        "Assemble just before eating.",
+        recipeStep(
+          "meal-tue-pickle",
+          [["1", "English cucumber"], ["1/2 cup", "quick-pickle brine"]],
+          "Slice and quick-pickle the cucumber.",
+          { complete: true, timerDurationSeconds: 12 * 60 },
+        ),
+        recipeStep(
+          "meal-tue-slice",
+          [["450 g", "cooked harissa chicken"]],
+          "Slice the cooked chicken into pita-sized pieces.",
+          { complete: true },
+        ),
+        recipeStep(
+          "meal-tue-pack",
+          [["6", "whole-wheat pitas"], ["180 g", "feta"], ["1 cup", "lemon yogurt sauce"]],
+          "Pack the pitas, filling, feta, and sauce separately in the cooler.",
+          { complete: true },
+        ),
+        recipeStep(
+          "meal-tue-assemble",
+          [["6", "packed pitas"]],
+          "Assemble the pitas just before eating.",
+          { complete: true },
+        ),
       ],
     },
     {
@@ -166,9 +252,24 @@ const INITIAL_DATA: PlannerData = {
         "Pickled cucumber",
       ],
       instructions: [
-        "Warm the farro and chicken.",
-        "Wilt spinach in the hot farro.",
-        "Top with pickled cucumber and yogurt sauce.",
+        recipeStep(
+          "meal-wed-warm",
+          [["remaining", "harissa chicken"], ["3 cups", "cooked farro"]],
+          "Warm the farro and chicken together.",
+          { complete: true, timerDurationSeconds: 8 * 60 },
+        ),
+        recipeStep(
+          "meal-wed-wilt",
+          [["1 bunch", "farm-box spinach"]],
+          "Wilt the spinach into the hot farro.",
+          { complete: true },
+        ),
+        recipeStep(
+          "meal-wed-finish",
+          [["1 cup", "pickled cucumber"], ["to serve", "yogurt sauce"]],
+          "Top the bowls with pickled cucumber and yogurt sauce.",
+          { complete: true },
+        ),
       ],
     },
     {
@@ -191,10 +292,44 @@ const INITIAL_DATA: PlannerData = {
         "1 English cucumber",
       ],
       instructions: [
-        "Start the rice and heat the oven to 220 C.",
-        "Brush salmon with miso-soy glaze; roast for 9-11 minutes.",
-        "Blister snap peas, slice cucumber, and build bowls.",
-        "Cool two salmon portions promptly for Saturday.",
+        recipeStep(
+          "meal-thu-thaw",
+          [["680 g", "salmon fillet"]],
+          "Thaw the salmon in the refrigerator.",
+          { complete: true, note: "Thawed Wednesday night." },
+        ),
+        recipeStep(
+          "meal-thu-rice",
+          [["2 cups", "jasmine rice"], ["3 cups", "water"]],
+          "Rinse the rice, combine it with the water, and cook until tender.",
+          { timerDurationSeconds: 18 * 60 },
+        ),
+        recipeStep(
+          "meal-thu-oven",
+          [],
+          "Heat the oven to 220 C.",
+        ),
+        recipeStep(
+          "meal-thu-glaze",
+          [["3 tbsp", "white miso"], ["2 tbsp", "low-sodium soy sauce"]],
+          "Mix the miso and soy sauce into a smooth glaze.",
+        ),
+        recipeStep(
+          "meal-thu-roast",
+          [["680 g", "thawed salmon"], ["all", "miso-soy glaze"]],
+          "Brush the salmon with glaze and roast until just cooked.",
+          { timerDurationSeconds: 10 * 60 },
+        ),
+        recipeStep(
+          "meal-thu-build",
+          [["300 g", "snap peas"], ["1", "English cucumber"]],
+          "Blister the snap peas, slice the cucumber, and build the rice bowls.",
+        ),
+        recipeStep(
+          "meal-thu-cool",
+          [["2 portions", "cooked salmon"]],
+          "Cool two salmon portions promptly for Sunday.",
+        ),
       ],
     },
     {
@@ -216,9 +351,27 @@ const INITIAL_DATA: PlannerData = {
         "3 tbsp soy sauce",
       ],
       instructions: [
-        "Sear chicken in a wide pan.",
-        "Add vegetables, then fresh noodles and sauce.",
-        "Toss over high heat until glossy and pack lunch portions.",
+        recipeStep(
+          "meal-fri-sauce",
+          [["3 tbsp", "soy sauce"], ["2 tbsp", "rice vinegar"], ["1 tbsp", "sesame oil"]],
+          "Mix the lo mein sauce until combined.",
+        ),
+        recipeStep(
+          "meal-fri-sear",
+          [["400 g", "chicken thighs, sliced"]],
+          "Sear the chicken in a wide pan until browned and cooked through.",
+          { timerDurationSeconds: 7 * 60 },
+        ),
+        recipeStep(
+          "meal-fri-noodles",
+          [["2 heads", "baby bok choy"], ["1", "red pepper"], ["450 g", "fresh lo mein noodles"]],
+          "Add the vegetables, then the fresh noodles and sauce.",
+        ),
+        recipeStep(
+          "meal-fri-finish",
+          [["2 portions", "finished lo mein"]],
+          "Toss over high heat until glossy and pack the lunch portions.",
+        ),
       ],
     },
     {
@@ -233,7 +386,13 @@ const INITIAL_DATA: PlannerData = {
       leftoverNote: "Use salmon if plans stay home",
       notes: "Leave this open until Saturday afternoon.",
       ingredients: [],
-      instructions: ["Check leftovers before deciding whether to cook."],
+      instructions: [
+        recipeStep(
+          "meal-sat-decide",
+          [["all", "available leftovers"]],
+          "Check the available leftovers before deciding whether to cook.",
+        ),
+      ],
     },
     {
       id: "meal-sun",
@@ -254,61 +413,37 @@ const INITIAL_DATA: PlannerData = {
         "Farm-box greens",
       ],
       instructions: [
-        "Flake salmon and mix with egg, panko, and parsley.",
-        "Form six small cakes and chill for 10 minutes.",
-        "Pan-sear and serve with chopped salad.",
+        recipeStep(
+          "meal-sun-flake",
+          [["2 portions", "reserved cooked salmon"]],
+          "Flake the reserved salmon into a mixing bowl.",
+        ),
+        recipeStep(
+          "meal-sun-mix",
+          [["1", "egg"], ["1/2 cup", "panko"], ["1/4 cup", "flat-leaf parsley"]],
+          "Mix the salmon with the egg, panko, and parsley.",
+        ),
+        recipeStep(
+          "meal-sun-chill",
+          [["6", "formed salmon cakes"]],
+          "Form six small cakes and chill until firm.",
+          { timerDurationSeconds: 10 * 60 },
+        ),
+        recipeStep(
+          "meal-sun-sear",
+          [["6", "chilled salmon cakes"], ["1 bowl", "chopped salad"]],
+          "Pan-sear the cakes and serve them with the chopped salad.",
+        ),
       ],
     },
   ],
   prep: [
-    {
-      id: "prep-1",
-      title: "Marinate harissa chicken",
-      due: "Sun, Jul 5",
-      mealId: "meal-mon",
-      complete: true,
-      duration: "10 min",
-    },
-    {
-      id: "prep-2",
-      title: "Pickle two cucumbers",
-      due: "Mon, Jul 6",
-      mealId: "meal-tue",
-      complete: true,
-      duration: "12 min",
-    },
-    {
-      id: "prep-3",
-      title: "Thaw 680 g salmon",
-      due: "Thu, Jul 9",
-      mealId: "meal-thu",
-      complete: true,
-      duration: "Overnight",
-    },
-    {
-      id: "prep-4",
-      title: "Cook double batch jasmine rice",
-      due: "Thu, Jul 9",
-      mealId: "meal-thu",
-      complete: false,
-      duration: "25 min",
-    },
-    {
-      id: "prep-5",
-      title: "Mix lo mein sauce",
-      due: "Fri, Jul 10",
-      mealId: "meal-fri",
-      complete: false,
-      duration: "5 min",
-    },
-    {
-      id: "prep-6",
-      title: "Flake reserved salmon",
-      due: "Sun, Jul 12",
-      mealId: "meal-sun",
-      complete: false,
-      duration: "8 min",
-    },
+    { id: "prep-1", stepId: "meal-mon-marinate", due: "Sun, Jul 5", position: 0 },
+    { id: "prep-2", stepId: "meal-tue-pickle", due: "Sun, Jul 5", position: 1 },
+    { id: "prep-3", stepId: "meal-thu-thaw", due: "Wed, Jul 8", position: 2 },
+    { id: "prep-4", stepId: "meal-thu-rice", due: "Sun, Jul 5", position: 3 },
+    { id: "prep-5", stepId: "meal-fri-sauce", due: "Sun, Jul 5", position: 4 },
+    { id: "prep-6", stepId: "meal-sun-flake", due: "Sun, Jul 12", position: 5 },
   ],
   groceries: [
     { id: "g-1", section: "Produce", item: "English cucumbers", detail: "2 large", checked: true, farmBox: false },
@@ -355,12 +490,12 @@ const INITIAL_DATA: PlannerData = {
 const INITIAL_EVENTS: EventEntry[] = [
   {
     id: "event-2",
-    actor: "You",
-    command: "completePrepTask",
+    actor: "Household",
+    command: "toggleInstructionStep",
     summary: "Marked salmon thawed",
-    target: "prep-3",
+    target: "meal-thu-thaw",
     changes: ["Complete: false to true"],
-    time: "Today, 8:12 AM",
+    occurredAt: Date.parse("2026-07-09T08:12:00-03:00"),
   },
   {
     id: "event-1",
@@ -369,7 +504,7 @@ const INITIAL_EVENTS: EventEntry[] = [
     summary: "Removed owned rice vinegar and sesame oil",
     target: "active-week-groceries",
     changes: ["Two owned pantry items removed"],
-    time: "Monday, 9:06 AM",
+    occurredAt: Date.parse("2026-07-06T09:06:00-03:00"),
   },
 ];
 
@@ -377,7 +512,7 @@ const INITIAL_CHAT: ChatMessage[] = [
   {
     id: "chat-1",
     role: "assistant",
-    text: "I have the active week and its linked prep, groceries, and leftovers in context.",
+    text: "I can reshape the active week while keeping prep, groceries, and leftovers linked.",
   },
 ];
 
@@ -412,14 +547,11 @@ const DRAFT_MEALS = [
 ];
 
 function cloneInitialData() {
-  return JSON.parse(JSON.stringify(INITIAL_DATA)) as PlannerData;
+  return structuredClone(INITIAL_DATA);
 }
 
-function eventTime() {
-  return new Intl.DateTimeFormat("en-CA", {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date());
+function migrateStoredData(value: unknown): PlannerData {
+  return migrateStoredPlannerData(value, cloneInitialData());
 }
 
 function makeId(prefix: string) {
@@ -487,48 +619,58 @@ function StatusBadge({ status }: { status: MealStatus }) {
   );
 }
 
-function ProgressRing({ value, label }: { value: number; label: string }) {
-  return (
-    <div className="progress-ring" style={{ "--progress": `${value * 3.6}deg` } as React.CSSProperties}>
-      <span>{value}%</span>
-      <small>{label}</small>
-    </div>
-  );
-}
-
 export default function PlannerApp() {
   const [view, setView] = useState<View>("week");
   const [data, setData] = useState<PlannerData>(() => cloneInitialData());
   const [events, setEvents] = useState<EventEntry[]>(INITIAL_EVENTS);
   const [undo, setUndo] = useState<UndoState>(null);
   const [selectedWeekId, setSelectedWeekId] = useState(ACTIVE_WEEK_ID);
-  const [weekPickerOpen, setWeekPickerOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
+  const [chatInputContext, setChatInputContext] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(INITIAL_CHAT);
+  const [chatPending, setChatPending] = useState(false);
+  const [bridgeCheck, setBridgeCheck] = useState(0);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
+    state: "checking",
+    detail: "Checking local Codex",
+  });
   const [groceryFilter, setGroceryFilter] = useState<"remaining" | "all">("remaining");
   const [hydrated, setHydrated] = useState(false);
+  const [persistenceFailed, setPersistenceFailed] = useState(false);
+  const dataRef = useRef(data);
+  const selectedWeekIdRef = useRef(selectedWeekId);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
+
+  useEffect(() => {
+    selectedWeekIdRef.current = selectedWeekId;
+  }, [selectedWeekId]);
 
   useEffect(() => {
     const restore = window.setTimeout(() => {
       try {
-        const saved = window.localStorage.getItem(STORAGE_KEY);
+        const saved =
+          window.localStorage.getItem(STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as {
-            data?: PlannerData;
-            events?: EventEntry[];
+            data?: unknown;
+            events?: unknown;
+            chatMessages?: unknown;
           };
-          if (parsed.data?.meals?.length === 7) {
-            const seeded = cloneInitialData();
-            setData({
-              ...parsed.data,
-              leftovers: parsed.data.leftovers ?? seeded.leftovers,
-              draftReady: parsed.data.draftReady ?? false,
-            });
+          if (parsed.data) {
+            const migratedData = migrateStoredData(parsed.data);
+            dataRef.current = migratedData;
+            setData(migratedData);
           }
-          if (parsed.events?.length) setEvents(parsed.events);
+          const migratedEvents = migrateEventHistory(parsed.events, migrateStoredData);
+          if (migratedEvents.length) setEvents(migratedEvents);
+          setChatMessages(migrateChatMessages(parsed.chatMessages, INITIAL_CHAT));
         }
       } catch {
         // Keep the seeded local week if stored state is missing or stale.
@@ -541,14 +683,75 @@ export default function PlannerApp() {
 
   useEffect(() => {
     if (!hydrated) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ data, events }));
-  }, [data, events, hydrated]);
+    let failed = false;
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ data, events, chatMessages }),
+      );
+    } catch {
+      failed = true;
+    }
+
+    const statusUpdate = window.setTimeout(() => setPersistenceFailed(failed), 0);
+    return () => window.clearTimeout(statusUpdate);
+  }, [chatMessages, data, events, hydrated]);
 
   useEffect(() => {
     if (!undo) return;
     const timer = window.setTimeout(() => setUndo(null), 9000);
     return () => window.clearTimeout(timer);
   }, [undo]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    let active = true;
+
+    void fetch(`${CODEX_BRIDGE_URL}/health`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = (await response.json()) as {
+          account?: { type?: string; planType?: string };
+          auth?: { type?: string; mode?: string; planType?: string; message?: string };
+          error?: string;
+        };
+        if (!active) return;
+        const account = payload.account ?? payload.auth;
+        const authType = account?.type ?? payload.auth?.mode;
+        if (response.ok && authType === "chatgpt") {
+          setBridgeStatus({
+            state: "ready",
+            detail: account?.planType
+              ? `ChatGPT ${account.planType} connected`
+              : "ChatGPT account connected",
+          });
+          return;
+        }
+        if (response.ok || response.status === 401) {
+          setBridgeStatus({
+            state: "wrong-auth",
+            detail: payload.error ?? payload.auth?.message ?? "Codex needs a ChatGPT login",
+          });
+          return;
+        }
+        throw new Error(payload.error ?? `Bridge returned ${response.status}`);
+      })
+      .catch(() => {
+        if (active) {
+          setBridgeStatus({
+            state: "unavailable",
+            detail: "Local Codex bridge unavailable",
+          });
+        }
+      })
+      .finally(() => window.clearTimeout(timeout));
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [bridgeCheck]);
 
   const activeWeek = WEEK_OPTIONS.find((week) => week.id === selectedWeekId) ?? WEEK_OPTIONS[1];
   const selectedWeekState: WeekState =
@@ -559,16 +762,25 @@ export default function PlannerApp() {
     () => data.meals.find((meal) => meal.id === selectedMealId) ?? null,
     [data.meals, selectedMealId],
   );
-  const selectedAssignedLeftover = selectedMeal?.leftoverId
-    ? data.leftovers.find((leftover) => leftover.id === selectedMeal.leftoverId) ?? null
+  const selectedAssignedLeftover = selectedMeal
+    ? data.leftovers.find(
+        (leftover) =>
+          leftover.state === "assigned" &&
+          leftover.assignedDayIndex === selectedMeal.dayIndex,
+      ) ?? null
     : null;
   const tonightMeal = data.meals.find((meal) => meal.dayIndex === TODAY_INDEX) ?? data.meals[3];
-  const prepDone = data.prep.filter((task) => task.complete).length;
+  const prepDone = data.prep.filter(
+    (reference) => resolveInstructionStep(data, reference.stepId)?.step.complete,
+  ).length;
   const groceriesDone = data.groceries.filter((item) => item.checked).length;
   const cookedMeals = data.meals.filter((meal) => meal.status === "cooked" || meal.status === "leftover").length;
 
-  const contextLabel =
-    view === "tonight"
+  const contextLabel = selectedMeal
+    ? `${DAYS[selectedMeal.dayIndex].name} | ${selectedMeal.title}`
+    : selectedWeekId !== ACTIVE_WEEK_ID
+      ? `${activeWeek.state} week | ${activeWeek.range}`
+      : view === "tonight"
       ? `Tonight | ${tonightMeal.title}`
       : view === "groceries"
         ? "Groceries | farm-box reconciliation"
@@ -579,13 +791,15 @@ export default function PlannerApp() {
             : "Week overview | Jul 6 - 12";
 
   function dispatchCommand(actor: Actor, command: DomainCommand) {
-    const result = executeDomainCommand(data, command);
+    const currentData = dataRef.current;
+    const result = executeDomainCommand(currentData, command);
     if (!result.ok) return result;
-    const before = data;
+    const before = currentData;
+    dataRef.current = result.state;
     setData(result.state);
     setUndo({ snapshot: before, summary: result.summary, actor });
-    setEvents((current) => [
-      {
+    setEvents((current) =>
+      retainRecoverableEventHistory([{
         id: makeId("event"),
         actor,
         command: command.type,
@@ -593,181 +807,337 @@ export default function PlannerApp() {
         target: result.target,
         changes: result.changes,
         before,
-        time: `Today, ${eventTime()}`,
-      },
-      ...current,
-    ]);
+        occurredAt: Date.now(),
+      }, ...current]),
+    );
     return result;
   }
 
   function undoLastChange() {
     if (!undo) return;
-    const before = data;
+    const before = dataRef.current;
+    dataRef.current = undo.snapshot;
     setData(undo.snapshot);
-    setEvents((current) => [
-      {
+    setEvents((current) =>
+      retainRecoverableEventHistory([{
         id: makeId("event"),
-        actor: "You",
+        actor: "Household",
         command: "undo",
         summary: `Undid: ${undo.summary}`,
         target: "active-week-state",
         changes: [`Restored the state before: ${undo.summary}`],
         before,
-        time: `Today, ${eventTime()}`,
-      },
-      ...current,
-    ]);
+        occurredAt: Date.now(),
+      }, ...current]),
+    );
     setUndo(null);
   }
 
   function revertHistoryEvent(eventId: string) {
     const entry = events.find((event) => event.id === eventId);
     if (!entry?.before) return;
-    const before = data;
+    const before = dataRef.current;
+    dataRef.current = entry.before;
     setData(entry.before);
-    setUndo({ snapshot: before, summary: `Reverted ${entry.summary}`, actor: "You" });
-    setEvents((current) => [
-      {
+    setUndo({ snapshot: before, summary: `Reverted ${entry.summary}`, actor: "Household" });
+    setEvents((current) =>
+      retainRecoverableEventHistory([{
         id: makeId("event"),
-        actor: "You",
+        actor: "Household",
         command: "revertEvent",
         summary: `Reverted: ${entry.summary}`,
         target: entry.target || "active-week-state",
         changes: [`Restored the state stored with event ${entry.id}`],
         before,
-        time: `Today, ${eventTime()}`,
-      },
-      ...current,
-    ]);
+        occurredAt: Date.now(),
+      }, ...current]),
+    );
   }
 
   function resetDemo() {
     window.localStorage.removeItem(STORAGE_KEY);
-    setData(cloneInitialData());
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    const reset = cloneInitialData();
+    dataRef.current = reset;
+    setData(reset);
     setEvents(INITIAL_EVENTS);
+    setChatMessages(INITIAL_CHAT);
+    setPersistenceFailed(false);
+    setChatInput("");
+    setChatInputContext(null);
     setUndo(null);
     setSelectedWeekId(ACTIVE_WEEK_ID);
     setView("week");
   }
 
-  function moveMeal(mealId: string, targetDayIndex: number, actor: Actor = "You") {
+  function moveMeal(mealId: string, targetDayIndex: number, actor: Actor = "Household") {
     dispatchCommand(actor, { type: "moveMeal", mealId, targetDayIndex });
   }
 
-  function runCodexMove() {
-    const result = dispatchCommand("Codex", { type: "moveSalmonToSaturday" });
-    if (!result.ok) {
-      setChatMessages((current) => [
-        ...current,
-        {
-          id: makeId("chat"),
-          role: "assistant",
-          text: result.error,
-        },
-      ]);
+  async function sendChatMessage(messageValue: string, messageContext = contextLabel) {
+    const message = messageValue.trim();
+    if (!message) return;
+    if (chatPending || bridgeStatus.state !== "ready") {
+      setChatOpen(true);
+      setChatInput(message);
+      setChatInputContext(messageContext);
       return;
     }
-
-    setChatMessages((current) => [
-      ...current,
-      {
-        id: makeId("chat"),
-        role: "assistant",
-        text: "Applied the plan change across the active week.",
-        changes: result.changes,
-      },
-    ]);
-  }
-
-  function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = chatInput.trim();
-    if (!message) return;
-    setChatMessages((current) => [
-      ...current,
-      { id: makeId("chat"), role: "user", text: message },
-    ]);
+    const userMessage: ChatMessage = {
+      id: makeId("chat"),
+      role: "user",
+      text: message,
+      context: messageContext,
+    };
+    const conversation = [...chatMessages, userMessage];
+    setChatMessages(conversation);
     setChatInput("");
+    setChatInputContext(null);
+    setChatPending(true);
+    const requestWeekId = selectedWeekId;
+    const requestWeekState = selectedWeekState;
+    const mutationBaseState = dataRef.current;
+    const requestState = buildChatPlannerState({
+      activeWeekId: ACTIVE_WEEK_ID,
+      activePlannerState: mutationBaseState,
+      selectedWeek: {
+        id: requestWeekId,
+        label: activeWeek.label,
+        range: activeWeek.range,
+        state: requestWeekState,
+      },
+      draftMealTitles: DRAFT_MEALS,
+    });
+    const requestStateFingerprint = JSON.stringify(mutationBaseState);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 90000);
 
-    if (isSupportedSalmonMoveIntent(message)) {
-      runCodexMove();
-    } else {
+    try {
+      const response = await fetch(`${CODEX_BRIDGE_URL}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message,
+          state: requestState,
+          context: messageContext,
+          messages: chatMessages.slice(-12).map(({ role, text, context }) => ({
+            role,
+            text: (context ? `[${context}] ${text}` : text).slice(0, 4_000),
+          })),
+        }),
+        signal: controller.signal,
+      });
+      const payload = (await response.json()) as {
+        reply?: unknown;
+        command?: unknown;
+        error?: string;
+      };
+      if (!response.ok) {
+        if (response.status === 401) {
+          setBridgeStatus({
+            state: "wrong-auth",
+            detail: payload.error ?? "ChatGPT login required",
+          });
+        } else if (response.status === 503) {
+          setBridgeStatus({
+            state: "unavailable",
+            detail: "Local Codex bridge unavailable",
+          });
+        }
+        throw new Error(payload.error ?? `Codex bridge returned ${response.status}`);
+      }
+      if (typeof payload.reply !== "string" || !payload.reply.trim()) {
+        throw new Error("Codex returned an invalid reply.");
+      }
+      if (payload.command !== null && payload.command !== undefined) {
+        if (!isDomainCommand(payload.command)) {
+          throw new Error("Codex proposed an unsupported planner command.");
+        }
+        if (selectedWeekIdRef.current !== requestWeekId) {
+          setChatMessages((current) => [
+            ...current,
+            {
+              id: makeId("chat"),
+              role: "assistant",
+              text: `${payload.reply}\n\nThe selected week changed while I was responding, so I did not apply this command. Send it again from the intended week.`,
+            },
+          ]);
+          return;
+        }
+        const canApplyToSelectedWeek =
+          (requestWeekId === ACTIVE_WEEK_ID && requestWeekState === "active") ||
+          (requestWeekState === "draft" && payload.command.type === "createWeekPlan");
+        if (!canApplyToSelectedWeek) {
+          setChatMessages((current) => [
+            ...current,
+            {
+              id: makeId("chat"),
+              role: "assistant",
+              text: `${payload.reply}\n\nI did not apply a planner change because this week is read-only.`,
+            },
+          ]);
+          return;
+        }
+        if (JSON.stringify(dataRef.current) !== requestStateFingerprint) {
+          setChatMessages((current) => [
+            ...current,
+            {
+              id: makeId("chat"),
+              role: "assistant",
+              text: `${payload.reply}\n\nThe week changed while I was responding, so I did not apply this command. Send it again to use the current week.`,
+            },
+          ]);
+          return;
+        }
+        const result = dispatchCommand("Codex", payload.command);
+        setChatMessages((current) => [
+          ...current,
+          {
+            id: makeId("chat"),
+            role: "assistant",
+            text: result.ok
+              ? payload.reply as string
+              : `${payload.reply}\n\nNo change was applied: ${result.error}`,
+            changes: result.ok ? result.changes : undefined,
+          },
+        ]);
+      } else {
+        setChatMessages((current) => [
+          ...current,
+          { id: makeId("chat"), role: "assistant", text: payload.reply as string },
+        ]);
+      }
+    } catch (error) {
+      if (error instanceof TypeError) {
+        setBridgeStatus({
+          state: "unavailable",
+          detail: "Local Codex bridge unavailable",
+        });
+      }
+      const detail =
+        error instanceof DOMException && error.name === "AbortError"
+          ? "Codex took too long to respond. No change was applied."
+          : error instanceof Error
+            ? `${error.message} No change was applied.`
+            : "Codex could not respond. No change was applied.";
       setChatMessages((current) => [
         ...current,
         {
           id: makeId("chat"),
           role: "assistant",
-          text: "No change was applied. This preview accepts the highlighted move command only.",
+          text: detail,
         },
       ]);
+    } finally {
+      window.clearTimeout(timeout);
+      setChatPending(false);
     }
+  }
+
+  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendChatMessage(chatInput, chatInputContext ?? contextLabel);
   }
 
   function updateMealStatus(mealId: string, status: MealStatus) {
-    dispatchCommand("You", { type: "updateMealStatus", mealId, status });
+    dispatchCommand("Household", { type: "updateMealStatus", mealId, status });
   }
 
   function updateMealSnapshot(
     mealId: string,
     changes: Pick<Meal, "title" | "venue" | "notes">,
   ) {
-    dispatchCommand("You", { type: "updateMealSnapshot", mealId, changes });
+    return dispatchCommand("Household", {
+      type: "updateMealSnapshot",
+      mealId,
+      changes,
+    }).ok;
   }
 
-  function togglePrep(taskId: string) {
-    dispatchCommand("You", { type: "completePrepTask", taskId });
+  function toggleInstructionStep(stepId: string) {
+    dispatchCommand("Household", { type: "toggleInstructionStep", stepId });
   }
 
-  function reschedulePrep(taskId: string) {
-    dispatchCommand("You", { type: "reschedulePrepTask", taskId, due: "Fri, Jul 10" });
+  function updateInstructionStepNote(stepId: string, note: string) {
+    dispatchCommand("Household", { type: "updateInstructionStepNote", stepId, note });
+  }
+
+  function startInstructionTimer(stepId: string) {
+    dispatchCommand("Household", { type: "startInstructionTimer", stepId });
+  }
+
+  function resetInstructionTimer(stepId: string) {
+    dispatchCommand("Household", { type: "resetInstructionTimer", stepId });
+  }
+
+  function movePrepReference(referenceId: string, targetPosition: number) {
+    dispatchCommand("Household", { type: "movePrepReference", referenceId, targetPosition });
+  }
+
+  function reschedulePrepReference(referenceId: string, due: string) {
+    dispatchCommand("Household", { type: "reschedulePrepReference", referenceId, due });
+  }
+
+  function removePrepReference(referenceId: string) {
+    dispatchCommand("Household", { type: "removePrepReference", referenceId });
+  }
+
+  function sendInstructionComment(meal: Meal, step: InstructionStep, message: string) {
+    if (chatPending || bridgeStatus.state !== "ready") return false;
+    setChatOpen(true);
+    void sendChatMessage(
+      message,
+      `${DAYS[meal.dayIndex].name} | ${meal.title} | ${step.id}`,
+    );
+    return true;
   }
 
   function toggleGrocery(itemId: string) {
-    dispatchCommand("You", { type: "updateGroceryItem", itemId });
+    dispatchCommand("Household", { type: "updateGroceryItem", itemId });
   }
 
   function reconcileFarmBox() {
-    dispatchCommand("You", { type: "reconcileGroceries" });
+    dispatchCommand("Household", { type: "reconcileGroceries" });
   }
 
   function updateFeedback(mealId: string, value: "repeat" | "modify" | "drop") {
-    dispatchCommand("You", { type: "captureFeedback", mealId, value });
+    dispatchCommand("Household", { type: "captureFeedback", mealId, value });
   }
 
   function archiveWeek() {
-    dispatchCommand("You", { type: "archiveWeek" });
+    dispatchCommand("Household", { type: "archiveWeek" });
   }
 
   function updateWeekLesson(weekLesson: string) {
-    dispatchCommand("You", { type: "captureWeekLesson", weekLesson });
+    dispatchCommand("Household", { type: "captureWeekLesson", weekLesson });
   }
 
   function updateLeftoverQuality(
     leftoverId: string,
     quality: "good" | "mixed" | "poor",
   ) {
-    dispatchCommand("You", { type: "captureLeftoverQuality", leftoverId, quality });
+    dispatchCommand("Household", { type: "captureLeftoverQuality", leftoverId, quality });
   }
 
   function assignLeftover(leftoverId: string, dayIndex: number) {
-    dispatchCommand("You", { type: "assignLeftover", leftoverId, dayIndex });
+    dispatchCommand("Household", { type: "assignLeftover", leftoverId, dayIndex });
   }
 
   function consumeLeftover(leftoverId: string) {
-    dispatchCommand("You", { type: "consumeLeftover", leftoverId });
+    dispatchCommand("Household", { type: "consumeLeftover", leftoverId });
   }
 
   function markDraftReady() {
-    dispatchCommand("You", { type: "createWeekPlan" });
+    dispatchCommand("Household", { type: "createWeekPlan" });
   }
 
   function moveWeek(direction: -1 | 1) {
     const index = WEEK_OPTIONS.findIndex((week) => week.id === selectedWeekId);
     const next = Math.max(0, Math.min(WEEK_OPTIONS.length - 1, index + direction));
     setSelectedWeekId(WEEK_OPTIONS[next].id);
-    setChatOpen(false);
-    setWeekPickerOpen(false);
   }
+
+  const canSendInstructionComment = bridgeStatus.state === "ready" && !chatPending;
 
   const viewTitle =
     view === "week"
@@ -789,13 +1159,13 @@ export default function PlannerApp() {
           </div>
           <div>
             <p className="brand-name">Weekly Recipe Planner</p>
-            <p className="sync-note">
-              <span className="sync-dot" /> Local state saved
+            <p className={persistenceFailed ? "sync-note failed" : "sync-note"}>
+              <span className="sync-dot" /> {persistenceFailed ? "Local save failed" : "Local state saved"}
             </p>
           </div>
         </div>
 
-        <div className="week-control" aria-label="Selected week">
+        <div className="week-control">
           <button
             className="icon-button"
             type="button"
@@ -806,43 +1176,24 @@ export default function PlannerApp() {
           >
             <ArrowLeft size={18} />
           </button>
-          <div className="week-picker-wrap">
-            <button
-              className="week-picker-button"
-              type="button"
-              aria-expanded={weekPickerOpen}
-              onClick={() => setWeekPickerOpen((open) => !open)}
+          <label className="week-select">
+            <span className="sr-only">Selected week</span>
+            <select
+              value={selectedWeekId}
+              onChange={(event) => setSelectedWeekId(event.target.value)}
             >
-              <span>
-                <strong>{activeWeek.range}</strong>
-                <small>{selectedWeekState === "active" ? "Active week" : selectedWeekState === "draft" ? "Draft plan" : "Archived week"}</small>
-              </span>
-              <ChevronDown size={17} aria-hidden="true" />
-            </button>
-            {weekPickerOpen && (
-              <div className="week-menu" role="menu">
-                {WEEK_OPTIONS.map((week) => (
-                  <button
-                    key={week.id}
-                    type="button"
-                    role="menuitem"
-                    className={week.id === selectedWeekId ? "week-menu-item active" : "week-menu-item"}
-                    onClick={() => {
-                      setSelectedWeekId(week.id);
-                      setChatOpen(false);
-                      setWeekPickerOpen(false);
-                    }}
-                  >
-                    <span>
-                      <strong>{week.range}</strong>
-                      <small>{week.id === ACTIVE_WEEK_ID && data.weekArchived ? "archived" : week.state}</small>
-                    </span>
-                    {week.id === selectedWeekId && <Check size={16} aria-hidden="true" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+              {WEEK_OPTIONS.map((week) => {
+                const state = week.id === ACTIVE_WEEK_ID && data.weekArchived
+                  ? "archived"
+                  : week.state;
+                return (
+                  <option key={week.id} value={week.id}>
+                    {week.range} - {state === "active" ? "Active week" : state === "draft" ? "Draft plan" : "Archived week"}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
           <button
             className="icon-button"
             type="button"
@@ -868,11 +1219,12 @@ export default function PlannerApp() {
           <button
             className={chatOpen ? "primary-button active" : "primary-button"}
             type="button"
-            onClick={() => setChatOpen((open) => !open)}
-            disabled={selectedWeekId !== ACTIVE_WEEK_ID || data.weekArchived}
+            aria-label="Open ChatGPT"
+            title="Open ChatGPT"
+            onClick={() => setChatOpen(true)}
           >
             <MessageCircle size={17} aria-hidden="true" />
-            <span>Ask Codex</span>
+            <span>ChatGPT</span>
           </button>
         </div>
       </header>
@@ -915,18 +1267,19 @@ export default function PlannerApp() {
           )}
         </div>
 
-        {selectedWeekId !== ACTIVE_WEEK_ID ? (
-          <LifecycleWeek
-            state={activeWeek.state}
-            onOpenActive={() => setSelectedWeekId(ACTIVE_WEEK_ID)}
-            draftReady={data.draftReady}
-            onMarkDraftReady={markDraftReady}
-          />
-        ) : data.weekArchived ? (
-          <ArchivedCurrentWeek data={data} onOpenHistory={() => setHistoryOpen(true)} />
-        ) : (
-          <div className={chatOpen ? "workspace chat-visible" : "workspace"}>
-            <section className="primary-workspace">
+        <div className="workspace">
+          <section className="primary-workspace">
+            {selectedWeekId !== ACTIVE_WEEK_ID ? (
+              <LifecycleWeek
+                state={activeWeek.state}
+                onOpenActive={() => setSelectedWeekId(ACTIVE_WEEK_ID)}
+                draftReady={data.draftReady}
+                onMarkDraftReady={markDraftReady}
+              />
+            ) : data.weekArchived ? (
+              <ArchivedCurrentWeek data={data} onOpenHistory={() => setHistoryOpen(true)} />
+            ) : (
+              <>
               {view === "week" && (
                 <WeekOverview
                   data={data}
@@ -939,19 +1292,30 @@ export default function PlannerApp() {
               {view === "tonight" && (
                 <TonightView
                   meal={tonightMeal}
-                  prep={data.prep.filter((task) => task.mealId === tonightMeal.id)}
                   leftovers={data.leftovers.filter((leftover) => leftover.sourceMealId === tonightMeal.id)}
                   onOpenMeal={setSelectedMealId}
                   onStatus={updateMealStatus}
-                  onTogglePrep={togglePrep}
+                  onToggleStep={toggleInstructionStep}
+                  onStartTimer={startInstructionTimer}
+                  onResetTimer={resetInstructionTimer}
+                  onAddNote={updateInstructionStepNote}
+                  canSendToChat={canSendInstructionComment}
+                  onSendToChat={(step, message) => sendInstructionComment(tonightMeal, step, message)}
                   onAssignLeftover={assignLeftover}
                 />
               )}
               {view === "prep" && (
                 <PrepView
                   data={data}
-                  onToggle={togglePrep}
-                  onReschedule={reschedulePrep}
+                  onToggleStep={toggleInstructionStep}
+                  onStartTimer={startInstructionTimer}
+                  onResetTimer={resetInstructionTimer}
+                  onAddNote={updateInstructionStepNote}
+                  canSendToChat={canSendInstructionComment}
+                  onSendToChat={sendInstructionComment}
+                  onMove={movePrepReference}
+                  onReschedule={reschedulePrepReference}
+                  onRemove={removePrepReference}
                   onOpenMeal={setSelectedMealId}
                 />
               )}
@@ -973,30 +1337,30 @@ export default function PlannerApp() {
                   onArchive={archiveWeek}
                 />
               )}
-            </section>
+              </>
+            )}
+          </section>
 
-            <aside className={chatOpen ? "ops-rail chat-rail open" : "ops-rail"} aria-label={chatOpen ? "Codex planner" : "Week operations"}>
-              {chatOpen ? (
-                <ChatPanel
-                  contextLabel={contextLabel}
-                  input={chatInput}
-                  messages={chatMessages}
-                  onInput={setChatInput}
-                  onSubmit={handleChatSubmit}
-                  onClose={() => setChatOpen(false)}
-                />
-              ) : (
-                <OperationsRail
-                  data={data}
-                  prepDone={prepDone}
-                  groceriesDone={groceriesDone}
-                  onOpenView={setView}
-                  onOpenChat={() => setChatOpen(true)}
-                />
-              )}
-            </aside>
-          </div>
-        )}
+          <aside className={chatOpen ? "ops-rail chat-rail open" : "ops-rail chat-rail"} aria-label="Shared ChatGPT planner">
+            <ChatPanel
+              bridgeStatus={bridgeStatus}
+              contextLabel={chatInputContext ?? contextLabel}
+              input={chatInput}
+              pending={chatPending}
+              messages={chatMessages}
+              onInput={(value) => {
+                setChatInput(value);
+                if (!value) setChatInputContext(null);
+              }}
+              onSubmit={handleChatSubmit}
+              onRetry={() => {
+                setBridgeStatus({ state: "checking", detail: "Checking local Codex" });
+                setBridgeCheck((value) => value + 1);
+              }}
+              onClose={() => setChatOpen(false)}
+            />
+          </aside>
+        </div>
       </main>
 
       <nav className="mobile-nav" aria-label="Planner views">
@@ -1029,6 +1393,16 @@ export default function PlannerApp() {
           onStatus={(status) => updateMealStatus(selectedMeal.id, status)}
           onSave={(changes) => updateMealSnapshot(selectedMeal.id, changes)}
           onConsumeLeftover={consumeLeftover}
+          onToggleStep={toggleInstructionStep}
+          onStartTimer={startInstructionTimer}
+          onResetTimer={resetInstructionTimer}
+          onAddNote={updateInstructionStepNote}
+          canSendToChat={canSendInstructionComment}
+          onSendToChat={(step, message) => {
+            const sent = sendInstructionComment(selectedMeal, step, message);
+            if (sent) setSelectedMealId(null);
+            return sent;
+          }}
         />
       )}
 
@@ -1116,109 +1490,59 @@ function WeekOverview({
   );
 }
 
-function OperationsRail({
-  data,
-  prepDone,
-  groceriesDone,
-  onOpenView,
-  onOpenChat,
-}: {
-  data: PlannerData;
-  prepDone: number;
-  groceriesDone: number;
-  onOpenView: (view: View) => void;
-  onOpenChat: () => void;
-}) {
-  const nextPrep = data.prep.filter((task) => !task.complete).slice(0, 2);
-  const remaining = data.groceries.length - groceriesDone;
-  return (
-    <div className="rail-content">
-      <div className="rail-heading">
-        <div>
-          <p className="eyebrow">At a glance</p>
-          <h2>Week pressure</h2>
-        </div>
-        <ProgressRing value={Math.round(((prepDone + groceriesDone) / (data.prep.length + data.groceries.length)) * 100)} label="ready" />
-      </div>
-
-      <section className="rail-section">
-        <button className="section-link" type="button" onClick={() => onOpenView("prep")}>
-          <span><ListChecks size={17} /> Prep</span>
-          <span>{data.prep.length - prepDone} due <ChevronRight size={15} /></span>
-        </button>
-        <div className="rail-list">
-          {nextPrep.map((task) => (
-            <div key={task.id}>
-              <Circle size={14} />
-              <span><strong>{task.title}</strong><small>{task.due} | {task.duration}</small></span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="rail-section">
-        <button className="section-link" type="button" onClick={() => onOpenView("groceries")}>
-          <span><ShoppingBasket size={17} /> Groceries</span>
-          <span>{remaining} left <ChevronRight size={15} /></span>
-        </button>
-        <div className="farm-note">
-          <Sprout size={18} />
-          <span>
-            <strong>{data.farmBoxReconciled ? "Farm box reconciled" : "Farm box needs review"}</strong>
-            <small>{data.farmBoxReconciled ? "2 produce buys covered" : "Parsley and greens may be covered"}</small>
-          </span>
-        </div>
-      </section>
-
-      <section className="rail-section leftovers-section">
-        <div className="section-label"><PackageCheck size={17} /> Leftovers</div>
-        {data.leftovers.slice(0, 3).map((leftover) => (
-          <div className="leftover-row" key={leftover.id}>
-            <span>{leftover.label}</span>
-            <strong>{leftover.portions} | {leftover.state}</strong>
-          </div>
-        ))}
-      </section>
-
-      <button className="codex-callout" type="button" onClick={onOpenChat}>
-        <span className="bot-icon"><Bot size={18} /></span>
-        <span><strong>Reshape this week</strong><small>Codex has the week in context</small></span>
-        <ChevronRight size={17} />
-      </button>
-    </div>
-  );
-}
-
 function ChatPanel({
+  bridgeStatus,
   contextLabel,
   input,
+  pending,
   messages,
   onInput,
   onSubmit,
+  onRetry,
   onClose,
 }: {
+  bridgeStatus: BridgeStatus;
   contextLabel: string;
   input: string;
+  pending: boolean;
   messages: ChatMessage[];
   onInput: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onRetry: () => void;
   onClose: () => void;
 }) {
+  const messagesRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [messages.length, pending]);
+
   return (
     <div className="chat-panel">
       <div className="chat-header">
         <div className="chat-title">
           <span className="bot-icon"><Bot size={18} /></span>
-          <span><strong>Codex</strong><small>Local command preview</small></span>
+          <span><strong>ChatGPT</strong><small>Shared household planner</small></span>
         </div>
-        <button className="icon-button" type="button" aria-label="Close Codex" onClick={onClose}>
+        <button className="icon-button chat-close" type="button" aria-label="Close ChatGPT" onClick={onClose}>
           <X size={18} />
         </button>
       </div>
+      <div className={`bridge-status bridge-${bridgeStatus.state}`} role="status">
+        <span aria-hidden="true" />
+        <small>{bridgeStatus.detail}</small>
+        {bridgeStatus.state !== "ready" && bridgeStatus.state !== "checking" && (
+          <button className="icon-button" type="button" aria-label="Retry Codex connection" onClick={onRetry}>
+            <RotateCcw size={14} />
+          </button>
+        )}
+      </div>
       <div className="chat-context"><Sparkles size={14} /> {contextLabel}</div>
-      <div className="chat-messages" aria-live="polite">
+      <div ref={messagesRef} className="chat-messages" aria-live="polite" aria-busy={pending}>
         {messages.map((message) => (
           <div key={message.id} className={`chat-message ${message.role}`}>
+            {message.context && <small className="chat-message-context">{message.context}</small>}
             <p>{message.text}</p>
             {message.changes && (
               <ul>
@@ -1231,44 +1555,300 @@ function ChatPanel({
       <button
         className="suggestion-button"
         type="button"
-        onClick={() => onInput("Move Thursday's salmon to Saturday and make Thursday leftovers")}
+        onClick={() => onInput("Create a Sunday prep plan from this week's instruction steps")}
       >
-        Move Thursday&apos;s salmon to Saturday
+        Build Sunday prep from this week
       </button>
       <form className="chat-form" onSubmit={onSubmit}>
-        <label htmlFor="codex-command" className="sr-only">Ask Codex to change the week</label>
+        <label htmlFor="codex-command" className="sr-only">Send a message to ChatGPT</label>
         <textarea
           id="codex-command"
           value={input}
           onChange={(event) => onInput(event.target.value)}
-          placeholder="Ask Codex to change this week..."
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder="Ask about or change the plan..."
           rows={2}
         />
-        <button type="submit" aria-label="Send to Codex" disabled={!input.trim()}>
-          <Send size={17} />
+        <button
+          type="submit"
+          aria-label="Send to ChatGPT"
+          disabled={!input.trim() || pending || bridgeStatus.state !== "ready"}
+        >
+          {pending ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}
         </button>
       </form>
     </div>
   );
 }
 
+function formatClock(seconds: number) {
+  const wholeSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(wholeSeconds / 60);
+  const remainder = wholeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function timerLabel(step: InstructionStep, now: number) {
+  if (!step.timerDurationSeconds) return null;
+  if (step.timerStartedAt === undefined) {
+    return `${Math.round(step.timerDurationSeconds / 60)} min`;
+  }
+  const remaining = step.timerDurationSeconds - (now - step.timerStartedAt) / 1000;
+  return remaining >= 0 ? formatClock(remaining) : `+${formatClock(Math.abs(remaining))}`;
+}
+
+function InstructionTimerReadout({ step }: { step: InstructionStep }) {
+  const isRunning = step.timerStartedAt !== undefined;
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [isRunning, step.timerStartedAt]);
+
+  const displayNow = step.timerStartedAt === undefined
+    ? now
+    : Math.max(now, step.timerStartedAt);
+  const label = timerLabel(step, displayNow) ?? "";
+
+  return (
+    <>
+      <strong>{label}</strong>
+      <span>{isRunning ? (label.startsWith("+") ? "overtime" : "remaining") : "timer"}</span>
+    </>
+  );
+}
+
+function InstructionStepCard({
+  instanceId,
+  meal,
+  step,
+  reference,
+  prepCount,
+  onToggle,
+  onStartTimer,
+  onResetTimer,
+  onAddNote,
+  canSendToChat,
+  onSendToChat,
+  onMove,
+  onReschedule,
+  onRemove,
+  onOpenMeal,
+}: {
+  instanceId: string;
+  meal: Meal;
+  step: InstructionStep;
+  reference?: PrepReference;
+  prepCount?: number;
+  onToggle: (stepId: string) => void;
+  onStartTimer: (stepId: string) => void;
+  onResetTimer: (stepId: string) => void;
+  onAddNote: (stepId: string, note: string) => void;
+  canSendToChat: boolean;
+  onSendToChat: (step: InstructionStep, message: string) => boolean;
+  onMove?: (referenceId: string, targetPosition: number) => void;
+  onReschedule?: (referenceId: string, due: string) => void;
+  onRemove?: (referenceId: string) => void;
+  onOpenMeal?: (mealId: string) => void;
+}) {
+  const [comment, setComment] = useState("");
+  const stepNumber = meal.instructions.findIndex((item) => item.id === step.id) + 1;
+  const hasTimer = step.timerDurationSeconds !== undefined;
+  const hasRunningTimer = step.timerStartedAt !== undefined;
+
+  return (
+    <article
+      className={step.complete ? "instruction-step complete" : "instruction-step"}
+      id={instanceId}
+      data-step-id={step.id}
+    >
+      <div className="instruction-step-heading">
+        <label className="step-checkbox">
+          <input
+            type="checkbox"
+            checked={step.complete}
+            onChange={() => onToggle(step.id)}
+            aria-label={`${step.complete ? "Reopen" : "Complete"} step ${stepNumber}: ${step.instruction}`}
+          />
+          <span>Step {stepNumber}</span>
+        </label>
+        {reference ? (
+          <div className="prep-reference-actions">
+            <button
+              className="icon-button"
+              type="button"
+              title="Move step earlier"
+              aria-label="Move step earlier"
+              disabled={reference.position === 0}
+              onClick={() => onMove?.(reference.id, reference.position - 1)}
+            >
+              <ArrowUp size={16} />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              title="Move step later"
+              aria-label="Move step later"
+              disabled={reference.position === (prepCount ?? 1) - 1}
+              onClick={() => onMove?.(reference.id, reference.position + 1)}
+            >
+              <ArrowDown size={16} />
+            </button>
+            <select
+              value={reference.due}
+              aria-label={`Prep date for ${step.instruction}`}
+              onChange={(event) => onReschedule?.(reference.id, event.target.value)}
+            >
+              {PREP_DATES.map((date) => <option key={date} value={date}>{date}</option>)}
+            </select>
+            <button
+              className="icon-button danger"
+              type="button"
+              title="Remove from prep"
+              aria-label="Remove from prep"
+              onClick={() => onRemove?.(reference.id)}
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      {reference && (
+        <button className="step-meal-link" type="button" onClick={() => onOpenMeal?.(meal.id)}>
+          {DAYS[meal.dayIndex].name} | {meal.title} <ChevronRight size={14} />
+        </button>
+      )}
+
+      {step.inputs.length > 0 && (
+        <div className="step-inputs" aria-label="Amounts for this step">
+          {step.inputs.map((input, index) => (
+            <span key={`${input.amount}-${input.ingredient}-${index}`}>
+              <strong>{input.amount}</strong> {input.ingredient}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="step-instruction">{step.instruction}</p>
+
+      {hasTimer && (
+        <div className={hasRunningTimer ? "step-timer running" : "step-timer"}>
+          <Clock3 size={15} />
+          <InstructionTimerReadout step={step} />
+          <button
+            className="icon-button"
+            type="button"
+            title={hasRunningTimer ? "Restart timer" : "Start timer"}
+            aria-label={hasRunningTimer ? "Restart timer" : "Start timer"}
+            disabled={step.complete}
+            onClick={() => onStartTimer(step.id)}
+          >
+            <Play size={15} />
+          </button>
+          {hasRunningTimer && (
+            <button
+              className="icon-button"
+              type="button"
+              title="Reset timer"
+              aria-label="Reset timer"
+              onClick={() => onResetTimer(step.id)}
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {step.note !== undefined && step.note !== "" && (
+        <div className="step-note">
+          <StickyNote size={15} />
+          <p>{step.note}</p>
+          <button
+            className="icon-button"
+            type="button"
+            title="Remove note"
+            aria-label="Remove note"
+            onClick={() => onAddNote(step.id, "")}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      <details className="step-comment">
+        <summary><MessageSquareText size={15} /> Add comment</summary>
+        <div className="step-comment-body">
+          <label htmlFor={`${instanceId}-comment`} className="sr-only">Comment on step {stepNumber}</label>
+          <textarea
+            id={`${instanceId}-comment`}
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            placeholder="What changed or what should ChatGPT consider?"
+            rows={2}
+          />
+          <div className="step-comment-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={!comment.trim()}
+              onClick={() => {
+                onAddNote(step.id, comment.trim());
+                setComment("");
+              }}
+            >
+              <StickyNote size={15} /> Add note
+            </button>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={!comment.trim() || !canSendToChat}
+              onClick={() => {
+                if (onSendToChat(step, comment.trim())) setComment("");
+              }}
+            >
+              <Send size={15} /> Send to ChatGPT
+            </button>
+          </div>
+        </div>
+      </details>
+    </article>
+  );
+}
+
 function TonightView({
   meal,
-  prep,
   leftovers,
   onOpenMeal,
   onStatus,
-  onTogglePrep,
+  onToggleStep,
+  onStartTimer,
+  onResetTimer,
+  onAddNote,
+  canSendToChat,
+  onSendToChat,
   onAssignLeftover,
 }: {
   meal: Meal;
-  prep: PrepTask[];
   leftovers: Leftover[];
   onOpenMeal: (id: string) => void;
   onStatus: (id: string, status: MealStatus) => void;
-  onTogglePrep: (id: string) => void;
+  onToggleStep: (id: string) => void;
+  onStartTimer: (id: string) => void;
+  onResetTimer: (id: string) => void;
+  onAddNote: (id: string, note: string) => void;
+  canSendToChat: boolean;
+  onSendToChat: (step: InstructionStep, message: string) => boolean;
   onAssignLeftover: (leftoverId: string, dayIndex: number) => void;
 }) {
+  const completeSteps = meal.instructions.filter((step) => step.complete).length;
   return (
     <div className="tonight-layout">
       <section className="tonight-main">
@@ -1290,12 +1870,23 @@ function TonightView({
         </div>
         <div className="execution-grid">
           <section>
-            <div className="section-title"><CookingPot size={18} /><h3>Cook in order</h3></div>
-            <ol className="instruction-list">
-              {meal.instructions.map((step, index) => (
-                <li key={step}><span>{index + 1}</span><p>{step}</p></li>
+            <div className="section-title"><CookingPot size={18} /><h3>Instructions</h3><span>{completeSteps}/{meal.instructions.length} done</span></div>
+            <div className="instruction-steps">
+              {meal.instructions.map((step) => (
+                <InstructionStepCard
+                  key={step.id}
+                  instanceId={`tonight-${step.id}`}
+                  meal={meal}
+                  step={step}
+                  onToggle={onToggleStep}
+                  onStartTimer={onStartTimer}
+                  onResetTimer={onResetTimer}
+                  onAddNote={onAddNote}
+                  canSendToChat={canSendToChat}
+                  onSendToChat={onSendToChat}
+                />
               ))}
-            </ol>
+            </div>
           </section>
           <section>
             <div className="section-title"><ClipboardCheck size={18} /><h3>Components</h3></div>
@@ -1306,14 +1897,10 @@ function TonightView({
         </div>
       </section>
       <aside className="tonight-side">
-        <section className="plain-panel">
-          <div className="section-title"><Clock3 size={18} /><h3>Due before dinner</h3></div>
-          {prep.length ? prep.map((task) => (
-            <label className="task-row compact" key={task.id}>
-              <input type="checkbox" checked={task.complete} onChange={() => onTogglePrep(task.id)} />
-              <span><strong>{task.title}</strong><small>{task.duration}</small></span>
-            </label>
-          )) : <p className="empty-copy">No prep tasks attached to this meal.</p>}
+        <section className="plain-panel prep-readiness">
+          <div className="section-title"><ClipboardCheck size={18} /><h3>Step readiness</h3></div>
+          <strong>{completeSteps} of {meal.instructions.length} already done</strong>
+          <p>Steps completed from Prep stay checked here in their original recipe order.</p>
         </section>
         <section className="plain-panel leftover-plan">
           <div className="section-title"><PackageCheck size={18} /><h3>After dinner</h3></div>
@@ -1345,46 +1932,64 @@ function TonightView({
 
 function PrepView({
   data,
-  onToggle,
+  onToggleStep,
+  onStartTimer,
+  onResetTimer,
+  onAddNote,
+  canSendToChat,
+  onSendToChat,
+  onMove,
   onReschedule,
+  onRemove,
   onOpenMeal,
 }: {
   data: PlannerData;
-  onToggle: (id: string) => void;
-  onReschedule: (id: string) => void;
+  onToggleStep: (id: string) => void;
+  onStartTimer: (id: string) => void;
+  onResetTimer: (id: string) => void;
+  onAddNote: (id: string, note: string) => void;
+  canSendToChat: boolean;
+  onSendToChat: (meal: Meal, step: InstructionStep, message: string) => boolean;
+  onMove: (id: string, targetPosition: number) => void;
+  onReschedule: (id: string, due: string) => void;
+  onRemove: (id: string) => void;
   onOpenMeal: (id: string) => void;
 }) {
-  const groups = [
-    { title: "Done", tasks: data.prep.filter((task) => task.complete) },
-    { title: "Today", tasks: data.prep.filter((task) => !task.complete && task.due.startsWith("Thu")) },
-    { title: "Later this week", tasks: data.prep.filter((task) => !task.complete && !task.due.startsWith("Thu")) },
-  ];
+  const ordered = [...data.prep].sort((left, right) => left.position - right.position);
+  const resolved = ordered.flatMap((reference) => {
+    const target = resolveInstructionStep(data, reference.stepId);
+    return target ? [{ reference, ...target }] : [];
+  });
+  const remaining = resolved.filter(({ step }) => !step.complete).length;
   return (
     <div className="list-surface">
       <div className="surface-summary">
-        <div><p className="eyebrow">Batch plan</p><h2>{data.prep.filter((task) => !task.complete).length} tasks remaining</h2></div>
-        <span className="summary-chip"><Clock3 size={15} /> 38 active minutes</span>
+        <div><p className="eyebrow">Manual run order</p><h2>{remaining} steps remaining</h2></div>
+        <span className="summary-chip"><ListChecks size={15} /> {resolved.length} referenced steps</span>
       </div>
-      {groups.map((group) => (
-        <section className="task-group" key={group.title}>
-          <h3>{group.title}<span>{group.tasks.length}</span></h3>
-          {group.tasks.length ? group.tasks.map((task) => {
-            const meal = data.meals.find((item) => item.id === task.mealId);
-            return (
-              <div className={task.complete ? "task-row complete" : "task-row"} key={task.id}>
-                <label>
-                  <input type="checkbox" checked={task.complete} onChange={() => onToggle(task.id)} />
-                  <span><strong>{task.title}</strong><small>{task.due} | {task.duration}</small></span>
-                </label>
-                <div className="task-actions">
-                  {meal && <button type="button" onClick={() => onOpenMeal(meal.id)}>{meal.title}</button>}
-                  {!task.complete && <button type="button" onClick={() => onReschedule(task.id)}><CalendarDays size={15} /> Move to Fri</button>}
-                </div>
-              </div>
-            );
-          }) : <p className="empty-copy">Nothing here.</p>}
-        </section>
-      ))}
+      <div className="prep-step-list">
+        {resolved.map(({ reference, meal, step }) => (
+          <InstructionStepCard
+            key={reference.id}
+            instanceId={`prep-${reference.id}`}
+            meal={meal}
+            step={step}
+            reference={reference}
+            prepCount={resolved.length}
+            onToggle={onToggleStep}
+            onStartTimer={onStartTimer}
+            onResetTimer={onResetTimer}
+            onAddNote={onAddNote}
+            canSendToChat={canSendToChat}
+            onSendToChat={(currentStep, message) => onSendToChat(meal, currentStep, message)}
+            onMove={onMove}
+            onReschedule={onReschedule}
+            onRemove={onRemove}
+            onOpenMeal={onOpenMeal}
+          />
+        ))}
+        {!resolved.length && <p className="empty-copy">No steps are assigned to prep.</p>}
+      </div>
     </div>
   );
 }
@@ -1516,20 +2121,38 @@ function MealDetail({
   onStatus,
   onSave,
   onConsumeLeftover,
+  onToggleStep,
+  onStartTimer,
+  onResetTimer,
+  onAddNote,
+  canSendToChat,
+  onSendToChat,
 }: {
   meal: Meal;
   assignedLeftover: Leftover | null;
   onClose: () => void;
   onMove: (day: number) => void;
   onStatus: (status: MealStatus) => void;
-  onSave: (changes: Pick<Meal, "title" | "venue" | "notes">) => void;
+  onSave: (changes: Pick<Meal, "title" | "venue" | "notes">) => boolean;
   onConsumeLeftover: (leftoverId: string) => void;
+  onToggleStep: (stepId: string) => void;
+  onStartTimer: (stepId: string) => void;
+  onResetTimer: (stepId: string) => void;
+  onAddNote: (stepId: string, note: string) => void;
+  canSendToChat: boolean;
+  onSendToChat: (step: InstructionStep, message: string) => boolean;
 }) {
   const [title, setTitle] = useState(meal.title);
   const [venue, setVenue] = useState(meal.venue);
   const [notes, setNotes] = useState(meal.notes);
   const [targetDay, setTargetDay] = useState(String(meal.dayIndex));
   const dialogRef = useDialogFocus(onClose);
+  const snapshot = { title: title.trim(), venue: venue.trim(), notes };
+  const snapshotValid = snapshot.title.length > 0 && snapshot.venue.length > 0;
+  const snapshotUnchanged =
+    snapshot.title === meal.title &&
+    snapshot.venue === meal.venue &&
+    snapshot.notes === meal.notes;
   return (
     <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
       <section ref={dialogRef} className="drawer meal-drawer" role="dialog" aria-modal="true" aria-labelledby="meal-detail-title">
@@ -1539,15 +2162,15 @@ function MealDetail({
         </div>
         <div className="drawer-body">
           <div className="field-grid">
-            <label><span>Meal name</span><input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-            <label><span>Venue</span><input value={venue} onChange={(event) => setVenue(event.target.value)} /></label>
+            <label><span>Meal name</span><input value={title} maxLength={300} onChange={(event) => setTitle(event.target.value)} /></label>
+            <label><span>Venue</span><input value={venue} maxLength={300} onChange={(event) => setVenue(event.target.value)} /></label>
           </div>
-          <label className="full-field"><span>Notes and adaptation</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} /></label>
+          <label className="full-field"><span>Notes and adaptation</span><textarea value={notes} maxLength={4_000} onChange={(event) => setNotes(event.target.value)} rows={3} /></label>
           <div className="field-grid">
             <label><span>Status</span><select value={meal.status} onChange={(event) => onStatus(event.target.value as MealStatus)}>{Object.entries(STATUS_META).map(([value, meta]) => <option value={value} key={value}>{meta.label}</option>)}</select></label>
             <label><span>Move to</span><select value={targetDay} onChange={(event) => setTargetDay(event.target.value)}>{DAYS.map((day, index) => <option value={index} key={day.name}>{day.name}</option>)}</select></label>
           </div>
-          <button className="secondary-button full" type="button" disabled={Number(targetDay) === meal.dayIndex} onClick={() => onMove(Number(targetDay))}><CalendarDays size={17} /> Move meal and linked prep</button>
+          <button className="secondary-button full" type="button" disabled={Number(targetDay) === meal.dayIndex} onClick={() => onMove(Number(targetDay))}><CalendarDays size={17} /> Move meal</button>
           {assignedLeftover && (
             <section className="assigned-leftover">
               <PackageCheck size={18} />
@@ -1561,12 +2184,39 @@ function MealDetail({
             </section>
           )}
           <section className="snapshot-section"><h3>Ingredients</h3><ul>{meal.ingredients.map((ingredient) => <li key={ingredient}>{ingredient}</li>)}</ul></section>
-          <section className="snapshot-section"><h3>Instructions</h3><ol>{meal.instructions.map((instruction) => <li key={instruction}>{instruction}</li>)}</ol></section>
+          <section className="snapshot-section">
+            <h3>Instructions</h3>
+            <div className="instruction-steps drawer-instruction-steps">
+              {meal.instructions.map((step) => (
+                <InstructionStepCard
+                  key={step.id}
+                  instanceId={`detail-${step.id}`}
+                  meal={meal}
+                  step={step}
+                  onToggle={onToggleStep}
+                  onStartTimer={onStartTimer}
+                  onResetTimer={onResetTimer}
+                  onAddNote={onAddNote}
+                  canSendToChat={canSendToChat}
+                  onSendToChat={onSendToChat}
+                />
+              ))}
+            </div>
+          </section>
           <div className="source-note"><Home size={16} /><span><strong>Source snapshot</strong><small>Adapted for this week; the original recipe remains unchanged.</small></span></div>
         </div>
         <div className="drawer-footer">
-          <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
-          <button className="primary-button" type="button" onClick={() => { onSave({ title, venue, notes }); onClose(); }}><Check size={17} /> Save snapshot</button>
+          <button className="secondary-button" type="button" onClick={onClose}>Close</button>
+          <button
+            className="primary-button"
+            type="button"
+            disabled={!snapshotValid}
+            onClick={() => {
+              if (snapshotUnchanged || onSave(snapshot)) onClose();
+            }}
+          >
+            <Check size={17} /> Save meal details
+          </button>
         </div>
       </section>
     </div>
@@ -1597,7 +2247,7 @@ function HistoryPanel({
                 <strong>{entry.summary}</strong>
                 <span>{entry.actor} | {entry.command} | {entry.target || "active week"}</span>
                 {entry.changes?.length ? <small>{entry.changes.join(" | ")}</small> : null}
-                <small>{entry.time}</small>
+                <small>{entry.occurredAt === undefined ? entry.time ?? "Unknown time" : formatPlannerEventTime(entry.occurredAt)}</small>
                 {entry.before && <button type="button" onClick={() => onRevert(entry.id)}><RotateCcw size={14} /> Revert to before</button>}
               </div>
             </div>

@@ -1,0 +1,402 @@
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { createInterface } from "node:readline";
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+export class CodexBridgeError extends Error {
+  constructor(message, { code = "CODEX_BRIDGE_ERROR", cause } = {}) {
+    super(message, { cause });
+    this.name = "CodexBridgeError";
+    this.code = code;
+  }
+}
+
+export class CodexAppServerClient extends EventEmitter {
+  constructor({
+    command = "codex",
+    args = ["app-server", "--listen", "stdio://"],
+    cwd = process.cwd(),
+    env = process.env,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    spawnImpl = spawn,
+  } = {}) {
+    super();
+    this.command = command;
+    this.args = args;
+    this.cwd = cwd;
+    this.env = env;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.spawnImpl = spawnImpl;
+    this.child = null;
+    this.initialized = false;
+    this.startPromise = null;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.turnRecords = new Map();
+    this.ignoredTurnIds = new Set();
+    this.stderrTail = [];
+  }
+
+  async start() {
+    if (this.startPromise) return this.startPromise;
+    if (this.child && !this.child.killed && this.initialized) return;
+
+    const launch = this.#launch();
+    this.startPromise = launch;
+    try {
+      await launch;
+    } finally {
+      if (this.startPromise === launch) this.startPromise = null;
+    }
+  }
+
+  async #launch() {
+    const child = this.spawnImpl(this.command, this.args, {
+      cwd: this.cwd,
+      env: this.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.child = child;
+    this.initialized = false;
+    this.stderrTail = [];
+
+    const stdout = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
+
+    stdout.on("line", (line) => this.#handleLine(line));
+    stderr.on("line", (line) => {
+      this.stderrTail.push(line);
+      if (this.stderrTail.length > 12) this.stderrTail.shift();
+      this.emit("stderr", line);
+    });
+    child.stdin.on("error", (error) => this.#handleExit(error, child));
+    child.once("error", (error) => this.#handleExit(error, child));
+    child.once("exit", (code, signal) => {
+      const detail = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      this.#handleExit(new Error(`codex app-server exited with ${detail}.`), child);
+    });
+
+    try {
+      await this.#requestWithoutStart(
+        "initialize",
+        {
+          clientInfo: {
+            name: "weekly_recipe_planner",
+            title: "Weekly Recipe Planner",
+            version: "0.1.0",
+          },
+        },
+        this.requestTimeoutMs,
+      );
+      this.notify("initialized");
+      this.initialized = true;
+    } catch (error) {
+      this.close();
+      throw new CodexBridgeError(
+        "Could not initialize Codex app-server. Confirm that Codex is installed and `codex login status` succeeds.",
+        { code: "CODEX_UNAVAILABLE", cause: error },
+      );
+    }
+  }
+
+  #handleLine(line) {
+    if (!line.trim()) return;
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      this.emit("protocolError", new Error("Codex app-server emitted invalid JSONL."));
+      return;
+    }
+
+    if (message === null || typeof message !== "object" || Array.isArray(message)) {
+      this.emit("protocolError", new Error("Codex app-server emitted a non-object JSONL frame."));
+      return;
+    }
+
+    if (typeof message.method === "string" && Object.hasOwn(message, "id")) {
+      this.emit("serverRequest", message);
+      try {
+        this.#writeMessage({
+          id: message.id,
+          error: {
+            code: -32601,
+            message: `Client does not support server request ${message.method}.`,
+          },
+        });
+      } catch {
+        // The write path already transitions the client to unavailable.
+      }
+      return;
+    }
+
+    if (Object.hasOwn(message, "id")) {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      this.pending.delete(message.id);
+      clearTimeout(pending.timer);
+      if (message.error) {
+        pending.reject(
+          new CodexBridgeError(message.error.message ?? "Codex request failed.", {
+            code: "CODEX_RPC_ERROR",
+          }),
+        );
+      } else {
+        pending.resolve(message.result);
+      }
+      return;
+    }
+
+    if (typeof message.method === "string") {
+      this.#recordTurnNotification(message);
+      this.emit("notification", message);
+      // EventEmitter treats the bare event name "error" as fatal without a listener.
+      this.emit(`notification:${message.method}`, message.params);
+    }
+  }
+
+  #recordTurnNotification(message) {
+    const params = message.params ?? {};
+    const turnId = params.turnId ?? params.turn?.id;
+    if (typeof turnId !== "string") return;
+    if (this.ignoredTurnIds.has(turnId)) {
+      if (message.method === "turn/completed") this.ignoredTurnIds.delete(turnId);
+      return;
+    }
+
+    const record = this.turnRecords.get(turnId) ?? {
+      deltas: [],
+      messages: [],
+      completion: null,
+      waiters: [],
+    };
+
+    if (message.method === "item/agentMessage/delta" && typeof params.delta === "string") {
+      record.deltas.push(params.delta);
+    } else if (
+      message.method === "item/completed" &&
+      params.item?.type === "agentMessage" &&
+      typeof params.item.text === "string"
+    ) {
+      record.messages.push({ text: params.item.text, phase: params.item.phase ?? null });
+    } else if (message.method === "turn/completed") {
+      record.completion = params.turn;
+    }
+
+    this.turnRecords.set(turnId, record);
+    if (record.completion) this.#settleTurnRecord(turnId, record);
+  }
+
+  #settleTurnRecord(turnId, record) {
+    if (record.waiters.length === 0) return;
+    const completion = record.completion;
+    const finalMessage =
+      record.messages.findLast((message) => message.phase === "final_answer") ??
+      record.messages.at(-1);
+    const text = finalMessage?.text ?? record.deltas.join("");
+
+    for (const waiter of record.waiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      if (completion?.status === "completed") {
+        waiter.resolve({ text, turn: completion });
+      } else {
+        waiter.reject(
+          new CodexBridgeError(
+            completion?.error?.message ?? `Codex turn ended with ${completion?.status ?? "unknown status"}.`,
+            { code: "CODEX_TURN_FAILED" },
+          ),
+        );
+      }
+    }
+    this.turnRecords.delete(turnId);
+  }
+
+  #handleExit(error, child = this.child) {
+    if (!this.child || this.child !== child) return;
+    this.child = null;
+    this.initialized = false;
+    const stderr = this.stderrTail.at(-1);
+    const suffix = stderr ? ` ${stderr}` : "";
+    const wrapped = new CodexBridgeError(`Codex app-server stopped.${suffix}`, {
+      code: "CODEX_UNAVAILABLE",
+      cause: error,
+    });
+
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(wrapped);
+    }
+    this.pending.clear();
+
+    for (const record of this.turnRecords.values()) {
+      for (const waiter of record.waiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(wrapped);
+      }
+    }
+    this.turnRecords.clear();
+    this.ignoredTurnIds.clear();
+    this.emit("stopped", wrapped);
+    if (!child.killed) {
+      try {
+        child.kill();
+      } catch {
+        // The process is already unavailable.
+      }
+    }
+  }
+
+  #writeMessage(message) {
+    const child = this.child;
+    if (!child?.stdin?.writable) {
+      throw new CodexBridgeError("Codex app-server is not running.", {
+        code: "CODEX_UNAVAILABLE",
+      });
+    }
+
+    try {
+      child.stdin.write(`${JSON.stringify(message)}\n`, (error) => {
+        if (error) this.#handleExit(error, child);
+      });
+    } catch (error) {
+      this.#handleExit(error, child);
+      throw new CodexBridgeError("Could not write to Codex app-server.", {
+        code: "CODEX_UNAVAILABLE",
+        cause: error,
+      });
+    }
+  }
+
+  #ignoreTurn(turnId) {
+    this.turnRecords.delete(turnId);
+    this.ignoredTurnIds.add(turnId);
+    while (this.ignoredTurnIds.size > 256) {
+      this.ignoredTurnIds.delete(this.ignoredTurnIds.values().next().value);
+    }
+  }
+
+  #requestWithoutStart(method, params, timeoutMs) {
+    if (!this.child?.stdin?.writable) {
+      return Promise.reject(
+        new CodexBridgeError("Codex app-server is not running.", { code: "CODEX_UNAVAILABLE" }),
+      );
+    }
+
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new CodexBridgeError(`Codex request ${method} timed out.`, {
+            code: "CODEX_TIMEOUT",
+          }),
+        );
+      }, timeoutMs);
+      timer.unref?.();
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.#writeMessage({ id, method, params });
+      } catch (error) {
+        const pending = this.pending.get(id);
+        if (pending) {
+          this.pending.delete(id);
+          clearTimeout(pending.timer);
+          pending.reject(error);
+        }
+      }
+    });
+  }
+
+  async request(method, params = {}, { timeoutMs = this.requestTimeoutMs } = {}) {
+    await this.start();
+    return this.#requestWithoutStart(method, params, timeoutMs);
+  }
+
+  notify(method, params) {
+    this.#writeMessage(params === undefined ? { method } : { method, params });
+  }
+
+  async getAccount() {
+    const result = await this.request("account/read", { refreshToken: false });
+    return result?.account ?? null;
+  }
+
+  async startThread(params) {
+    return this.request("thread/start", params);
+  }
+
+  async unsubscribeThread(threadId) {
+    if (!this.child || !this.initialized) return;
+    return this.#requestWithoutStart(
+      "thread/unsubscribe",
+      { threadId },
+      this.requestTimeoutMs,
+    );
+  }
+
+  async runTurn(params, { timeoutMs }) {
+    const deadline = Date.now() + timeoutMs;
+    const result = await this.request("turn/start", params, { timeoutMs });
+    const turnId = result?.turn?.id;
+    if (typeof turnId !== "string") {
+      throw new CodexBridgeError("Codex did not return a turn id.", {
+        code: "CODEX_PROTOCOL_ERROR",
+      });
+    }
+    try {
+      return await this.waitForTurn(turnId, {
+        timeoutMs: Math.max(1, deadline - Date.now()),
+      });
+    } catch (error) {
+      if (error?.code === "CODEX_TIMEOUT") {
+        this.#ignoreTurn(turnId);
+        try {
+          await this.#requestWithoutStart(
+            "turn/interrupt",
+            { threadId: params.threadId, turnId },
+            Math.min(5_000, this.requestTimeoutMs),
+          );
+        } catch {
+          // The original timeout remains the useful error for the caller.
+        }
+      }
+      throw error;
+    }
+  }
+
+  waitForTurn(turnId, { timeoutMs }) {
+    const record = this.turnRecords.get(turnId) ?? {
+      deltas: [],
+      messages: [],
+      completion: null,
+      waiters: [],
+    };
+    this.turnRecords.set(turnId, record);
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const current = this.turnRecords.get(turnId);
+        if (current) {
+          current.waiters = current.waiters.filter((waiter) => waiter.resolve !== resolve);
+          if (current.waiters.length === 0 && !current.completion) this.#ignoreTurn(turnId);
+        }
+        reject(
+          new CodexBridgeError("Codex took too long to answer.", {
+            code: "CODEX_TIMEOUT",
+          }),
+        );
+      }, timeoutMs);
+      timer.unref?.();
+      record.waiters.push({ resolve, reject, timer });
+      if (record.completion) this.#settleTurnRecord(turnId, record);
+    });
+  }
+
+  close() {
+    const child = this.child;
+    if (!child) return;
+    this.#handleExit(new Error("Codex app-server client closed."), child);
+  }
+}
