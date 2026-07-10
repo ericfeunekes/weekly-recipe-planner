@@ -31,6 +31,11 @@ test("runtime config keeps API and front-controller surfaces on loopback", () =>
       PLANNER_ALLOWED_ORIGINS: "https://remote.example",
     }),
   );
+  assert.throws(() =>
+    readRuntimeConfig({
+      PLANNER_DATA_DIR: "./dist/planner-data",
+    }),
+  );
 });
 
 test("process supervisor stops siblings when one child fails", async () => {
@@ -59,4 +64,3 @@ test("process supervisor stops siblings when one child fails", async () => {
   assert.equal(await supervised, 7);
   assert.equal(children[1].killed, true);
 });
-

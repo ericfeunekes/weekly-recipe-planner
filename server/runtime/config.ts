@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 export type RuntimeMode = "api" | "front";
 
@@ -67,6 +67,19 @@ function parseAllowedOrigins(value: string | undefined, mode: RuntimeMode, port:
   return origins;
 }
 
+function assertDataDirectoryOutsideBuildOutput(dataDirectory: string) {
+  for (const output of [".next", ".vinext", "dist", "out"]) {
+    const outputDirectory = resolve(output);
+    const pathFromOutput = relative(outputDirectory, dataDirectory);
+    if (
+      pathFromOutput === "" ||
+      (!pathFromOutput.startsWith("..") && !isAbsolute(pathFromOutput))
+    ) {
+      throw new TypeError("PLANNER_DATA_DIR must be outside build output.");
+    }
+  }
+}
+
 export function readRuntimeConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): PlannerRuntimeConfig {
@@ -78,6 +91,7 @@ export function readRuntimeConfig(
     "PLANNER_PORT",
   );
   const dataDirectory = resolve(environment.PLANNER_DATA_DIR ?? ".planner-data");
+  assertDataDirectoryOutsideBuildOutput(dataDirectory);
   return {
     mode,
     host,
@@ -92,4 +106,3 @@ export function readRuntimeConfig(
     ),
   };
 }
-
