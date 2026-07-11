@@ -2,11 +2,13 @@ import { expect, test, type Page } from "@playwright/test";
 
 function watchRuntime(page: Page) {
   const pageErrors: string[] = [];
-  const consoleErrors: string[] = [];
+  const consoleErrors: Array<{ text: string; url: string }> = [];
   const failedResponses: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
+    if (message.type() === "error") {
+      consoleErrors.push({ text: message.text(), url: message.location().url });
+    }
   });
   page.on("response", (response) => {
     if (response.status() >= 500) {
@@ -95,8 +97,18 @@ test.describe.serial("family dinner authority", () => {
 
     expect(runtimeA.pageErrors).toEqual([]);
     expect(runtimeB.pageErrors).toEqual([]);
-    expect(runtimeA.consoleErrors).toEqual([]);
-    expect(runtimeB.consoleErrors).toEqual([]);
+    expect(runtimeA.consoleErrors).toEqual([
+      {
+        text: "Failed to load resource: net::ERR_INTERNET_DISCONNECTED",
+        url: "http://127.0.0.1:3101/api/workspace",
+      },
+    ]);
+    expect(runtimeB.consoleErrors).toEqual([
+      {
+        text: "Failed to load resource: the server responded with a status of 409 (Conflict)",
+        url: "http://127.0.0.1:3101/api/commands",
+      },
+    ]);
     expect(runtimeA.failedResponses).toEqual([]);
     expect(runtimeB.failedResponses).toEqual([]);
     await contextA.close();

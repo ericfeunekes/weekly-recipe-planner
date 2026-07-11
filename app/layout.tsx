@@ -36,6 +36,9 @@ export async function generateMetadata(): Promise<Metadata> {
       description: "Keep the whole cooking week under control.",
       images: [imageUrl],
     },
+    icons: {
+      icon: "/og.png",
+    },
   };
 }
 
