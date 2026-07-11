@@ -205,6 +205,43 @@ test("chat accepts structured canonical context and returns its durable running 
   assert.equal(calls[0][0], "chat");
 });
 
+test("service failures retain field errors and authoritative workspace readback", async (t) => {
+  const { dependencies } = createDependencies();
+  dependencies.planner.bootstrap = () => {
+    throw Object.assign(new Error("Legacy prep date is invalid."), {
+      code: "INVALID_REQUEST",
+      httpStatus: 422,
+      fieldErrors: { "data.prep[0].due": "Use a known v2 prep date." },
+      workspace: { initialized: false, schemaVersion: 1 },
+    });
+  };
+  const handler = createApplicationRouter(dependencies, {
+    allowedOrigins: new Set(["http://localhost:3001"]),
+    allowOriginlessMutations: false,
+  });
+  const server = await listenHttpServer({ handler, port: 0 });
+  t.after(() => closeHttpServer(server));
+  const address = server.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
+    body: JSON.stringify({
+      requestId: "bootstrap-invalid",
+      mode: "import-v2",
+      payload: { data: {}, events: [], chatMessages: [] },
+    }),
+  });
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "INVALID_REQUEST",
+      message: "Legacy prep date is invalid.",
+      fieldErrors: { "data.prep[0].due": "Use a known v2 prep date." },
+    },
+    workspace: { initialized: false, schemaVersion: 1 },
+  });
+});
+
 test("front controller keeps API local and proxies the web surface", async (t) => {
   const upstream = createServer((_request, response) => {
     response.writeHead(200, { "Content-Type": "text/plain" });
@@ -234,4 +271,3 @@ test("front controller keeps API local and proxies the web surface", async (t) =
     surface: "api",
   });
 });
-

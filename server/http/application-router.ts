@@ -37,17 +37,20 @@ class ApiRouteError extends Error {
   readonly statusCode: number;
   readonly code: ApiErrorCode;
   readonly fieldErrors?: Record<string, string>;
+  readonly workspace?: WorkspaceResponse;
 
   constructor(
     statusCode: number,
     code: ApiErrorCode,
     message: string,
     fieldErrors?: Record<string, string>,
+    workspace?: WorkspaceResponse,
   ) {
     super(message);
     this.statusCode = statusCode;
     this.code = code;
     this.fieldErrors = fieldErrors;
+    this.workspace = workspace;
   }
 }
 
@@ -107,6 +110,7 @@ function sendFailure(response: ServerResponse, error: ApiRouteError) {
       message: error.message,
       ...(error.fieldErrors ? { fieldErrors: error.fieldErrors } : {}),
     },
+    ...(error.workspace ? { workspace: error.workspace } : {}),
   });
 }
 
@@ -227,7 +231,7 @@ function mapThrownError(error: unknown): ApiRouteError {
     typeof error.message === "string"
   ) {
     const code = error.code as ApiErrorCode;
-    const status =
+    const mappedStatus =
       code === "NOT_INITIALIZED" || code === "NOT_FOUND"
         ? 404
         : code === "ALREADY_INITIALIZED" || code === "VERSION_CONFLICT" || code === "REQUEST_ID_REUSE" || code === "TURN_BUSY" || code === "CONTEXT_STALE"
@@ -237,7 +241,23 @@ function mapThrownError(error: unknown): ApiRouteError {
             : code === "UNAVAILABLE" || code === "CODEX_UNAVAILABLE" || code === "STORE_CORRUPT"
               ? 503
               : 500;
-    return new ApiRouteError(status, code, error.message);
+    const explicitStatus = Number(error.httpStatus);
+    const status =
+      Number.isInteger(explicitStatus) && explicitStatus >= 400 && explicitStatus <= 599
+        ? explicitStatus
+        : mappedStatus;
+    const fieldErrors = isRecord(error.fieldErrors)
+      ? Object.fromEntries(
+          Object.entries(error.fieldErrors).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : undefined;
+    const workspace =
+      isRecord(error.workspace) && typeof error.workspace.initialized === "boolean"
+        ? (error.workspace as WorkspaceResponse)
+        : undefined;
+    return new ApiRouteError(status, code, error.message, fieldErrors, workspace);
   }
   return new ApiRouteError(500, "INTERNAL_ERROR", "The planner failed unexpectedly.");
 }
