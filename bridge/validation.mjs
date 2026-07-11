@@ -3,8 +3,11 @@ import {
   MAX_PREP_ENTRIES,
   isDomainCommand,
 } from "../lib/planner-command-contract.ts";
-
 export { DOMAIN_COMMAND_SCHEMA, MAX_PREP_ENTRIES, isDomainCommand };
+export {
+  HOUSEHOLD_CHAT_OUTPUT_SCHEMA,
+  parseHouseholdAssistantOutput,
+} from "../server/chat/output.ts";
 
 export const MAX_BODY_BYTES = 160 * 1024;
 export const MAX_MESSAGE_LENGTH = 4_000;

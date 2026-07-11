@@ -199,6 +199,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     for (const waiter of record.waiters.splice(0)) {
       clearTimeout(waiter.timer);
+      waiter.cleanup?.();
       if (completion?.status === "completed") {
         waiter.resolve({ text, turn: completion });
       } else {
@@ -233,6 +234,7 @@ export class CodexAppServerClient extends EventEmitter {
     for (const record of this.turnRecords.values()) {
       for (const waiter of record.waiters) {
         clearTimeout(waiter.timer);
+        waiter.cleanup?.();
         waiter.reject(wrapped);
       }
     }
@@ -335,7 +337,13 @@ export class CodexAppServerClient extends EventEmitter {
     );
   }
 
-  async runTurn(params, { timeoutMs }) {
+  async runTurn(params, { timeoutMs, signal } = {}) {
+    timeoutMs ??= this.requestTimeoutMs;
+    if (signal?.aborted) {
+      throw new CodexBridgeError("Codex turn was interrupted.", {
+        code: "CODEX_ABORTED",
+      });
+    }
     const deadline = Date.now() + timeoutMs;
     const result = await this.request("turn/start", params, { timeoutMs });
     const turnId = result?.turn?.id;
@@ -347,9 +355,10 @@ export class CodexAppServerClient extends EventEmitter {
     try {
       return await this.waitForTurn(turnId, {
         timeoutMs: Math.max(1, deadline - Date.now()),
+        signal,
       });
     } catch (error) {
-      if (error?.code === "CODEX_TIMEOUT") {
+      if (error?.code === "CODEX_TIMEOUT" || error?.code === "CODEX_ABORTED") {
         this.#ignoreTurn(turnId);
         try {
           await this.#requestWithoutStart(
@@ -365,7 +374,7 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  waitForTurn(turnId, { timeoutMs }) {
+  waitForTurn(turnId, { timeoutMs, signal } = {}) {
     const record = this.turnRecords.get(turnId) ?? {
       deltas: [],
       messages: [],
@@ -375,19 +384,41 @@ export class CodexAppServerClient extends EventEmitter {
     this.turnRecords.set(turnId, record);
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      let waiter;
+      const removeWaiter = () => {
         const current = this.turnRecords.get(turnId);
-        if (current) {
-          current.waiters = current.waiters.filter((waiter) => waiter.resolve !== resolve);
-          if (current.waiters.length === 0 && !current.completion) this.#ignoreTurn(turnId);
-        }
+        if (!current || !waiter) return;
+        current.waiters = current.waiters.filter((candidate) => candidate !== waiter);
+        if (current.waiters.length === 0 && !current.completion) this.#ignoreTurn(turnId);
+      };
+      const onAbort = () => {
+        clearTimeout(waiter.timer);
+        waiter.cleanup?.();
+        removeWaiter();
+        reject(
+          new CodexBridgeError("Codex turn was interrupted.", {
+            code: "CODEX_ABORTED",
+          }),
+        );
+      };
+      const timer = setTimeout(() => {
+        waiter.cleanup?.();
+        removeWaiter();
         reject(
           new CodexBridgeError("Codex took too long to answer.", {
             code: "CODEX_TIMEOUT",
           }),
         );
       }, timeoutMs);
-      record.waiters.push({ resolve, reject, timer });
+      waiter = {
+        resolve,
+        reject,
+        timer,
+        cleanup: () => signal?.removeEventListener("abort", onAbort),
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      record.waiters.push(waiter);
+      if (signal?.aborted) onAbort();
       if (record.completion) this.#settleTurnRecord(turnId, record);
     });
   }
