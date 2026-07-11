@@ -38,15 +38,24 @@ async function main() {
   }
 
   let shuttingDown = false;
+  const signalHandlers = new Map<NodeJS.Signals, () => void>();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
+    const handler = () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      void runtime.close().catch((error) => {
-        console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = 1;
-      });
-    });
+      void runtime.close()
+        .catch((error) => {
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exitCode = 1;
+        })
+        .finally(() => {
+          for (const [registeredSignal, registeredHandler] of signalHandlers) {
+            process.off(registeredSignal, registeredHandler);
+          }
+        });
+    };
+    signalHandlers.set(signal, handler);
+    process.on(signal, handler);
   }
 }
 

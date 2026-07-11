@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, request as requestHttp } from "node:http";
 import test from "node:test";
 
 import { createApplicationRouter } from "../server/http/application-router.ts";
@@ -136,6 +136,22 @@ async function startApplication(t) {
   return { baseUrl: `http://127.0.0.1:${address.port}`, calls };
 }
 
+function rawHttpRequest(options, body = "") {
+  return new Promise((resolve, reject) => {
+    const request = requestHttp(options, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        text: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    request.once("error", reject);
+    request.end(body);
+  });
+}
+
 test("workspace reads use a complete sync-revision ETag and pages normalize cursors", async (t) => {
   const { baseUrl } = await startApplication(t);
   const workspace = await fetch(`${baseUrl}/api/workspace`);
@@ -192,6 +208,42 @@ test("mutations reject foreign origins and accept only typed command envelopes",
     body: JSON.stringify({ ...JSON.parse(body), actor: "Codex" }),
   });
   assert.equal(spoofed.status, 400);
+  assert.equal(calls.length, 1);
+});
+
+test("IPv6 loopback browser origins can mutate through the configured authority", async (t) => {
+  const { dependencies, calls } = createDependencies();
+  const handler = createApplicationRouter(dependencies, {
+    allowedOrigins: new Set(["http://[::1]:3001"]),
+    allowOriginlessMutations: false,
+  });
+  const server = await listenHttpServer({ handler, port: 0 });
+  t.after(() => closeHttpServer(server));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const body = JSON.stringify({
+    requestId: "ipv6-request",
+    basePlannerVersion: 2,
+    command: {
+      type: "captureWeekLesson",
+      weekId: "2026-07-06",
+      weekLesson: "Keep prep short.",
+    },
+  });
+  const response = await rawHttpRequest({
+    hostname: "127.0.0.1",
+    port: address.port,
+    path: "/api/commands",
+    method: "POST",
+    headers: {
+      Host: "[::1]:3001",
+      Origin: "http://[::1]:3001",
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+    },
+  }, body);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(response.text).decision.status, "accepted");
   assert.equal(calls.length, 1);
 });
 
@@ -279,8 +331,14 @@ test("service failures retain field errors and authoritative workspace readback"
 });
 
 test("front controller keeps API local and proxies the web surface", async (t) => {
-  const upstream = createServer((_request, response) => {
-    response.writeHead(200, { "Content-Type": "text/plain" });
+  let upstreamRequestHeaders;
+  const upstream = createServer((request, response) => {
+    upstreamRequestHeaders = request.headers;
+    response.writeHead(200, {
+      "Content-Type": "text/plain",
+      Connection: "x-upstream-hop",
+      "X-Upstream-Hop": "must-not-forward",
+    });
     response.end("web surface");
   });
   await new Promise((resolve, reject) => {
@@ -302,7 +360,18 @@ test("front controller keeps API local and proxies the web surface", async (t) =
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
-  assert.equal(await (await fetch(`${baseUrl}/`)).text(), "web surface");
+  const web = await rawHttpRequest({
+      hostname: "127.0.0.1",
+      port: address.port,
+      path: "/",
+      headers: {
+        Connection: "x-client-hop",
+        "X-Client-Hop": "must-not-forward",
+      },
+    });
+  assert.equal(web.text, "web surface");
+  assert.equal(upstreamRequestHeaders["x-client-hop"], undefined);
+  assert.equal(web.headers["x-upstream-hop"], undefined);
   assert.deepEqual(await (await fetch(`${baseUrl}/api/health`)).json(), {
     surface: "api",
   });

@@ -48,7 +48,8 @@ export type PlannerRuntimeOptions = {
   store?: SqlitePlannerStore;
   seedFactory?: () => ReturnType<typeof createCanonicalSeed>;
   legacyTransformer?: (payload: LegacyV2Payload) => LegacyV2TransformResult;
-  webProbe?: (origin: URL | null) => Promise<boolean>;
+  webProbe?: (origin: URL) => Promise<boolean>;
+  shutdownGracePeriodMs?: number;
 };
 
 export type PlannerRuntime = {
@@ -67,8 +68,7 @@ function bootstrapContext(clock: Clock, idFactory: IdFactory): HouseholdCommandC
   };
 }
 
-async function probeWebOrigin(origin: URL | null): Promise<boolean> {
-  if (!origin) return true;
+async function probeWebOrigin(origin: URL): Promise<boolean> {
   try {
     const response = await fetch(origin, {
       method: "GET",
@@ -94,7 +94,7 @@ function createHealthReader({
   store: SqlitePlannerStore;
   planner: ReturnType<typeof createPlannerApplicationService>;
   codexAdapter: CodexPlannerAdapter;
-  webProbe: (origin: URL | null) => Promise<boolean>;
+  webProbe: (origin: URL) => Promise<boolean>;
 }) {
   return async (): Promise<HealthResponse> => {
     let storeReady = false;
@@ -161,94 +161,100 @@ export async function startPlannerRuntime(
   const failureInjector = options.failureInjector ?? NO_FAILURES;
   const store =
     options.store ?? openPlannerStore({ filename: options.config.databasePath });
-  const context = () => bootstrapContext(clock, idFactory);
-  const planner = createPlannerApplicationService({
-    store,
-    domain: options.domain ?? householdDomain,
-    seedFactory: options.seedFactory ?? (() => createCanonicalSeed(context())),
-    transformLegacyV2:
-      options.legacyTransformer ??
-      ((payload) => transformLegacyV2(payload, context())),
-    clock,
-    idFactory,
-    failureInjector,
-  });
-  const chat = createChatApplicationService({
-    transactionRunner: store,
-    persistence: store,
-    plannerMutationKernel: planner,
-    plannerRead: store,
-    clock,
-    idFactory,
-    failureInjector,
-    codexAdapter: options.codexAdapter,
-  });
-  const interruptedTurns = chat.interruptRunningTurns();
-  const apiHandler = createApplicationRouter(
-    {
-      planner,
-      chat,
-      readHealth: createHealthReader({
-        config: options.config,
-        store,
-        planner,
-        codexAdapter: options.codexAdapter,
-        webProbe: options.webProbe ?? probeWebOrigin,
-      }),
-    },
-    {
-      allowedOrigins: options.config.allowedOrigins,
-      allowOriginlessMutations: false,
-    },
-  );
-
-  let handler: HttpHandler = apiHandler;
-  if (options.config.mode === "front") {
-    if (!options.config.webOrigin) {
-      store.close();
-      throw new TypeError("Front-controller mode requires an internal web origin.");
-    }
-    handler = createFrontController({ apiHandler, webOrigin: options.config.webOrigin });
-  }
-
-  let server: Server;
   try {
-    server = await listenHttpServer({
+    const context = () => bootstrapContext(clock, idFactory);
+    const planner = createPlannerApplicationService({
+      store,
+      domain: options.domain ?? householdDomain,
+      seedFactory: options.seedFactory ?? (() => createCanonicalSeed(context())),
+      transformLegacyV2:
+        options.legacyTransformer ??
+        ((payload) => transformLegacyV2(payload, context())),
+      clock,
+      idFactory,
+      failureInjector,
+    });
+    const chat = createChatApplicationService({
+      transactionRunner: store,
+      persistence: store,
+      plannerMutationKernel: planner,
+      plannerRead: store,
+      clock,
+      idFactory,
+      failureInjector,
+      codexAdapter: options.codexAdapter,
+    });
+    const interruptedTurns = chat.interruptRunningTurns();
+    const apiHandler = createApplicationRouter(
+      {
+        planner,
+        chat,
+        readHealth: createHealthReader({
+          config: options.config,
+          store,
+          planner,
+          codexAdapter: options.codexAdapter,
+          webProbe: options.webProbe ?? probeWebOrigin,
+        }),
+      },
+      {
+        allowedOrigins: options.config.allowedOrigins,
+        allowOriginlessMutations: false,
+      },
+    );
+    const handler: HttpHandler =
+      options.config.mode === "front"
+        ? createFrontController({
+            apiHandler,
+            webOrigin: options.config.webOrigin,
+          })
+        : apiHandler;
+    const server = await listenHttpServer({
       handler,
       host: options.config.host,
       port: options.config.port,
     });
+
+    let closePromise: Promise<void> | null = null;
+    const close = () => {
+      if (closePromise) return closePromise;
+      closePromise = (async () => {
+        const serverClose = closeHttpServer(server, {
+          gracePeriodMs: options.shutdownGracePeriodMs,
+        });
+        let closeError: unknown;
+        try {
+          await options.closeCodex?.();
+        } catch (error) {
+          closeError = error;
+        }
+        try {
+          await serverClose;
+        } catch (error) {
+          closeError ??= error;
+        }
+        try {
+          store.close();
+        } catch (error) {
+          closeError ??= error;
+        }
+        if (closeError) throw closeError;
+      })();
+      return closePromise;
+    };
+
+    return { server, store, planner, chat, interruptedTurns, close };
   } catch (error) {
-    await options.closeCodex?.();
-    store.close();
+    try {
+      await options.closeCodex?.();
+    } catch {
+      // Startup failure remains the primary diagnostic.
+    }
+    try {
+      store.close();
+    } catch {
+      // Startup failure remains the primary diagnostic.
+    }
     throw error;
   }
-
-  let closePromise: Promise<void> | null = null;
-  const close = () => {
-    if (closePromise) return closePromise;
-    closePromise = (async () => {
-      const serverClose = closeHttpServer(server);
-      let closeError: unknown;
-      try {
-        await options.closeCodex?.();
-      } catch (error) {
-        closeError = error;
-      }
-      try {
-        await serverClose;
-      } catch (error) {
-        closeError ??= error;
-      }
-      try {
-        store.close();
-      } catch (error) {
-        closeError ??= error;
-      }
-      if (closeError) throw closeError;
-    })();
-    return closePromise;
-  };
-
-  return { server, store, planner, chat, interruptedTurns, close };
 }

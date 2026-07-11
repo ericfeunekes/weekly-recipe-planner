@@ -34,10 +34,26 @@ export async function listenHttpServer({
   return server;
 }
 
-export async function closeHttpServer(server: Server): Promise<void> {
+export async function closeHttpServer(
+  server: Server,
+  { gracePeriodMs = 5_000 }: { gracePeriodMs?: number } = {},
+): Promise<void> {
+  if (!Number.isSafeInteger(gracePeriodMs) || gracePeriodMs < 0) {
+    throw new TypeError("HTTP shutdown grace period must be a non-negative integer.");
+  }
+  if (!server.listening) {
+    server.closeAllConnections?.();
+    return;
+  }
   await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+    const forceTimer = setTimeout(() => {
+      server.closeAllConnections?.();
+    }, gracePeriodMs);
+    server.close((error) => {
+      clearTimeout(forceTimer);
+      if (error) reject(error);
+      else resolve();
+    });
     server.closeIdleConnections?.();
   });
 }
-

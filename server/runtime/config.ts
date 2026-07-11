@@ -8,7 +8,7 @@ export type PlannerRuntimeConfig = {
   port: number;
   dataDirectory: string;
   databasePath: string;
-  webOrigin: URL | null;
+  webOrigin: URL;
   allowedOrigins: ReadonlySet<string>;
 };
 
@@ -35,8 +35,9 @@ function parseMode(value: string | undefined): RuntimeMode {
 }
 
 function parseWebOrigin(value: string | undefined, mode: RuntimeMode) {
-  if (mode === "api") return null;
-  const origin = new URL(value ?? "http://127.0.0.1:3002");
+  const defaultOrigin =
+    mode === "api" ? "http://127.0.0.1:3001" : "http://127.0.0.1:3002";
+  const origin = new URL(value ?? defaultOrigin);
   if (origin.protocol !== "http:" || !["127.0.0.1", "[::1]", "localhost"].includes(origin.hostname)) {
     throw new TypeError("PLANNER_WEB_ORIGIN must be a loopback HTTP origin.");
   }
@@ -46,11 +47,28 @@ function parseWebOrigin(value: string | undefined, mode: RuntimeMode) {
   return origin;
 }
 
-function parseAllowedOrigins(value: string | undefined, mode: RuntimeMode, port: number) {
-  const defaults =
-    mode === "api"
-      ? ["http://localhost:3001", "http://127.0.0.1:3001"]
-      : [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
+function effectivePort(origin: URL) {
+  return origin.port ? Number(origin.port) : 80;
+}
+
+function loopbackOrigins(port: number) {
+  const suffix = port === 80 ? "" : `:${port}`;
+  return [
+    `http://localhost${suffix}`,
+    `http://127.0.0.1${suffix}`,
+    `http://[::1]${suffix}`,
+  ];
+}
+
+function parseAllowedOrigins(
+  value: string | undefined,
+  mode: RuntimeMode,
+  port: number,
+  webOrigin: URL,
+) {
+  const defaults = loopbackOrigins(
+    mode === "api" ? effectivePort(webOrigin) : port,
+  );
   const entries = value?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? defaults;
   const origins = new Set<string>();
   for (const entry of entries) {
@@ -92,17 +110,24 @@ export function readRuntimeConfig(
   );
   const dataDirectory = resolve(environment.PLANNER_DATA_DIR ?? ".planner-data");
   assertDataDirectoryOutsideBuildOutput(dataDirectory);
+  const webOrigin = parseWebOrigin(environment.PLANNER_WEB_ORIGIN, mode);
+  if (effectivePort(webOrigin) === port) {
+    throw new TypeError(
+      "PLANNER_WEB_ORIGIN must not use the application listener port.",
+    );
+  }
   return {
     mode,
     host,
     port,
     dataDirectory,
     databasePath: resolve(dataDirectory, "planner.sqlite"),
-    webOrigin: parseWebOrigin(environment.PLANNER_WEB_ORIGIN, mode),
+    webOrigin,
     allowedOrigins: parseAllowedOrigins(
       environment.PLANNER_ALLOWED_ORIGINS,
       mode,
       port,
+      webOrigin,
     ),
   };
 }
