@@ -111,6 +111,9 @@ const timerDurationSchema = {
     { type: "null" },
   ],
 };
+const nullableTextSchema = {
+  anyOf: [textSchema, { type: "null" }],
+};
 const stepInputSchema = {
   type: "object",
   additionalProperties: false,
@@ -123,16 +126,12 @@ const stepInputSchema = {
 const stepPlanSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["inputs", "instruction"],
+  required: ["inputs", "instruction", "timerDurationSeconds", "note"],
   properties: {
     inputs: { type: "array", maxItems: MAX_STEP_INPUTS, items: stepInputSchema },
     instruction: nonemptyTextSchema,
-    timerDurationSeconds: {
-      type: "integer",
-      minimum: 1,
-      maximum: MAX_TIMER_DURATION_SECONDS,
-    },
-    note: textSchema,
+    timerDurationSeconds: timerDurationSchema,
+    note: nullableTextSchema,
   },
 };
 const stepContentSchema = {
@@ -161,15 +160,19 @@ const groceryContentSchema = {
 };
 const groceryPlanSchema = {
   ...groceryContentSchema,
+  required: [...groceryContentSchema.required, "checked"],
   properties: {
     ...groceryContentSchema.properties,
-    checked: { type: "boolean" },
+    checked: { anyOf: [{ type: "boolean" }, { type: "null" }] },
   },
 };
 const reconciliationItemSchema = {
   ...groceryContentSchema,
-  required: [...groceryContentSchema.required, "checked"],
-  properties: { ...groceryPlanSchema.properties, id: idSchema },
+  required: [...groceryPlanSchema.required, "id"],
+  properties: {
+    ...groceryPlanSchema.properties,
+    id: { anyOf: [idSchema, { type: "null" }] },
+  },
 };
 const mealSnapshotSchema = {
   type: "object",
@@ -212,12 +215,18 @@ const mealPlanSchema = {
     "notes",
     "ingredients",
     "instructions",
+    "status",
   ],
   properties: {
     ...mealSnapshotSchema.properties,
     date: isoDateSchema,
     slot: { type: "string", enum: [...MEAL_SLOTS] },
-    status: { type: "string", enum: [...MEAL_STATUSES] },
+    status: {
+      anyOf: [
+        { type: "string", enum: [...MEAL_STATUSES] },
+        { type: "null" },
+      ],
+    },
     protein: { type: "string", enum: ["chicken", "salmon", "none"] },
     instructions: {
       type: "array",
@@ -229,7 +238,7 @@ const mealPlanSchema = {
 const weekPlanSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["meals", "groceries"],
+  required: ["meals", "groceries", "weekLesson"],
   properties: {
     meals: { type: "array", maxItems: MAX_MEALS_PER_WEEK, items: mealPlanSchema },
     groceries: {
@@ -237,7 +246,7 @@ const weekPlanSchema = {
       maxItems: MAX_GROCERY_ITEMS,
       items: groceryPlanSchema,
     },
-    weekLesson: textSchema,
+    weekLesson: nullableTextSchema,
   },
 };
 

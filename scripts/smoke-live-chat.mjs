@@ -71,8 +71,9 @@ try {
   }
   const turn = result.decision.turn;
   if (turn.status !== "completed" || turn.mutationOutcome !== "no_command") {
+    const detail = [turn.errorCode, turn.errorDetail].filter(Boolean).join(": ");
     throw new Error(
-      `Live ChatGPT smoke ended ${turn.status}/${turn.mutationOutcome ?? "none"}.`,
+      `Live ChatGPT smoke ended ${turn.status}/${turn.mutationOutcome ?? "none"}${detail ? ` (${detail})` : ""}.`,
     );
   }
   console.log("Live ChatGPT smoke passed: authenticated turn completed without a planner mutation.");

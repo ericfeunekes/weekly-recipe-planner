@@ -35,6 +35,65 @@ function hasExactKeys(value: unknown, keys: string[]) {
   );
 }
 
+function withoutNullFields(
+  value: Record<string, unknown>,
+  fields: string[],
+): Record<string, unknown> {
+  const normalized = { ...value };
+  for (const field of fields) {
+    if (normalized[field] === null) delete normalized[field];
+  }
+  return normalized;
+}
+
+function normalizeStepPlan(value: unknown): unknown {
+  return isRecord(value)
+    ? withoutNullFields(value, ["timerDurationSeconds", "note"])
+    : value;
+}
+
+function normalizeGroceryPlan(value: unknown): unknown {
+  return isRecord(value) ? withoutNullFields(value, ["checked"]) : value;
+}
+
+function normalizeMealPlan(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const normalized = withoutNullFields(value, ["status"]);
+  if (Array.isArray(normalized.instructions)) {
+    normalized.instructions = normalized.instructions.map(normalizeStepPlan);
+  }
+  return normalized;
+}
+
+function normalizeHouseholdCommand(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  if (value.type === "addInstructionStep") {
+    return { ...value, step: normalizeStepPlan(value.step) };
+  }
+  if (value.type === "addGroceryItem") {
+    return { ...value, item: normalizeGroceryPlan(value.item) };
+  }
+  if (value.type === "reconcileGroceries" && Array.isArray(value.items)) {
+    return {
+      ...value,
+      items: value.items.map((item) =>
+        isRecord(item) ? withoutNullFields(item, ["id"]) : item,
+      ),
+    };
+  }
+  if (value.type === "createWeekPlan" && isRecord(value.plan)) {
+    const plan = withoutNullFields(value.plan, ["weekLesson"]);
+    if (Array.isArray(plan.meals)) {
+      plan.meals = plan.meals.map(normalizeMealPlan);
+    }
+    if (Array.isArray(plan.groceries)) {
+      plan.groceries = plan.groceries.map(normalizeGroceryPlan);
+    }
+    return { ...value, plan };
+  }
+  return value;
+}
+
 function unwrapJsonFence(text: string) {
   const trimmed = text.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -63,9 +122,11 @@ export function parseHouseholdAssistantOutput(text: unknown) {
   ) {
     throw new Error("Codex response reply is missing or too long.");
   }
-  if (parsed.command !== null && !isHouseholdCommand(parsed.command)) {
+  const command =
+    parsed.command === null ? null : normalizeHouseholdCommand(parsed.command);
+  if (command !== null && !isHouseholdCommand(command)) {
     throw new Error("Codex returned a malformed household planner command.");
   }
 
-  return { reply: parsed.reply.trim(), command: parsed.command };
+  return { reply: parsed.reply.trim(), command };
 }
