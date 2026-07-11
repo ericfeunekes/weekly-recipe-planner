@@ -13,7 +13,6 @@ import {
   type HouseholdPlannerState,
   type InstructionStep,
   type IsoDate,
-  type Leftover,
   type Meal,
   type PrepReference,
   type WeekId,

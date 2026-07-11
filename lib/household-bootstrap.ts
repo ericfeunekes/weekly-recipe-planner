@@ -305,10 +305,15 @@ function normalizeLegacyPrep(
         left.legacyPosition - right.legacyPosition ||
         left.inputIndex - right.inputIndex,
     )
-    .map(({ legacyPosition: _legacyPosition, inputIndex: _inputIndex, ...reference }) => {
+    .map((reference) => {
       const position = positions.get(reference.prepDate) ?? 0;
       positions.set(reference.prepDate, position + 1);
-      return { ...reference, position };
+      return {
+        id: reference.id,
+        stepId: reference.stepId,
+        prepDate: reference.prepDate,
+        position,
+      };
     });
 }
 
