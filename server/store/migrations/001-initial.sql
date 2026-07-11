@@ -18,6 +18,7 @@ CREATE TABLE workspace (
 CREATE TABLE command_receipts (
   operation_kind TEXT NOT NULL CHECK (operation_kind IN (
     'planner_command',
+    'planner_chat_command',
     'planner_undo',
     'workspace_bootstrap',
     'chat_submit',

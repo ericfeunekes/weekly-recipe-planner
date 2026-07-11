@@ -43,6 +43,16 @@ function runtimeBaseUrl(runtime) {
   return `http://127.0.0.1:${address.port}`;
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 test("composed authority bootstraps once and survives a real process restart", async (t) => {
   const dataDirectory = await mkdtemp(join(tmpdir(), "planner-runtime-"));
   t.after(() => rm(dataDirectory, { recursive: true, force: true }));
@@ -113,4 +123,103 @@ test("front-controller health fails when the internal web process is unavailable
 
   await runtime.close();
   assert.equal(codexClosed, true);
+});
+
+test("household and chat planner receipts cannot collide while a model turn is running", async (t) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "planner-chat-receipt-race-"));
+  t.after(() => rm(dataDirectory, { recursive: true, force: true }));
+  const model = deferred();
+  const codexAdapter = {
+    complete: () => model.promise,
+    readStatus: async () => ({
+      available: true,
+      authenticated: true,
+      detail: "ready",
+    }),
+  };
+  const runtime = await startPlannerRuntime({
+    config: createConfig(dataDirectory),
+    codexAdapter,
+    clock: { now: () => Date.UTC(2026, 6, 6, 12) },
+    idFactory: (() => {
+      let sequence = 0;
+      return { createId: (prefix) => `${prefix}-${++sequence}` };
+    })(),
+  });
+  t.after(() => runtime.close());
+  const baseUrl = runtimeBaseUrl(runtime);
+  const bootstrap = await fetch(`${baseUrl}/api/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: ALLOWED_ORIGIN },
+    body: JSON.stringify({ requestId: "bootstrap-race", mode: "seed" }),
+  });
+  const seeded = await bootstrap.json();
+  const week = seeded.workspace.state.weeks[0];
+  const meal = week.data.meals[0];
+  const step = meal.instructions[0];
+  const chatResponse = fetch(`${baseUrl}/api/chat/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: ALLOWED_ORIGIN },
+    body: JSON.stringify({
+      requestId: "chat-race",
+      basePlannerVersion: 0,
+      message: "Complete the first step.",
+      context: {
+        view: "prep",
+        weekId: week.id,
+        mealId: meal.id,
+        stepId: step.id,
+      },
+    }),
+  });
+
+  let runningTurn;
+  for (let attempt = 0; attempt < 50 && !runningTurn; attempt += 1) {
+    const workspace = await (await fetch(`${baseUrl}/api/workspace`)).json();
+    runningTurn = workspace.chatTurns.find((turn) => turn.status === "running");
+    if (!runningTurn) await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.ok(runningTurn);
+  const collidingRequestId = `chat-command:${runningTurn.turnId}`;
+  const household = await fetch(`${baseUrl}/api/commands`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: ALLOWED_ORIGIN },
+    body: JSON.stringify({
+      requestId: collidingRequestId,
+      basePlannerVersion: 0,
+      command: {
+        type: "setInstructionStepComplete",
+        weekId: week.id,
+        stepId: step.id,
+        complete: false,
+      },
+    }),
+  });
+  assert.equal(household.status, 422);
+  assert.equal((await household.json()).decision.status, "domain_rejected");
+
+  model.resolve({
+    reply: "The prep step is complete.",
+    command: {
+      type: "setInstructionStepComplete",
+      weekId: week.id,
+      stepId: step.id,
+      complete: true,
+    },
+  });
+  const terminal = await (await chatResponse).json();
+  assert.equal(terminal.decision.turn.status, "completed");
+  assert.equal(terminal.decision.turn.mutationOutcome, "applied");
+  assert.equal(terminal.workspace.plannerVersion, 1);
+  assert.equal(
+    terminal.workspace.state.weeks[0].data.meals[0].instructions[0].complete,
+    true,
+  );
+  const receipts = runtime.store.database
+    .prepare(
+      "SELECT operation_kind FROM command_receipts WHERE request_id = ? ORDER BY operation_kind",
+    )
+    .all(collidingRequestId)
+    .map((row) => row.operation_kind);
+  assert.deepEqual(receipts, ["planner_chat_command", "planner_command"]);
 });

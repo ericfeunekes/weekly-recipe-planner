@@ -208,18 +208,15 @@ export class DurableChatApplicationService<Transaction>
     }
 
     const hash = payloadHash(normalized);
-    const replay = this.#readReceipt("chat_submit", normalized.requestId, hash);
-    if (replay) return replay;
+    const preflight = this.#transactionRunner.transaction((transaction) =>
+      this.#guardSubmit(transaction, normalized, hash),
+    );
+    if (preflight) return preflight;
 
     const status = await this.#readCodexStatus();
     const preparation = this.#transactionRunner.transaction((transaction) => {
-      const concurrentReplay = this.#resolveReceipt(
-        transaction,
-        "chat_submit",
-        normalized.requestId,
-        hash,
-      );
-      if (concurrentReplay) return { response: concurrentReplay };
+      const guarded = this.#guardSubmit(transaction, normalized, hash);
+      if (guarded) return { response: guarded };
 
       const workspace = this.#plannerRead.readInitializedWorkspace(transaction);
       if (!status.available || !status.authenticated) {
@@ -227,29 +224,6 @@ export class DurableChatApplicationService<Transaction>
           status: "codex_unavailable",
           message: status.detail,
         };
-        this.#storeDecision(transaction, "chat_submit", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
-      if (normalized.basePlannerVersion !== workspace.plannerVersion) {
-        const decision: ChatTurnDecision = {
-          status: "context_stale",
-          expectedVersion: normalized.basePlannerVersion,
-          actualVersion: workspace.plannerVersion,
-        };
-        this.#storeDecision(transaction, "chat_submit", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
-      if (!resolveCanonicalContext(workspace, normalized.context)) {
-        const decision: ChatTurnDecision = {
-          status: "not_found",
-          message: "The selected planner context no longer exists.",
-        };
-        this.#storeDecision(transaction, "chat_submit", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
-      const running = this.#persistence.readRunningTurn(transaction);
-      if (running) {
-        const decision: ChatTurnDecision = { status: "turn_busy", runningTurn: running };
         this.#storeDecision(transaction, "chat_submit", normalized.requestId, hash, decision);
         return { response: { decision, workspace } };
       }
@@ -320,18 +294,15 @@ export class DurableChatApplicationService<Transaction>
     }
 
     const hash = payloadHash(normalized);
-    const replay = this.#readReceipt("chat_retry", normalized.requestId, hash);
-    if (replay) return replay;
+    const preflight = this.#transactionRunner.transaction((transaction) =>
+      this.#guardRetry(transaction, normalized, hash),
+    );
+    if (preflight) return preflight;
 
     const status = await this.#readCodexStatus();
     const preparation = this.#transactionRunner.transaction((transaction) => {
-      const concurrentReplay = this.#resolveReceipt(
-        transaction,
-        "chat_retry",
-        normalized.requestId,
-        hash,
-      );
-      if (concurrentReplay) return { response: concurrentReplay };
+      const guarded = this.#guardRetry(transaction, normalized, hash);
+      if (guarded) return { response: guarded };
 
       const workspace = this.#plannerRead.readInitializedWorkspace(transaction);
       if (!status.available || !status.authenticated) {
@@ -342,53 +313,13 @@ export class DurableChatApplicationService<Transaction>
         this.#storeDecision(transaction, "chat_retry", normalized.requestId, hash, decision);
         return { response: { decision, workspace } };
       }
-      if (normalized.basePlannerVersion !== workspace.plannerVersion) {
-        const decision: ChatTurnDecision = {
-          status: "context_stale",
-          expectedVersion: normalized.basePlannerVersion,
-          actualVersion: workspace.plannerVersion,
-        };
-        this.#storeDecision(transaction, "chat_retry", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
       const priorTurn = this.#persistence.readTurn(transaction, normalized.turnId);
-      if (!priorTurn) {
-        const decision: ChatTurnDecision = {
-          status: "not_found",
-          message: "The chat turn no longer exists.",
-        };
-        this.#storeDecision(transaction, "chat_retry", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
-      if (priorTurn.status !== "failed" && priorTurn.status !== "interrupted") {
-        const decision: ChatTurnDecision = {
-          status: "domain_rejected",
-          message: "Only failed or interrupted chat turns can be retried.",
-        };
-        this.#storeDecision(transaction, "chat_retry", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
-      if (!resolveCanonicalContext(workspace, priorTurn.context)) {
-        const decision: ChatTurnDecision = {
-          status: "not_found",
-          message: "The original planner context no longer exists.",
-        };
-        this.#storeDecision(transaction, "chat_retry", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
+      if (!priorTurn) throw new Error("Guarded retry source disappeared inside one transaction.");
       const userEntry = this.#persistence.readTranscriptEntry(
         transaction,
         priorTurn.userEntryId,
       );
-      if (!userEntry || userEntry.role !== "user") {
-        throw new Error("The retry source is missing its durable user transcript entry.");
-      }
-      const running = this.#persistence.readRunningTurn(transaction);
-      if (running) {
-        const decision: ChatTurnDecision = { status: "turn_busy", runningTurn: running };
-        this.#storeDecision(transaction, "chat_retry", normalized.requestId, hash, decision);
-        return { response: { decision, workspace } };
-      }
+      if (!userEntry || userEntry.role !== "user") throw new Error("Guarded retry user entry disappeared inside one transaction.");
 
       const now = this.#clock.now();
       const turnId = this.#idFactory.createId("chat-turn");
@@ -597,10 +528,106 @@ export class DurableChatApplicationService<Transaction>
     });
   }
 
-  #readReceipt(kind: ReceiptKind, requestId: string, hash: string) {
-    return this.#transactionRunner.transaction((transaction) =>
-      this.#resolveReceipt(transaction, kind, requestId, hash),
+  #guardSubmit(
+    transaction: Transaction,
+    request: SubmitChatTurnRequest,
+    hash: string,
+  ): ChatServiceResponse | null {
+    const replay = this.#resolveReceipt(
+      transaction,
+      "chat_submit",
+      request.requestId,
+      hash,
     );
+    if (replay) return replay;
+    const workspace = this.#plannerRead.readInitializedWorkspace(transaction);
+    if (request.basePlannerVersion !== workspace.plannerVersion) {
+      const decision: ChatTurnDecision = {
+        status: "context_stale",
+        expectedVersion: request.basePlannerVersion,
+        actualVersion: workspace.plannerVersion,
+      };
+      this.#storeDecision(transaction, "chat_submit", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    if (!resolveCanonicalContext(workspace, request.context)) {
+      const decision: ChatTurnDecision = {
+        status: "not_found",
+        message: "The selected planner context no longer exists.",
+      };
+      this.#storeDecision(transaction, "chat_submit", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    const running = this.#persistence.readRunningTurn(transaction);
+    if (running) {
+      const decision: ChatTurnDecision = { status: "turn_busy", runningTurn: running };
+      this.#storeDecision(transaction, "chat_submit", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    return null;
+  }
+
+  #guardRetry(
+    transaction: Transaction,
+    request: RetryChatTurnRequest,
+    hash: string,
+  ): ChatServiceResponse | null {
+    const replay = this.#resolveReceipt(
+      transaction,
+      "chat_retry",
+      request.requestId,
+      hash,
+    );
+    if (replay) return replay;
+    const workspace = this.#plannerRead.readInitializedWorkspace(transaction);
+    if (request.basePlannerVersion !== workspace.plannerVersion) {
+      const decision: ChatTurnDecision = {
+        status: "context_stale",
+        expectedVersion: request.basePlannerVersion,
+        actualVersion: workspace.plannerVersion,
+      };
+      this.#storeDecision(transaction, "chat_retry", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    const priorTurn = this.#persistence.readTurn(transaction, request.turnId);
+    if (!priorTurn) {
+      const decision: ChatTurnDecision = {
+        status: "not_found",
+        message: "The chat turn no longer exists.",
+      };
+      this.#storeDecision(transaction, "chat_retry", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    if (priorTurn.status !== "failed" && priorTurn.status !== "interrupted") {
+      const decision: ChatTurnDecision = {
+        status: "domain_rejected",
+        message: "Only failed or interrupted chat turns can be retried.",
+      };
+      this.#storeDecision(transaction, "chat_retry", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    if (!resolveCanonicalContext(workspace, priorTurn.context)) {
+      const decision: ChatTurnDecision = {
+        status: "not_found",
+        message: "The original planner context no longer exists.",
+      };
+      this.#storeDecision(transaction, "chat_retry", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    const userEntry = this.#persistence.readTranscriptEntry(
+      transaction,
+      priorTurn.userEntryId,
+    );
+    if (!userEntry || userEntry.role !== "user") {
+      throw new Error("The retry source is missing its durable user transcript entry.");
+    }
+    const running = this.#persistence.readRunningTurn(transaction);
+    if (running) {
+      const decision: ChatTurnDecision = { status: "turn_busy", runningTurn: running };
+      this.#storeDecision(transaction, "chat_retry", request.requestId, hash, decision);
+      return { decision, workspace };
+    }
+    return null;
   }
 
   #resolveReceipt(

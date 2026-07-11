@@ -227,6 +227,130 @@ test("turn timeout interrupts Codex and ignores late completion events", async (
   assert.equal(client.ignoredTurnIds.size, 0);
 });
 
+test("turn-start timeout recycles app-server and ignores the orphaned late turn", async (t) => {
+  const children = [];
+  const calls = [];
+  const client = new CodexAppServerClient({
+    requestTimeoutMs: 100,
+    spawnImpl() {
+      const childIndex = children.length;
+      const child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.killed = false;
+      child.kill = () => {
+        child.killed = true;
+        queueMicrotask(() => child.emit("exit", 0, null));
+        return true;
+      };
+      children.push(child);
+      let input = "";
+      child.stdin.setEncoding("utf8");
+      child.stdin.on("data", (chunk) => {
+        input += chunk;
+        const lines = input.split("\n");
+        input = lines.pop();
+        for (const line of lines) {
+          if (!line) continue;
+          const request = JSON.parse(line);
+          calls.push({ childIndex, request });
+          if (request.method === "initialize") {
+            child.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+          } else if (request.method === "turn/start" && childIndex === 0) {
+            setTimeout(() => {
+              child.stdout.write(`${JSON.stringify({ id: request.id, result: { turn: { id: "orphaned-turn" } } })}\n`);
+              child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: { turn: { id: "orphaned-turn", status: "completed" } } })}\n`);
+            }, 35);
+          } else if (request.method === "turn/start") {
+            child.stdout.write(`${JSON.stringify({ id: request.id, result: { turn: { id: "fresh-turn" } } })}\n`);
+            queueMicrotask(() => {
+              child.stdout.write(`${JSON.stringify({ method: "item/completed", params: { turnId: "fresh-turn", item: { type: "agentMessage", phase: "final_answer", text: "fresh answer" } } })}\n`);
+              child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: { turn: { id: "fresh-turn", status: "completed" } } })}\n`);
+            });
+          }
+        }
+      });
+      return child;
+    },
+  });
+  t.after(() => client.close());
+
+  await assert.rejects(
+    client.runTurn(
+      { threadId: "thread-orphan", input: [{ type: "text", text: "Slow start" }] },
+      { timeoutMs: 10 },
+    ),
+    (error) => error.code === "CODEX_TIMEOUT",
+  );
+  assert.equal(children[0].killed, true);
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.turnRecords.size, 0);
+
+  const result = await client.runTurn(
+    { threadId: "thread-fresh", input: [{ type: "text", text: "Try again" }] },
+    { timeoutMs: 100 },
+  );
+  assert.equal(result.text, "fresh answer");
+  assert.equal(children.length, 2);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.turnRecords.size, 0);
+  assert.equal(client.unclaimedTurnIds.size, 0);
+  assert.equal(
+    calls.filter(({ request }) => request.method === "turn/interrupt").length,
+    0,
+  );
+});
+
+test("aborting while turn-start is pending recycles the unaddressable app-server", async () => {
+  let child;
+  let turnStarted = false;
+  const client = new CodexAppServerClient({
+    requestTimeoutMs: 1_000,
+    spawnImpl() {
+      child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.killed = false;
+      child.kill = () => {
+        child.killed = true;
+        return true;
+      };
+      let input = "";
+      child.stdin.setEncoding("utf8");
+      child.stdin.on("data", (chunk) => {
+        input += chunk;
+        const lines = input.split("\n");
+        input = lines.pop();
+        for (const line of lines) {
+          if (!line) continue;
+          const request = JSON.parse(line);
+          if (request.method === "initialize") {
+            child.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+          } else if (request.method === "turn/start") {
+            turnStarted = true;
+          }
+        }
+      });
+      return child;
+    },
+  });
+  const controller = new AbortController();
+  const running = client.runTurn(
+    { threadId: "thread-abort", input: [{ type: "text", text: "Stop" }] },
+    { timeoutMs: 1_000, signal: controller.signal },
+  );
+  while (!turnStarted) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(running, (error) => error.code === "CODEX_ABORTED");
+  assert.equal(child.killed, true);
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.turnRecords.size, 0);
+});
+
 test("stdin EPIPE transitions the client to unavailable instead of crashing", async () => {
   let child;
   const client = new CodexAppServerClient({

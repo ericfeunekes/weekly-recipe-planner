@@ -262,7 +262,9 @@ export class PlannerApplicationServiceImpl
     actor: PlannerActor,
     options: { chatTurnId?: string; now?: number } = {},
   ): ApplyPlannerCommandResponse {
-    const operationKind = "planner_command" as const;
+    const operationKind = options.chatTurnId
+      ? ("planner_chat_command" as const)
+      : ("planner_command" as const);
     const payloadHash = hashCanonicalPayload(operationKind, request);
     const existing = this.store.findReceipt(transaction, operationKind, request.requestId);
     if (existing) {

@@ -214,12 +214,16 @@ function plannerDecisionStatus(status: string) {
   return 422;
 }
 
+function undoDecisionStatus(status: string) {
+  return status === "accepted" ? 200 : 409;
+}
+
 function chatDecisionStatus(status: string) {
   if (status === "accepted") return 202;
   if (status === "turn_busy" || status === "context_stale" || status === "request_id_reuse") return 409;
   if (status === "not_found") return 404;
   if (status === "codex_unavailable") return 503;
-  return 422;
+  return 409;
 }
 
 function mapThrownError(error: unknown): ApiRouteError {
@@ -358,7 +362,7 @@ export function createApplicationRouter(
           basePlannerVersion: body.basePlannerVersion,
           targetEventId: body.targetEventId,
         });
-        sendJson(response, plannerDecisionStatus(result.decision.status), result);
+        sendJson(response, undoDecisionStatus(result.decision.status), result);
         return;
       }
       if (url.pathname === PLANNER_API_ROUTES.chatSubmit.path) {

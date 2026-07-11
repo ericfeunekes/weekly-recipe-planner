@@ -29,6 +29,7 @@ export type PlannerActor = "Household" | "Codex";
 
 export const OPERATION_KINDS = [
   "planner_command",
+  "planner_chat_command",
   "planner_undo",
   "workspace_bootstrap",
   "chat_submit",

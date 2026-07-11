@@ -259,6 +259,7 @@ class FakeAdapter {
   constructor(results = []) {
     this.results = [...results];
     this.calls = [];
+    this.statusCalls = 0;
     this.status = {
       available: true,
       authenticated: true,
@@ -267,6 +268,7 @@ class FakeAdapter {
   }
 
   async readStatus() {
+    this.statusCalls += 1;
     return this.status;
   }
 
@@ -370,6 +372,7 @@ test("submit is idempotent, rejects changed reuse, and exposes one shared busy t
   );
   assert.equal(busy.decision.status, "turn_busy");
   assert.equal(runtime.data.workspace.transcriptEntries.length, 1);
+  assert.equal(adapter.statusCalls, 1);
 
   pending.resolve({ reply: "Done.", command: null });
   const first = await firstPromise;
@@ -385,6 +388,7 @@ test("stale context is durably rejected before Codex is called", async () => {
     actualVersion: 0,
   });
   assert.equal(adapter.calls.length, 0);
+  assert.equal(adapter.statusCalls, 0);
   const replay = await service.submit(submitRequest({ basePlannerVersion: 4 }));
   assert.deepEqual(replay.decision, result.decision);
 
@@ -394,6 +398,53 @@ test("stale context is durably rejected before Codex is called", async () => {
   });
   assert.equal(browserState.decision.status, "domain_rejected");
   assert.equal(adapter.calls.length, 0);
+  assert.equal(adapter.statusCalls, 0);
+});
+
+test("reservation rechecks planner state after Codex status lookup", async () => {
+  const statusGate = deferred();
+  const adapter = new FakeAdapter();
+  adapter.readStatus = async () => {
+    adapter.statusCalls += 1;
+    await statusGate.promise;
+    return adapter.status;
+  };
+  const { runtime, service } = createHarness({ adapter });
+  const submitted = service.submit(submitRequest());
+  await new Promise((resolve) => setImmediate(resolve));
+  runtime.data.workspace.plannerVersion = 1;
+  statusGate.resolve();
+
+  const result = await submitted;
+  assert.deepEqual(result.decision, {
+    status: "context_stale",
+    expectedVersion: 0,
+    actualVersion: 1,
+  });
+  assert.equal(adapter.statusCalls, 1);
+  assert.equal(adapter.calls.length, 0);
+  assert.equal(runtime.data.workspace.chatTurns.length, 0);
+  assert.equal(runtime.data.workspace.transcriptEntries.length, 0);
+});
+
+test("retry eligibility and missing turns are decided before contacting Codex", async () => {
+  const { adapter, service } = createHarness();
+  const completed = await service.submit(submitRequest());
+  const statusCallsAfterCompletion = adapter.statusCalls;
+
+  const ineligible = await service.retry({
+    requestId: "retry-completed",
+    basePlannerVersion: 0,
+    turnId: completed.decision.turn.turnId,
+  });
+  assert.equal(ineligible.decision.status, "domain_rejected");
+  const missing = await service.retry({
+    requestId: "retry-missing",
+    basePlannerVersion: 0,
+    turnId: "missing-turn",
+  });
+  assert.equal(missing.decision.status, "not_found");
+  assert.equal(adapter.statusCalls, statusCallsAfterCompletion);
 });
 
 test("Codex unavailability is idempotent and does not create planner or transcript state", async () => {

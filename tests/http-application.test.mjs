@@ -96,8 +96,15 @@ function createDependencies() {
         workspace: { ...WORKSPACE, syncRevision: 4 },
       };
     },
-    async retry() {
-      throw new Error("not used");
+    async retry(request) {
+      calls.push(["chat-retry", request]);
+      return {
+        decision: {
+          status: "domain_rejected",
+          message: "Only failed or interrupted chat turns can be retried.",
+        },
+        workspace: WORKSPACE,
+      };
     },
     interruptRunningTurns: () => 0,
   };
@@ -203,6 +210,35 @@ test("chat accepts structured canonical context and returns its durable running 
   assert.equal(response.status, 202);
   assert.equal((await response.json()).decision.turn.status, "running");
   assert.equal(calls[0][0], "chat");
+});
+
+test("undo and chat lifecycle rejections preserve their durable conflict status", async (t) => {
+  const { baseUrl, calls } = await startApplication(t);
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
+  const undo = await fetch(`${baseUrl}/api/undo`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: "undo-ineligible",
+      basePlannerVersion: 2,
+      targetEventId: "event-older",
+    }),
+  });
+  assert.equal(undo.status, 409);
+  assert.equal((await undo.json()).decision.status, "domain_rejected");
+
+  const retry = await fetch(`${baseUrl}/api/chat/retry`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: "retry-ineligible",
+      basePlannerVersion: 2,
+      turnId: "turn-completed",
+    }),
+  });
+  assert.equal(retry.status, 409);
+  assert.equal((await retry.json()).decision.status, "domain_rejected");
+  assert.deepEqual(calls.map(([kind]) => kind), ["undo", "chat-retry"]);
 });
 
 test("service failures retain field errors and authoritative workspace readback", async (t) => {

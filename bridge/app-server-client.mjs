@@ -34,6 +34,7 @@ export class CodexAppServerClient extends EventEmitter {
     this.nextId = 1;
     this.pending = new Map();
     this.turnRecords = new Map();
+    this.unclaimedTurnIds = new Set();
     this.ignoredTurnIds = new Set();
     this.stderrTail = [];
   }
@@ -64,7 +65,9 @@ export class CodexAppServerClient extends EventEmitter {
     const stdout = createInterface({ input: child.stdout, crlfDelay: Infinity });
     const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
 
-    stdout.on("line", (line) => this.#handleLine(line));
+    stdout.on("line", (line) => {
+      if (this.child === child) this.#handleLine(line);
+    });
     stderr.on("line", (line) => {
       this.stderrTail.push(line);
       if (this.stderrTail.length > 12) this.stderrTail.shift();
@@ -137,6 +140,7 @@ export class CodexAppServerClient extends EventEmitter {
       if (!pending) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timer);
+      pending.cleanup?.();
       if (message.error) {
         pending.reject(
           new CodexBridgeError(message.error.message ?? "Codex request failed.", {
@@ -144,6 +148,12 @@ export class CodexAppServerClient extends EventEmitter {
           }),
         );
       } else {
+        if (
+          pending.method === "turn/start" &&
+          typeof message.result?.turn?.id === "string"
+        ) {
+          this.unclaimedTurnIds.add(message.result.turn.id);
+        }
         pending.resolve(message.result);
       }
       return;
@@ -190,7 +200,10 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   #settleTurnRecord(turnId, record) {
-    if (record.waiters.length === 0) return;
+    if (record.waiters.length === 0) {
+      if (!this.unclaimedTurnIds.has(turnId)) this.turnRecords.delete(turnId);
+      return;
+    }
     const completion = record.completion;
     const finalMessage =
       record.messages.findLast((message) => message.phase === "final_answer") ??
@@ -227,6 +240,7 @@ export class CodexAppServerClient extends EventEmitter {
 
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
+      pending.cleanup?.();
       pending.reject(wrapped);
     }
     this.pending.clear();
@@ -239,6 +253,7 @@ export class CodexAppServerClient extends EventEmitter {
       }
     }
     this.turnRecords.clear();
+    this.unclaimedTurnIds.clear();
     this.ignoredTurnIds.clear();
     this.emit("stopped", wrapped);
     if (!child.killed) {
@@ -279,7 +294,7 @@ export class CodexAppServerClient extends EventEmitter {
     }
   }
 
-  #requestWithoutStart(method, params, timeoutMs) {
+  #requestWithoutStart(method, params, timeoutMs, signal) {
     if (!this.child?.stdin?.writable) {
       return Promise.reject(
         new CodexBridgeError("Codex app-server is not running.", { code: "CODEX_UNAVAILABLE" }),
@@ -288,31 +303,55 @@ export class CodexAppServerClient extends EventEmitter {
 
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const rejectPending = (error) => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
         this.pending.delete(id);
-        reject(
+        clearTimeout(pending.timer);
+        pending.cleanup?.();
+        pending.reject(error);
+      };
+      const onAbort = () => {
+        rejectPending(
+          new CodexBridgeError(`Codex request ${method} was interrupted.`, {
+            code: "CODEX_ABORTED",
+          }),
+        );
+      };
+      const timer = setTimeout(() => {
+        rejectPending(
           new CodexBridgeError(`Codex request ${method} timed out.`, {
             code: "CODEX_TIMEOUT",
           }),
         );
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        timer,
+        method,
+        cleanup: () => signal?.removeEventListener("abort", onAbort),
+      });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
       try {
         this.#writeMessage({ id, method, params });
       } catch (error) {
-        const pending = this.pending.get(id);
-        if (pending) {
-          this.pending.delete(id);
-          clearTimeout(pending.timer);
-          pending.reject(error);
-        }
+        rejectPending(error);
       }
     });
   }
 
-  async request(method, params = {}, { timeoutMs = this.requestTimeoutMs } = {}) {
+  async request(
+    method,
+    params = {},
+    { timeoutMs = this.requestTimeoutMs, signal } = {},
+  ) {
     await this.start();
-    return this.#requestWithoutStart(method, params, timeoutMs);
+    return this.#requestWithoutStart(method, params, timeoutMs, signal);
   }
 
   notify(method, params) {
@@ -345,7 +384,15 @@ export class CodexAppServerClient extends EventEmitter {
       });
     }
     const deadline = Date.now() + timeoutMs;
-    const result = await this.request("turn/start", params, { timeoutMs });
+    let result;
+    try {
+      result = await this.request("turn/start", params, { timeoutMs, signal });
+    } catch (error) {
+      if (error?.code === "CODEX_TIMEOUT" || error?.code === "CODEX_ABORTED") {
+        this.close();
+      }
+      throw error;
+    }
     const turnId = result?.turn?.id;
     if (typeof turnId !== "string") {
       throw new CodexBridgeError("Codex did not return a turn id.", {
@@ -353,6 +400,7 @@ export class CodexAppServerClient extends EventEmitter {
       });
     }
     try {
+      this.unclaimedTurnIds.delete(turnId);
       return await this.waitForTurn(turnId, {
         timeoutMs: Math.max(1, deadline - Date.now()),
         signal,
