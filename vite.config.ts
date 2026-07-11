@@ -11,6 +11,26 @@ const { d1, r2 } = hostingConfig;
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
+function loopbackOrigin(value: string) {
+  const origin = new URL(value);
+  if (
+    origin.protocol !== "http:" ||
+    !["127.0.0.1", "[::1]", "localhost"].includes(origin.hostname) ||
+    origin.origin !== value
+  ) {
+    throw new TypeError("PLANNER_API_ORIGIN must be a loopback HTTP origin.");
+  }
+  return origin.origin;
+}
+
+const plannerWebPort = Number(process.env.PLANNER_WEB_PORT ?? 3001);
+if (!Number.isInteger(plannerWebPort) || plannerWebPort < 1 || plannerWebPort > 65_535) {
+  throw new TypeError("PLANNER_WEB_PORT must be an integer from 1 to 65535.");
+}
+const plannerApiOrigin = loopbackOrigin(
+  process.env.PLANNER_API_ORIGIN ?? "http://127.0.0.1:8788",
+);
+
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
@@ -45,11 +65,11 @@ export default defineConfig(async () => {
 
   return {
     server: {
-      port: 3001,
+      port: plannerWebPort,
       strictPort: true,
       proxy: {
         "/api": {
-          target: "http://127.0.0.1:8788",
+          target: plannerApiOrigin,
         },
       },
       watch: isCodexSeatbeltSandbox
