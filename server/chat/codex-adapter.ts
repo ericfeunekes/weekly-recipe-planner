@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import { CodexAppServerClient, CodexBridgeError } from "../../bridge/app-server-client.mjs";
+import { CODEX_THREAD_CAPABILITY_CONFIG } from "../../bridge/codex-runtime-policy.mjs";
 import {
   HOUSEHOLD_CHAT_OUTPUT_SCHEMA,
   parseHouseholdAssistantOutput,
@@ -68,14 +69,11 @@ export class CodexAppServerPlannerAdapter implements CodexPlannerAdapter {
           ? "Codex is authenticated, but not with ChatGPT."
           : "Codex is not signed in with ChatGPT.",
       };
-    } catch (error) {
+    } catch {
       return {
         available: false,
         authenticated: null,
-        detail:
-          error instanceof Error
-            ? error.message
-            : "Codex app-server is unavailable.",
+        detail: "Codex app-server is unavailable.",
       };
     }
   }
@@ -97,8 +95,12 @@ export class CodexAppServerPlannerAdapter implements CodexPlannerAdapter {
       const result = await this.#rpc.startThread({
         cwd: this.#cwd,
         ephemeral: true,
+        environments: [],
+        dynamicTools: [],
+        selectedCapabilityRoots: [],
         sandbox: "read-only",
         approvalPolicy: "never",
+        config: CODEX_THREAD_CAPABILITY_CONFIG,
         developerInstructions: HOUSEHOLD_PLANNER_INSTRUCTIONS,
         model: this.#model,
         serviceName: "weekly_recipe_planner",
@@ -129,11 +131,9 @@ export class CodexAppServerPlannerAdapter implements CodexPlannerAdapter {
       }
     } finally {
       if (threadId) {
-        try {
-          await this.#rpc.unsubscribeThread(threadId);
-        } catch {
-          // Ephemeral thread cleanup must not replace the turn result.
-        }
+        void this.#rpc.unsubscribeThread(threadId).catch(() => {
+          // Ephemeral cleanup must not delay or replace the completed turn.
+        });
       }
     }
   }

@@ -23,6 +23,7 @@ import {
   type TranscriptEntry,
 } from "../../lib/planner-chat-contract.ts";
 import type { HouseholdPlannerState } from "../../lib/household-contract.ts";
+import { normalizeLegacyLeftoverSourceStatuses } from "../../lib/household-persistence-upgrade.ts";
 import type {
   ChatPersistencePort,
   ChatTurnTerminalUpdate,
@@ -134,6 +135,69 @@ function parseJson<T>(text: string, label: string): T {
     throw new PlannerStoreError(
       "STORE_CORRUPT",
       `Stored ${label} is not valid JSON.`,
+      { cause: error },
+    );
+  }
+}
+
+function normalizeStoredLegacyLeftoverSources(database: DatabaseSync): void {
+  try {
+    database.exec("BEGIN IMMEDIATE");
+  } catch (error) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "Legacy household state normalization could not start.",
+      { cause: error },
+    );
+  }
+
+  try {
+    const workspace = database
+      .prepare("SELECT state_json FROM workspace WHERE id = 'household'")
+      .get() as { state_json: string } | undefined;
+    if (workspace) {
+      const normalized = normalizeLegacyLeftoverSourceStatuses(
+        parseJson<HouseholdPlannerState>(workspace.state_json, "workspace state"),
+      );
+      if (normalized.changed) {
+        database
+          .prepare(
+            `UPDATE workspace
+             SET state_json = ?, sync_revision = sync_revision + 1, updated_at = ?
+             WHERE id = 'household'`,
+          )
+          .run(JSON.stringify(normalized.state), Date.now());
+      }
+    }
+
+    const events = database
+      .prepare("SELECT sequence, before_state_json FROM planner_events")
+      .all() as Array<{ sequence: number; before_state_json: string }>;
+    const updateEvent = database.prepare(
+      "UPDATE planner_events SET before_state_json = ? WHERE sequence = ?",
+    );
+    for (const event of events) {
+      const normalized = normalizeLegacyLeftoverSourceStatuses(
+        parseJson<HouseholdPlannerState>(
+          event.before_state_json,
+          "planner event undo state",
+        ),
+      );
+      if (normalized.changed) {
+        updateEvent.run(JSON.stringify(normalized.state), event.sequence);
+      }
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // Preserve the normalization failure.
+    }
+    if (error instanceof PlannerStoreError) throw error;
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "Legacy household state normalization failed.",
       { cause: error },
     );
   }
@@ -814,6 +878,7 @@ export function openPlannerStore(options: OpenPlannerStoreOptions = {}): SqliteP
     );
     quickCheck(database);
     applyMigrations(database, options.migrationPath ?? DEFAULT_MIGRATION_PATH);
+    normalizeStoredLegacyLeftoverSources(database);
     quickCheck(database);
     return new SqlitePlannerStore(filename, database);
   } catch (error) {

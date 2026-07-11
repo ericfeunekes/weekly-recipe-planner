@@ -33,7 +33,7 @@ function copyFixture() {
   return structuredClone(FIXTURE);
 }
 
-test("strict v2 transform preserves planner and transcript state while discarding events", () => {
+test("strict v2 transform preserves planner and transcript state while normalizing leftover sources", () => {
   const payload = copyFixture();
   const before = structuredClone(payload);
   const result = transformLegacyV2(payload, context());
@@ -43,6 +43,7 @@ test("strict v2 transform preserves planner and transcript state while discardin
   assert.equal(result.state.weeks[0].status, "active");
   assert.equal(result.state.weeks[0].data.meals[0].date, "2026-07-06");
   assert.equal(result.state.weeks[0].data.meals[0].slot, "dinner");
+  assert.equal(result.state.weeks[0].data.meals[0].status, "cooked");
   assert.equal(result.state.weeks[0].data.prep[0].prepDate, "2026-07-05");
   assert.equal(result.state.weeks[0].data.leftovers[0].assignedDate, "2026-07-08");
   assert.equal(result.state.weeks[0].data.meals[0].instructions[1].timerStartedAt, 1783353600000);
@@ -131,6 +132,8 @@ test("canonical seed uses injected time and IDs and returns valid active state",
   assert.equal(seed.weeks[0].status, "active");
   assert.equal(seed.weeks[0].data.meals.length, 2);
   assert.equal(seed.weeks[0].data.meals[0].id, "meal-1");
+  assert.equal(seed.weeks[0].data.meals[0].date, "2026-07-10");
+  assert.ok(seed.weeks[0].data.meals.some((meal) => meal.date === "2026-07-10"));
   assert.deepEqual(
     seed.weeks[0].data.prep.map(({ prepDate, position }) => ({ prepDate, position })),
     [

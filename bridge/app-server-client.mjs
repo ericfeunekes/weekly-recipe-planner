@@ -2,6 +2,15 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
 
+import {
+  createIsolatedCodexRuntimeEnvironment,
+  DEFAULT_CODEX_APP_SERVER_ARGS,
+  DEFAULT_CODEX_EXECUTABLE_PATH,
+  lockThreadStartParams,
+  lockTurnStartParams,
+  resolveCodexExecutable,
+} from "./codex-runtime-policy.mjs";
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
 export class CodexBridgeError extends Error {
@@ -14,20 +23,20 @@ export class CodexBridgeError extends Error {
 
 export class CodexAppServerClient extends EventEmitter {
   constructor({
-    command = "codex",
-    args = ["app-server", "--listen", "stdio://"],
+    command,
     cwd = process.cwd(),
     env = process.env,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     spawnImpl = spawn,
   } = {}) {
     super();
-    this.command = command;
-    this.args = args;
+    this.command = command ?? env.PLANNER_CODEX_BINARY ?? DEFAULT_CODEX_EXECUTABLE_PATH;
+    this.args = DEFAULT_CODEX_APP_SERVER_ARGS;
     this.cwd = cwd;
-    this.env = env;
+    this.env = { ...env };
     this.requestTimeoutMs = requestTimeoutMs;
     this.spawnImpl = spawnImpl;
+    this.runtimeEnvironment = null;
     this.child = null;
     this.initialized = false;
     this.startPromise = null;
@@ -36,7 +45,6 @@ export class CodexAppServerClient extends EventEmitter {
     this.turnRecords = new Map();
     this.unclaimedTurnIds = new Set();
     this.ignoredTurnIds = new Set();
-    this.stderrTail = [];
   }
 
   async start() {
@@ -53,14 +61,24 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async #launch() {
-    const child = this.spawnImpl(this.command, this.args, {
-      cwd: this.cwd,
-      env: this.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    this.#cleanupRuntimeEnvironment();
+    let child;
+    try {
+      const executable = this.spawnImpl === spawn
+        ? resolveCodexExecutable(this.command)
+        : this.command;
+      this.runtimeEnvironment = createIsolatedCodexRuntimeEnvironment(this.env);
+      child = this.spawnImpl(executable, this.args, {
+        cwd: this.cwd,
+        env: this.runtimeEnvironment.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      this.#cleanupRuntimeEnvironment();
+      throw error;
+    }
     this.child = child;
     this.initialized = false;
-    this.stderrTail = [];
 
     const stdout = createInterface({ input: child.stdout, crlfDelay: Infinity });
     const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
@@ -68,10 +86,8 @@ export class CodexAppServerClient extends EventEmitter {
     stdout.on("line", (line) => {
       if (this.child === child) this.#handleLine(line);
     });
-    stderr.on("line", (line) => {
-      this.stderrTail.push(line);
-      if (this.stderrTail.length > 12) this.stderrTail.shift();
-      this.emit("stderr", line);
+    stderr.on("line", () => {
+      this.emit("stderr", "Codex app-server reported an error.");
     });
     child.stdin.on("error", (error) => this.#handleExit(error, child));
     child.once("error", (error) => this.#handleExit(error, child));
@@ -89,6 +105,7 @@ export class CodexAppServerClient extends EventEmitter {
             title: "Weekly Recipe Planner",
             version: "0.1.0",
           },
+          capabilities: { experimentalApi: true },
         },
         this.requestTimeoutMs,
       );
@@ -143,7 +160,7 @@ export class CodexAppServerClient extends EventEmitter {
       pending.cleanup?.();
       if (message.error) {
         pending.reject(
-          new CodexBridgeError(message.error.message ?? "Codex request failed.", {
+          new CodexBridgeError("Codex request failed.", {
             code: "CODEX_RPC_ERROR",
           }),
         );
@@ -156,6 +173,7 @@ export class CodexAppServerClient extends EventEmitter {
         }
         pending.resolve(message.result);
       }
+      this.#pruneOrphanedTurnRecords();
       return;
     }
 
@@ -201,7 +219,12 @@ export class CodexAppServerClient extends EventEmitter {
 
   #settleTurnRecord(turnId, record) {
     if (record.waiters.length === 0) {
-      if (!this.unclaimedTurnIds.has(turnId)) this.turnRecords.delete(turnId);
+      if (
+        !this.unclaimedTurnIds.has(turnId) &&
+        !this.#hasPendingTurnStart()
+      ) {
+        this.turnRecords.delete(turnId);
+      }
       return;
     }
     const completion = record.completion;
@@ -218,7 +241,7 @@ export class CodexAppServerClient extends EventEmitter {
       } else {
         waiter.reject(
           new CodexBridgeError(
-            completion?.error?.message ?? `Codex turn ended with ${completion?.status ?? "unknown status"}.`,
+            "Codex turn did not complete.",
             { code: "CODEX_TURN_FAILED" },
           ),
         );
@@ -227,13 +250,27 @@ export class CodexAppServerClient extends EventEmitter {
     this.turnRecords.delete(turnId);
   }
 
+  #hasPendingTurnStart() {
+    return [...this.pending.values()].some((pending) => pending.method === "turn/start");
+  }
+
+  #pruneOrphanedTurnRecords() {
+    if (this.#hasPendingTurnStart()) return;
+    for (const [turnId, record] of this.turnRecords) {
+      if (
+        record.waiters.length === 0 &&
+        !this.unclaimedTurnIds.has(turnId)
+      ) {
+        this.turnRecords.delete(turnId);
+      }
+    }
+  }
+
   #handleExit(error, child = this.child) {
     if (!this.child || this.child !== child) return;
     this.child = null;
     this.initialized = false;
-    const stderr = this.stderrTail.at(-1);
-    const suffix = stderr ? ` ${stderr}` : "";
-    const wrapped = new CodexBridgeError(`Codex app-server stopped.${suffix}`, {
+    const wrapped = new CodexBridgeError("Codex app-server stopped.", {
       code: "CODEX_UNAVAILABLE",
       cause: error,
     });
@@ -263,6 +300,12 @@ export class CodexAppServerClient extends EventEmitter {
         // The process is already unavailable.
       }
     }
+    this.#cleanupRuntimeEnvironment();
+  }
+
+  #cleanupRuntimeEnvironment() {
+    this.runtimeEnvironment?.cleanup();
+    this.runtimeEnvironment = null;
   }
 
   #writeMessage(message) {
@@ -309,6 +352,7 @@ export class CodexAppServerClient extends EventEmitter {
         this.pending.delete(id);
         clearTimeout(pending.timer);
         pending.cleanup?.();
+        this.#pruneOrphanedTurnRecords();
         pending.reject(error);
       };
       const onAbort = () => {
@@ -364,7 +408,7 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async startThread(params) {
-    return this.request("thread/start", params);
+    return this.request("thread/start", lockThreadStartParams(params));
   }
 
   async unsubscribeThread(threadId) {
@@ -384,9 +428,10 @@ export class CodexAppServerClient extends EventEmitter {
       });
     }
     const deadline = Date.now() + timeoutMs;
+    const lockedParams = lockTurnStartParams(params);
     let result;
     try {
-      result = await this.request("turn/start", params, { timeoutMs, signal });
+      result = await this.request("turn/start", lockedParams, { timeoutMs, signal });
     } catch (error) {
       if (error?.code === "CODEX_TIMEOUT" || error?.code === "CODEX_ABORTED") {
         this.close();
@@ -411,7 +456,7 @@ export class CodexAppServerClient extends EventEmitter {
         try {
           await this.#requestWithoutStart(
             "turn/interrupt",
-            { threadId: params.threadId, turnId },
+            { threadId: lockedParams.threadId, turnId },
             Math.min(5_000, this.requestTimeoutMs),
           );
         } catch {
@@ -473,7 +518,10 @@ export class CodexAppServerClient extends EventEmitter {
 
   close() {
     const child = this.child;
-    if (!child) return;
+    if (!child) {
+      this.#cleanupRuntimeEnvironment();
+      return;
+    }
     this.#handleExit(new Error("Codex app-server client closed."), child);
   }
 }

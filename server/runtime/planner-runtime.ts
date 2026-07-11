@@ -200,6 +200,7 @@ export async function startPlannerRuntime(
       {
         allowedOrigins: options.config.allowedOrigins,
         allowOriginlessMutations: false,
+        now: () => clock.now(),
       },
     );
     const handler: HttpHandler =

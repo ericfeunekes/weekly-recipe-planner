@@ -83,6 +83,49 @@ test("process supervisor stops siblings when one child fails", async () => {
   assert.equal(children[1].killed, true);
 });
 
+test("process supervisor treats an unexpected clean child exit as failure", async () => {
+  const children = [];
+  const spawnImpl = () => {
+    const child = new EventEmitter();
+    child.killed = false;
+    child.kill = (signal) => {
+      child.killed = true;
+      queueMicrotask(() => child.emit("close", null, signal));
+      return true;
+    };
+    children.push(child);
+    return child;
+  };
+  const supervised = superviseProcesses(
+    [{ command: "one" }, { command: "two" }],
+    { spawnImpl, signals: [] },
+  );
+
+  children[0].emit("close", 0, null);
+
+  assert.equal(await supervised, 1);
+  assert.equal(children[1].killed, true);
+});
+
+test("process supervisor preserves success for an initiated shutdown", async () => {
+  const signals = [];
+  const child = new EventEmitter();
+  child.kill = (signal) => {
+    signals.push(signal);
+    queueMicrotask(() => child.emit("close", 0, null));
+    return true;
+  };
+  const supervised = superviseProcesses([{ command: "one" }], {
+    spawnImpl: () => child,
+    signals: ["planner-test-stop"],
+  });
+
+  process.emit("planner-test-stop");
+
+  assert.equal(await supervised, 0);
+  assert.deepEqual(signals, ["planner-test-stop"]);
+});
+
 test("process supervisor force-stops a child after the shutdown grace period", async () => {
   const signals = [];
   const child = new EventEmitter();

@@ -30,6 +30,11 @@ export function resolveCanonicalContext(
     : null;
   if (context.stepId && !step) return null;
 
+  const leftover = context.leftoverId
+    ? week.data.leftovers.find((candidate) => candidate.id === context.leftoverId)
+    : null;
+  if (context.leftoverId && !leftover) return null;
+
   return {
     view: context.view,
     householdTimeZone: workspace.state.householdTimeZone,
@@ -37,6 +42,7 @@ export function resolveCanonicalContext(
     selectedWeek: week,
     selectedMealId: meal?.id ?? null,
     selectedStepId: step?.id ?? null,
+    selectedLeftoverId: leftover?.id ?? null,
   };
 }
 

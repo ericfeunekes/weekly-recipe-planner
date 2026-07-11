@@ -156,15 +156,83 @@ export function isAbortError(error: unknown): boolean {
   return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
 }
 
-async function postJson(path: string, body: unknown): Promise<{ response: Response; value: unknown }> {
-  const response = await fetchApi(path, {
+const MAX_AMBIGUOUS_POST_ENVELOPES = 32;
+const ambiguousPostEnvelopes = new Map<string, string>();
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+  );
+}
+
+function postEnvelopeKey(path: string, body: unknown): string {
+  if (isRecord(body) && typeof body.requestId === "string" && body.requestId.length > 0) {
+    return `${path}\n${body.requestId}`;
+  }
+  return `${path}\n${JSON.stringify(canonicalJsonValue(body))}`;
+}
+
+function rememberAmbiguousEnvelope(key: string, serializedBody: string): void {
+  if (ambiguousPostEnvelopes.has(key)) return;
+  if (ambiguousPostEnvelopes.size >= MAX_AMBIGUOUS_POST_ENVELOPES) {
+    const oldest = ambiguousPostEnvelopes.keys().next().value;
+    if (oldest !== undefined) ambiguousPostEnvelopes.delete(oldest);
+  }
+  ambiguousPostEnvelopes.set(key, serializedBody);
+}
+
+async function postJson<Result>(
+  path: string,
+  body: unknown,
+  accept: (response: Response, value: unknown) => Result,
+): Promise<Result> {
+  const key = postEnvelopeKey(path, body);
+  const serializedBody = ambiguousPostEnvelopes.get(key) ?? JSON.stringify(body);
+  const request: RequestInit = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const value = await parseJson(response);
-  if (isApiFailure(value)) throwFailure(response, value);
-  return { response, value };
+    body: serializedBody,
+  };
+  let response: Response;
+  try {
+    try {
+      response = await fetchApi(path, request);
+    } catch (error) {
+      if (!(error instanceof PlannerApiError) || error.code !== "NETWORK_ERROR") throw error;
+      // A response can disappear after commit. Retry the identical envelope so
+      // the authority can resolve the existing receipt without duplicating work.
+      response = await fetchApi(path, request);
+    }
+  } catch (error) {
+    if (error instanceof PlannerApiError && error.code === "NETWORK_ERROR") {
+      rememberAmbiguousEnvelope(key, serializedBody);
+    }
+    throw error;
+  }
+  let value: unknown;
+  try {
+    value = await parseJson(response);
+  } catch (error) {
+    rememberAmbiguousEnvelope(key, serializedBody);
+    throw error;
+  }
+  if (isApiFailure(value)) {
+    ambiguousPostEnvelopes.delete(key);
+    throwFailure(response, value);
+  }
+  try {
+    const result = accept(response, value);
+    ambiguousPostEnvelopes.delete(key);
+    return result;
+  } catch (error) {
+    rememberAmbiguousEnvelope(key, serializedBody);
+    throw error;
+  }
 }
 
 export function createRequestId(): string {
@@ -208,16 +276,17 @@ export async function readHealth(): Promise<HealthResponse> {
 export async function bootstrapWorkspace(
   request: BootstrapWorkspaceRequest,
 ): Promise<BootstrapWorkspaceResponse> {
-  const { response, value } = await postJson(PLANNER_API_ROUTES.bootstrap.path, request);
-  if (!response.ok) throwFailure(response, value);
-  if (
-    !isRecord(value) ||
-    typeof value.imported !== "boolean" ||
-    !isInitializedWorkspace(value.workspace)
-  ) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid bootstrap response." });
-  }
-  return value as BootstrapWorkspaceResponse;
+  return postJson(PLANNER_API_ROUTES.bootstrap.path, request, (response, value) => {
+    if (!response.ok) throwFailure(response, value);
+    if (
+      !isRecord(value) ||
+      typeof value.imported !== "boolean" ||
+      !isInitializedWorkspace(value.workspace)
+    ) {
+      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid bootstrap response." });
+    }
+    return value as BootstrapWorkspaceResponse;
+  });
 }
 
 export async function applyPlannerCommand(options: {
@@ -225,35 +294,39 @@ export async function applyPlannerCommand(options: {
   basePlannerVersion: number;
   command: HouseholdCommand;
 }): Promise<ApplyPlannerCommandResponse> {
-  const { value } = await postJson(PLANNER_API_ROUTES.commands.path, options);
-  if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid command response." });
-  }
-  return value as ApplyPlannerCommandResponse;
+  return postJson(PLANNER_API_ROUTES.commands.path, options, (_response, value) => {
+    if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
+      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid command response." });
+    }
+    return value as ApplyPlannerCommandResponse;
+  });
 }
 
 export async function undoLatest(request: UndoLatestRequest): Promise<ApplyPlannerCommandResponse> {
-  const { value } = await postJson(PLANNER_API_ROUTES.undo.path, request);
-  if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid undo response." });
-  }
-  return value as ApplyPlannerCommandResponse;
+  return postJson(PLANNER_API_ROUTES.undo.path, request, (_response, value) => {
+    if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
+      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid undo response." });
+    }
+    return value as ApplyPlannerCommandResponse;
+  });
 }
 
 export async function submitChatTurn(request: SubmitChatTurnRequest): Promise<ChatServiceResponse> {
-  const { value } = await postJson(PLANNER_API_ROUTES.chatSubmit.path, request);
-  if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
-  }
-  return value as ChatServiceResponse;
+  return postJson(PLANNER_API_ROUTES.chatSubmit.path, request, (_response, value) => {
+    if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
+      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
+    }
+    return value as ChatServiceResponse;
+  });
 }
 
 export async function retryChatTurn(request: RetryChatTurnRequest): Promise<ChatServiceResponse> {
-  const { value } = await postJson(PLANNER_API_ROUTES.chatRetry.path, request);
-  if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
-  }
-  return value as ChatServiceResponse;
+  return postJson(PLANNER_API_ROUTES.chatRetry.path, request, (_response, value) => {
+    if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
+      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
+    }
+    return value as ChatServiceResponse;
+  });
 }
 
 function pagePath(path: string, request: PageRequest): string {

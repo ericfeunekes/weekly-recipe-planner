@@ -432,3 +432,326 @@ test("step deletion is reference-safe and archived weeks reject week-local mutat
   assert.equal(archivedEdit.ok, false);
   assert.match(archivedEdit.message, /read-only/i);
 });
+
+test("occupied leftover assignment replaces the destination recipe through consumption", () => {
+  const context = createContext();
+  let state = createCanonicalSeed(context);
+  let week = activeWeek(state);
+  const source = week.data.meals.find((meal) => meal.title === "Harissa chicken traybake");
+  const destination = week.data.meals.find((meal) => meal.title === "Miso salmon rice bowls");
+  assert.ok(source);
+  assert.ok(destination);
+  const displacedStepIds = new Set(destination.instructions.map((step) => step.id));
+
+  let result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "updateMealStatus",
+        weekId: week.id,
+        mealId: source.id,
+        status: "cooked",
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const leftoverId = result.createdIds.leftoverId;
+  assert.ok(leftoverId);
+
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "assignLeftover",
+        weekId: week.id,
+        leftoverId,
+        targetDate: destination.date,
+        slot: destination.slot,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  week = activeWeek(state);
+  let replaced = week.data.meals.find((meal) => meal.id === destination.id);
+  assert.equal(replaced.title, source.title);
+  assert.equal(replaced.status, "leftover");
+  assert.equal(replaced.protein, "none");
+  assert.deepEqual(replaced.ingredients, []);
+  assert.deepEqual(replaced.instructions, []);
+  assert.equal(
+    week.data.prep.some((reference) => displacedStepIds.has(reference.stepId)),
+    false,
+  );
+  assert.deepEqual(householdDomain.validateState(state), { ok: true });
+
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "consumeLeftover", weekId: week.id, leftoverId },
+      context,
+    ),
+  );
+  state = result.state;
+  week = activeWeek(state);
+  replaced = week.data.meals.find((meal) => meal.id === destination.id);
+  assert.equal(replaced.title, source.title);
+  assert.equal(replaced.status, "cooked");
+  assert.match(replaced.subtitle, /portions from Harissa chicken traybake/);
+  assert.equal(week.data.leftovers.find((item) => item.id === leftoverId).state, "consumed");
+  const leftoverCount = week.data.leftovers.length;
+  state = accepted(
+    householdDomain.execute(
+      state,
+      { type: "updateMealStatus", weekId: week.id, mealId: replaced.id, status: "planned" },
+      context,
+    ),
+  ).state;
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "updateMealStatus", weekId: week.id, mealId: replaced.id, status: "cooked" },
+      context,
+    ),
+  );
+  state = result.state;
+  assert.equal(result.createdIds.leftoverId, undefined);
+  assert.equal(activeWeek(state).data.leftovers.length, leftoverCount);
+  assert.deepEqual(householdDomain.validateState(state), { ok: true });
+});
+
+test("empty-slot leftover assignment materializes a dinner that survives consumption", () => {
+  const context = createContext();
+  let state = createCanonicalSeed(context);
+  let week = activeWeek(state);
+  const source = week.data.meals.find((meal) => meal.title === "Harissa chicken traybake");
+  assert.ok(source);
+  const emptyDate = addIsoDateDays(week.id, 6);
+  assert.equal(week.data.meals.some((meal) => meal.date === emptyDate), false);
+
+  let result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "updateMealStatus",
+        weekId: week.id,
+        mealId: source.id,
+        status: "cooked",
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const leftoverId = result.createdIds.leftoverId;
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "assignLeftover",
+        weekId: week.id,
+        leftoverId,
+        targetDate: emptyDate,
+        slot: "dinner",
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const createdMealId = result.createdIds.mealId;
+  assert.ok(createdMealId);
+  week = activeWeek(state);
+  let leftoverDinner = week.data.meals.find((meal) => meal.id === createdMealId);
+  assert.equal(leftoverDinner.date, emptyDate);
+  assert.equal(leftoverDinner.status, "leftover");
+  assert.equal(leftoverDinner.protein, "none");
+
+  state = accepted(
+    householdDomain.execute(
+      state,
+      { type: "consumeLeftover", weekId: week.id, leftoverId },
+      context,
+    ),
+  ).state;
+  week = activeWeek(state);
+  leftoverDinner = week.data.meals.find((meal) => meal.id === createdMealId);
+  assert.equal(leftoverDinner.date, emptyDate);
+  assert.equal(leftoverDinner.status, "cooked");
+  assert.equal(week.data.leftovers.find((leftover) => leftover.id === leftoverId).state, "consumed");
+  assert.deepEqual(householdDomain.validateState(state), { ok: true });
+});
+
+test("leftover portion parsing ignores calendar dates and clamps zero labels", () => {
+  for (const [leftoverNote, expectedPortions] of [
+    ["Leftovers from 2026-07-07", 2],
+    ["0 portions", 1],
+    ["00 servings", 1],
+  ]) {
+    const context = createContext();
+    const state = createCanonicalSeed(context);
+    const week = activeWeek(state);
+    const source = week.data.meals.find((meal) => meal.title === "Harissa chicken traybake");
+    source.leftoverNote = leftoverNote;
+    const result = accepted(
+      householdDomain.execute(
+        state,
+        {
+          type: "updateMealStatus",
+          weekId: week.id,
+          mealId: source.id,
+          status: "cooked",
+        },
+        context,
+      ),
+    );
+    const leftover = activeWeek(result.state).data.leftovers.find(
+      (candidate) => candidate.id === result.createdIds.leftoverId,
+    );
+    assert.equal(leftover.portions, expectedPortions, leftoverNote);
+  }
+});
+
+test("occupied leftover assignment preserves meals referenced by other leftovers", () => {
+  const context = createContext();
+  let state = createCanonicalSeed(context);
+  let week = activeWeek(state);
+  const source = week.data.meals.find((meal) => meal.title === "Miso salmon rice bowls");
+  const destination = week.data.meals.find((meal) => meal.title === "Harissa chicken traybake");
+  assert.ok(source);
+  assert.ok(destination);
+  const sourceDate = addIsoDateDays(week.id, 2);
+  const destinationDate = destination.date;
+  const dependentLeftoverDate = addIsoDateDays(week.id, 6);
+
+  state = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "moveMeal",
+        weekId: week.id,
+        mealId: source.id,
+        targetDate: sourceDate,
+        slot: source.slot,
+      },
+      context,
+    ),
+  ).state;
+
+  let result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "updateMealStatus",
+        weekId: week.id,
+        mealId: source.id,
+        status: "cooked",
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const sourceLeftoverId = result.createdIds.leftoverId;
+  assert.ok(sourceLeftoverId);
+
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "updateMealStatus",
+        weekId: week.id,
+        mealId: destination.id,
+        status: "cooked",
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const destinationLeftoverId = result.createdIds.leftoverId;
+  assert.ok(destinationLeftoverId);
+
+  const lockedSourceState = structuredClone(state);
+  const statusDowngrade = householdDomain.execute(
+    state,
+    {
+      type: "updateMealStatus",
+      weekId: week.id,
+      mealId: destination.id,
+      status: "planned",
+    },
+    context,
+  );
+  assert.equal(statusDowngrade.ok, false);
+  assert.match(statusDowngrade.message, /tracked leftovers/i);
+  assert.deepEqual(statusDowngrade.state, lockedSourceState);
+
+  const sourceMove = householdDomain.execute(
+    state,
+    {
+      type: "moveMeal",
+      weekId: week.id,
+      mealId: destination.id,
+      targetDate: addIsoDateDays(week.id, 5),
+      slot: "dinner",
+    },
+    context,
+  );
+  assert.equal(sourceMove.ok, false);
+  assert.match(sourceMove.message, /tracked leftovers/i);
+  assert.deepEqual(sourceMove.state, lockedSourceState);
+  assert.deepEqual(householdDomain.validateState(state), { ok: true });
+
+  for (const dependentState of ["available", "assigned", "consumed"]) {
+    let scenario = structuredClone(state);
+    if (dependentState !== "available") {
+      scenario = accepted(
+        householdDomain.execute(
+          scenario,
+          {
+            type: "assignLeftover",
+            weekId: week.id,
+            leftoverId: destinationLeftoverId,
+            targetDate: dependentLeftoverDate,
+            slot: "dinner",
+          },
+          context,
+        ),
+      ).state;
+    }
+    if (dependentState === "consumed") {
+      scenario = accepted(
+        householdDomain.execute(
+          scenario,
+          {
+            type: "consumeLeftover",
+            weekId: week.id,
+            leftoverId: destinationLeftoverId,
+          },
+          context,
+        ),
+      ).state;
+    }
+    const beforeAssignment = structuredClone(scenario);
+
+    const blocked = householdDomain.execute(
+      scenario,
+      {
+        type: "assignLeftover",
+        weekId: week.id,
+        leftoverId: sourceLeftoverId,
+        targetDate: destinationDate,
+        slot: destination.slot,
+      },
+      context,
+    );
+    assert.equal(blocked.ok, false, dependentState);
+    assert.match(blocked.message, /tracked leftovers/i, dependentState);
+    assert.deepEqual(blocked.state, beforeAssignment, dependentState);
+    week = activeWeek(blocked.state);
+    const dependentLeftover = week.data.leftovers.find(
+      (leftover) => leftover.id === destinationLeftoverId,
+    );
+    assert.equal(dependentLeftover.sourceMealId, destination.id, dependentState);
+    assert.equal(dependentLeftover.state, dependentState, dependentState);
+    assert.deepEqual(householdDomain.validateState(blocked.state), { ok: true });
+  }
+});

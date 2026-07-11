@@ -23,9 +23,10 @@ export type TranscriptRole = "user" | "assistant" | "system";
 export type PlannerView = "week" | "tonight" | "prep" | "groceries" | "closeout";
 
 type PlannerContextReference =
-  | { weekId: WeekId; mealId?: never; stepId?: never }
-  | { weekId: WeekId; mealId: string; stepId?: never }
-  | { weekId: WeekId; mealId: string; stepId: string };
+  | { weekId: WeekId; mealId?: never; stepId?: never; leftoverId?: never }
+  | { weekId: WeekId; mealId: string; stepId?: never; leftoverId?: never }
+  | { weekId: WeekId; mealId: string; stepId: string; leftoverId?: never }
+  | { weekId: WeekId; mealId?: never; stepId?: never; leftoverId: string };
 
 export type PlannerChatContext = { view: PlannerView } & PlannerContextReference;
 
@@ -101,7 +102,7 @@ export function isPlannerChatContext(value: unknown): value is PlannerChatContex
   const candidate = value as Record<string, unknown>;
   const keys = Object.keys(candidate);
   if (
-    !keys.every((key) => ["view", "weekId", "mealId", "stepId"].includes(key)) ||
+    !keys.every((key) => ["view", "weekId", "mealId", "stepId", "leftoverId"].includes(key)) ||
     !keys.includes("view") ||
     !keys.includes("weekId") ||
     !PLANNER_VIEWS.includes(candidate.view as PlannerView) ||
@@ -113,5 +114,9 @@ export function isPlannerChatContext(value: unknown): value is PlannerChatContex
     typeof id === "string" && id.trim().length > 0 && id.length <= 200;
   if (candidate.mealId !== undefined && !isId(candidate.mealId)) return false;
   if (candidate.stepId !== undefined && !isId(candidate.stepId)) return false;
+  if (candidate.leftoverId !== undefined && !isId(candidate.leftoverId)) return false;
+  if (candidate.leftoverId !== undefined) {
+    return candidate.mealId === undefined && candidate.stepId === undefined;
+  }
   return candidate.stepId === undefined || candidate.mealId !== undefined;
 }

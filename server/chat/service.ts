@@ -703,8 +703,8 @@ export class DurableChatApplicationService<Transaction>
 
   #currentAccepted(transaction: Transaction, turnId: string): ChatServiceResponse {
     const workspace = this.#plannerRead.readInitializedWorkspace(transaction);
-    const turn = workspace.chatTurns.find((candidate) => candidate.turnId === turnId);
-    if (!turn) throw new Error("Chat turn is missing from authoritative workspace readback.");
+    const turn = this.#persistence.readTurn(transaction, turnId);
+    if (!turn) throw new Error("Chat turn is missing from authoritative persistence.");
     return { decision: accepted(turn), workspace };
   }
 

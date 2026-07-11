@@ -31,6 +31,7 @@ export type ApplicationRouterDependencies = {
 export type ApplicationRouterOptions = {
   allowedOrigins?: ReadonlySet<string>;
   allowOriginlessMutations?: boolean;
+  now?: () => number;
 };
 
 class ApiRouteError extends Error {
@@ -278,6 +279,10 @@ export function createApplicationRouter(
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
+    const responseTime = options.now?.() ?? Date.now();
+    if (Number.isFinite(responseTime)) {
+      response.setHeader("Date", new Date(responseTime).toUTCString());
+    }
     try {
       if (!isLoopbackHost(request.headers.host)) {
         throw new ApiRouteError(400, "INVALID_REQUEST", "Planner requests require a loopback host.");

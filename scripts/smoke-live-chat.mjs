@@ -55,7 +55,7 @@ try {
     body: JSON.stringify({
       requestId: randomUUID(),
       basePlannerVersion: seeded.workspace.plannerVersion,
-      message: "Confirm briefly that you can see this meal and step. Do not change the planner.",
+      message: "Mark this exact instruction step complete in the shared planner.",
       context: {
         view: "tonight",
         weekId: week.id,
@@ -70,13 +70,35 @@ try {
     throw new Error(`Live ChatGPT smoke failed with HTTP ${response.status} (${decision}).`);
   }
   const turn = result.decision.turn;
-  if (turn.status !== "completed" || turn.mutationOutcome !== "no_command") {
+  if (turn.status !== "completed" || turn.mutationOutcome !== "applied") {
     const detail = [turn.errorCode, turn.errorDetail].filter(Boolean).join(": ");
     throw new Error(
       `Live ChatGPT smoke ended ${turn.status}/${turn.mutationOutcome ?? "none"}${detail ? ` (${detail})` : ""}.`,
     );
   }
-  console.log("Live ChatGPT smoke passed: authenticated turn completed without a planner mutation.");
+
+  const secondClient = await fetch(`${baseUrl}/api/workspace`);
+  if (!secondClient.ok) {
+    throw new Error(`Second-client workspace read failed with HTTP ${secondClient.status}.`);
+  }
+  const workspace = await secondClient.json();
+  const persistedStep = workspace.state.weeks[0]?.data.meals[0]?.instructions[0];
+  const persistedTurn = workspace.chatTurns.find((candidate) => candidate.turnId === turn.turnId);
+  const transcript = workspace.transcriptEntries.filter((entry) => entry.turnId === turn.turnId);
+  const event = workspace.events.find((candidate) => candidate.chatTurnId === turn.turnId);
+  if (!persistedStep?.complete) {
+    throw new Error("The Codex command was not visible in second-client planner readback.");
+  }
+  if (persistedTurn?.status !== "completed" || persistedTurn.mutationOutcome !== "applied") {
+    throw new Error("The completed Codex turn was not durable in second-client readback.");
+  }
+  if (!transcript.some((entry) => entry.role === "user") || !transcript.some((entry) => entry.role === "assistant")) {
+    throw new Error("The shared user and assistant transcript entries were not durable.");
+  }
+  if (event?.actor !== "Codex" || event.command?.type !== "setInstructionStepComplete") {
+    throw new Error("The live planner event did not retain Codex actor provenance.");
+  }
+  console.log("Live ChatGPT smoke passed: authenticated Codex mutation, transcript, event, and second-client readback are durable.");
 } finally {
   if (runtime) await runtime.close();
   else rpc.close();

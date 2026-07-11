@@ -745,6 +745,11 @@ svg {
   color: #ffffff;
 }
 
+.chat-message.unapplied {
+  background: var(--amber-soft);
+  border-left: 3px solid var(--amber);
+}
+
 .chat-message p {
   font-size: 11px;
   line-height: 1.45;
@@ -798,6 +803,13 @@ svg {
   padding: 10px;
 }
 
+.chat-input-field {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
 .chat-form textarea {
   background: var(--paper);
   border: 1px solid var(--line-strong);
@@ -808,6 +820,7 @@ svg {
   min-height: 50px;
   padding: 9px;
   resize: vertical;
+  width: 100%;
 }
 
 .chat-form button {
@@ -950,6 +963,7 @@ svg {
   font-size: 9px;
   font-weight: 700;
   gap: 8px;
+  min-height: 44px;
 }
 
 .step-checkbox input {
@@ -981,7 +995,7 @@ svg {
   border-radius: 6px;
   color: var(--ink-soft);
   font-size: 10px;
-  min-height: 32px;
+  min-height: 44px;
   padding: 4px 7px;
 }
 
@@ -1001,7 +1015,8 @@ svg {
   font-weight: 700;
   gap: 3px;
   justify-content: flex-start;
-  padding: 0;
+  min-height: 44px;
+  padding: 6px 4px;
   text-align: left;
 }
 
@@ -1095,6 +1110,7 @@ svg {
   font-weight: 700;
   gap: 6px;
   list-style: none;
+  min-height: 44px;
 }
 
 .step-comment summary::-webkit-details-marker {
@@ -1260,8 +1276,17 @@ svg {
 
 .grocery-row input {
   accent-color: var(--green);
-  height: 20px;
-  width: 20px;
+  height: 24px;
+  width: 24px;
+}
+
+.grocery-check {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  height: 44px;
+  justify-content: center;
+  width: 44px;
 }
 
 .grocery-row > span:nth-child(2) {
@@ -1323,10 +1348,9 @@ svg {
 .grocery-row {
   align-items: center;
   border-bottom: 1px solid var(--line);
-  cursor: pointer;
   display: grid;
   gap: 10px;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
   min-height: 62px;
   padding: 9px 0;
 }
@@ -1532,6 +1556,11 @@ svg {
   width: 100%;
 }
 
+.drawer input,
+.drawer select {
+  min-height: 44px;
+}
+
 .promotion-candidate {
   background: var(--amber-soft);
   border-radius: 7px;
@@ -1657,6 +1686,25 @@ svg {
 .full-field > span {
   font-size: 10px;
   font-weight: 700;
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.field-limit {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  justify-self: end;
+  line-height: 1.3;
+}
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--danger);
 }
 
 .full-field {
@@ -2109,6 +2157,20 @@ svg {
   flex: 0 0 auto;
 }
 
+.authority-banner-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.chat-inline-notice {
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
+  margin: 0;
+}
+
 .empty-workspace {
   align-items: flex-start;
   display: grid;
@@ -2132,8 +2194,8 @@ svg {
 
 .lifecycle-button {
   justify-self: end;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: 44px;
+  padding: 8px;
 }
 
 .prep-add-row,
@@ -2173,6 +2235,18 @@ svg {
 
 .grocery-add-row input {
   flex: 1 1 140px;
+}
+
+.grocery-add-row .compact-field {
+  display: grid;
+  flex: 1 1 140px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.grocery-add-row .compact-field input {
+  flex: none;
+  width: 100%;
 }
 
 .prep-day-group {
@@ -2534,7 +2608,7 @@ svg {
     border-left: 0;
     border-radius: 0 8px 8px 0;
     display: block;
-    height: calc(100vh - 280px);
+    height: calc(100dvh - 350px);
     min-height: 0;
     position: sticky;
     top: 136px;
@@ -2610,7 +2684,7 @@ svg {
   }
 
   .grocery-row {
-    grid-template-columns: 22px minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr);
   }
 
   .farm-tag {

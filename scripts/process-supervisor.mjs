@@ -61,8 +61,11 @@ export async function superviseProcesses(
 
   for (const child of children) {
     child.once("error", () => stop("SIGTERM", 1));
-    child.once("close", (code, signal) => {
-      if (!stopping) stop("SIGTERM", code ?? (signal ? 1 : 0));
+    child.once("close", (code) => {
+      if (!stopping) {
+        const exitCode = typeof code === "number" && code !== 0 ? code : 1;
+        stop("SIGTERM", exitCode);
+      }
     });
   }
 

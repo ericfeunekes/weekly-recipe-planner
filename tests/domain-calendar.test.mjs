@@ -48,7 +48,7 @@ test("meal moves support empty targets and occupied-slot swaps", () => {
   const chickenId = week.data.meals[0].id;
   const salmonId = week.data.meals[1].id;
   const emptyTuesday = addIsoDateDays(weekId, 1);
-  const occupiedThursday = addIsoDateDays(weekId, 3);
+  const occupiedDinnerDate = week.data.meals[1].date;
 
   let result = accepted(
     householdDomain.execute(
@@ -68,7 +68,7 @@ test("meal moves support empty targets and occupied-slot swaps", () => {
         type: "moveMeal",
         weekId,
         mealId: chickenId,
-        targetDate: occupiedThursday,
+        targetDate: occupiedDinnerDate,
         slot: "dinner",
       },
       commandContext,
@@ -76,7 +76,7 @@ test("meal moves support empty targets and occupied-slot swaps", () => {
   );
   state = result.state;
   const meals = state.weeks[0].data.meals;
-  assert.equal(meals.find((meal) => meal.id === chickenId).date, occupiedThursday);
+  assert.equal(meals.find((meal) => meal.id === chickenId).date, occupiedDinnerDate);
   assert.equal(meals.find((meal) => meal.id === salmonId).date, emptyTuesday);
 });
 
@@ -197,7 +197,7 @@ test("aggregate validation enforces canonical prep order and exact reference sha
   }
 });
 
-test("leftover assignments and meal moves cannot precede their source meal", () => {
+test("leftover assignments require later dates and lock their source meal", () => {
   const commandContext = context();
   let state = createCanonicalSeed(commandContext);
   const weekId = state.activeWeekId;
@@ -210,6 +210,23 @@ test("leftover assignments and meal moves cannot precede their source meal", () 
     ),
   );
   state = result.state;
+  const beforeEarlyAssignment = structuredClone(state);
+  const earlyAssignment = householdDomain.execute(
+    state,
+    {
+      type: "assignLeftover",
+      weekId,
+      leftoverId: result.createdIds.leftoverId,
+      targetDate: weekId,
+      slot: "dinner",
+    },
+    commandContext,
+  );
+  assert.equal(earlyAssignment.ok, false);
+  assert.deepEqual(earlyAssignment.state, beforeEarlyAssignment);
+  assert.match(earlyAssignment.message, /after their source/i);
+  assert.ok(Object.values(earlyAssignment.fieldErrors ?? {}).some((message) => /later date/i.test(message)));
+
   result = accepted(
     householdDomain.execute(
       state,
@@ -238,7 +255,7 @@ test("leftover assignments and meal moves cannot precede their source meal", () 
   );
   assert.equal(rejected.ok, false);
   assert.deepEqual(rejected.state, beforeMove);
-  assert.ok(Object.values(rejected.fieldErrors ?? {}).some((message) => /after their source/i.test(message)));
+  assert.ok(Object.values(rejected.fieldErrors ?? {}).some((message) => /recorded date/i.test(message)));
 
   const invalidStoredState = structuredClone(state);
   invalidStoredState.weeks[0].data.leftovers[0].assignedDate = weekId;

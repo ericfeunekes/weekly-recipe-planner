@@ -41,11 +41,25 @@ import {
   useEffect,
   useRef,
   useState,
+  type Dispatch,
   type FormEvent,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 
-import type { HouseholdCommand } from "@/lib/household-command-contract";
+import {
+  MAX_COMMAND_TEXT_LENGTH,
+  MAX_GROCERY_ITEM_LENGTH,
+  MAX_INGREDIENT_LINE_LENGTH,
+  MAX_INGREDIENT_LINES,
+  MAX_MEAL_SUBTITLE_LENGTH,
+  MAX_MEAL_TITLE_LENGTH,
+  MAX_MEAL_VENUE_LENGTH,
+  MAX_STEP_INPUT_AMOUNT_LENGTH,
+  MAX_STEP_INPUT_INGREDIENT_LENGTH,
+  MAX_STEP_INPUTS,
+  type HouseholdCommand,
+} from "@/lib/household-command-contract";
 import {
   FEEDBACK_VALUES,
   LEFTOVER_QUALITIES,
@@ -60,15 +74,20 @@ import {
 import { addIsoDateDays, weekContainsDate } from "@/lib/household-domain";
 import {
   LEGACY_V2_STORAGE_KEY,
+  type ApplyPlannerCommandRequest,
+  type BootstrapWorkspaceRequest,
   type HealthResponse,
   type InitializedWorkspace,
   type PlannerEvent,
+  type UndoLatestRequest,
   type WorkspaceResponse,
 } from "@/lib/planner-api-contract";
 import type {
   ChatTurn,
   PlannerChatContext,
   PlannerView,
+  RetryChatTurnRequest,
+  SubmitChatTurnRequest,
 } from "@/lib/planner-chat-contract";
 import {
   LEGACY_V1_STORAGE_KEY,
@@ -86,12 +105,67 @@ import {
   undoLatest,
   type LegacyImportCandidate,
 } from "./planner-api";
+import {
+  hasValidationIssues,
+  validateGroceryDraft,
+  validateMealDraft,
+  validateStepDraft,
+} from "./planner-validation";
+import { deriveTimerDisplay } from "./timer-display";
+import {
+  composeCompositeDraft,
+  editCompositeDraft,
+  settleCompositeDraft,
+  type CompositeDraft,
+} from "./versioned-draft";
+import { plannerChatContextForView } from "./planner-chat-context";
 
 type ConnectionState = "loading" | "online" | "offline";
 type Notice = { tone: "info" | "warning" | "error"; message: string } | null;
+type MutateOptions = {
+  basePlannerVersion?: number;
+  conflictStrategy?: "recompose";
+  onAccepted?: (plannerVersion: number) => void;
+  onConflict?: (plannerVersion: number) => void;
+};
+type PendingAuthorityRetry = {
+  label: string;
+  message: string;
+  tone: "warning" | "error";
+} & (
+  | {
+      kind: "planner";
+      mode: "same-envelope" | "latest-version";
+      request: ApplyPlannerCommandRequest;
+      options?: MutateOptions;
+    }
+  | { kind: "bootstrap"; request: BootstrapWorkspaceRequest }
+  | {
+      kind: "chat-submit";
+      request: SubmitChatTurnRequest;
+      onAccepted?: () => void;
+    }
+  | { kind: "chat-retry"; request: RetryChatTurnRequest }
+  | { kind: "undo"; request: UndoLatestRequest; event: PlannerEvent }
+);
+type PendingRetryChannel = "planner" | "chat";
+
+function pendingRetryChannel(retry: PendingAuthorityRetry): PendingRetryChannel {
+  return retry.kind === "chat-submit" || retry.kind === "chat-retry" ? "chat" : "planner";
+}
+type AuthorityRecoveryProps = {
+  notice: Notice;
+  pendingRetryLabel?: string;
+  onRetryPending: () => void;
+  retryDisabled: boolean;
+  onDiscardPending?: () => void;
+  onDismissNotice: () => void;
+  offline: boolean;
+  onReconnect: () => void;
+};
 type Mutate = (
   command: HouseholdCommand,
-  options?: { onAccepted?: () => void },
+  options?: MutateOptions,
 ) => Promise<boolean>;
 type SendContextMessage = (
   message: string,
@@ -99,7 +173,133 @@ type SendContextMessage = (
   onAccepted?: () => void,
 ) => Promise<boolean>;
 
+const PLANNER_ACTION_LABELS = {
+  moveMeal: "Move dinner",
+  updateMealStatus: "Change dinner status",
+  updateMealSnapshot: "Save recipe details",
+  addInstructionStep: "Add recipe step",
+  updateInstructionStep: "Save recipe step",
+  moveInstructionStep: "Reorder recipe step",
+  removeInstructionStep: "Delete recipe step",
+  setInstructionStepComplete: "Change recipe step completion",
+  updateInstructionStepNote: "Save recipe step note",
+  startInstructionTimer: "Start recipe timer",
+  resetInstructionTimer: "Reset recipe timer",
+  setPrepPlan: "Save prep plan",
+  movePrepReference: "Reorder prep step",
+  reschedulePrepReference: "Reschedule prep step",
+  removePrepReference: "Remove prep step",
+  addGroceryItem: "Add grocery item",
+  updateGroceryItem: "Update grocery item",
+  removeGroceryItem: "Remove grocery item",
+  setGroceryItemChecked: "Change grocery item completion",
+  reconcileGroceries: "Reconcile groceries",
+  captureFeedback: "Save dinner feedback",
+  captureWeekLesson: "Save week lesson",
+  captureLeftoverQuality: "Save leftover quality",
+  assignLeftover: "Assign leftovers",
+  consumeLeftover: "Mark leftovers consumed",
+  archiveWeek: "Archive week",
+  createWeekPlan: "Create week plan",
+  activateWeek: "Activate week",
+  handoffWeek: "Activate next week",
+} satisfies Record<HouseholdCommand["type"], string>;
+
+function plannerActionLabel(
+  command: HouseholdCommand,
+  state?: InitializedWorkspace["state"],
+): string {
+  const week = "weekId" in command
+    ? state?.weeks.find((candidate) => candidate.id === command.weekId)
+    : undefined;
+  let target: string | undefined;
+  if (week && "stepId" in command) {
+    const resolved = findStep(week, command.stepId);
+    if (resolved) target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
+  } else if (week && "referenceId" in command) {
+    const reference = week.data.prep.find((candidate) => candidate.id === command.referenceId);
+    const resolved = reference ? findStep(week, reference.stepId) : null;
+    if (resolved) target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
+  } else if (week && "itemId" in command) {
+    target = week.data.groceries.find((candidate) => candidate.id === command.itemId)?.item;
+  } else if (week && "leftoverId" in command) {
+    target = week.data.leftovers.find((candidate) => candidate.id === command.leftoverId)?.label;
+  } else if (week && "mealId" in command) {
+    target = week.data.meals.find((candidate) => candidate.id === command.mealId)?.title;
+  }
+  let action: string;
+  if (command.type === "setInstructionStepComplete") {
+    action = command.complete ? "Mark recipe step done" : "Reopen recipe step";
+  } else if (command.type === "setGroceryItemChecked") {
+    action = command.checked ? "Check grocery item" : "Reopen grocery item";
+  } else if (command.type === "updateMealStatus") {
+    action = `Mark dinner ${command.status}`;
+  } else {
+    action = PLANNER_ACTION_LABELS[command.type];
+  }
+  return target ? `${action}: ${target}` : action;
+}
+
+function isAmbiguousPostError(error: unknown): error is PlannerApiError {
+  return error instanceof PlannerApiError &&
+    (error.code === "NETWORK_ERROR" || error.code === "INVALID_RESPONSE");
+}
+
 const ServerOffsetContext = createContext(0);
+const PlannerVersionContext = createContext(0);
+
+function useVersionedDraft<T extends object = Record<never, never>>() {
+  const plannerVersion = useContext(PlannerVersionContext);
+  const versionRef = useRef<number | null>(null);
+  const editRevisionRef = useRef(0);
+  const compositeDraftRef = useRef<CompositeDraft<T> | null>(null);
+  const [compositeDraft, setCompositeDraft] = useState<CompositeDraft<T> | null>(null);
+  return {
+    versionRef,
+    begin() {
+      versionRef.current ??= plannerVersion;
+      editRevisionRef.current += 1;
+    },
+    edit<K extends keyof T>(canonical: T, field: K, value: T[K]) {
+      versionRef.current ??= plannerVersion;
+      editRevisionRef.current += 1;
+      const next = editCompositeDraft(compositeDraftRef.current, canonical, field, value);
+      compositeDraftRef.current = next;
+      setCompositeDraft(next);
+    },
+    compose(canonical: T): T {
+      return composeCompositeDraft(canonical, compositeDraft);
+    },
+    mutationOptions(onAccepted?: () => void): MutateOptions {
+      const submittedRevision = editRevisionRef.current;
+      const submittedCompositeDraft = compositeDraftRef.current;
+      return {
+        basePlannerVersion: versionRef.current ?? plannerVersion,
+        conflictStrategy: "recompose",
+        onAccepted(nextPlannerVersion) {
+          const settledCompositeDraft = settleCompositeDraft(
+            compositeDraftRef.current,
+            submittedCompositeDraft,
+          );
+          compositeDraftRef.current = settledCompositeDraft;
+          setCompositeDraft(settledCompositeDraft);
+          const hasNewerDraft = settledCompositeDraft !== null ||
+            (submittedCompositeDraft === null && editRevisionRef.current !== submittedRevision);
+          if (!hasNewerDraft) {
+            versionRef.current = null;
+            editRevisionRef.current = 0;
+            onAccepted?.();
+          } else {
+            versionRef.current = nextPlannerVersion;
+          }
+        },
+        onConflict(nextPlannerVersion) {
+          versionRef.current = nextPlannerVersion;
+        },
+      };
+    },
+  };
+}
 
 const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "week", label: "Week", icon: CalendarDays },
@@ -115,6 +315,10 @@ const GROCERY_SECTIONS: GroceryItem["section"][] = [
   "Dairy",
   "Pantry",
 ];
+const MAX_STEP_INPUT_TEXT_LENGTH =
+  MAX_STEP_INPUTS * (MAX_STEP_INPUT_AMOUNT_LENGTH + MAX_STEP_INPUT_INGREDIENT_LENGTH + 4);
+const MAX_INGREDIENT_TEXT_LENGTH =
+  MAX_INGREDIENT_LINES * (MAX_INGREDIENT_LINE_LENGTH + 1);
 
 function formatCalendarDate(
   value: string,
@@ -167,6 +371,40 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The planner failed unexpectedly.";
 }
 
+function FieldError({ id, message }: { id: string; message?: string }) {
+  return message ? <small id={id} className="field-error" role="alert">{message}</small> : null;
+}
+
+function AuthorityNotice(props: {
+  notice: Exclude<Notice, null>;
+  pendingRetryLabel?: string;
+  onRetryPending?: () => void;
+  retryDisabled?: boolean;
+  onDiscardPending?: () => void;
+  onDismiss?: () => void;
+  className?: string;
+}) {
+  const { notice, pendingRetryLabel, onRetryPending, retryDisabled = false, onDiscardPending, onDismiss, className = "" } = props;
+  return (
+    <div className={`authority-banner ${notice.tone} ${className}`.trim()} role={notice.tone === "error" ? "alert" : "status"}>
+      <span>{notice.message}</span>
+      <div className="authority-banner-actions">
+        {pendingRetryLabel && onRetryPending ? (
+          <button className="secondary-button" type="button" aria-label={`Retry ${pendingRetryLabel}`} disabled={retryDisabled} onClick={onRetryPending}>
+            <RotateCcw size={14} /> Retry action
+          </button>
+        ) : null}
+        {pendingRetryLabel && onDiscardPending ? (
+          <button className="text-button" type="button" onClick={onDiscardPending}>Discard retry</button>
+        ) : null}
+        {!pendingRetryLabel && onDismiss ? (
+          <button className="icon-button" type="button" title="Dismiss" onClick={onDismiss}><X size={16} /></button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function findStep(
   week: WeekPlan,
   stepId: string,
@@ -176,6 +414,13 @@ function findStep(
     if (position >= 0) return { step: meal.instructions[position], meal, position };
   }
   return null;
+}
+
+function stepControlTarget(meal: Meal, step: InstructionStep, stepNumber: number): string {
+  const instruction = step.instruction.length > 90
+    ? `${step.instruction.slice(0, 87)}…`
+    : step.instruction;
+  return `step ${stepNumber} for ${meal.title}: ${instruction}`;
 }
 
 function progressForWeek(week: WeekPlan): { complete: number; total: number } {
@@ -202,8 +447,10 @@ function BootstrapScreen(props: {
   onImport: () => void;
   onFresh: () => void;
   onRetry: () => void;
+  pendingRetryLabel?: string;
+  onRetryPending?: () => void;
 }) {
-  const { candidate, busy, notice, onFresh, onImport, onRetry } = props;
+  const { candidate, busy, notice, onFresh, onImport, onRetry, pendingRetryLabel, onRetryPending } = props;
   return (
     <main className="bootstrap-shell">
       <section className="bootstrap-panel" aria-labelledby="bootstrap-title">
@@ -230,7 +477,11 @@ function BootstrapScreen(props: {
             <Plus size={17} /> Start Fresh
           </button>
         </div>
-        {notice?.tone === "error" ? (
+        {pendingRetryLabel && onRetryPending ? (
+          <button className="text-button" type="button" disabled={busy} onClick={onRetryPending}>
+            Retry {pendingRetryLabel.toLowerCase()}
+          </button>
+        ) : notice?.tone === "error" ? (
           <button className="text-button" type="button" onClick={onRetry}>Retry connection</button>
         ) : null}
         <small>{LEGACY_V2_STORAGE_KEY}</small>
@@ -264,9 +515,11 @@ export default function PlannerApp() {
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessage, setChatMessage] = useState("");
   const [plannerPending, setPlannerPending] = useState(false);
   const [chatPending, setChatPending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const [pendingRetries, setPendingRetries] = useState<PendingAuthorityRetry[]>([]);
   const [legacyCandidate, setLegacyCandidate] = useState<LegacyImportCandidate>({
     present: false,
     payload: null,
@@ -279,9 +532,32 @@ export default function PlannerApp() {
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const plannerMutationInFlight = useRef(false);
   const chatRequestInFlight = useRef(false);
+  const pendingRetryRef = useRef(new Map<PendingRetryChannel, PendingAuthorityRetry>());
   const appContentRef = useRef<HTMLDivElement>(null);
   const chatTriggerRef = useRef<HTMLButtonElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+
+  const setPendingRetry = useCallback((retry: PendingAuthorityRetry) => {
+    pendingRetryRef.current.set(pendingRetryChannel(retry), retry);
+    setPendingRetries([...pendingRetryRef.current.values()]);
+  }, []);
+
+  const clearPendingRetry = useCallback((channel: PendingRetryChannel) => {
+    pendingRetryRef.current.delete(channel);
+    setPendingRetries([...pendingRetryRef.current.values()]);
+  }, []);
+
+  const blockForPendingRetry = useCallback(() => {
+    const pending = pendingRetryRef.current.values().next().value as PendingAuthorityRetry | undefined;
+    if (!pending) return false;
+    setNotice({
+      tone: "warning",
+      message: `Resolve “${pending.label}” before starting another shared change.`,
+    });
+    return true;
+  }, []);
+
+  const pendingRetry = pendingRetries[0] ?? null;
 
   const navigate = useCallback((nextView: PlannerView) => {
     setView(nextView);
@@ -393,19 +669,15 @@ export default function PlannerApp() {
     };
   }, [mobile, chatOpen]);
 
-  const bootstrap = useCallback(async (mode: "seed" | "import-v2") => {
+  const executeBootstrap = useCallback(async (request: BootstrapWorkspaceRequest) => {
     if (plannerMutationInFlight.current) return;
-    if (mode === "import-v2" && !legacyCandidate.payload) return;
     plannerMutationInFlight.current = true;
     setPlannerPending(true);
     setNotice(null);
     try {
-      const result = await bootstrapWorkspace(
-        mode === "seed"
-          ? { requestId: createRequestId(), mode: "seed" }
-          : { requestId: createRequestId(), mode: "import-v2", payload: legacyCandidate.payload! },
-      );
+      const result = await bootstrapWorkspace(request);
       acceptWorkspace(result.workspace);
+      clearPendingRetry("planner");
       // Browser data is removed only after the server has durably accepted bootstrap.
       window.localStorage.removeItem(LEGACY_V2_STORAGE_KEY);
       window.localStorage.removeItem(LEGACY_V1_STORAGE_KEY);
@@ -415,23 +687,134 @@ export default function PlannerApp() {
     } catch (error) {
       if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
       if (error instanceof PlannerApiError && error.code === "ALREADY_INITIALIZED") {
+        clearPendingRetry("planner");
         setNotice({
           tone: "warning",
           message: "Another device initialized the planner first. Browser data was kept.",
         });
         await refresh(true);
+      } else if (isAmbiguousPostError(error)) {
+        setPendingRetry({
+          kind: "bootstrap",
+          label: "Set up shared planner",
+          tone: "error",
+          message: "The setup response was interrupted. Reconnect, then retry the same setup request.",
+          request,
+        });
+        if (error.code === "NETWORK_ERROR") setConnection("offline");
+        setNotice({
+          tone: "error",
+          message: "The setup response was interrupted. Reconnect, then retry the same setup request.",
+        });
       } else {
+        clearPendingRetry("planner");
         setNotice({ tone: "error", message: errorMessage(error) });
       }
     } finally {
       plannerMutationInFlight.current = false;
       setPlannerPending(false);
     }
-  }, [acceptWorkspace, legacyCandidate.payload, refresh]);
+  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
+
+  const bootstrap = useCallback(async (mode: "seed" | "import-v2") => {
+    if (blockForPendingRetry() || plannerMutationInFlight.current) return;
+    const importPayload = legacyCandidate.payload;
+    if (mode === "import-v2" && !importPayload) return;
+    const request: BootstrapWorkspaceRequest = mode === "seed"
+      ? { requestId: createRequestId(), mode: "seed" }
+      : { requestId: createRequestId(), mode: "import-v2", payload: importPayload! };
+    await executeBootstrap(request);
+  }, [blockForPendingRetry, executeBootstrap, legacyCandidate.payload]);
+
+  const executePlannerMutation = useCallback(async (
+    request: ApplyPlannerCommandRequest,
+    options?: MutateOptions,
+  ): Promise<boolean> => {
+    if (plannerMutationInFlight.current) return false;
+    const current = workspaceRef.current;
+    const actionLabel = plannerActionLabel(
+      request.command,
+      current?.initialized ? current.state : undefined,
+    );
+    plannerMutationInFlight.current = true;
+    setPlannerPending(true);
+    setNotice(null);
+    try {
+      const result = await applyPlannerCommand(request);
+      acceptWorkspace(result.workspace);
+      if (result.decision.status === "accepted") {
+        clearPendingRetry("planner");
+        options?.onAccepted?.(result.workspace.plannerVersion);
+        await refresh(true);
+        return true;
+      }
+      if (result.decision.status === "version_conflict") {
+        options?.onConflict?.(result.workspace.plannerVersion);
+        if (options?.conflictStrategy === "recompose") {
+          clearPendingRetry("planner");
+          setNotice({
+            tone: "warning",
+            message: `Someone else changed the plan. “${actionLabel}” was not saved. Your draft was kept and refreshed with their changes; review it, then save again.`,
+          });
+        } else {
+          setPendingRetry({
+            kind: "planner",
+            label: actionLabel,
+            tone: "warning",
+            message: `Someone else changed the plan. “${actionLabel}” was not saved. Review the latest plan, then retry it.`,
+            mode: "latest-version",
+            request,
+            options,
+          });
+          setNotice({
+            tone: "warning",
+            message: `Someone else changed the plan. “${actionLabel}” was not saved. Review the latest plan, then retry it.`,
+          });
+        }
+      } else {
+        clearPendingRetry("planner");
+        setNotice({ tone: "error", message: result.decision.message });
+      }
+      return false;
+    } catch (error) {
+      if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
+      if (isAmbiguousPostError(error)) {
+        setPendingRetry({
+          kind: "planner",
+          label: actionLabel,
+          tone: "error",
+          message: `The response for “${actionLabel}” was interrupted. Reconnect, then resolve that exact request.`,
+          mode: "same-envelope",
+          request,
+          options,
+        });
+        if (error.code === "NETWORK_ERROR") setConnection("offline");
+        setNotice({
+          tone: "error",
+          message: `The response for “${actionLabel}” was interrupted. Reconnect, then resolve that exact request.`,
+        });
+      } else {
+        clearPendingRetry("planner");
+        setNotice({ tone: "error", message: errorMessage(error) });
+      }
+      return false;
+    } finally {
+      plannerMutationInFlight.current = false;
+      setPlannerPending(false);
+    }
+  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
 
   const mutate: Mutate = useCallback(async (command, options) => {
     const current = workspaceRef.current;
-    if (!current?.initialized || plannerMutationInFlight.current || connection !== "online") return false;
+    if (
+      !current?.initialized ||
+      plannerMutationInFlight.current ||
+      connection !== "online" ||
+      blockForPendingRetry()
+    ) return false;
+    const visiblePlannerVersion = workspace?.initialized
+      ? workspace.plannerVersion
+      : current.plannerVersion;
     const commandWeekId = "weekId" in command ? command.weekId : null;
     const commandWeek = commandWeekId
       ? current.state.weeks.find((week) => week.id === commandWeekId)
@@ -440,64 +823,38 @@ export default function PlannerApp() {
       setNotice({ tone: "warning", message: "Archived weeks are read-only." });
       return false;
     }
-    plannerMutationInFlight.current = true;
-    setPlannerPending(true);
-    setNotice(null);
-    try {
-      const result = await applyPlannerCommand({
-        requestId: createRequestId(),
-        basePlannerVersion: current.plannerVersion,
-        command,
-      });
-      acceptWorkspace(result.workspace);
-      if (result.decision.status === "accepted") {
-        options?.onAccepted?.();
-        await refresh(true);
-        return true;
-      }
-      if (result.decision.status === "version_conflict") {
-        setNotice({
-          tone: "warning",
-          message: "Someone else changed the plan. Their version is shown; your draft was kept.",
-        });
-      } else {
-        setNotice({ tone: "error", message: result.decision.message });
-      }
-      return false;
-    } catch (error) {
-      if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
-      if (error instanceof PlannerApiError && error.code === "NETWORK_ERROR") setConnection("offline");
-      setNotice({ tone: "error", message: errorMessage(error) });
-      return false;
-    } finally {
-      plannerMutationInFlight.current = false;
-      setPlannerPending(false);
-    }
-  }, [acceptWorkspace, connection, refresh]);
+    return executePlannerMutation({
+      requestId: createRequestId(),
+      basePlannerVersion: options?.basePlannerVersion ?? visiblePlannerVersion,
+      command,
+    }, options);
+  }, [blockForPendingRetry, connection, executePlannerMutation, workspace]);
 
-  const sendContextMessage: SendContextMessage = useCallback(async (message, context, onAccepted) => {
-    const current = workspaceRef.current;
-    if (!current?.initialized || chatRequestInFlight.current || connection !== "online") return false;
-    if (current.chatTurns.some((turn) => turn.status === "running")) {
-      setNotice({ tone: "warning", message: "ChatGPT is already working on a household request. Your draft was kept." });
-      return false;
-    }
-    if (health && health.codex.status !== "ready") {
-      setNotice({ tone: "warning", message: "The shared planner is online, but ChatGPT is not available." });
-      return false;
-    }
+  const executeChatSubmit = useCallback(async (
+    request: SubmitChatTurnRequest,
+    onAccepted?: () => void,
+  ): Promise<boolean> => {
+    if (chatRequestInFlight.current) return false;
     chatRequestInFlight.current = true;
     setChatPending(true);
     setNotice(null);
     try {
-      const response = await submitChatTurn({
-        requestId: createRequestId(),
-        basePlannerVersion: current.plannerVersion,
-        message,
-        context,
-      });
+      const response = await submitChatTurn(request);
       acceptWorkspace(response.workspace);
+      clearPendingRetry("chat");
       if (response.decision.status === "accepted") {
+        const mutationOutcome = response.decision.turn.mutationOutcome;
+        if (mutationOutcome === "version_conflict") {
+          setNotice({
+            tone: "warning",
+            message: "ChatGPT replied, but its planner change was not applied because the plan changed. Review the latest plan and ask again.",
+          });
+        } else if (mutationOutcome === "domain_rejected") {
+          setNotice({
+            tone: "warning",
+            message: "ChatGPT replied, but the planner rejected its proposed change. Review the latest plan and ask again.",
+          });
+        }
         onAccepted?.();
         await refresh(true);
         return true;
@@ -517,54 +874,114 @@ export default function PlannerApp() {
       return false;
     } catch (error) {
       if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
-      if (error instanceof PlannerApiError && error.code === "NETWORK_ERROR") setConnection("offline");
-      setNotice({ tone: "error", message: errorMessage(error) });
+      if (isAmbiguousPostError(error)) {
+        setPendingRetry({
+          kind: "chat-submit",
+          label: "Send ChatGPT message",
+          tone: "error",
+          message: "The ChatGPT response was interrupted. Reconnect, then resolve that exact request.",
+          request,
+          onAccepted,
+        });
+        if (error.code === "NETWORK_ERROR") setConnection("offline");
+        setNotice({
+          tone: "error",
+          message: "The ChatGPT response was interrupted. Reconnect, then resolve that exact request.",
+        });
+      } else {
+        clearPendingRetry("chat");
+        setNotice({ tone: "error", message: errorMessage(error) });
+      }
       return false;
     } finally {
       chatRequestInFlight.current = false;
       setChatPending(false);
     }
-  }, [acceptWorkspace, connection, health, refresh]);
+  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
 
-  const retryTurn = useCallback(async (turn: ChatTurn) => {
+  const sendContextMessage: SendContextMessage = useCallback(async (message, context, onAccepted) => {
     const current = workspaceRef.current;
-    if (!current?.initialized || chatRequestInFlight.current || connection !== "online") return;
+    if (
+      !current?.initialized ||
+      chatRequestInFlight.current ||
+      connection !== "online" ||
+      blockForPendingRetry()
+    ) return false;
+    if (current.chatTurns.some((turn) => turn.status === "running")) {
+      setNotice({ tone: "warning", message: "ChatGPT is already working on a household request. Your draft was kept." });
+      return false;
+    }
+    if (health && health.codex.status !== "ready") {
+      setNotice({ tone: "warning", message: "The shared planner is online, but ChatGPT is not available." });
+      return false;
+    }
+    return executeChatSubmit({
+      requestId: createRequestId(),
+      basePlannerVersion: current.plannerVersion,
+      message,
+      context,
+    }, onAccepted);
+  }, [blockForPendingRetry, connection, executeChatSubmit, health]);
+
+  const executeChatRetry = useCallback(async (request: RetryChatTurnRequest) => {
+    if (chatRequestInFlight.current) return;
     chatRequestInFlight.current = true;
     setChatPending(true);
     setNotice(null);
     try {
-      const response = await retryChatTurn({
-        requestId: createRequestId(),
-        basePlannerVersion: current.plannerVersion,
-        turnId: turn.turnId,
-      });
+      const response = await retryChatTurn(request);
       acceptWorkspace(response.workspace);
+      clearPendingRetry("chat");
       if (response.decision.status !== "accepted") {
         setNotice({ tone: "warning", message: "That chat turn could not be retried yet." });
       }
       await refresh(true);
     } catch (error) {
       if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
-      setNotice({ tone: "error", message: errorMessage(error) });
+      if (isAmbiguousPostError(error)) {
+        setPendingRetry({
+          kind: "chat-retry",
+          label: "Retry ChatGPT request",
+          tone: "error",
+          message: "The ChatGPT retry response was interrupted. Reconnect, then resolve that exact request.",
+          request,
+        });
+        if (error.code === "NETWORK_ERROR") setConnection("offline");
+        setNotice({ tone: "error", message: "The ChatGPT retry response was interrupted. Reconnect, then resolve that exact request." });
+      } else {
+        clearPendingRetry("chat");
+        setNotice({ tone: "error", message: errorMessage(error) });
+      }
     } finally {
       chatRequestInFlight.current = false;
       setChatPending(false);
     }
-  }, [acceptWorkspace, connection, refresh]);
+  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
 
-  const runUndo = useCallback(async (event: PlannerEvent) => {
+  const retryTurn = useCallback(async (turn: ChatTurn) => {
     const current = workspaceRef.current;
-    if (!current?.initialized || plannerMutationInFlight.current || connection !== "online") return;
+    if (
+      !current?.initialized ||
+      chatRequestInFlight.current ||
+      connection !== "online" ||
+      blockForPendingRetry()
+    ) return;
+    await executeChatRetry({
+      requestId: createRequestId(),
+      basePlannerVersion: current.plannerVersion,
+      turnId: turn.turnId,
+    });
+  }, [blockForPendingRetry, connection, executeChatRetry]);
+
+  const executeUndo = useCallback(async (request: UndoLatestRequest, event: PlannerEvent) => {
+    if (plannerMutationInFlight.current) return;
     plannerMutationInFlight.current = true;
     setPlannerPending(true);
     setNotice(null);
     try {
-      const result = await undoLatest({
-        requestId: createRequestId(),
-        basePlannerVersion: current.plannerVersion,
-        targetEventId: event.eventId,
-      });
+      const result = await undoLatest(request);
       acceptWorkspace(result.workspace);
+      clearPendingRetry("planner");
       if (result.decision.status === "accepted") {
         setHistoryOpen(false);
         await refresh(true);
@@ -579,12 +996,73 @@ export default function PlannerApp() {
       }
     } catch (error) {
       if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
-      setNotice({ tone: "error", message: errorMessage(error) });
+      if (isAmbiguousPostError(error)) {
+        setPendingRetry({
+          kind: "undo",
+          label: "Undo latest change",
+          tone: "error",
+          message: "The undo response was interrupted. Reconnect, then resolve that exact request.",
+          request,
+          event,
+        });
+        if (error.code === "NETWORK_ERROR") setConnection("offline");
+        setNotice({ tone: "error", message: "The undo response was interrupted. Reconnect, then resolve that exact request." });
+      } else {
+        clearPendingRetry("planner");
+        setNotice({ tone: "error", message: errorMessage(error) });
+      }
     } finally {
       plannerMutationInFlight.current = false;
       setPlannerPending(false);
     }
-  }, [acceptWorkspace, connection, refresh]);
+  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
+
+  const runUndo = useCallback(async (event: PlannerEvent) => {
+    const current = workspaceRef.current;
+    if (
+      !current?.initialized ||
+      plannerMutationInFlight.current ||
+      connection !== "online" ||
+      blockForPendingRetry()
+    ) return;
+    await executeUndo({
+      requestId: createRequestId(),
+      basePlannerVersion: current.plannerVersion,
+      targetEventId: event.eventId,
+    }, event);
+  }, [blockForPendingRetry, connection, executeUndo]);
+
+  const retryPendingOperation = useCallback(async () => {
+    const pending = pendingRetryRef.current.values().next().value as PendingAuthorityRetry | undefined;
+    if (!pending) return;
+    if (pending.kind !== "bootstrap" && connection !== "online") return;
+    if (pending.kind === "planner") {
+      const request = pending.mode === "latest-version"
+        ? {
+            ...pending.request,
+            requestId: createRequestId(),
+            basePlannerVersion: workspaceRef.current?.initialized
+              ? workspaceRef.current.plannerVersion
+              : pending.request.basePlannerVersion,
+          }
+        : pending.request;
+      await executePlannerMutation(request, pending.options);
+      return;
+    }
+    if (pending.kind === "bootstrap") {
+      await executeBootstrap(pending.request);
+      return;
+    }
+    if (pending.kind === "chat-submit") {
+      await executeChatSubmit(pending.request, pending.onAccepted);
+      return;
+    }
+    if (pending.kind === "chat-retry") {
+      await executeChatRetry(pending.request);
+      return;
+    }
+    await executeUndo(pending.request, pending.event);
+  }, [connection, executeBootstrap, executeChatRetry, executeChatSubmit, executePlannerMutation, executeUndo]);
 
   if (!workspace) return <InitialLoading error={initialError} onRetry={() => void refresh(true)} />;
   if (!workspace.initialized) {
@@ -596,6 +1074,8 @@ export default function PlannerApp() {
         onImport={() => void bootstrap("import-v2")}
         onFresh={() => void bootstrap("seed")}
         onRetry={() => void refresh(true)}
+        pendingRetryLabel={pendingRetry?.kind === "bootstrap" ? pendingRetry.label : undefined}
+        onRetryPending={() => void retryPendingOperation()}
       />
     );
   }
@@ -608,12 +1088,28 @@ export default function PlannerApp() {
   const now = clockNow + serverOffset;
   const today = isoDateForTimeZone(now, initialized.state.householdTimeZone);
   const selectedMeal = week?.data.meals.find((meal) => meal.id === selectedMealId) ?? null;
-  const isReadOnly = connection !== "online" || plannerPending || week?.status === "archived";
+  const isReadOnly = connection !== "online" || plannerPending || Boolean(pendingRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
   const heading = view === "tonight" ? "Tonight" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
+  const authorityNotice: Notice = pendingRetry
+    ? { tone: pendingRetry.tone, message: pendingRetry.message }
+    : notice;
+  const authorityRecovery: AuthorityRecoveryProps = {
+    notice: authorityNotice,
+    pendingRetryLabel: pendingRetry?.label,
+    onRetryPending: () => void retryPendingOperation(),
+    retryDisabled: connection !== "online" || plannerPending || chatPending,
+    onDiscardPending: pendingRetry?.kind === "planner" && pendingRetry.mode === "latest-version"
+      ? () => { clearPendingRetry("planner"); setNotice(null); }
+      : undefined,
+    onDismissNotice: () => setNotice(null),
+    offline: connection === "offline",
+    onReconnect: () => void refresh(true),
+  };
   return (
-    <ServerOffsetContext.Provider value={serverOffset}>
-    <div className="app-shell">
+    <PlannerVersionContext.Provider value={initialized.plannerVersion}>
+      <ServerOffsetContext.Provider value={serverOffset}>
+      <div className="app-shell">
       <div ref={appContentRef}>
         <header className="app-header">
           <div className="brand-block">
@@ -655,7 +1151,7 @@ export default function PlannerApp() {
                 else document.querySelector<HTMLTextAreaElement>('.chat-rail textarea[aria-label="Message ChatGPT"]')?.focus();
               }}
               aria-expanded={mobile ? chatOpen : undefined}
-              aria-label={mobile ? "Open ChatGPT" : undefined}
+              aria-label={mobile ? "Open ChatGPT" : "Focus ChatGPT chat"}
             >
               <MessageCircle size={17} /><span>ChatGPT</span>
             </button>
@@ -670,6 +1166,7 @@ export default function PlannerApp() {
                 key={item.id}
                 className={`nav-item ${view === item.id ? "active" : ""}`}
                 type="button"
+                aria-current={view === item.id ? "page" : undefined}
                 onClick={() => navigate(item.id)}
               >
                 <Icon size={16} /> {item.label}
@@ -679,11 +1176,17 @@ export default function PlannerApp() {
         </nav>
 
         <main className="app-main">
-          {notice ? (
-            <div className={`authority-banner ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>
-              <span>{notice.message}</span>
-              <button className="icon-button" type="button" title="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button>
-            </div>
+          {authorityNotice ? (
+            <AuthorityNotice
+              notice={authorityNotice}
+              pendingRetryLabel={pendingRetry?.label}
+              onRetryPending={() => void retryPendingOperation()}
+              retryDisabled={connection !== "online" || plannerPending || chatPending}
+              onDiscardPending={pendingRetry?.kind === "planner" && pendingRetry.mode === "latest-version"
+                ? () => { clearPendingRetry("planner"); setNotice(null); }
+                : undefined}
+              onDismiss={pendingRetry ? undefined : () => setNotice(null)}
+            />
           ) : null}
           {connection === "offline" ? (
             <div className="authority-banner warning" role="status">
@@ -738,6 +1241,7 @@ export default function PlannerApp() {
                   />
                 ) : view === "prep" ? (
                   <PrepView
+                    key={week.id}
                     week={week}
                     disabled={isReadOnly}
                     mutate={mutate}
@@ -745,7 +1249,7 @@ export default function PlannerApp() {
                     onOpenMeal={setSelectedMealId}
                   />
                 ) : view === "groceries" ? (
-                  <GroceryView week={week} disabled={isReadOnly} mutate={mutate} />
+                  <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
                 ) : (
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
                 )}
@@ -755,8 +1259,11 @@ export default function PlannerApp() {
                   workspace={initialized}
                   week={week}
                   view={view}
-                  disabled={connection !== "online" || chatPending || (health !== null && health.codex.status !== "ready")}
+                  today={today}
+                  disabled={connection !== "online" || chatPending || Boolean(pendingRetry) || (health !== null && health.codex.status !== "ready")}
                   health={health}
+                  message={chatMessage}
+                  onMessageChange={setChatMessage}
                   onSend={sendContextMessage}
                   onRetry={retryTurn}
                 />
@@ -769,7 +1276,7 @@ export default function PlannerApp() {
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             return (
-              <button key={item.id} type="button" className={view === item.id ? "active" : ""} onClick={() => navigate(item.id)}>
+              <button key={item.id} type="button" className={view === item.id ? "active" : ""} aria-current={view === item.id ? "page" : undefined} onClick={() => navigate(item.id)}>
                 <Icon size={17} /><span>{item.label}</span>
               </button>
             );
@@ -784,14 +1291,16 @@ export default function PlannerApp() {
             disabled={isReadOnly}
             mutate={mutate}
             sendContextMessage={sendContextMessage}
+            {...authorityRecovery}
             onClose={() => setSelectedMealId(null)}
           />
         ) : null}
         {historyOpen ? (
           <HistoryDrawer
             workspace={initialized}
-            disabled={connection !== "online" || plannerPending}
+            disabled={connection !== "online" || plannerPending || Boolean(pendingRetry)}
             onUndo={runUndo}
+            {...authorityRecovery}
             onClose={() => setHistoryOpen(false)}
           />
         ) : null}
@@ -803,17 +1312,22 @@ export default function PlannerApp() {
             workspace={initialized}
             week={week}
             view={view}
-            disabled={connection !== "online" || chatPending || (health !== null && health.codex.status !== "ready")}
+            today={today}
+            disabled={connection !== "online" || chatPending || Boolean(pendingRetry) || (health !== null && health.codex.status !== "ready")}
             health={health}
+            message={chatMessage}
+            onMessageChange={setChatMessage}
             onSend={sendContextMessage}
             onRetry={retryTurn}
+            {...authorityRecovery}
             modal
             onClose={() => setChatOpen(false)}
           />
         </ModalChat>
       ) : null}
-    </div>
-    </ServerOffsetContext.Provider>
+      </div>
+      </ServerOffsetContext.Provider>
+    </PlannerVersionContext.Provider>
   );
 }
 
@@ -824,13 +1338,26 @@ function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; tod
       <div className="week-grid">
         {dates.map((date) => {
           const meal = week.data.meals.find((item) => item.date === date && item.slot === "dinner");
+          const assignedLeftover = week.data.leftovers.find(
+            (leftover) =>
+              leftover.state === "assigned" &&
+              leftover.assignedDate === date &&
+              leftover.assignedSlot === "dinner",
+          );
           return (
             <div key={date} className={`day-column ${date === today ? "today" : ""}`}>
               <div className="day-heading">
                 <div><span>{dayName(date, "short")}</span>{date === today ? <small>Today</small> : null}</div>
                 <strong>{Number(date.slice(-2))}</strong>
               </div>
-              {meal ? (
+              {assignedLeftover ? (
+                <div className="meal-card leftover-meal" aria-label={`${dayName(date)} dinner is ${assignedLeftover.label}`}>
+                  <span className="status-badge"><PackageCheck size={12} /> leftovers</span>
+                  <strong className="meal-title">{assignedLeftover.label}</strong>
+                  <span className="meal-subtitle">{assignedLeftover.portions} portions ready to use.</span>
+                  <span className="meal-meta">Assigned family dinner</span>
+                </div>
+              ) : meal ? (
                 <button className="meal-card" type="button" onClick={() => onOpenMeal(meal.id)}>
                   <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
                   <strong className="meal-title">{meal.title}</strong>
@@ -869,7 +1396,42 @@ function TonightView(props: {
 }) {
   const { week, today, disabled, mutate, sendContextMessage, onOpenMeal } = props;
   const meal = week.data.meals.find((item) => item.date === today && item.slot === "dinner");
-  if (!weekContainsDate(week.id, today) || !meal) {
+  const assignedLeftover = week.data.leftovers.find(
+    (leftover) =>
+      leftover.state === "assigned" &&
+      leftover.assignedDate === today &&
+      leftover.assignedSlot === "dinner",
+  );
+  if (!weekContainsDate(week.id, today)) {
+    return (
+      <div className="finished-state">
+        <CalendarDays size={34} />
+        <h3>No dinner in this selected week</h3>
+        <p>Select the week containing today or use the week view.</p>
+      </div>
+    );
+  }
+  if (assignedLeftover) {
+    return (
+      <div className="finished-state assigned-leftover">
+        <PackageCheck size={34} />
+        <p className="eyebrow">{dayName(today)} dinner · leftovers</p>
+        <h3>{assignedLeftover.label}</h3>
+        <p>{assignedLeftover.portions} portions are assigned to tonight.</p>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={disabled}
+          onClick={() => void mutate({
+            type: "consumeLeftover",
+            weekId: week.id,
+            leftoverId: assignedLeftover.id,
+          })}
+        ><Check size={16} /> Mark eaten</button>
+      </div>
+    );
+  }
+  if (!meal) {
     return (
       <div className="finished-state">
         <CalendarDays size={34} />
@@ -901,11 +1463,12 @@ function TonightView(props: {
         </div>
         <div className="section-title"><ListChecks size={17} /><h3>Instructions</h3><span>{complete}/{meal.instructions.length} done</span></div>
         <div className="instruction-steps">
-          {meal.instructions.map((step) => (
+          {meal.instructions.map((step, index) => (
             <StepCard
               key={step.id}
               step={step}
               meal={meal}
+              stepNumber={index + 1}
               week={week}
               disabled={disabled}
               mutate={mutate}
@@ -935,16 +1498,25 @@ function Timer({ step }: { step: InstructionStep }) {
     return () => window.clearInterval(interval);
   }, [step.timerStartedAt]);
   if (!step.timerDurationSeconds) return null;
-  const elapsed = step.timerStartedAt === undefined ? 0 : Math.floor((now + serverOffset - step.timerStartedAt) / 1_000);
-  const remaining = Math.max(0, step.timerDurationSeconds - elapsed);
-  const minutes = Math.floor(remaining / 60).toString().padStart(2, "0");
-  const seconds = (remaining % 60).toString().padStart(2, "0");
-  return <strong>{minutes}:{seconds}</strong>;
+  const display = deriveTimerDisplay(
+    step.timerDurationSeconds,
+    step.timerStartedAt,
+    now + serverOffset,
+  );
+  const minutes = Math.floor(display.remainingSeconds / 60).toString().padStart(2, "0");
+  const seconds = (display.remainingSeconds % 60).toString().padStart(2, "0");
+  return (
+    <>
+      <strong>{minutes}:{seconds}</strong>
+      <span>{display.status}</span>
+    </>
+  );
 }
 
 function StepCard(props: {
   step: InstructionStep;
   meal: Meal;
+  stepNumber: number;
   week: WeekPlan;
   disabled: boolean;
   mutate: Mutate;
@@ -953,29 +1525,59 @@ function StepCard(props: {
   actions?: ReactNode;
   editable?: boolean;
 }) {
-  const { step, meal, week, disabled, mutate, sendContextMessage, contextView, actions, editable = false } = props;
+  const { step, meal, stepNumber, week, disabled, mutate, sendContextMessage, contextView, actions, editable = false } = props;
+  const controlTarget = stepControlTarget(meal, step, stepNumber);
   const [comment, setComment] = useState("");
-  const [instruction, setInstruction] = useState(step.instruction);
-  const [inputs, setInputs] = useState(step.inputs.map((input) => `${input.amount} | ${input.ingredient}`).join("\n"));
-  const [timerMinutes, setTimerMinutes] = useState(step.timerDurationSeconds ? String(step.timerDurationSeconds / 60) : "");
+  const [editAttempted, setEditAttempted] = useState(false);
+  const canonicalInstructionDraft = {
+    inputs: step.inputs.map((input) => `${input.amount} | ${input.ingredient}`).join("\n"),
+    instruction: step.instruction,
+    timerMinutes: step.timerDurationSeconds ? String(step.timerDurationSeconds / 60) : "",
+  };
+  const instructionDraft = useVersionedDraft<typeof canonicalInstructionDraft>();
+  const noteDraft = useVersionedDraft();
+  const {
+    inputs: draftInputs,
+    instruction: draftInstruction,
+    timerMinutes: draftTimerMinutes,
+  } = instructionDraft.compose(canonicalInstructionDraft);
   const chatContext: PlannerChatContext = { view: contextView, weekId: week.id, mealId: meal.id, stepId: step.id };
-  const parsedInputs = inputs.split("\n").filter((line) => line.trim()).map((line) => {
+  const parsedInputs = draftInputs.split("\n").filter((line) => line.trim()).map((line) => {
     const [amount, ...ingredient] = line.split("|");
     return { amount: amount.trim(), ingredient: ingredient.join("|").trim() };
   });
-  const timerMinutesNumber = timerMinutes.trim() === "" ? null : Number(timerMinutes);
-  const timerValid =
-    timerMinutesNumber === null ||
-    (Number.isFinite(timerMinutesNumber) && timerMinutesNumber > 0 && timerMinutesNumber <= 1_440);
+  const timerMinutesNumber = draftTimerMinutes.trim() === "" ? null : Number(draftTimerMinutes);
   const timerSeconds = timerMinutesNumber === null ? null : Math.max(1, Math.round(timerMinutesNumber * 60));
+  const editIssues = validateStepDraft({
+    inputs: draftInputs,
+    instruction: draftInstruction,
+    timerMinutes: draftTimerMinutes,
+  });
+  const inputErrorId = `step-${step.id}-inputs-error`;
+  const instructionErrorId = `step-${step.id}-instruction-error`;
+  const timerErrorId = `step-${step.id}-timer-error`;
+  const saveInstruction = () => {
+    setEditAttempted(true);
+    if (hasValidationIssues(editIssues)) return;
+    void mutate(
+      {
+        type: "updateInstructionStep",
+        weekId: week.id,
+        stepId: step.id,
+        changes: { inputs: parsedInputs, instruction: draftInstruction.trim(), timerDurationSeconds: timerSeconds },
+      },
+      instructionDraft.mutationOptions(() => setEditAttempted(false)),
+    );
+  };
   return (
-    <article className={`instruction-step ${step.complete ? "complete" : ""}`}>
+    <article className={`instruction-step ${step.complete ? "complete" : ""}`} aria-label={controlTarget}>
       <div className="instruction-step-heading">
         <label className="step-checkbox">
           <input
             type="checkbox"
             checked={step.complete}
             disabled={disabled}
+            aria-label={`${step.complete ? "Reopen" : "Complete"} ${controlTarget}`}
             onChange={(event) => void mutate({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete: event.target.checked })}
           />
           {step.complete ? "Done" : "To do"}
@@ -987,11 +1589,11 @@ function StepCard(props: {
       {step.timerDurationSeconds ? (
         <div className={`step-timer ${step.timerStartedAt !== undefined ? "running" : ""}`}>
           <Clock3 size={14} /><Timer step={step} />
-          <span>{step.timerStartedAt !== undefined ? "running" : "timer"}</span>
           <button
             className="icon-button"
             type="button"
             title={step.timerStartedAt !== undefined ? "Reset timer" : "Start timer"}
+            aria-label={`${step.timerStartedAt !== undefined ? "Reset" : "Start"} timer for ${controlTarget}`}
             disabled={disabled || step.complete}
             onClick={() => void mutate({ type: step.timerStartedAt !== undefined ? "resetInstructionTimer" : "startInstructionTimer", weekId: week.id, stepId: step.id })}
           >
@@ -1006,6 +1608,7 @@ function StepCard(props: {
             className="icon-button"
             type="button"
             title="Clear step note"
+            aria-label={`Clear note for ${controlTarget}`}
             disabled={disabled}
             onClick={() => void mutate({ type: "updateInstructionStepNote", weekId: week.id, stepId: step.id, note: "" })}
           ><X size={14} /></button>
@@ -1013,44 +1616,52 @@ function StepCard(props: {
       ) : null}
       {editable ? (
         <details className="step-comment">
-          <summary><PencilLine size={14} /> Edit instruction</summary>
+          <summary aria-label={`Edit ${controlTarget}`}><PencilLine size={14} /> Edit instruction</summary>
           <div className="step-comment-body">
-            <label className="full-field"><span>Amounts, one per line: amount | ingredient</span><textarea value={inputs} onChange={(event) => setInputs(event.target.value)} /></label>
-            <label className="full-field"><span>Instruction</span><textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} /></label>
-            <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input type="number" min="0.5" max="1440" step="0.5" value={timerMinutes} onChange={(event) => setTimerMinutes(event.target.value)} /></label>
+            <label className="full-field"><span>Amounts, one per line: amount | ingredient</span><textarea aria-label={`Amounts for ${controlTarget}`} maxLength={MAX_STEP_INPUT_TEXT_LENGTH} value={draftInputs} aria-invalid={editAttempted && Boolean(editIssues.inputs)} aria-describedby={editAttempted && editIssues.inputs ? inputErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", event.target.value)} />{editAttempted && editIssues.inputs ? <small id={inputErrorId} className="field-error" role="alert">{editIssues.inputs}</small> : null}</label>
+            <label className="full-field"><span>Instruction</span><textarea aria-label={`Instruction text for ${controlTarget}`} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftInstruction} aria-invalid={editAttempted && Boolean(editIssues.instruction)} aria-describedby={editAttempted && editIssues.instruction ? instructionErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "instruction", event.target.value)} />{editAttempted && editIssues.instruction ? <small id={instructionErrorId} className="field-error" role="alert">{editIssues.instruction}</small> : null}</label>
+            <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input aria-label={`Timer minutes for ${controlTarget}`} type="number" min="0.5" max="1440" step="0.5" value={draftTimerMinutes} aria-invalid={editAttempted && Boolean(editIssues.timer)} aria-describedby={editAttempted && editIssues.timer ? timerErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "timerMinutes", event.target.value)} />{editAttempted && editIssues.timer ? <small id={timerErrorId} className="field-error" role="alert">{editIssues.timer}</small> : null}</label>
             <button
               className="secondary-button"
               type="button"
-              disabled={disabled || !instruction.trim() || !timerValid}
-              onClick={() => void mutate({
-                type: "updateInstructionStep",
-                weekId: week.id,
-                stepId: step.id,
-                changes: { inputs: parsedInputs, instruction: instruction.trim(), timerDurationSeconds: timerSeconds },
-              })}
+              disabled={disabled}
+              aria-label={`Save ${controlTarget}`}
+              onClick={saveInstruction}
             ><Check size={15} /> Save instruction</button>
           </div>
         </details>
       ) : null}
       <details className="step-comment">
-        <summary><MessageSquareText size={14} /> Add note or ask ChatGPT</summary>
+        <summary aria-label={`Add note or ask ChatGPT about ${controlTarget}`}><MessageSquareText size={14} /> Add note or ask ChatGPT</summary>
         <div className="step-comment-body">
-          <textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="What changed, or what should ChatGPT help with?" />
+          <textarea aria-label={`Note or ChatGPT request for ${controlTarget}`} maxLength={MAX_COMMAND_TEXT_LENGTH} value={comment} onChange={(event) => { noteDraft.begin(); setComment(event.target.value); }} placeholder="What changed, or what should ChatGPT help with?" />
+          <small className="field-limit">{comment.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small>
           <div className="step-comment-actions">
             <button
               className="secondary-button"
               type="button"
               disabled={disabled || !comment.trim()}
+              aria-label={`Add note for ${controlTarget}`}
               onClick={() => void mutate(
                 { type: "updateInstructionStepNote", weekId: week.id, stepId: step.id, note: comment.trim() },
-                { onAccepted: () => setComment("") },
+                noteDraft.mutationOptions(() => setComment("")),
               )}
             ><StickyNote size={14} /> Add note</button>
             <button
               className="primary-button"
               type="button"
               disabled={disabled || !comment.trim()}
-              onClick={() => void sendContextMessage(comment.trim(), chatContext, () => setComment(""))}
+              aria-label={`Send ${controlTarget} to ChatGPT`}
+              onClick={() => {
+                const submittedComment = comment.trim();
+                void sendContextMessage(submittedComment, chatContext, () => {
+                  setComment((current) => {
+                    if (current.trim() !== submittedComment) return current;
+                    noteDraft.versionRef.current = null;
+                    return "";
+                  });
+                });
+              }}
             ><Bot size={14} /> Send to ChatGPT</button>
           </div>
         </div>
@@ -1069,6 +1680,7 @@ function PrepView(props: {
   const { week, disabled, mutate, sendContextMessage, onOpenMeal } = props;
   const [stepId, setStepId] = useState("");
   const [prepDate, setPrepDate] = useState<IsoDate>(addIsoDateDays(week.id, -1));
+  const prepDraft = useVersionedDraft();
   const dates = Array.from({ length: 8 }, (_, index) => addIsoDateDays(week.id, index - 1));
   const existing = new Set(week.data.prep.map((reference) => reference.stepId));
   const available = week.data.meals.flatMap((meal) => meal.instructions.filter((step) => !existing.has(step.id)).map((step) => ({ meal, step })));
@@ -1081,11 +1693,11 @@ function PrepView(props: {
       </div>
       {week.status !== "archived" ? (
         <div className="prep-add-row">
-          <select value={stepId} onChange={(event) => setStepId(event.target.value)} aria-label="Instruction to add to prep">
+          <select value={stepId} onChange={(event) => { prepDraft.begin(); setStepId(event.target.value); }} aria-label="Instruction to add to prep">
             <option value="">Choose a recipe step</option>
             {available.map(({ meal, step }) => <option key={step.id} value={step.id}>{meal.title}: {step.instruction}</option>)}
           </select>
-          <select value={prepDate} onChange={(event) => setPrepDate(event.target.value as IsoDate)} aria-label="Prep date">
+          <select value={prepDate} onChange={(event) => { prepDraft.begin(); setPrepDate(event.target.value as IsoDate); }} aria-label="Prep date">
             {dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "short", month: "short", day: "numeric" })}</option>)}
           </select>
           <button
@@ -1098,7 +1710,7 @@ function PrepView(props: {
                 weekId: week.id,
                 entries: [...sorted.map((reference) => ({ stepId: reference.stepId, prepDate: reference.prepDate })), { stepId, prepDate }],
               },
-              { onAccepted: () => setStepId("") },
+              prepDraft.mutationOptions(() => setStepId("")),
             )}
           ><Plus size={15} /> Add to prep</button>
         </div>
@@ -1113,18 +1725,19 @@ function PrepView(props: {
               {references.map((reference, index) => {
                 const resolved = findStep(week, reference.stepId);
                 if (!resolved) return null;
+                const target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
                 const actions = (
                   <div className="prep-reference-actions">
-                    <button className="step-meal-link" type="button" onClick={() => onOpenMeal(resolved.meal.id)}>{resolved.meal.title}<ChevronRight size={13} /></button>
-                    <button className="icon-button" type="button" title="Move up" disabled={disabled || index === 0} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
-                    <button className="icon-button" type="button" title="Move down" disabled={disabled || index === references.length - 1} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
-                    <select value={reference.prepDate} disabled={disabled} aria-label="Move prep step to date" onChange={(event) => void mutate({ type: "reschedulePrepReference", weekId: week.id, referenceId: reference.id, prepDate: event.target.value as IsoDate })}>
+                    <button className="step-meal-link" type="button" aria-label={`Open recipe for ${target}`} onClick={() => onOpenMeal(resolved.meal.id)}>{resolved.meal.title}<ChevronRight size={13} /></button>
+                    <button className="icon-button" type="button" title={`Move ${target} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
+                    <button className="icon-button" type="button" title={`Move ${target} down`} disabled={disabled || index === references.length - 1} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
+                    <select value={reference.prepDate} disabled={disabled} aria-label={`Prep date for ${target}`} onChange={(event) => void mutate({ type: "reschedulePrepReference", weekId: week.id, referenceId: reference.id, prepDate: event.target.value as IsoDate })}>
                       {dates.map((target) => <option key={target} value={target}>{formatCalendarDate(target, { weekday: "short", day: "numeric" })}</option>)}
                     </select>
-                    <button className="icon-button danger" type="button" title="Remove from prep" disabled={disabled} onClick={() => void mutate({ type: "removePrepReference", weekId: week.id, referenceId: reference.id })}><Trash2 size={14} /></button>
+                    <button className="icon-button danger" type="button" title={`Remove ${target} from prep`} disabled={disabled} onClick={() => void mutate({ type: "removePrepReference", weekId: week.id, referenceId: reference.id })}><Trash2 size={14} /></button>
                   </div>
                 );
-                return <StepCard key={reference.id} step={resolved.step} meal={resolved.meal} week={week} disabled={disabled} mutate={mutate} sendContextMessage={sendContextMessage} contextView="prep" actions={actions} />;
+                return <StepCard key={reference.id} step={resolved.step} meal={resolved.meal} stepNumber={resolved.position + 1} week={week} disabled={disabled} mutate={mutate} sendContextMessage={sendContextMessage} contextView="prep" actions={actions} />;
               })}
             </section>
           );
@@ -1140,25 +1753,33 @@ function GroceryView({ week, disabled, mutate }: { week: WeekPlan; disabled: boo
   const [item, setItem] = useState("");
   const [detail, setDetail] = useState("");
   const [section, setSection] = useState<GroceryItem["section"]>("Produce");
+  const [addAttempted, setAddAttempted] = useState(false);
+  const groceryDraft = useVersionedDraft();
   const visible = week.data.groceries.filter((entry) => filter === "all" || (filter === "done" ? entry.checked : !entry.checked));
   const checked = week.data.groceries.filter((entry) => entry.checked).length;
+  const addIssues = validateGroceryDraft({ item, detail });
+  const addGrocery = () => {
+    setAddAttempted(true);
+    if (hasValidationIssues(addIssues)) return;
+    void mutate(
+      { type: "addGroceryItem", weekId: week.id, item: { section, item: item.trim(), detail: detail.trim(), farmBox: false } },
+      groceryDraft.mutationOptions(() => { setItem(""); setDetail(""); setAddAttempted(false); }),
+    );
+  };
   return (
     <div className="grocery-layout">
       <div className="grocery-list">
         <div className="surface-summary grocery-summary">
           <div><p className="eyebrow">Shared shopping list</p><h2>Groceries</h2></div>
           <div className="segmented-control" aria-label="Grocery filter">
-            {(["all", "open", "done"] as const).map((value) => <button key={value} type="button" className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value}</button>)}
+            {(["all", "open", "done"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value}</button>)}
           </div>
         </div>
         <div className="grocery-add-row">
-          <select value={section} onChange={(event) => setSection(event.target.value as GroceryItem["section"])} aria-label="Grocery section">{GROCERY_SECTIONS.map((value) => <option key={value}>{value}</option>)}</select>
-          <input value={item} onChange={(event) => setItem(event.target.value)} placeholder="Item" aria-label="New grocery item" />
-          <input value={detail} onChange={(event) => setDetail(event.target.value)} placeholder="Amount or detail" aria-label="Grocery detail" />
-          <button className="secondary-button" type="button" disabled={disabled || !item.trim()} onClick={() => void mutate(
-            { type: "addGroceryItem", weekId: week.id, item: { section, item: item.trim(), detail: detail.trim(), farmBox: false } },
-            { onAccepted: () => { setItem(""); setDetail(""); } },
-          )}><Plus size={15} /> Add</button>
+          <select value={section} onChange={(event) => { groceryDraft.begin(); setSection(event.target.value as GroceryItem["section"]); }} aria-label="Grocery section">{GROCERY_SECTIONS.map((value) => <option key={value}>{value}</option>)}</select>
+          <label className="compact-field"><input maxLength={MAX_GROCERY_ITEM_LENGTH} value={item} onChange={(event) => { groceryDraft.begin(); setItem(event.target.value); }} placeholder="Item" aria-label="New grocery item" aria-invalid={addAttempted && Boolean(addIssues.item)} aria-describedby={addAttempted && addIssues.item ? "grocery-item-error" : undefined} />{addAttempted && addIssues.item ? <small id="grocery-item-error" className="field-error" role="alert">{addIssues.item}</small> : null}</label>
+          <label className="compact-field"><input maxLength={MAX_COMMAND_TEXT_LENGTH} value={detail} onChange={(event) => { groceryDraft.begin(); setDetail(event.target.value); }} placeholder="Amount or detail" aria-label="Grocery detail" aria-invalid={addAttempted && Boolean(addIssues.detail)} aria-describedby={addAttempted && addIssues.detail ? "grocery-detail-error" : undefined} />{addAttempted && addIssues.detail ? <small id="grocery-detail-error" className="field-error" role="alert">{addIssues.detail}</small> : null}</label>
+          <button className="secondary-button" type="button" disabled={disabled} onClick={addGrocery}><Plus size={15} /> Add</button>
         </div>
         {GROCERY_SECTIONS.map((group) => {
           const entries = visible.filter((entry) => entry.section === group);
@@ -1168,7 +1789,9 @@ function GroceryView({ week, disabled, mutate }: { week: WeekPlan; disabled: boo
               <h3>{group}<span>{entries.length}</span></h3>
               {entries.map((entry) => (
                 <div className={`grocery-row ${entry.checked ? "checked" : ""}`} key={entry.id}>
-                  <input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${entry.item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} />
+                  <label className="grocery-check">
+                    <input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${entry.item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} />
+                  </label>
                   <span><strong>{entry.item}</strong><small>{entry.detail || "No amount noted"}</small></span>
                   {entry.farmBox ? <span className="farm-tag"><Sprout size={12} /> Farm box</span> : (
                     <button className="icon-button danger" type="button" title={`Remove ${entry.item}`} disabled={disabled} onClick={() => void mutate({ type: "removeGroceryItem", weekId: week.id, itemId: entry.id })}><Trash2 size={14} /></button>
@@ -1201,6 +1824,7 @@ function GroceryView({ week, disabled, mutate }: { week: WeekPlan; disabled: boo
 
 function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
   const [targets, setTargets] = useState<Record<string, IsoDate>>({});
+  const assignmentDraft = useVersionedDraft();
   return (
     <div className="leftover-feedback">
       {week.data.leftovers.map((leftover) => {
@@ -1210,16 +1834,16 @@ function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled
         return (
           <div key={leftover.id}>
             <span><strong>{leftover.label} · {leftover.portions} portions</strong><small>{leftover.state}{leftover.assignedDate ? ` for ${leftover.assignedDate}` : ""}</small></span>
-            <div className="segmented-control">
-              {LEFTOVER_QUALITIES.map((quality) => <button key={quality} type="button" className={leftover.quality === quality ? "active" : ""} disabled={disabled} onClick={() => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}>{quality}</button>)}
+            <div className="segmented-control" aria-label={`Quality for ${leftover.label} leftovers`}>
+              {LEFTOVER_QUALITIES.map((quality) => <button key={quality} type="button" aria-label={`Rate ${leftover.label} leftovers ${quality}`} aria-pressed={leftover.quality === quality} className={leftover.quality === quality ? "active" : ""} disabled={disabled} onClick={() => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}>{quality}</button>)}
             </div>
             {leftover.state === "available" && dates.length ? (
               <div className="inline-control-row">
-                <select value={target} disabled={disabled} onChange={(event) => setTargets((current) => ({ ...current, [leftover.id]: event.target.value as IsoDate }))}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "short", month: "short", day: "numeric" })}</option>)}</select>
-                <button className="secondary-button" type="button" disabled={disabled} onClick={() => void mutate({ type: "assignLeftover", weekId: week.id, leftoverId: leftover.id, targetDate: target, slot: "dinner" })}>Assign</button>
+                <select aria-label={`Dinner date for ${leftover.label} leftovers`} value={target} disabled={disabled} onChange={(event) => { assignmentDraft.begin(); setTargets((current) => ({ ...current, [leftover.id]: event.target.value as IsoDate })); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "short", month: "short", day: "numeric" })}</option>)}</select>
+                <button className="secondary-button" type="button" aria-label={`Assign ${leftover.label} leftovers`} disabled={disabled} onClick={() => void mutate({ type: "assignLeftover", weekId: week.id, leftoverId: leftover.id, targetDate: target, slot: "dinner" }, assignmentDraft.mutationOptions())}>Assign</button>
               </div>
             ) : null}
-            {leftover.state === "assigned" ? <button className="secondary-button" type="button" disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</button> : null}
+            {leftover.state === "assigned" ? <button className="secondary-button" type="button" aria-label={`Mark ${leftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</button> : null}
           </div>
         );
       })}
@@ -1230,6 +1854,10 @@ function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled
 
 function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
   const [lesson, setLesson] = useState(week.data.weekLesson);
+  const lessonDraft = useVersionedDraft();
+  const draftLesson = lessonDraft.versionRef.current === null
+    ? week.data.weekLesson
+    : lesson;
   const feedbackComplete = week.data.meals.filter((meal) => week.data.feedback[meal.id]).length;
   if (week.status === "archived") {
     return (
@@ -1248,15 +1876,15 @@ function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: bo
         {week.data.meals.map((meal) => (
           <div className="feedback-row" key={meal.id}>
             <div><strong>{meal.title}</strong><small>{formatCalendarDate(meal.date, { weekday: "long" })} · {meal.status}</small></div>
-            <div className="segmented-control feedback-control">
-              {FEEDBACK_VALUES.map((value) => <button key={value} type="button" className={week.data.feedback[meal.id] === value ? "active" : ""} disabled={disabled} onClick={() => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })}>{value}</button>)}
+            <div className="segmented-control feedback-control" aria-label={`Feedback for ${meal.title}`}>
+              {FEEDBACK_VALUES.map((value) => <button key={value} type="button" aria-label={`Rate ${meal.title} ${value}`} aria-pressed={week.data.feedback[meal.id] === value} className={week.data.feedback[meal.id] === value ? "active" : ""} disabled={disabled} onClick={() => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })}>{value}</button>)}
             </div>
           </div>
         ))}
       </div>
       <aside className="closeout-notes">
-        <label><span>What should next week remember?</span><textarea value={lesson} onChange={(event) => setLesson(event.target.value)} placeholder="A short planning lesson" /></label>
-        <button className="secondary-button" type="button" disabled={disabled || lesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: lesson })}><StickyNote size={15} /> Save lesson</button>
+        <label><span>What should next week remember?</span><textarea maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLesson} onChange={(event) => { lessonDraft.begin(); setLesson(event.target.value); }} placeholder="A short planning lesson" /><small className="field-limit">{draftLesson.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
+        <button className="secondary-button" type="button" disabled={disabled || draftLesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: draftLesson }, lessonDraft.mutationOptions())}><StickyNote size={15} /> Save lesson</button>
         <span className="field-label">Leftovers</span>
         <LeftoverControls week={week} disabled={disabled} mutate={mutate} />
         <span className="closeout-check"><CheckCircle2 size={14} /> Archiving freezes this week as a read-only family record.</span>
@@ -1273,58 +1901,133 @@ function MealDrawer(props: {
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
   onClose: () => void;
-}) {
-  const { meal, week, disabled, mutate, sendContextMessage, onClose } = props;
-  const [title, setTitle] = useState(meal.title);
-  const [subtitle, setSubtitle] = useState(meal.subtitle);
-  const [venue, setVenue] = useState(meal.venue);
-  const [prepNote, setPrepNote] = useState(meal.prepNote);
-  const [leftoverNote, setLeftoverNote] = useState(meal.leftoverNote);
-  const [notes, setNotes] = useState(meal.notes);
-  const [ingredients, setIngredients] = useState(meal.ingredients.join("\n"));
+} & AuthorityRecoveryProps) {
+  const {
+    meal,
+    week,
+    disabled,
+    mutate,
+    sendContextMessage,
+    onClose,
+    notice,
+    pendingRetryLabel,
+    onRetryPending,
+    retryDisabled,
+    onDiscardPending,
+    onDismissNotice,
+    offline,
+    onReconnect,
+  } = props;
   const [targetDate, setTargetDate] = useState<IsoDate>(meal.date);
   const [newInstruction, setNewInstruction] = useState("");
   const [newInputs, setNewInputs] = useState("");
   const [newTimer, setNewTimer] = useState("");
+  const [saveAttempted, setSaveAttempted] = useState(false);
+  const [newStepAttempted, setNewStepAttempted] = useState(false);
+  const canonicalRecipeDraft = {
+    title: meal.title,
+    subtitle: meal.subtitle,
+    venue: meal.venue,
+    prepNote: meal.prepNote,
+    leftoverNote: meal.leftoverNote,
+    notes: meal.notes,
+    ingredients: meal.ingredients.join("\n"),
+  };
+  const recipeDraft = useVersionedDraft<typeof canonicalRecipeDraft>();
+  const moveDraft = useVersionedDraft();
+  const newStepDraft = useVersionedDraft();
+  const {
+    title: draftTitle,
+    subtitle: draftSubtitle,
+    venue: draftVenue,
+    prepNote: draftPrepNote,
+    leftoverNote: draftLeftoverNote,
+    notes: draftNotes,
+    ingredients: draftIngredients,
+  } = recipeDraft.compose(canonicalRecipeDraft);
+  const draftTargetDate = moveDraft.versionRef.current === null ? meal.date : targetDate;
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   const newTimerMinutes = newTimer.trim() === "" ? null : Number(newTimer);
-  const newTimerValid =
-    newTimerMinutes === null ||
-    (Number.isFinite(newTimerMinutes) && newTimerMinutes > 0 && newTimerMinutes <= 1_440);
-  const save = () => void mutate(
-    {
-      type: "updateMealSnapshot",
-      weekId: week.id,
-      mealId: meal.id,
-      changes: {
-        title: title.trim(), subtitle: subtitle.trim(), venue: venue.trim(), prepNote: prepNote.trim(), leftoverNote: leftoverNote.trim(), notes: notes.trim(),
-        ingredients: ingredients.split("\n").map((line) => line.trim()).filter(Boolean),
+  const mealIssues = validateMealDraft({
+    title: draftTitle,
+    subtitle: draftSubtitle,
+    venue: draftVenue,
+    prepNote: draftPrepNote,
+    leftoverNote: draftLeftoverNote,
+    notes: draftNotes,
+    ingredients: draftIngredients,
+  });
+  const newStepIssues = validateStepDraft({ inputs: newInputs, instruction: newInstruction, timerMinutes: newTimer });
+  const save = () => {
+    setSaveAttempted(true);
+    if (hasValidationIssues(mealIssues)) return;
+    void mutate(
+      {
+        type: "updateMealSnapshot",
+        weekId: week.id,
+        mealId: meal.id,
+        changes: {
+          title: draftTitle.trim(), subtitle: draftSubtitle.trim(), venue: draftVenue.trim(), prepNote: draftPrepNote.trim(), leftoverNote: draftLeftoverNote.trim(), notes: draftNotes.trim(),
+          ingredients: draftIngredients.split("\n").map((line) => line.trim()).filter(Boolean),
+        },
       },
-    },
-  );
+      recipeDraft.mutationOptions(() => setSaveAttempted(false)),
+    );
+  };
+  const addInstruction = () => {
+    setNewStepAttempted(true);
+    if (hasValidationIssues(newStepIssues)) return;
+    const timer = newTimerMinutes === null ? undefined : Math.max(1, Math.round(newTimerMinutes * 60));
+    void mutate(
+      {
+        type: "addInstructionStep", weekId: week.id, mealId: meal.id, position: meal.instructions.length,
+        step: {
+          inputs: newInputs.split("\n").filter((line) => line.trim()).map((line) => { const [amount, ...ingredient] = line.split("|"); return { amount: amount.trim(), ingredient: ingredient.join("|").trim() }; }),
+          instruction: newInstruction.trim(), ...(timer ? { timerDurationSeconds: timer } : {}),
+        },
+      },
+      newStepDraft.mutationOptions(() => { setNewInstruction(""); setNewInputs(""); setNewTimer(""); setNewStepAttempted(false); }),
+    );
+  };
   return (
     <ModalDrawer title={meal.title} className="meal-drawer" onClose={onClose}>
       <div className="drawer-body">
+        {notice ? (
+          <AuthorityNotice
+            notice={notice}
+            pendingRetryLabel={pendingRetryLabel}
+            onRetryPending={onRetryPending}
+            retryDisabled={retryDisabled}
+            onDiscardPending={onDiscardPending}
+            onDismiss={pendingRetryLabel ? undefined : onDismissNotice}
+          />
+        ) : null}
+        {offline ? (
+          <div className="authority-banner warning" role="status">
+            <span>Editing is paused until the server reconnects.</span>
+            <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
+          </div>
+        ) : null}
         {week.status === "archived" ? <p className="inline-alert warning">Archived weeks are read-only.</p> : null}
         <div className="field-grid">
-          <label><span>Title</span><input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-          <label><span>Venue</span><input value={venue} onChange={(event) => setVenue(event.target.value)} /></label>
+          <label><span>Title</span><input aria-label="Title" maxLength={MAX_MEAL_TITLE_LENGTH} value={draftTitle} aria-invalid={saveAttempted && Boolean(mealIssues.title)} aria-describedby={saveAttempted && mealIssues.title ? "meal-title-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "title", event.target.value)} /><FieldError id="meal-title-error" message={saveAttempted ? mealIssues.title : undefined} /></label>
+          <label><span>Venue</span><input aria-label="Venue" maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
         </div>
-        <label className="full-field"><span>Subtitle</span><input value={subtitle} onChange={(event) => setSubtitle(event.target.value)} /></label>
-        <label className="full-field"><span>Ingredients, one per line</span><textarea rows={5} value={ingredients} onChange={(event) => setIngredients(event.target.value)} /></label>
-        <label className="full-field"><span>Recipe note</span><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
+        <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
+        <label className="full-field"><span>Ingredients, one per line</span><textarea aria-label="Ingredients" rows={5} maxLength={MAX_INGREDIENT_TEXT_LENGTH} value={draftIngredients} aria-invalid={saveAttempted && Boolean(mealIssues.ingredients)} aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "ingredients", event.target.value)} /><FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} /></label>
+        <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
         <div className="field-grid">
-          <label><span>Prep note</span><textarea value={prepNote} onChange={(event) => setPrepNote(event.target.value)} /></label>
-          <label><span>Leftover note</span><textarea value={leftoverNote} onChange={(event) => setLeftoverNote(event.target.value)} /></label>
+          <label><span>Prep note</span><textarea aria-label="Prep note" maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>
+          <label><span>Leftover note</span><textarea aria-label="Leftover note" maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLeftoverNote} aria-invalid={saveAttempted && Boolean(mealIssues.leftoverNote)} aria-describedby={saveAttempted && mealIssues.leftoverNote ? "meal-leftover-note-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "leftoverNote", event.target.value)} /><FieldError id="meal-leftover-note-error" message={saveAttempted ? mealIssues.leftoverNote : undefined} /></label>
         </div>
-        <button className="primary-button" type="button" disabled={disabled || !title.trim() || !venue.trim()} onClick={save}><Check size={15} /> Save recipe details</button>
+        <button className="primary-button" type="button" disabled={disabled} onClick={save}><Check size={15} /> Save recipe details</button>
         <div className="snapshot-section">
           <h3>Schedule and status</h3>
           <div className="inline-control-row">
-            <select value={targetDate} disabled={disabled} onChange={(event) => setTargetDate(event.target.value as IsoDate)}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select>
-            <button className="secondary-button" type="button" disabled={disabled || targetDate === meal.date} onClick={() => void mutate({ type: "moveMeal", weekId: week.id, mealId: meal.id, targetDate, slot: "dinner" })}>Move dinner</button>
+            <select value={draftTargetDate} disabled={disabled} onChange={(event) => { moveDraft.begin(); setTargetDate(event.target.value as IsoDate); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select>
+            <button className="secondary-button" type="button" disabled={disabled || draftTargetDate === meal.date} onClick={() => void mutate({ type: "moveMeal", weekId: week.id, mealId: meal.id, targetDate: draftTargetDate, slot: "dinner" }, moveDraft.mutationOptions())}>Move dinner</button>
           </div>
-          <div className="segmented-control status-control">{MEAL_STATUSES.map((status) => <button key={status} type="button" className={meal.status === status ? "active" : ""} disabled={disabled || meal.status === status} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status })}>{status}</button>)}</div>
+          <div className="segmented-control status-control">{MEAL_STATUSES.map((status) => <button key={status} type="button" aria-pressed={meal.status === status} className={meal.status === status ? "active" : ""} disabled={disabled || meal.status === status} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status })}>{status}</button>)}</div>
         </div>
         <div className="snapshot-section">
           <h3>Instructions</h3>
@@ -1334,6 +2037,7 @@ function MealDrawer(props: {
                 key={step.id}
                 step={step}
                 meal={meal}
+                stepNumber={index + 1}
                 week={week}
                 disabled={disabled}
                 mutate={mutate}
@@ -1341,31 +2045,18 @@ function MealDrawer(props: {
                 contextView="week"
                 editable
                 actions={<div className="prep-reference-actions">
-                  <button className="icon-button" type="button" title="Move instruction up" disabled={disabled || index === 0} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
-                  <button className="icon-button" type="button" title="Move instruction down" disabled={disabled || index === meal.instructions.length - 1} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
-                  <button className="icon-button danger" type="button" title="Delete instruction" disabled={disabled || week.data.prep.some((reference) => reference.stepId === step.id)} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></button>
+                  <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
+                  <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} down`} disabled={disabled || index === meal.instructions.length - 1} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
+                  <button className="icon-button danger" type="button" title={`Delete ${stepControlTarget(meal, step, index + 1)}`} disabled={disabled || week.data.prep.some((reference) => reference.stepId === step.id)} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></button>
                 </div>}
               />
             ))}
           </div>
           <div className="instruction-step new-step-form">
-            <label className="full-field"><span>Amounts: amount | ingredient</span><textarea value={newInputs} onChange={(event) => setNewInputs(event.target.value)} /></label>
-            <label className="full-field"><span>New instruction</span><textarea value={newInstruction} onChange={(event) => setNewInstruction(event.target.value)} /></label>
-            <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input type="number" min="0.5" max="1440" step="0.5" value={newTimer} onChange={(event) => setNewTimer(event.target.value)} /></label>
-            <button className="secondary-button" type="button" disabled={disabled || !newInstruction.trim() || !newTimerValid} onClick={() => {
-              if (!newTimerValid) return;
-              const timer = newTimerMinutes === null ? undefined : Math.max(1, Math.round(newTimerMinutes * 60));
-              void mutate(
-                {
-                  type: "addInstructionStep", weekId: week.id, mealId: meal.id, position: meal.instructions.length,
-                  step: {
-                    inputs: newInputs.split("\n").filter((line) => line.trim()).map((line) => { const [amount, ...ingredient] = line.split("|"); return { amount: amount.trim(), ingredient: ingredient.join("|").trim() }; }),
-                    instruction: newInstruction.trim(), ...(timer ? { timerDurationSeconds: timer } : {}),
-                  },
-                },
-                { onAccepted: () => { setNewInstruction(""); setNewInputs(""); setNewTimer(""); } },
-              );
-            }}><Plus size={15} /> Add instruction</button>
+            <label className="full-field"><span>Amounts: amount | ingredient</span><textarea aria-label="New amounts" maxLength={MAX_STEP_INPUT_TEXT_LENGTH} value={newInputs} aria-invalid={newStepAttempted && Boolean(newStepIssues.inputs)} aria-describedby={newStepAttempted && newStepIssues.inputs ? "new-step-inputs-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewInputs(event.target.value); }} /><FieldError id="new-step-inputs-error" message={newStepAttempted ? newStepIssues.inputs : undefined} /></label>
+            <label className="full-field"><span>New instruction</span><textarea aria-label="New instruction" maxLength={MAX_COMMAND_TEXT_LENGTH} value={newInstruction} aria-invalid={newStepAttempted && Boolean(newStepIssues.instruction)} aria-describedby={newStepAttempted && newStepIssues.instruction ? "new-step-instruction-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewInstruction(event.target.value); }} /><FieldError id="new-step-instruction-error" message={newStepAttempted ? newStepIssues.instruction : undefined} /></label>
+            <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input aria-label="New timer minutes" type="number" min="0.5" max="1440" step="0.5" value={newTimer} aria-invalid={newStepAttempted && Boolean(newStepIssues.timer)} aria-describedby={newStepAttempted && newStepIssues.timer ? "new-step-timer-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewTimer(event.target.value); }} /><FieldError id="new-step-timer-error" message={newStepAttempted ? newStepIssues.timer : undefined} /></label>
+            <button className="secondary-button" type="button" disabled={disabled} onClick={addInstruction}><Plus size={15} /> Add instruction</button>
           </div>
         </div>
       </div>
@@ -1378,15 +2069,46 @@ function ChatPanel(props: {
   workspace: InitializedWorkspace;
   week: WeekPlan;
   view: PlannerView;
+  today: IsoDate;
   disabled: boolean;
   health: HealthResponse | null;
+  message: string;
+  onMessageChange: Dispatch<SetStateAction<string>>;
   onSend: SendContextMessage;
   onRetry: (turn: ChatTurn) => void;
+  notice?: Notice;
+  onDismissNotice?: () => void;
+  pendingRetryLabel?: string;
+  onRetryPending?: () => void;
+  retryDisabled?: boolean;
+  onDiscardPending?: () => void;
+  offline?: boolean;
+  onReconnect?: () => void;
   modal?: boolean;
   onClose?: () => void;
 }) {
-  const { workspace, week, view, disabled, health, onSend, onRetry, modal = false, onClose } = props;
-  const [message, setMessage] = useState("");
+  const {
+    workspace,
+    week,
+    view,
+    today,
+    disabled,
+    health,
+    message,
+    onMessageChange,
+    onSend,
+    onRetry,
+    notice,
+    onDismissNotice,
+    pendingRetryLabel,
+    onRetryPending,
+    retryDisabled,
+    onDiscardPending,
+    offline = false,
+    onReconnect,
+    modal = false,
+    onClose,
+  } = props;
   const endRef = useRef<HTMLDivElement>(null);
   const entries = [...workspace.transcriptEntries].sort((left, right) => left.sequence - right.sequence);
   const turns = [...workspace.chatTurns].sort((left, right) => right.turnSequence - left.turnSequence);
@@ -1397,11 +2119,30 @@ function ChatPanel(props: {
       (turn.status === "failed" || turn.status === "interrupted") &&
       !retriedTurnIds.has(turn.turnId),
   );
-  const context: PlannerChatContext = { view, weekId: week.id };
+  const unappliedTurns = turns.filter(
+    (turn) =>
+      turn.status === "completed" &&
+      (turn.mutationOutcome === "version_conflict" || turn.mutationOutcome === "domain_rejected"),
+  );
+  const tonightMeal = view === "tonight"
+    ? week.data.meals.find((meal) => meal.date === today && meal.slot === "dinner")
+    : null;
+  const tonightLeftover = view === "tonight"
+    ? week.data.leftovers.find(
+        (leftover) =>
+          leftover.state === "assigned" &&
+          leftover.assignedDate === today &&
+          leftover.assignedSlot === "dinner",
+      )
+    : null;
+  const context = plannerChatContextForView(view, week, today);
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!message.trim()) return;
-    void onSend(message.trim(), context, () => setMessage(""));
+    const submittedMessage = message.trim();
+    if (!submittedMessage) return;
+    void onSend(submittedMessage, context, () => {
+      onMessageChange((current) => current.trim() === submittedMessage ? "" : current);
+    });
   };
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -1417,7 +2158,24 @@ function ChatPanel(props: {
         <div className={`bridge-status ${codexReady ? "bridge-ready" : "bridge-unavailable"}`}>
           <span /><small>{health ? (codexReady ? "ChatGPT ready" : "Planner ready · ChatGPT unavailable") : "Checking ChatGPT"}</small>
         </div>
-        <div className="chat-context"><Home size={12} /> {view} · week {week.id}</div>
+        <div className="chat-context"><Home size={12} /> {view} · week {week.id}{tonightLeftover ? ` · ${tonightLeftover.label} leftovers` : tonightMeal ? ` · ${tonightMeal.title}` : ""}</div>
+        {modal && notice ? (
+          <AuthorityNotice
+            notice={notice}
+            pendingRetryLabel={pendingRetryLabel}
+            onRetryPending={onRetryPending}
+            retryDisabled={retryDisabled}
+            onDiscardPending={onDiscardPending}
+            onDismiss={onDismissNotice}
+            className="chat-inline-notice"
+          />
+        ) : null}
+        {modal && offline ? (
+          <div className="authority-banner warning chat-inline-notice" role="status">
+            <span>You are seeing the last shared plan. Editing is paused until the server reconnects.</span>
+            <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
+          </div>
+        ) : null}
         <div className="chat-messages" aria-live="polite">
           {!entries.length ? <p className="empty-copy">Ask about this week or request a planner change.</p> : null}
           {entries.map((entry) => (
@@ -1426,12 +2184,20 @@ function ChatPanel(props: {
               <p>{entry.text}</p>
             </div>
           ))}
+          {unappliedTurns.map((turn) => (
+            <div key={`unapplied-${turn.turnId}`} className="chat-message unapplied">
+              <span className="chat-message-context">Planner change not applied</span>
+              <p>{turn.mutationOutcome === "version_conflict"
+                ? "The shared plan changed first. Review it, then ask ChatGPT again."
+                : "The proposed change did not fit the current plan. Review it, then ask ChatGPT again."}</p>
+            </div>
+          ))}
           {running ? <div className="chat-message"><span className="chat-message-context">Working</span><p><LoaderCircle className="spin inline-spinner" size={14} /> ChatGPT is updating the shared plan…</p></div> : null}
           <div ref={endRef} />
         </div>
         {retryable ? <button className="suggestion-button" type="button" disabled={disabled || Boolean(running)} onClick={() => onRetry(retryable)}><RotateCcw size={14} /> Retry the interrupted ChatGPT request</button> : null}
         <form className="chat-form" onSubmit={submit}>
-          <textarea data-autofocus={modal ? "true" : undefined} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Ask or change the plan…" aria-label="Message ChatGPT" />
+          <label className="chat-input-field"><textarea data-autofocus={modal ? "true" : undefined} maxLength={MAX_COMMAND_TEXT_LENGTH} value={message} onChange={(event) => onMessageChange(event.target.value)} placeholder="Ask or change the plan…" aria-label="Message ChatGPT" /><small className="field-limit">{message.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
           <button type="submit" title="Send to ChatGPT" disabled={disabled || Boolean(running) || !message.trim()}>{disabled || running ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>
         </form>
       </div>
@@ -1444,13 +2210,42 @@ function HistoryDrawer(props: {
   disabled: boolean;
   onUndo: (event: PlannerEvent) => void;
   onClose: () => void;
-}) {
-  const { workspace, disabled, onUndo, onClose } = props;
+} & AuthorityRecoveryProps) {
+  const {
+    workspace,
+    disabled,
+    onUndo,
+    onClose,
+    notice,
+    pendingRetryLabel,
+    onRetryPending,
+    retryDisabled,
+    onDiscardPending,
+    onDismissNotice,
+    offline,
+    onReconnect,
+  } = props;
   const events = [...workspace.events].sort((left, right) => right.sequence - left.sequence);
   const latest = events[0];
   const canUndo = latest && latest.command.type !== "undoLatest";
   return (
     <ModalDrawer title="Recent changes" className="history-drawer" onClose={onClose}>
+      {notice ? (
+        <AuthorityNotice
+          notice={notice}
+          pendingRetryLabel={pendingRetryLabel}
+          onRetryPending={onRetryPending}
+          retryDisabled={retryDisabled}
+          onDiscardPending={onDiscardPending}
+          onDismiss={pendingRetryLabel ? undefined : onDismissNotice}
+        />
+      ) : null}
+      {offline ? (
+        <div className="authority-banner warning" role="status">
+          <span>Editing is paused until the server reconnects.</span>
+          <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
+        </div>
+      ) : null}
       <div className="history-list">
         {!events.length ? <p className="empty-copy">No planner changes yet.</p> : null}
         {events.map((event, index) => (
@@ -1521,12 +2316,17 @@ function useDialogFocus(
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
-      const focusTarget = restoreFocus?.isConnected
-        ? restoreFocus
-        : previous?.isConnected
-          ? previous
-          : null;
-      if (focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
+      window.requestAnimationFrame(() => {
+        const fallback = Array.from(document.querySelectorAll<HTMLElement>(
+          ".mobile-nav button, .view-nav button, .header-actions button",
+        )).find((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
+        const focusTarget = restoreFocus?.isConnected
+          ? restoreFocus
+          : previous?.isConnected
+            ? previous
+            : fallback;
+        focusTarget?.focus();
+      });
     };
   }, [ref, restoreFocusRef]);
 }

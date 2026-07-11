@@ -495,6 +495,11 @@ export function transformLegacyV2(
     .map((leftover, index) =>
       decodeLegacyLeftover(decoder, leftover, `payload.data.leftovers[${index}]`, weekId),
     );
+  const leftoverSourceMealIds = new Set(leftovers.map((leftover) => leftover.sourceMealId));
+  for (const meal of meals) {
+    // Browser-v2 allowed a source meal to be reset after leftovers were recorded.
+    if (leftoverSourceMealIds.has(meal.id)) meal.status = "cooked";
+  }
   const feedbackRecord = decoder.record(data.feedback, "payload.data.feedback");
   const feedback: HouseholdPlannerState["weeks"][number]["data"]["feedback"] = {};
   for (const [mealId, value] of Object.entries(feedbackRecord)) {
@@ -575,6 +580,13 @@ export function createCanonicalSeed(
   validateContext(context);
   const today = isoDateInTimeZone(context.now, DEFAULT_HOUSEHOLD_TIME_ZONE);
   const weekId = mondayForIsoDate(today);
+  const usualSecondDinner = addIsoDateDays(weekId, 3);
+  const weekEnd = addIsoDateDays(weekId, 6);
+  const secondDinnerDate = usualSecondDinner > today
+    ? usualSecondDinner
+    : today < weekEnd
+      ? addIsoDateDays(today, 1)
+      : usualSecondDinner;
   let state: HouseholdPlannerState = {
     householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
     activeWeekId: null,
@@ -588,7 +600,7 @@ export function createCanonicalSeed(
       plan: {
         meals: [
           {
-            date: weekId,
+            date: today,
             slot: "dinner",
             title: "Harissa chicken traybake",
             subtitle: "Peppers, chickpeas, lemon yogurt",
@@ -621,7 +633,7 @@ export function createCanonicalSeed(
             ],
           },
           {
-            date: addIsoDateDays(weekId, 3),
+            date: secondDinnerDate,
             slot: "dinner",
             title: "Miso salmon rice bowls",
             subtitle: "Snap peas, sesame, cucumber",

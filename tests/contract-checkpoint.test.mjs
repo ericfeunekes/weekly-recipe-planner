@@ -56,6 +56,32 @@ test("contract checkpoint freezes bounded workspace and prep semantics", () => {
     true,
   );
   assert.equal(
+    isPlannerChatContext({
+      view: "tonight",
+      weekId: "2026-07-06",
+      leftoverId: "leftover-1",
+    }),
+    true,
+  );
+  assert.equal(
+    isPlannerChatContext({
+      view: "tonight",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      leftoverId: "leftover-1",
+    }),
+    false,
+  );
+  assert.equal(
+    isPlannerChatContext({
+      view: "tonight",
+      weekId: "2026-07-06",
+      stepId: "step-1",
+      leftoverId: "leftover-1",
+    }),
+    false,
+  );
+  assert.equal(
     isHouseholdCommand({
       type: "setInstructionStepComplete",
       weekId: "2026-07-06",

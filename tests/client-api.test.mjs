@@ -11,7 +11,10 @@ import {
   readLegacyImport,
   readHistoryPage,
   readWorkspace,
+  retryChatTurn,
   shouldAcceptWorkspace,
+  submitChatTurn,
+  undoLatest,
 } from "../app/planner-api.ts";
 
 function initializedWorkspace(syncRevision = 3, plannerVersion = 2) {
@@ -103,6 +106,214 @@ test("expected command conflicts are decision responses, not transport errors", 
     assert.equal(result.decision.status, "version_conflict");
     assert.equal(result.workspace.syncRevision, 10);
   });
+});
+
+test("ambiguous POST transport failures replay the exact request ID once", async () => {
+  const workspace = initializedWorkspace(11, 9);
+  const requests = [];
+  await withFetch(async (_path, init) => {
+    requests.push(JSON.parse(init.body));
+    if (requests.length === 1) throw new TypeError("response disappeared after commit");
+    return new Response(JSON.stringify({
+      decision: { status: "accepted", eventId: "event-1", resultVersion: 9 },
+      workspace,
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }, async () => {
+    const result = await applyPlannerCommand({
+      requestId: "stable-request-id",
+      basePlannerVersion: 8,
+      command: { type: "activateWeek", weekId: "2026-07-06" },
+    });
+    assert.equal(result.decision.status, "accepted");
+  });
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(requests[1].requestId, "stable-request-id");
+});
+
+test("ambiguous POST envelopes replay only for the original request ID", async (t) => {
+  const workspace = initializedWorkspace(11, 9);
+  const commandResponse = {
+    decision: { status: "accepted", eventId: "event-1", plannerVersion: 9 },
+    workspace,
+  };
+  const chatResponse = {
+    decision: { status: "context_stale", expectedVersion: 8, actualVersion: 9 },
+    workspace,
+  };
+  const cases = [
+    {
+      name: "planner command",
+      path: "/api/commands",
+      first: {
+        requestId: "command-original",
+        basePlannerVersion: 8,
+        command: { type: "activateWeek", weekId: "2026-07-06" },
+      },
+      run: applyPlannerCommand,
+      response: commandResponse,
+    },
+    {
+      name: "undo",
+      path: "/api/undo",
+      first: {
+        requestId: "undo-original",
+        basePlannerVersion: 8,
+        targetEventId: "event-before-undo",
+      },
+      run: undoLatest,
+      response: commandResponse,
+    },
+    {
+      name: "bootstrap",
+      path: "/api/bootstrap",
+      first: { requestId: "bootstrap-original", mode: "seed" },
+      run: bootstrapWorkspace,
+      response: { imported: false, workspace },
+    },
+    {
+      name: "chat submit",
+      path: "/api/chat/submit",
+      first: {
+        requestId: "chat-submit-original",
+        basePlannerVersion: 8,
+        message: "Move dinner to Tuesday",
+        context: { view: "week", weekId: "2026-07-06" },
+      },
+      run: submitChatTurn,
+      response: chatResponse,
+    },
+    {
+      name: "chat retry",
+      path: "/api/chat/retry",
+      first: {
+        requestId: "chat-retry-original",
+        basePlannerVersion: 8,
+        turnId: "turn-1",
+      },
+      run: retryChatTurn,
+      response: chatResponse,
+    },
+  ];
+
+  for (const operation of cases) {
+    await t.test(operation.name, async () => {
+      const requests = [];
+      const semanticFields = Object.fromEntries(
+        Object.entries(operation.first).filter(([key]) => key !== "requestId"),
+      );
+      const refreshedFields = "basePlannerVersion" in semanticFields
+        ? { ...semanticFields, basePlannerVersion: semanticFields.basePlannerVersion + 1 }
+        : semanticFields;
+      const laterRetry = { ...refreshedFields, requestId: operation.first.requestId };
+      const deliberateOperation = { ...refreshedFields, requestId: `${operation.name}-deliberate-id` };
+      await withFetch(async (path, init) => {
+        requests.push({ path, rawBody: init.body, body: JSON.parse(init.body) });
+        if (requests.length <= 2) throw new TypeError("response disappeared after commit");
+        return new Response(JSON.stringify(operation.response), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }, async () => {
+        await assert.rejects(
+          operation.run(operation.first),
+          (error) => error instanceof PlannerApiError && error.code === "NETWORK_ERROR",
+        );
+
+        await operation.run(deliberateOperation);
+        await operation.run(laterRetry);
+      });
+
+      assert.equal(requests.length, 4);
+      assert.ok(requests.every((request) => request.path === operation.path));
+      assert.equal(requests[0].rawBody, JSON.stringify(operation.first));
+      assert.equal(requests[1].rawBody, requests[0].rawBody);
+      assert.equal(requests[2].body.requestId, `${operation.name}-deliberate-id`);
+      assert.equal(requests[2].rawBody, JSON.stringify(deliberateOperation));
+      assert.equal(requests[3].rawBody, requests[0].rawBody);
+      assert.equal(requests[3].body.requestId, operation.first.requestId);
+    });
+  }
+});
+
+test("ambiguous planner retries cannot drift with canonical add-step or prep state", async (t) => {
+  const workspace = initializedWorkspace(11, 9);
+  const cases = [
+    {
+      name: "add step position",
+      first: {
+        requestId: "add-step-stable",
+        basePlannerVersion: 8,
+        command: {
+          type: "addInstructionStep",
+          weekId: "2026-07-06",
+          mealId: "meal-1",
+          position: 2,
+          step: { inputs: [], instruction: "Rest before serving." },
+        },
+      },
+      reconstructed: {
+        requestId: "add-step-stable",
+        basePlannerVersion: 9,
+        command: {
+          type: "addInstructionStep",
+          weekId: "2026-07-06",
+          mealId: "meal-1",
+          position: 3,
+          step: { inputs: [], instruction: "Rest before serving." },
+        },
+      },
+    },
+    {
+      name: "prep plan append",
+      first: {
+        requestId: "prep-plan-stable",
+        basePlannerVersion: 8,
+        command: {
+          type: "setPrepPlan",
+          weekId: "2026-07-06",
+          entries: [{ stepId: "step-1", prepDate: "2026-07-05" }],
+        },
+      },
+      reconstructed: {
+        requestId: "prep-plan-stable",
+        basePlannerVersion: 9,
+        command: {
+          type: "setPrepPlan",
+          weekId: "2026-07-06",
+          entries: [
+            { stepId: "step-1", prepDate: "2026-07-05" },
+            { stepId: "step-1", prepDate: "2026-07-05" },
+          ],
+        },
+      },
+    },
+  ];
+
+  for (const operation of cases) {
+    await t.test(operation.name, async () => {
+      const requests = [];
+      await withFetch(async (_path, init) => {
+        requests.push(JSON.parse(init.body));
+        if (requests.length <= 2) throw new TypeError("response disappeared after commit");
+        return new Response(JSON.stringify({
+          decision: { status: "accepted", eventId: "event-1", plannerVersion: 9 },
+          workspace,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }, async () => {
+        await assert.rejects(
+          applyPlannerCommand(operation.first),
+          (error) => error instanceof PlannerApiError && error.code === "NETWORK_ERROR",
+        );
+        await applyPlannerCommand(operation.reconstructed);
+      });
+
+      assert.equal(requests.length, 3);
+      assert.deepEqual(requests[1], operation.first);
+      assert.deepEqual(requests[2], operation.first);
+    });
+  }
 });
 
 test("bootstrap failures expose their authoritative workspace", async () => {

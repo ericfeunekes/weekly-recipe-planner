@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { CodexAppServerClient } from "../bridge/app-server-client.mjs";
 
-function createFakeSpawn() {
+function createFakeSpawn({ turnFailureMessage = null } = {}) {
   const calls = [];
   let spawnCount = 0;
 
@@ -56,6 +56,20 @@ function createFakeSpawn() {
         id: request.id,
         result: { turn: { id: "turn-rpc", status: "inProgress", items: [] } },
       });
+      if (turnFailureMessage !== null) {
+        write(child, {
+          method: "turn/completed",
+          params: {
+            threadId: "thread-rpc",
+            turn: {
+              id: "turn-rpc",
+              status: "failed",
+              error: { message: turnFailureMessage },
+            },
+          },
+        });
+        return;
+      }
       write(child, {
         id: "server-request-1",
         method: "item/tool/requestUserInput",
@@ -119,6 +133,95 @@ test("app-server client performs JSONL handshake once and resolves a completed t
       (message) => message.id === "server-request-1" && message.error?.code === -32601,
     ),
   );
+});
+
+test("turn completion errors never expose provider text", async (t) => {
+  const sentinel = "SECRET_SENTINEL_FROM_PROVIDER";
+  const fake = createFakeSpawn({ turnFailureMessage: sentinel });
+  const client = new CodexAppServerClient({
+    spawnImpl: fake.spawnImpl,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const thread = await client.startThread({ ephemeral: true });
+
+  await assert.rejects(
+    client.runTurn(
+      { threadId: thread.thread.id, input: [{ type: "text", text: "fail safely" }] },
+      { timeoutMs: 1_000 },
+    ),
+    (error) => {
+      assert.equal(error.code, "CODEX_TURN_FAILED");
+      assert.equal(error.message, "Codex turn did not complete.");
+      assert.doesNotMatch(error.message, new RegExp(sentinel));
+      return true;
+    },
+  );
+});
+
+test("turn completion received before the turn-start response remains claimable", async (t) => {
+  const client = new CodexAppServerClient({
+    requestTimeoutMs: 1_000,
+    spawnImpl() {
+      const child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.killed = false;
+      child.kill = () => {
+        child.killed = true;
+        queueMicrotask(() => child.emit("exit", 0, null));
+        return true;
+      };
+      let input = "";
+      child.stdin.setEncoding("utf8");
+      child.stdin.on("data", (chunk) => {
+        input += chunk;
+        const lines = input.split("\n");
+        input = lines.pop();
+        for (const line of lines) {
+          if (!line) continue;
+          const request = JSON.parse(line);
+          if (request.method === "initialize") {
+            child.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+          } else if (request.method === "turn/start") {
+            child.stdout.write(`${JSON.stringify({
+              method: "item/completed",
+              params: {
+                turnId: "turn-early",
+                item: {
+                  type: "agentMessage",
+                  phase: "final_answer",
+                  text: "early answer",
+                },
+              },
+            })}\n`);
+            child.stdout.write(`${JSON.stringify({
+              method: "turn/completed",
+              params: { turn: { id: "turn-early", status: "completed" } },
+            })}\n`);
+            child.stdout.write(`${JSON.stringify({
+              id: request.id,
+              result: { turn: { id: "turn-early", status: "inProgress" } },
+            })}\n`);
+          }
+        }
+      });
+      return child;
+    },
+  });
+  t.after(() => client.close());
+
+  const result = await client.runTurn(
+    { threadId: "thread-early", input: [{ type: "text", text: "Fast answer" }] },
+    { timeoutMs: 100 },
+  );
+
+  assert.equal(result.text, "early answer");
+  assert.equal(result.turn.status, "completed");
+  assert.equal(client.pending.size, 0);
+  assert.equal(client.turnRecords.size, 0);
+  assert.equal(client.unclaimedTurnIds.size, 0);
 });
 
 test("concurrent callers wait for the initialized handshake", async (t) => {

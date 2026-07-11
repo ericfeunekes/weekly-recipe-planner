@@ -350,6 +350,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   requireExactShape(issues, data, `${path}.data`, ["meals", "prep", "groceries", "leftovers", "farmBoxReconciled", "feedback", "weekLesson"]);
   const mealIds = new Set<string>();
   const mealDates = new Map<string, IsoDate>();
+  const mealStatuses = new Map<string, string>();
   const mealSlots = new Set<string>();
   const stepIds = new Set<string>();
   if (!Array.isArray(data.meals) || data.meals.length > MAX_MEALS_PER_WEEK) {
@@ -362,6 +363,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
         if (mealIds.has(validated.id)) addIssue(issues, `${mealPath}.id`, "Must be unique within the week.");
         mealIds.add(validated.id);
         if (validated.date) mealDates.set(validated.id, validated.date);
+        if (isRecord(meal) && typeof meal.status === "string") mealStatuses.set(validated.id, meal.status);
       }
       if (validated.date && validated.slot) {
         const key = `${validated.date}:${validated.slot}`;
@@ -452,7 +454,11 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
       if (!isId(leftover.id)) addIssue(issues, `${leftoverPath}.id`, "Must be a nonempty bounded ID.");
       else if (leftoverIds.has(leftover.id)) addIssue(issues, `${leftoverPath}.id`, "Must be unique within the week.");
       else leftoverIds.add(leftover.id);
-      if (!isId(leftover.sourceMealId) || !mealIds.has(leftover.sourceMealId)) addIssue(issues, `${leftoverPath}.sourceMealId`, "Must reference a meal in this week.");
+      if (!isId(leftover.sourceMealId) || !mealIds.has(leftover.sourceMealId)) {
+        addIssue(issues, `${leftoverPath}.sourceMealId`, "Must reference a meal in this week.");
+      } else if (mealStatuses.get(leftover.sourceMealId) !== "cooked") {
+        addIssue(issues, `${leftoverPath}.sourceMealId`, "Must reference the cooked meal that produced these leftovers.");
+      }
       if (!isText(leftover.label, 1_000, { nonempty: true })) addIssue(issues, `${leftoverPath}.label`, "Must be a nonempty label up to 1,000 characters.");
       if (!Number.isSafeInteger(leftover.portions) || Number(leftover.portions) < 1) addIssue(issues, `${leftoverPath}.portions`, "Must be a positive whole number.");
       if (!LEFTOVER_STATES.includes(leftover.state as (typeof LEFTOVER_STATES)[number])) addIssue(issues, `${leftoverPath}.state`, "Must be a supported leftover state.");
@@ -649,7 +655,9 @@ function rejectArchivedWeek(state: HouseholdPlannerState): HouseholdCommandExecu
 }
 
 function leftoverPortions(meal: Meal): number {
-  const match = meal.leftoverNote.match(/\b(\d+)\b/);
+  const match = meal.leftoverNote.match(
+    /\b(\d{1,2})(?:\s+[A-Za-z][A-Za-z'-]*){0,2}\s+(?:portions?|servings?|lunch(?:es)?)\b/i,
+  );
   return match ? Math.max(1, Number(match[1])) : 2;
 }
 
@@ -682,6 +690,15 @@ export function executeHouseholdCommand(
       const originalDate = moving.date;
       const originalSlot = moving.slot;
       const target = week.data.meals.find((meal) => meal.date === command.targetDate && meal.slot === command.slot);
+      if (
+        week.data.leftovers.some(
+          (leftover) => leftover.sourceMealId === moving.id || leftover.sourceMealId === target?.id,
+        )
+      ) {
+        return failure(state, "A meal with tracked leftovers cannot be moved or swapped.", {
+          mealId: "Keep the cooked source meal on its recorded date.",
+        });
+      }
       moving.date = command.targetDate;
       moving.slot = command.slot;
       moving.status = "moved";
@@ -716,6 +733,14 @@ export function executeHouseholdCommand(
       const meal = week.data.meals.find((item) => item.id === command.mealId);
       if (!meal) return failure(state, "Meal not found.", { mealId: "Choose a meal in the selected week." });
       if (meal.status === command.status) return failure(state, "Meal status is unchanged.");
+      if (
+        command.status !== "cooked" &&
+        week.data.leftovers.some((leftover) => leftover.sourceMealId === meal.id)
+      ) {
+        return failure(state, "A cooked meal with tracked leftovers cannot change status.", {
+          status: "Undo the original cooked action before other changes depend on it.",
+        });
+      }
       const previous = meal.status;
       meal.status = command.status;
       const createdIds: Record<string, string> = {};
@@ -1021,16 +1046,85 @@ export function executeHouseholdCommand(
       if (!sourceMeal) return failure(state, "Leftover source meal not found.");
       if (dateOrdinal(command.targetDate) <= dateOrdinal(sourceMeal.date)) return failure(state, "Leftovers must be assigned after their source meal.", { targetDate: "Choose a later date in the week." });
       if (week.data.leftovers.some((item) => item.state === "assigned" && item.assignedDate === command.targetDate && item.assignedSlot === command.slot)) return failure(state, "That date and slot already has assigned leftovers.");
+      const destination = week.data.meals.find((meal) => meal.date === command.targetDate && meal.slot === command.slot);
+      if (
+        destination &&
+        week.data.leftovers.some((item) => item.sourceMealId === destination.id)
+      ) {
+        return failure(state, "A dinner with tracked leftovers cannot be replaced.", {
+          targetDate: "Choose a dinner that is not the source of another leftover record.",
+        });
+      }
+      if (destination && ["cooking", "cooked", "leftover"].includes(destination.status)) {
+        return failure(state, "A started or completed dinner cannot be replaced with leftovers.", {
+          targetDate: "Choose an open or not-yet-started dinner slot.",
+        });
+      }
       leftover.state = "assigned";
       leftover.assignedDate = command.targetDate;
       leftover.assignedSlot = command.slot;
-      const destination = week.data.meals.find((meal) => meal.date === command.targetDate && meal.slot === command.slot);
+      let displacedMealTitle: string | null = null;
+      let removedPrepCount = 0;
+      const createdIds: Record<string, string> = {};
+      let destinationMeal: Meal;
       if (destination) {
-        destination.status = "leftover";
-        destination.subtitle = `${leftover.portions} portions from ${leftover.label}`;
-        destination.leftoverNote = `Assigned from ${sourceMeal.date}`;
+        destinationMeal = destination;
+        displacedMealTitle = destination.title;
+        const displacedStepIds = new Set(destination.instructions.map((step) => step.id));
+        const affectedPrepDates = new Set(
+          week.data.prep
+            .filter((reference) => displacedStepIds.has(reference.stepId))
+            .map((reference) => reference.prepDate),
+        );
+        const retainedPrep = week.data.prep.filter((reference) => !displacedStepIds.has(reference.stepId));
+        removedPrepCount = week.data.prep.length - retainedPrep.length;
+        week.data.prep = retainedPrep;
+        for (const prepDate of affectedPrepDates) normalizePrepDate(week.data.prep, prepDate);
+        week.data.prep = sortPrep(week.data.prep);
+        delete week.data.feedback[destination.id];
+      } else {
+        const id = materializeId(
+          context,
+          "meal",
+          new Set(week.data.meals.map((meal) => meal.id)),
+        );
+        if (!id) return failure(state, "Could not materialize a unique leftover-meal ID.");
+        destinationMeal = {
+          id,
+          date: command.targetDate,
+          slot: command.slot,
+          title: leftover.label,
+          subtitle: "",
+          venue: sourceMeal.venue,
+          status: "leftover",
+          protein: "none",
+          prepNote: "",
+          leftoverNote: "",
+          notes: "",
+          ingredients: [],
+          instructions: [],
+        };
+        week.data.meals.push(destinationMeal);
+        createdIds.mealId = id;
       }
-      return success(state, next, `Assigned ${leftover.label} leftovers`, leftover.id, [`State: available to assigned`, `Assigned slot: ${command.targetDate}/${command.slot}`, destination ? `${destination.title} now uses assigned leftovers` : "The empty slot now has assigned leftovers"]);
+      destinationMeal.title = leftover.label;
+      destinationMeal.subtitle = `${leftover.portions} portions from ${sourceMeal.title}`;
+      destinationMeal.venue = sourceMeal.venue;
+      destinationMeal.status = "leftover";
+      destinationMeal.protein = "none";
+      destinationMeal.prepNote = "";
+      destinationMeal.leftoverNote = `Leftovers from ${sourceMeal.date}`;
+      destinationMeal.notes = `This dinner uses leftovers from ${sourceMeal.title}.`;
+      destinationMeal.ingredients = [];
+      destinationMeal.instructions = [];
+      return success(state, next, `Assigned ${leftover.label} leftovers`, leftover.id, [
+        "State: available to assigned",
+        `Assigned slot: ${command.targetDate}/${command.slot}`,
+        destination
+          ? `${displacedMealTitle} was replaced with ${leftover.label} leftovers`
+          : `Created a leftover dinner for ${command.targetDate}/${command.slot}`,
+        ...(removedPrepCount > 0 ? [`Removed ${removedPrepCount} displaced prep reference${removedPrepCount === 1 ? "" : "s"}`] : []),
+      ], createdIds);
     }
 
     case "consumeLeftover": {

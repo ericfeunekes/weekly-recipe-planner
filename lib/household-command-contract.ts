@@ -87,6 +87,13 @@ export const MAX_STEP_INPUTS = 32;
 export const MAX_INGREDIENT_LINES = 128;
 export const MAX_GROCERY_ITEMS = 256;
 export const MAX_TIMER_DURATION_SECONDS = 86_400;
+export const MAX_MEAL_TITLE_LENGTH = 300;
+export const MAX_MEAL_SUBTITLE_LENGTH = 1_000;
+export const MAX_MEAL_VENUE_LENGTH = 300;
+export const MAX_GROCERY_ITEM_LENGTH = 1_000;
+export const MAX_STEP_INPUT_AMOUNT_LENGTH = 300;
+export const MAX_STEP_INPUT_INGREDIENT_LENGTH = 1_000;
+export const MAX_INGREDIENT_LINE_LENGTH = 1_000;
 
 const idSchema = { type: "string", minLength: 1, maxLength: MAX_ID_LENGTH };
 const textSchema = { type: "string", maxLength: MAX_COMMAND_TEXT_LENGTH };
@@ -98,7 +105,7 @@ const nonemptyTextSchema = {
 const groceryItemTextSchema = {
   type: "string",
   minLength: 1,
-  maxLength: 1_000,
+  maxLength: MAX_GROCERY_ITEM_LENGTH,
 };
 const isoDateSchema = {
   type: "string",
@@ -119,8 +126,8 @@ const stepInputSchema = {
   additionalProperties: false,
   required: ["amount", "ingredient"],
   properties: {
-    amount: { type: "string", maxLength: 300 },
-    ingredient: { type: "string", maxLength: 1_000 },
+    amount: { type: "string", maxLength: MAX_STEP_INPUT_AMOUNT_LENGTH },
+    ingredient: { type: "string", maxLength: MAX_STEP_INPUT_INGREDIENT_LENGTH },
   },
 };
 const stepPlanSchema = {
@@ -168,9 +175,10 @@ const groceryPlanSchema = {
 };
 const reconciliationItemSchema = {
   ...groceryContentSchema,
-  required: [...groceryPlanSchema.required, "id"],
+  required: [...groceryContentSchema.required, "checked", "id"],
   properties: {
-    ...groceryPlanSchema.properties,
+    ...groceryContentSchema.properties,
+    checked: { type: "boolean" },
     id: { anyOf: [idSchema, { type: "null" }] },
   },
 };
@@ -187,16 +195,16 @@ const mealSnapshotSchema = {
     "ingredients",
   ],
   properties: {
-    title: { type: "string", minLength: 1, maxLength: 300 },
-    subtitle: { type: "string", maxLength: 1_000 },
-    venue: { type: "string", minLength: 1, maxLength: 300 },
+    title: { type: "string", minLength: 1, maxLength: MAX_MEAL_TITLE_LENGTH },
+    subtitle: { type: "string", maxLength: MAX_MEAL_SUBTITLE_LENGTH },
+    venue: { type: "string", minLength: 1, maxLength: MAX_MEAL_VENUE_LENGTH },
     prepNote: textSchema,
     leftoverNote: textSchema,
     notes: textSchema,
     ingredients: {
       type: "array",
       maxItems: MAX_INGREDIENT_LINES,
-      items: { type: "string", maxLength: 1_000 },
+      items: { type: "string", maxLength: MAX_INGREDIENT_LINE_LENGTH },
     },
   },
 };
@@ -335,7 +343,9 @@ function isIntegerInRange(value: unknown, minimum: number, maximum: number) {
 }
 
 function isStepInput(value: unknown) {
-  return hasKeys(value, ["amount", "ingredient"]) && isText(value.amount, 300) && isText(value.ingredient, 1_000);
+  return hasKeys(value, ["amount", "ingredient"]) &&
+    isText(value.amount, MAX_STEP_INPUT_AMOUNT_LENGTH) &&
+    isText(value.ingredient, MAX_STEP_INPUT_INGREDIENT_LENGTH);
 }
 
 function isStepPlan(value: unknown, { allowNullDuration = false } = {}) {
@@ -368,15 +378,15 @@ function isMealSnapshot(value: unknown): value is MealSnapshotInput {
 
 function hasMealSnapshotFields(value: Record<string, unknown>) {
   return (
-    isText(value.title, 300, false) &&
-    isText(value.subtitle, 1_000) &&
-    isText(value.venue, 300, false) &&
+    isText(value.title, MAX_MEAL_TITLE_LENGTH, false) &&
+    isText(value.subtitle, MAX_MEAL_SUBTITLE_LENGTH) &&
+    isText(value.venue, MAX_MEAL_VENUE_LENGTH, false) &&
     isText(value.prepNote) &&
     isText(value.leftoverNote) &&
     isText(value.notes) &&
     Array.isArray(value.ingredients) &&
     value.ingredients.length <= MAX_INGREDIENT_LINES &&
-    value.ingredients.every((ingredient) => isText(ingredient, 1_000))
+    value.ingredients.every((ingredient) => isText(ingredient, MAX_INGREDIENT_LINE_LENGTH))
   );
 }
 
@@ -389,7 +399,7 @@ function isGroceryContent(
   const optional = [allowChecked ? "checked" : "", allowId ? "id" : ""].filter(Boolean);
   if (!hasKeys(value, ["section", "item", "detail", "farmBox"], optional)) return false;
   if (!["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(value.section as string)) return false;
-  if (!isText(value.item, 1_000, false) || !isText(value.detail) || typeof value.farmBox !== "boolean") return false;
+  if (!isText(value.item, MAX_GROCERY_ITEM_LENGTH, false) || !isText(value.detail) || typeof value.farmBox !== "boolean") return false;
   if (requireChecked && typeof value.checked !== "boolean") return false;
   if (value.checked !== undefined && typeof value.checked !== "boolean") return false;
   return value.id === undefined || isId(value.id);

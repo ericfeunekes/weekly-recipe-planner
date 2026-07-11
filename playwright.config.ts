@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { defineConfig } from "@playwright/test";
 
 const apiPort = 8877;
+const controlPort = 8878;
 const webPort = 3101;
 const webOrigin = `http://127.0.0.1:${webPort}`;
 const dataDirectory = join(
@@ -37,6 +38,7 @@ export default defineConfig({
       env: {
         ...process.env,
         PLANNER_E2E_API_PORT: String(apiPort),
+        PLANNER_E2E_CONTROL_PORT: String(controlPort),
         PLANNER_E2E_DATA_DIR: dataDirectory,
         PLANNER_E2E_WEB_ORIGIN: webOrigin,
       },
