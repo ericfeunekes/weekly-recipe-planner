@@ -272,11 +272,13 @@ async function runControlProcess() {
   await rm(dataDirectory, { recursive: true, force: true });
 
   let authorityChild = null;
+  let expectedAuthorityExit = null;
   let authorityReady = false;
   let restartInFlight = null;
   let stopping = false;
   let currentTime = E2E_PREP_NOW;
   let clockRequestId = 0;
+  let controlServer = null;
 
   const startAuthorityChild = async () => {
     const child = spawn(process.execPath, [...process.execArgv, modulePath], {
@@ -291,10 +293,13 @@ async function runControlProcess() {
     authorityReady = false;
     child.on("exit", (code, signal) => {
       if (authorityChild !== child) return;
+      const expectedExit = stopping || expectedAuthorityExit === child;
+      if (expectedAuthorityExit === child) expectedAuthorityExit = null;
       authorityChild = null;
       authorityReady = false;
-      if (!stopping && !restartInFlight) {
+      if (!expectedExit) {
         console.error(`Deterministic planner authority exited unexpectedly (${signal ?? code}).`);
+        void stop(1);
       }
     });
 
@@ -324,6 +329,7 @@ async function runControlProcess() {
     const child = authorityChild;
     authorityReady = false;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    expectedAuthorityExit = child;
     await new Promise((resolveExit) => {
       const forceTimer = setTimeout(() => child.kill("SIGKILL"), 2_000);
       child.once("exit", () => {
@@ -366,9 +372,24 @@ async function runControlProcess() {
     currentTime = nextTime;
   };
 
+  const stop = async (requestedExitCode = 0) => {
+    if (stopping) return;
+    stopping = true;
+    let exitCode = requestedExitCode;
+    try {
+      await closeServer(controlServer);
+      await stopAuthorityChild();
+      await rm(dataDirectory, { recursive: true, force: true });
+    } catch (error) {
+      exitCode = 1;
+      console.error(error instanceof Error ? error.message : String(error));
+    }
+    process.exit(exitCode);
+  };
+
   await startAuthorityChild();
 
-  const controlServer = createServer((request, response) => {
+  controlServer = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (request.method === "GET" && url.pathname === "/status") {
@@ -450,20 +471,6 @@ async function runControlProcess() {
     throw error;
   }
 
-  const stop = async () => {
-    if (stopping) return;
-    stopping = true;
-    let exitCode = 0;
-    try {
-      await closeServer(controlServer);
-      await stopAuthorityChild();
-      await rm(dataDirectory, { recursive: true, force: true });
-    } catch (error) {
-      exitCode = 1;
-      console.error(error instanceof Error ? error.message : String(error));
-    }
-    process.exit(exitCode);
-  };
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.on(signal, () => void stop());
   }

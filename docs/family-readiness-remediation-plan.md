@@ -1,6 +1,8 @@
 # Family Readiness Remediation Plan
 
-Status: challenge converged on 2026-07-10; ready for dependency-gated parallel implementation planning, with implementation not yet started
+Status: implemented and family-readiness signed off at `217e81306160346fc944712175059bece5da23d0` on 2026-07-11; Tailscale exposure and the expanded Codex runtime remain separate follow-up work
+
+Closeout evidence: the exact candidate passed Node 22.15 typecheck/build and 138 deterministic tests, lint, both Playwright family flows, authenticated Codex smoke, development and production health checks, durable browser-plan import/restart readback, and multi-viewport visual QA under `outputs/qa/2026-07-11-family-readiness/`.
 
 ## Locked Invariants
 
