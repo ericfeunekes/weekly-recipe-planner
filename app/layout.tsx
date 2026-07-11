@@ -16,7 +16,7 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title: "Weekly Recipe Planner",
     description:
-      "A local-first weekly meal planning surface for meals, prep, groceries, leftovers, and household feedback.",
+      "A shared household planner for meals, prep, groceries, leftovers, and family feedback.",
     openGraph: {
       title: "Weekly Recipe Planner",
       description: "Keep the whole cooking week under control.",
