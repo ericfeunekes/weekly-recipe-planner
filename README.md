@@ -28,23 +28,21 @@ saving it as a note.
 
 ## Implementation Status
 
-The committed baseline still persists its current week, history, and transcript
-in browser local storage and applies commands in React. That baseline is useful
-in one browser but is not the accepted family-ready authority model.
+The family runtime uses one local Node authority and one SQLite household
+workspace. It owns optimistic concurrency, idempotent requests, shared planner
+state, durable chat, history, and undo. The Vinext process renders the web
+surface but does not own household data.
 
-The active implementation contract replaces browser authority with one local
-Node application server and SQLite household workspace, using optimistic
-concurrency, idempotent requests, durable shared chat, and one atomic client
-cutover. See [the family-readiness plan](docs/family-readiness-remediation-plan.md)
-and [functional spine](docs/functional-spine.md). Tailscale exposure and the
+Development and production have deliberately different HTTP topology. In
+development, Vinext is browser-facing and proxies `/api/*` to the authority. In
+production, the authority is the browser-facing front controller: it handles
+`/api/*` and proxies all other requests to a private Vinext process. See
+[the family-readiness plan](docs/family-readiness-remediation-plan.md) and
+[functional spine](docs/functional-spine.md). Tailscale exposure and the
 expanded Codex runtime remain separate follow-ups.
 
-The current loopback-only Node bridge starts Codex app-server over stdio, reuses
-the Codex CLI's ChatGPT login, and asks for one structured planner command. A
-composite prep-plan command lets Codex select and order several canonical steps
-at once. The browser validates every command and applies it through the same
-domain reducer used by direct UI actions until the server-authority cutover
-lands.
+The authority starts Codex app-server over stdio and reuses the Codex CLI's
+ChatGPT login.
 
 Codex runs read-only with approvals disabled. OAuth credentials and the raw
 app-server protocol never enter the browser.
@@ -58,19 +56,37 @@ session.
 codex login status
 ```
 
-The expected status is `Logged in using ChatGPT`. Then start both the web app
-and local bridge:
+The expected status is `Logged in using ChatGPT`. Install dependencies and
+start the development runtime:
 
 ```bash
 npm ci
 npm run dev
 ```
 
-`npm run dev:web` starts the web surface without the bridge; chat will report
-that local Codex is unavailable. The web preview uses the fixed local URL
-`http://localhost:3001`; startup fails instead of silently moving to a port the
-bridge does not trust. `npm run bridge` starts only the bridge on
-`http://127.0.0.1:8788`.
+Open `http://127.0.0.1:3001`. Vinext listens only on that loopback address and
+proxies `/api/*` to the authority at `http://127.0.0.1:8788`. Runtime health is
+available through the browser-facing origin at
+`http://127.0.0.1:3001/api/health`. Startup fails instead of silently moving
+either process to another port.
+
+For the production topology, build first and then start the composed runtime:
+
+```bash
+npm run build
+npm start
+```
+
+Open `http://127.0.0.1:3000`; this is the only browser-facing production
+origin. The front controller keeps Vinext private at `127.0.0.1:3002` and
+serves health at `http://127.0.0.1:3000/api/health`. `PLANNER_PORT` changes the
+public port, `PLANNER_HOST` may select `127.0.0.1` or `::1`, and
+`PLANNER_DATA_DIR` changes the default `.planner-data` directory. All listeners
+remain loopback-only.
+
+`npm run dev:web` and `npm run start:web` start only their respective web
+processes; they are useful for web debugging but do not provide a ready planner
+authority.
 
 ## Hosting Boundary
 
@@ -86,7 +102,14 @@ authorization.
 npm run typecheck
 npm run lint
 npm test
+npm run test:e2e
 ```
 
 `npm test` enforces strict TypeScript, builds the Cloudflare Workers-compatible
 Vinext output, and verifies the rendered site and locked command/view surface.
+Playwright runs separately through `npm run test:e2e`. The authenticated,
+disposable ChatGPT check is opt-in and remains outside deterministic tests:
+
+```bash
+npm run smoke:live-chat
+```

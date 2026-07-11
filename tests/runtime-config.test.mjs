@@ -66,7 +66,7 @@ test("process supervisor stops siblings when one child fails", async () => {
     child.kill = (signal) => {
       child.killed = true;
       child.signalCode = signal;
-      queueMicrotask(() => child.emit("exit", null, signal));
+      queueMicrotask(() => child.emit("close", null, signal));
       return true;
     };
     children.push(child);
@@ -78,7 +78,39 @@ test("process supervisor stops siblings when one child fails", async () => {
     { spawnImpl, signals: [] },
   );
   children[0].exitCode = 7;
-  children[0].emit("exit", 7, null);
+  children[0].emit("close", 7, null);
   assert.equal(await supervised, 7);
   assert.equal(children[1].killed, true);
+});
+
+test("process supervisor force-stops a child after the shutdown grace period", async () => {
+  const signals = [];
+  const child = new EventEmitter();
+  child.kill = (signal) => {
+    signals.push(signal);
+    if (signal === "SIGKILL") {
+      queueMicrotask(() => child.emit("close", null, signal));
+    }
+    return true;
+  };
+  const supervised = superviseProcesses([{ command: "stubborn" }], {
+    spawnImpl: () => child,
+    signals: [],
+    shutdownGracePeriodMs: 5,
+  });
+
+  child.emit("error", new Error("trigger shutdown"));
+  assert.equal(await supervised, 1);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("process supervisor validates the shutdown bound before spawning", async () => {
+  await assert.rejects(
+    superviseProcesses([{ command: "unused" }], {
+      spawnImpl: () => assert.fail("invalid configuration must not spawn"),
+      signals: [],
+      shutdownGracePeriodMs: -1,
+    }),
+    /non-negative integer/,
+  );
 });
