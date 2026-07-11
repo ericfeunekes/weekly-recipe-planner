@@ -2014,6 +2014,230 @@ svg {
   display: none;
 }
 
+.bootstrap-shell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
+}
+
+.bootstrap-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 14px;
+  max-width: 560px;
+  padding: clamp(24px, 5vw, 46px);
+  width: 100%;
+}
+
+.bootstrap-panel.compact {
+  justify-items: start;
+  max-width: 470px;
+}
+
+.bootstrap-panel h1 {
+  font-size: clamp(28px, 5vw, 42px);
+  line-height: 1.05;
+}
+
+.bootstrap-panel > p:not(.eyebrow, .inline-alert) {
+  color: var(--ink-soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.bootstrap-panel > small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+.bootstrap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 4px;
+}
+
+.inline-alert,
+.authority-banner {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
+.inline-alert.info,
+.authority-banner.info {
+  background: var(--green-soft);
+  border-color: #bdd8cc;
+  color: var(--green-dark);
+}
+
+.inline-alert.warning,
+.authority-banner.warning {
+  background: var(--amber-soft);
+  border-color: #e4cf91;
+  color: #725019;
+}
+
+.inline-alert.error,
+.authority-banner.error {
+  background: var(--coral-soft);
+  border-color: #ecc3b7;
+  color: var(--danger);
+}
+
+.authority-banner {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.authority-banner .secondary-button,
+.authority-banner .icon-button {
+  flex: 0 0 auto;
+}
+
+.empty-workspace {
+  align-items: flex-start;
+  display: grid;
+  gap: 8px;
+}
+
+.empty-workspace p,
+.empty-meal {
+  color: var(--muted);
+}
+
+.empty-meal {
+  cursor: default;
+  justify-content: center;
+}
+
+.empty-meal:hover {
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.lifecycle-button {
+  justify-self: end;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+.prep-add-row,
+.grocery-add-row,
+.inline-control-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prep-add-row,
+.grocery-add-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-bottom: 22px;
+  padding: 10px;
+}
+
+.prep-add-row select,
+.grocery-add-row select,
+.grocery-add-row input,
+.inline-control-row select {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  font-size: 11px;
+  min-height: 44px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.prep-add-row select:first-child {
+  flex: 1 1 280px;
+}
+
+.grocery-add-row input {
+  flex: 1 1 140px;
+}
+
+.prep-day-group {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.prep-day-group > .section-title {
+  border-bottom: 1px solid var(--line-strong);
+  margin: 0;
+  padding-bottom: 8px;
+}
+
+.inline-control-row select {
+  flex: 1 1 150px;
+}
+
+.status-control {
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.new-step-form {
+  margin-top: 12px;
+}
+
+.inline-spinner {
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: text-bottom;
+}
+
+.mobile-chat-overlay {
+  background: rgba(22, 31, 28, 0.45);
+  inset: 0;
+  position: fixed;
+  z-index: 95;
+}
+
+.mobile-chat-dialog {
+  inset: auto 0 0;
+  position: absolute;
+}
+
+.mobile-chat-dialog .ops-rail.chat-rail.open {
+  bottom: auto;
+  left: auto;
+  position: relative;
+  right: auto;
+  top: auto;
+}
+
+.prep-reference-actions .icon-button,
+.step-timer .icon-button,
+.step-note .icon-button {
+  height: 44px;
+  min-height: 44px;
+  width: 44px;
+}
+
+.step-comment-actions button {
+  min-height: 44px;
+}
+
 @media (max-width: 1180px) {
   .app-header {
     grid-template-columns: minmax(190px, 1fr) auto minmax(170px, 1fr);
@@ -2292,6 +2516,28 @@ svg {
 
   .draft-grid small {
     margin-top: 0;
+  }
+}
+
+@media (min-width: 701px) and (max-width: 840px) {
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 268px;
+  }
+
+  .primary-workspace {
+    border-radius: 8px 0 0 8px;
+  }
+
+  .ops-rail.chat-rail {
+    border: 1px solid var(--line);
+    border-left: 0;
+    border-radius: 0 8px 8px 0;
+    display: block;
+    height: calc(100vh - 280px);
+    min-height: 0;
+    position: sticky;
+    top: 136px;
   }
 }
 
