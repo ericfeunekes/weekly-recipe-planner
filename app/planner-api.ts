@@ -2,10 +2,11 @@ import type { HouseholdCommand } from "../lib/household-command-contract.ts";
 import type {
   ApiError,
   ApiFailure,
+  ApplyPlannerCommandRequest,
   ApplyPlannerCommandResponse,
   BootstrapWorkspaceRequest,
   BootstrapWorkspaceResponse,
-  ExportEnvelope,
+  DiagnosticExportEnvelope,
   HealthResponse,
   InitializedWorkspace,
   LegacyV2Payload,
@@ -15,12 +16,24 @@ import type {
   UndoLatestRequest,
   WorkspaceResponse,
 } from "../lib/planner-api-contract.ts";
-import { LEGACY_V2_STORAGE_KEY, PLANNER_API_ROUTES } from "../lib/planner-api-contract.ts";
+import {
+  LEGACY_V2_STORAGE_KEY,
+  PLANNER_API_ROUTES,
+  isDiagnosticExportEnvelope,
+} from "../lib/planner-api-contract.ts";
 import type {
   ChatTurnDecision,
   RetryChatTurnRequest,
   SubmitChatTurnRequest,
 } from "../lib/planner-chat-contract.ts";
+import {
+  markAuthorityOperationAmbiguous,
+  prepareAuthorityOperation,
+  resolveAuthorityOperation,
+  settleAuthorityOperation,
+  type AuthorityOperationKind,
+  type PendingAuthorityOperation,
+} from "./authority-operation-journal.ts";
 
 export const LEGACY_V1_STORAGE_KEY = "weekly-recipe-planner:v1";
 
@@ -156,47 +169,42 @@ export function isAbortError(error: unknown): boolean {
   return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
 }
 
-const MAX_AMBIGUOUS_POST_ENVELOPES = 32;
-const ambiguousPostEnvelopes = new Map<string, string>();
+export type AuthorityOperationPresentation = {
+  label: string;
+  submittedDraft?: unknown;
+};
 
-function canonicalJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJsonValue);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
-  );
-}
+type PostResolution =
+  | { accepted: true }
+  | { accepted: false; code: string; message: string };
 
-function postEnvelopeKey(path: string, body: unknown): string {
-  if (isRecord(body) && typeof body.requestId === "string" && body.requestId.length > 0) {
-    return `${path}\n${body.requestId}`;
-  }
-  return `${path}\n${JSON.stringify(canonicalJsonValue(body))}`;
-}
-
-function rememberAmbiguousEnvelope(key: string, serializedBody: string): void {
-  if (ambiguousPostEnvelopes.has(key)) return;
-  if (ambiguousPostEnvelopes.size >= MAX_AMBIGUOUS_POST_ENVELOPES) {
-    const oldest = ambiguousPostEnvelopes.keys().next().value;
-    if (oldest !== undefined) ambiguousPostEnvelopes.delete(oldest);
-  }
-  ambiguousPostEnvelopes.set(key, serializedBody);
-}
+const DEFAULT_OPERATION_LABELS: Record<AuthorityOperationKind, string> = {
+  planner: "Save shared planner change",
+  bootstrap: "Set up shared planner",
+  "chat-submit": "Send ChatGPT message",
+  "chat-retry": "Retry ChatGPT request",
+  undo: "Undo latest change",
+};
 
 async function postJson<Result>(
+  kind: AuthorityOperationKind,
   path: string,
   body: unknown,
   accept: (response: Response, value: unknown) => Result,
+  resolution: (result: Result) => PostResolution,
+  presentation?: AuthorityOperationPresentation,
 ): Promise<Result> {
-  const key = postEnvelopeKey(path, body);
-  const serializedBody = ambiguousPostEnvelopes.get(key) ?? JSON.stringify(body);
+  const operation = prepareAuthorityOperation({
+    kind,
+    path,
+    body,
+    label: presentation?.label ?? DEFAULT_OPERATION_LABELS[kind],
+    submittedDraft: presentation?.submittedDraft ?? body,
+  });
   const request: RequestInit = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: serializedBody,
+    body: operation.serializedBody,
   };
   let response: Response;
   try {
@@ -210,7 +218,7 @@ async function postJson<Result>(
     }
   } catch (error) {
     if (error instanceof PlannerApiError && error.code === "NETWORK_ERROR") {
-      rememberAmbiguousEnvelope(key, serializedBody);
+      markAuthorityOperationAmbiguous(operation);
     }
     throw error;
   }
@@ -218,19 +226,30 @@ async function postJson<Result>(
   try {
     value = await parseJson(response);
   } catch (error) {
-    rememberAmbiguousEnvelope(key, serializedBody);
+    markAuthorityOperationAmbiguous(operation);
     throw error;
   }
   if (isApiFailure(value)) {
-    ambiguousPostEnvelopes.delete(key);
+    resolveAuthorityOperation(operation, {
+      code: value.error.code,
+      message: value.error.message,
+    });
     throwFailure(response, value);
   }
   try {
     const result = accept(response, value);
-    ambiguousPostEnvelopes.delete(key);
+    const outcome = resolution(result);
+    if (outcome.accepted) {
+      settleAuthorityOperation(operation);
+    } else {
+      resolveAuthorityOperation(operation, {
+        code: outcome.code,
+        message: outcome.message,
+      });
+    }
     return result;
   } catch (error) {
-    rememberAmbiguousEnvelope(key, serializedBody);
+    markAuthorityOperationAmbiguous(operation);
     throw error;
   }
 }
@@ -275,8 +294,9 @@ export async function readHealth(): Promise<HealthResponse> {
 
 export async function bootstrapWorkspace(
   request: BootstrapWorkspaceRequest,
+  presentation?: AuthorityOperationPresentation,
 ): Promise<BootstrapWorkspaceResponse> {
-  return postJson(PLANNER_API_ROUTES.bootstrap.path, request, (response, value) => {
+  return postJson("bootstrap", PLANNER_API_ROUTES.bootstrap.path, request, (response, value) => {
     if (!response.ok) throwFailure(response, value);
     if (
       !isRecord(value) ||
@@ -286,47 +306,127 @@ export async function bootstrapWorkspace(
       throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid bootstrap response." });
     }
     return value as BootstrapWorkspaceResponse;
-  });
+  }, () => ({ accepted: true }), presentation);
 }
 
 export async function applyPlannerCommand(options: {
   requestId: string;
   basePlannerVersion: number;
   command: HouseholdCommand;
-}): Promise<ApplyPlannerCommandResponse> {
-  return postJson(PLANNER_API_ROUTES.commands.path, options, (_response, value) => {
+}, presentation?: AuthorityOperationPresentation): Promise<ApplyPlannerCommandResponse> {
+  return postJson("planner", PLANNER_API_ROUTES.commands.path, options, (_response, value) => {
     if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
       throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid command response." });
     }
     return value as ApplyPlannerCommandResponse;
-  });
+  }, (result) => result.decision.status === "accepted"
+    ? { accepted: true }
+    : {
+        accepted: false,
+        code: result.decision.status,
+        message: result.decision.status === "domain_rejected"
+          ? result.decision.message
+          : `Someone else changed the plan. “${presentation?.label ?? DEFAULT_OPERATION_LABELS.planner}” was not saved. Review the latest plan, then retry it.`,
+      }, presentation);
 }
 
-export async function undoLatest(request: UndoLatestRequest): Promise<ApplyPlannerCommandResponse> {
-  return postJson(PLANNER_API_ROUTES.undo.path, request, (_response, value) => {
+export async function undoLatest(
+  request: UndoLatestRequest,
+  presentation?: AuthorityOperationPresentation,
+): Promise<ApplyPlannerCommandResponse> {
+  return postJson("undo", PLANNER_API_ROUTES.undo.path, request, (_response, value) => {
     if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
       throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid undo response." });
     }
     return value as ApplyPlannerCommandResponse;
-  });
+  }, (result) => result.decision.status === "accepted"
+    ? { accepted: true }
+    : {
+        accepted: false,
+        code: result.decision.status,
+        message: result.decision.status === "domain_rejected"
+          ? result.decision.message
+          : "The workspace changed before undo was accepted.",
+      }, presentation);
 }
 
-export async function submitChatTurn(request: SubmitChatTurnRequest): Promise<ChatServiceResponse> {
-  return postJson(PLANNER_API_ROUTES.chatSubmit.path, request, (_response, value) => {
+export async function submitChatTurn(
+  request: SubmitChatTurnRequest,
+  presentation?: AuthorityOperationPresentation,
+): Promise<ChatServiceResponse> {
+  return postJson("chat-submit", PLANNER_API_ROUTES.chatSubmit.path, request, (_response, value) => {
     if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
       throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
     }
     return value as ChatServiceResponse;
-  });
+  }, (result) => result.decision.status === "accepted"
+    ? { accepted: true }
+    : {
+        accepted: false,
+        code: result.decision.status,
+        message: "ChatGPT did not accept this request against the current shared plan.",
+      }, presentation);
 }
 
-export async function retryChatTurn(request: RetryChatTurnRequest): Promise<ChatServiceResponse> {
-  return postJson(PLANNER_API_ROUTES.chatRetry.path, request, (_response, value) => {
+export async function retryChatTurn(
+  request: RetryChatTurnRequest,
+  presentation?: AuthorityOperationPresentation,
+): Promise<ChatServiceResponse> {
+  return postJson("chat-retry", PLANNER_API_ROUTES.chatRetry.path, request, (_response, value) => {
     if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
       throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
     }
     return value as ChatServiceResponse;
-  });
+  }, (result) => result.decision.status === "accepted"
+    ? { accepted: true }
+    : {
+        accepted: false,
+        code: result.decision.status,
+        message: "The interrupted ChatGPT request could not be retried against the current plan.",
+      }, presentation);
+}
+
+export type AuthorityOperationReplayResult =
+  | { kind: "planner" | "undo"; response: ApplyPlannerCommandResponse }
+  | { kind: "bootstrap"; response: BootstrapWorkspaceResponse }
+  | { kind: "chat-submit" | "chat-retry"; response: ChatServiceResponse };
+
+export async function replayAuthorityOperation(
+  operation: PendingAuthorityOperation,
+): Promise<AuthorityOperationReplayResult> {
+  const request: unknown = JSON.parse(operation.serializedBody);
+  const presentation = {
+    label: operation.label,
+    submittedDraft: operation.editableDraft,
+  };
+  if (operation.kind === "planner") {
+    return {
+      kind: operation.kind,
+      response: await applyPlannerCommand(request as ApplyPlannerCommandRequest, presentation),
+    };
+  }
+  if (operation.kind === "bootstrap") {
+    return {
+      kind: operation.kind,
+      response: await bootstrapWorkspace(request as BootstrapWorkspaceRequest, presentation),
+    };
+  }
+  if (operation.kind === "undo") {
+    return {
+      kind: operation.kind,
+      response: await undoLatest(request as UndoLatestRequest, presentation),
+    };
+  }
+  if (operation.kind === "chat-submit") {
+    return {
+      kind: operation.kind,
+      response: await submitChatTurn(request as SubmitChatTurnRequest, presentation),
+    };
+  }
+  return {
+    kind: operation.kind,
+    response: await retryChatTurn(request as RetryChatTurnRequest, presentation),
+  };
 }
 
 function pagePath(path: string, request: PageRequest): string {
@@ -360,12 +460,16 @@ export async function readTranscriptPage(request: PageRequest = {}): Promise<Tra
   return value as TranscriptPage;
 }
 
-export async function exportWorkspace(): Promise<ExportEnvelope> {
+export async function exportWorkspace(): Promise<DiagnosticExportEnvelope> {
   const value = await getJson(PLANNER_API_ROUTES.export.path);
-  if (!isRecord(value) || !isInitializedWorkspace({ initialized: true, ...value })) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid export response." });
+  if (!isDiagnosticExportEnvelope(value)) {
+    throw new PlannerApiError({
+      status: 0,
+      code: "INVALID_RESPONSE",
+      message: "Invalid diagnostic export response.",
+    });
   }
-  return value as ExportEnvelope;
+  return value;
 }
 
 export function readLegacyImport(storage: Pick<Storage, "getItem">): LegacyImportCandidate {

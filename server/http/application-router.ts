@@ -3,16 +3,24 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isHouseholdCommand } from "../../lib/household-command-contract.ts";
 import {
   API_ERROR_CODES,
+  DIAGNOSTIC_EXPORT_FILENAME,
+  DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+  DIAGNOSTIC_EXPORT_KIND,
+  DIAGNOSTIC_EXPORT_WARNING,
   PLANNER_API_ROUTES,
+  isBootstrapWorkspaceRequest,
+  isDiagnosticExportMarker,
   normalizePageRequest,
   type ApiErrorCode,
   type BootstrapWorkspaceRequest,
   type HealthResponse,
-  type LegacyV2Payload,
   type PageRequest,
   type WorkspaceResponse,
 } from "../../lib/planner-api-contract.ts";
-import { isPlannerChatContext } from "../../lib/planner-chat-contract.ts";
+import {
+  isChatTurnIntent,
+  isPlannerChatContext,
+} from "../../lib/planner-chat-contract.ts";
 import type {
   ChatApplicationService,
   PlannerApplicationService,
@@ -81,11 +89,16 @@ function isNonnegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
-function isLoopbackHost(host: string | undefined): boolean {
+function isAllowedRequestHost(
+  host: string | undefined,
+  allowedOrigins: ReadonlySet<string> | undefined,
+): boolean {
   if (!host) return false;
   try {
     const parsed = new URL(`http://${host}`);
-    return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+    if (parsed.username || parsed.password || parsed.pathname !== "/") return false;
+    if (["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)) return true;
+    return [...(allowedOrigins ?? [])].some((origin) => new URL(origin).host === parsed.host);
   } catch {
     return false;
   }
@@ -168,22 +181,9 @@ function workspaceEtag(workspace: WorkspaceResponse) {
 }
 
 function validateBootstrapRequest(value: unknown): BootstrapWorkspaceRequest {
-  if (!isRecord(value) || !isId(value.requestId)) {
-    throw new ApiRouteError(400, "INVALID_REQUEST", "A valid requestId is required.");
-  }
-  if (value.mode === "seed" && hasExactKeys(value, ["requestId", "mode"])) {
-    return { requestId: value.requestId, mode: "seed" };
-  }
-  if (
-    value.mode === "import-v2" &&
-    hasExactKeys(value, ["requestId", "mode", "payload"]) &&
-    hasExactKeys(value.payload, ["data", "events", "chatMessages"])
-  ) {
-    return {
-      requestId: value.requestId,
-      mode: "import-v2",
-      payload: value.payload as LegacyV2Payload,
-    };
+  if (isBootstrapWorkspaceRequest(value)) return value;
+  if (isDiagnosticExportMarker(value)) {
+    throw new ApiRouteError(400, "INVALID_REQUEST", DIAGNOSTIC_EXPORT_WARNING);
   }
   throw new ApiRouteError(400, "INVALID_REQUEST", "Bootstrap must select seed or an exact v2 import.");
 }
@@ -284,8 +284,12 @@ export function createApplicationRouter(
       response.setHeader("Date", new Date(responseTime).toUTCString());
     }
     try {
-      if (!isLoopbackHost(request.headers.host)) {
-        throw new ApiRouteError(400, "INVALID_REQUEST", "Planner requests require a loopback host.");
+      if (!isAllowedRequestHost(request.headers.host, options.allowedOrigins)) {
+        throw new ApiRouteError(
+          400,
+          "INVALID_REQUEST",
+          "Planner requests require a loopback or explicitly allowed proxy host.",
+        );
       }
       const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
       const route = routeByPath.get(url.pathname);
@@ -326,7 +330,10 @@ export function createApplicationRouter(
         return;
       }
       if (url.pathname === PLANNER_API_ROUTES.export.path) {
-        response.setHeader("Content-Disposition", 'attachment; filename="meal-planner-export.json"');
+        response.setHeader("Content-Disposition", `attachment; filename="${DIAGNOSTIC_EXPORT_FILENAME}"`);
+        response.setHeader("X-Meal-Planner-Export-Kind", DIAGNOSTIC_EXPORT_KIND);
+        response.setHeader("X-Meal-Planner-Export-Version", String(DIAGNOSTIC_EXPORT_FORMAT_VERSION));
+        response.setHeader("X-Meal-Planner-Export-Restorable", "false");
         sendJson(response, 200, dependencies.planner.exportWorkspace());
         return;
       }
@@ -372,13 +379,14 @@ export function createApplicationRouter(
       }
       if (url.pathname === PLANNER_API_ROUTES.chatSubmit.path) {
         if (
-          !hasExactKeys(body, ["requestId", "basePlannerVersion", "message", "context"]) ||
+          !hasExactKeys(body, ["requestId", "basePlannerVersion", "message", "context", "intent"]) ||
           !isId(body.requestId) ||
           !isNonnegativeInteger(body.basePlannerVersion) ||
           typeof body.message !== "string" ||
           body.message.trim().length === 0 ||
           body.message.length > MAX_CHAT_MESSAGE_LENGTH ||
-          !isPlannerChatContext(body.context)
+          !isPlannerChatContext(body.context) ||
+          !isChatTurnIntent(body.intent)
         ) {
           throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed chat submission.");
         }
@@ -387,6 +395,7 @@ export function createApplicationRouter(
           basePlannerVersion: body.basePlannerVersion,
           message: body.message.trim(),
           context: body.context,
+          intent: body.intent,
         });
         sendJson(response, chatDecisionStatus(result.decision.status), result);
         return;

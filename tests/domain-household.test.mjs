@@ -30,6 +30,45 @@ function activeWeek(state) {
   return state.weeks.find((week) => week.id === state.activeWeekId);
 }
 
+test("setPrepPlan rejects duplicate step IDs before materializing prep references", () => {
+  let createIdCalls = 0;
+  const seedContext = createContext();
+  const state = createCanonicalSeed(seedContext);
+  const week = activeWeek(state);
+  const stepId = week.data.meals[0].instructions[0].id;
+  const prepDate = addIsoDateDays(week.id, -1);
+  const context = {
+    now: NOW,
+    createId(prefix) {
+      createIdCalls += 1;
+      return `${prefix}-unexpected-${createIdCalls}`;
+    },
+  };
+
+  const result = householdDomain.execute(
+    state,
+    {
+      type: "setPrepPlan",
+      weekId: week.id,
+      entries: [
+        { stepId, prepDate },
+        { stepId, prepDate },
+      ],
+    },
+    context,
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    state,
+    message: "Prep plan contains a duplicate instruction step.",
+    fieldErrors: {
+      "entries[1].stepId": "Each instruction step may appear in prep once.",
+    },
+  });
+  assert.equal(createIdCalls, 0);
+});
+
 test("household domain executes every week-local command through one pure boundary", () => {
   const context = createContext();
   let state = createCanonicalSeed(context);
@@ -56,6 +95,7 @@ test("household domain executes every week-local command through one pure bounda
           leftoverNote: chicken.leftoverNote,
           notes: "Pack the yogurt separately.",
           ingredients: [...chicken.ingredients, "1 cup lemon yogurt"],
+          yieldText: chicken.yieldText ?? null,
         },
       },
       context,
@@ -581,34 +621,28 @@ test("empty-slot leftover assignment materializes a dinner that survives consump
   assert.deepEqual(householdDomain.validateState(state), { ok: true });
 });
 
-test("leftover portion parsing ignores calendar dates and clamps zero labels", () => {
-  for (const [leftoverNote, expectedPortions] of [
-    ["Leftovers from 2026-07-07", 2],
-    ["0 portions", 1],
-    ["00 servings", 1],
-  ]) {
-    const context = createContext();
-    const state = createCanonicalSeed(context);
-    const week = activeWeek(state);
-    const source = week.data.meals.find((meal) => meal.title === "Harissa chicken traybake");
-    source.leftoverNote = leftoverNote;
-    const result = accepted(
-      householdDomain.execute(
-        state,
-        {
-          type: "updateMealStatus",
-          weekId: week.id,
-          mealId: source.id,
-          status: "cooked",
-        },
-        context,
-      ),
-    );
-    const leftover = activeWeek(result.state).data.leftovers.find(
-      (candidate) => candidate.id === result.createdIds.leftoverId,
-    );
-    assert.equal(leftover.portions, expectedPortions, leftoverNote);
-  }
+test("leftover portion parsing ignores calendar dates without a serving label", () => {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const week = activeWeek(state);
+  const source = week.data.meals.find((meal) => meal.title === "Harissa chicken traybake");
+  source.leftoverNote = "Leftovers from 2026-07-07";
+  const result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "updateMealStatus",
+        weekId: week.id,
+        mealId: source.id,
+        status: "cooked",
+      },
+      context,
+    ),
+  );
+  const leftover = activeWeek(result.state).data.leftovers.find(
+    (candidate) => candidate.id === result.createdIds.leftoverId,
+  );
+  assert.equal(leftover.portions, 2);
 });
 
 test("occupied leftover assignment preserves meals referenced by other leftovers", () => {
@@ -753,5 +787,159 @@ test("occupied leftover assignment preserves meals referenced by other leftovers
     assert.equal(dependentLeftover.sourceMealId, destination.id, dependentState);
     assert.equal(dependentLeftover.state, dependentState, dependentState);
     assert.deepEqual(householdDomain.validateState(blocked.state), { ok: true });
+  }
+});
+
+function sourcedRecipe() {
+  return {
+    title: "Primary-page lentil soup",
+    yieldText: "4 bowls",
+    source: {
+      kind: "web",
+      identity: "Example Kitchen",
+      url: "https://example.com/recipes/lentil-soup",
+      retrievedAt: 1_750_000_000_000,
+    },
+    steps: [{
+      inputs: [
+        { amount: "1 cup", ingredient: "lentils" },
+        { amount: "1 cup", ingredient: "lentils" },
+      ],
+      instruction: "Simmer the lentils.",
+      timerDurationSeconds: 900,
+    }],
+  };
+}
+
+function replacementReadyState() {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const week = activeWeek(state);
+  const meal = week.data.meals[0];
+  week.data.prep = [];
+  for (const step of meal.instructions) {
+    step.complete = false;
+    delete step.note;
+    delete step.timerStartedAt;
+  }
+  meal.status = "planned";
+  return { state, week, meal, context };
+}
+
+test("sourced replacement changes only recipe fields with ordered duplicate inputs and shared IDs", () => {
+  const { state, week, meal, context } = replacementReadyState();
+  const preserved = {
+    id: meal.id,
+    date: meal.date,
+    slot: meal.slot,
+    status: meal.status,
+    subtitle: meal.subtitle,
+    venue: meal.venue,
+    protein: meal.protein,
+    prepNote: meal.prepNote,
+    leftoverNote: meal.leftoverNote,
+    notes: meal.notes,
+  };
+  const result = accepted(householdDomain.execute(state, {
+    type: "replaceMealRecipeFromSource",
+    weekId: week.id,
+    mealId: meal.id,
+    recipe: sourcedRecipe(),
+  }, context));
+  const replaced = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
+  assert.deepEqual({
+    id: replaced.id,
+    date: replaced.date,
+    slot: replaced.slot,
+    status: replaced.status,
+    subtitle: replaced.subtitle,
+    venue: replaced.venue,
+    protein: replaced.protein,
+    prepNote: replaced.prepNote,
+    leftoverNote: replaced.leftoverNote,
+    notes: replaced.notes,
+  }, preserved);
+  assert.equal(replaced.title, "Primary-page lentil soup");
+  assert.equal(replaced.yieldText, "4 bowls");
+  assert.deepEqual(replaced.ingredients, ["1 cup lentils", "1 cup lentils"]);
+  assert.deepEqual(replaced.sourceRecipe, sourcedRecipe().source);
+  assert.equal(replaced.instructions.length, 1);
+  assert.equal(replaced.instructions[0].complete, false);
+  assert.equal(replaced.instructions[0].id, result.createdIds["instructionStep.0"]);
+});
+
+test("sourced replacement omission clears an existing yield while persisting source metadata", () => {
+  const { state, week, meal, context } = replacementReadyState();
+  meal.yieldText = "Old household yield";
+  const recipe = sourcedRecipe();
+  delete recipe.yieldText;
+  const result = accepted(householdDomain.execute(state, {
+    type: "replaceMealRecipeFromSource",
+    weekId: week.id,
+    mealId: meal.id,
+    recipe,
+  }, context));
+  const replaced = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
+  assert.equal(replaced.yieldText, undefined);
+  assert.deepEqual(replaced.sourceRecipe, recipe.source);
+});
+
+test("generic meal snapshots clear or update yield without laundering source provenance", () => {
+  for (const yieldText of [null, "6 servings"]) {
+    const { state, week, meal, context } = replacementReadyState();
+    meal.yieldText = "Old household yield";
+    meal.sourceRecipe = structuredClone(sourcedRecipe().source);
+    const sourceBefore = structuredClone(meal.sourceRecipe);
+    const result = accepted(householdDomain.execute(state, {
+      type: "updateMealSnapshot",
+      weekId: week.id,
+      mealId: meal.id,
+      changes: {
+        title: `${meal.title} refreshed`,
+        subtitle: meal.subtitle,
+        venue: meal.venue,
+        prepNote: meal.prepNote,
+        leftoverNote: meal.leftoverNote,
+        notes: meal.notes,
+        ingredients: meal.ingredients,
+        yieldText,
+      },
+    }, context));
+    const updated = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
+    assert.equal(updated.yieldText, yieldText === null ? undefined : yieldText);
+    assert.deepEqual(updated.sourceRecipe, sourceBefore);
+  }
+});
+
+test("each protected canonical state class and immutable target lifecycle rejects replacement", () => {
+  const mutateCases = [
+    ["completed", ({ meal }) => { meal.instructions[0].complete = true; }],
+    ["note", ({ meal }) => { meal.instructions[0].note = "keep"; }],
+    ["timer", ({ meal }) => { meal.instructions[0].timerStartedAt = NOW; }],
+    ["prep", ({ week, meal }) => {
+      week.data.prep.push({
+        id: "prep-protected",
+        stepId: meal.instructions[0].id,
+        prepDate: addIsoDateDays(week.id, -1),
+        position: 0,
+      });
+    }],
+    ["meal status", ({ meal }) => { meal.status = "cooking"; }],
+    ["week status", ({ state, week }) => {
+      week.status = "archived";
+      state.activeWeekId = null;
+    }],
+  ];
+  for (const [label, mutate] of mutateCases) {
+    const fixture = replacementReadyState();
+    mutate(fixture);
+    const result = householdDomain.execute(fixture.state, {
+      type: "replaceMealRecipeFromSource",
+      weekId: fixture.week.id,
+      mealId: fixture.meal.id,
+      recipe: sourcedRecipe(),
+    }, fixture.context);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.state, fixture.state, label);
   }
 });

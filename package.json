@@ -10,11 +10,18 @@
     "dev:web": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev --hostname 127.0.0.1 --port 3001",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "node scripts/start.mjs",
+    "start:installed": "node --disable-warning=ExperimentalWarning scripts/start-installed.mjs",
     "start:web": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start --hostname 127.0.0.1 --port 3002",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "npm run typecheck && npm run build && node --experimental-strip-types --test \"tests/**/*.test.mjs\"",
+    "test": "npm run typecheck && npm run build && node --disable-warning=ExperimentalWarning --experimental-strip-types --test \"tests/**/*.test.mjs\"",
     "test:e2e": "playwright test",
-    "smoke:live-chat": "node --experimental-strip-types scripts/smoke-live-chat.mjs",
+    "test:e2e:installed": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/support/planner-installed-qa.mjs --standalone",
+    "planner:release": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/planner-release.mjs",
+    "planner:service": "node --disable-warning=ExperimentalWarning scripts/planner-service.mjs",
+    "planner:global": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/planner-global-client.ts",
+    "probe:codex-follow-up": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/probe-codex-follow-up.mjs",
+    "smoke:live-chat": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/smoke-live-chat.mjs",
+    "verify:codex-activation": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/verify-codex-activation.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
@@ -24,6 +31,7 @@
     "react-dom": "19.2.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
     "@cloudflare/vite-plugin": "1.44.0",
     "@playwright/test": "1.61.1",
     "@types/node": "22.19.19",
@@ -31,6 +39,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
+    "ajv": "6.15.0",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "19.2.6",

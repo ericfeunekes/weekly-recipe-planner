@@ -86,6 +86,16 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /transcriptEntries/);
   assert.match(planner, /Add note/);
   assert.match(planner, /Send to ChatGPT/);
+  assert.match(planner, /ChatGPT task/);
+  assert.match(planner, /Research recipe/);
+  assert.match(planner, /archiveContextWeek: false/);
+  assert.match(planner, /Allow archiving week \{week\.id\} for this message/);
+  assert.match(planner, /onIntentChange\(DEFAULT_CHAT_INTENT\)/);
+  assert.match(planner, /Informational recipe source/);
+  assert.match(planner, /target="_blank" rel="noopener noreferrer"/);
+  assert.match(planner, /planner changes will not run again/);
+  assert.match(planner, /ChatGPT needs sign-in/);
+  assert.match(planner, /ChatGPT runtime incompatible/);
   assert.match(planner, /timerStartedAt/);
   assert.match(planner, /function Timer/);
   assert.match(planner, /className="week-select"/);
@@ -102,7 +112,7 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(layout, /images: \[imageUrl\]/);
   assert.match(layout, /requestHeaders\.get\("x-forwarded-host"\)/);
   assert.doesNotMatch(layout, /next\/font|Geist|antialiased/);
-  assert.match(styles, /--muted: #62716d/);
+  assert.match(styles, /--muted: #52605d/);
   assert.doesNotMatch(styles, /@import "tailwindcss"|font-geist/);
   assert.match(packageJson, /"lucide-react"/);
   assert.match(packageJson, /--experimental-strip-types/);

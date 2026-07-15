@@ -42,8 +42,8 @@ Past weeks do not need to remain fully active editing surfaces. They should pres
 
 - **WeekPlan**: a Monday-start week in draft/planned, active, or archived state.
 - **MealInstance**: central week object; assigned to a day/slot; can be moved, edited, cooked, skipped, or replaced by leftovers/flex.
-- **RecipeSnapshot**: structured editable recipe/adaptation attached to a week or meal instance. It contains ordered instruction steps, source links, and recipe-level details, but editing it does not imply the source recipe changed.
-- **SourceRecipe**: provenance pointer to NYT, Obsidian, cookbook, family/self, or AI-generated source.
+- **RecipeSnapshot**: the recipe-owned fields on the existing flat meal instance: title, optional yield text, derived ingredient display lines, ordered instruction steps, and optional source reference. Scheduling and household execution fields remain on the same meal but are not implicitly replaced with the recipe. The snapshot is editable/adaptable; editing it does not imply the source page changed.
+- **SourceRecipe**: optional informational reference on a meal snapshot, not an attestation. The sourced-web form is `{kind:"web",identity,url,retrievedAt}` with a canonical HTTP(S) URL, human-readable source identity/title, and observation time. Embedded research makes this the one primary page used as the recipe starting point and host-materializes the time; direct household/global commands supply a validated but unattested time. It does not attest authorship, extraction fidelity, or semantic equivalence after adaptation, and it is not an external authority, recipe-library identity, or actor/admission credential.
 - **InstructionStep**: canonical atomic recipe instruction with a stable ID, zero or more ingredient amount lines displayed above one free-text instruction, Boolean completion, an optional timer duration and persisted start timestamp, and one optional note. Completion and timer state belong to this object and therefore appear consistently in every view that references it.
 - **PrepReference**: an ordered reference to an `InstructionStep` selected for advance prep on a date. It stores the step ID, prep date, and manual position within that date; it does not copy the instruction, completion, timer, or note state. Prep dates run from the Sunday immediately before a Monday-start week through the Sunday ending that week. Removing it only removes the step from the prep list.
 - **GroceryItem**: active-week/planned-week shopping item with quantity/spec, section, notes, and farm-box substitution logic.
@@ -64,7 +64,8 @@ Core mutations:
 - Move a meal between days/slots.
 - Change venue: home, Waeg, picnic, flex, eating out.
 - Mark status: planned, moved, prepping/cooking, cooked, leftover, skipped/flex.
-- Edit meal details and the attached recipe snapshot.
+- Edit meal details and the attached recipe snapshot; ordinary edits preserve any existing source reference, and yield clearing uses explicit `null` rather than omission.
+- Replace only the recipe-owned portion of an existing planned/moved meal from a strict sourced recipe while preserving its date, slot, status, subtitle, venue, protein, prep/leftover notes, and meal notes. This replacement command is the only way to attach/change the source reference. Protected instruction execution state is checked against canonical pre-batch state and blocks replacement until cleanup commits separately and the caller refreshes.
 - Add or edit independently referenceable instruction steps.
 - Check or uncheck an instruction step from either the meal instructions or prep list; both views update the same completion value.
 - Start or reset an optional step timer. The app persists its start timestamp and derives elapsed/remaining time after reopening, but does not send notifications or complete the step automatically.
@@ -117,8 +118,10 @@ Chat with Codex is a first-class mutation surface alongside direct UI editing, d
 - The chat component carries the current view context: from Tonight it knows the current meal and selected instruction step; from Grocery/Farm Box it defaults to grocery scope; from Week Overview it defaults to the selected week.
 - A comment field on an instruction step offers exactly two actions. **Add note** persists the text as that step's optional note and does not send a chat message. **Send to ChatGPT** appends the text and the step's stable context reference to the global transcript and does not also save it as a note.
 - Chat-initiated mutations log to the event log with Codex as actor, same as app-server command mutations, and participate in recent undo.
+- Every foreground composer send explicitly selects ordinary planner work or sourced-recipe research. Planner sends expose a separate context-week archive grant that is off by default and applies only to that accepted turn; retry cannot acquire new authority.
+- Sourced-recipe research uses a live-hosted-search-only context with no planner tools, then passes one bounded untrusted candidate into a planner-only context. The resulting yield and primary-page reference are informational and visible on the meal; they do not claim authorship or extraction fidelity.
 - Structured results (meal cards, grocery diffs, prep changes) can render inline in the chat as interactive widgets, but the canonical display remains the view itself.
-- Runtime path: the loopback-only Node application server starts Codex app-server, uses the Codex CLI's existing ChatGPT login, builds a bounded prompt from canonical server state and the durable transcript, and applies any validated typed command through the same mutation service as the UI. The single logical app transcript does not require a persistent app-server transport thread.
+- Runtime path: the loopback-only Node application server starts the updater-managed Codex app-server from a fixed launcher using a dedicated file-authenticated `CODEX_HOME` and fixed deployment cwd. Each ephemeral model turn receives bounded canonical state and durable transcript context, while accepted dynamic-tool effects use the same versioned/idempotent transaction service as the UI. The single logical app transcript does not depend on persistent app-server thread state.
 
 ## Key Views For Design Overview
 
@@ -174,4 +177,4 @@ Not central to the spine:
 - Learning: app-owned reusable promotions with optional Obsidian export/archive.
 - Household model: one shared global state with no accounts, personal attribution, permissions, or private content.
 - Notes and chat: an instruction-step comment field has exactly **Add note** or **Send to ChatGPT**; notes remain on the step, while sent messages enter the one global transcript with object context.
-- Chat surface: always-available desktop/iPad side panel and mobile drawer, backed by the local Codex app-server bridge using the existing ChatGPT login; context-aware mutations use the same typed domain commands and event log.
+- Chat surface: always-available desktop/iPad side panel and mobile drawer, backed by the isolated managed Codex app-server runtime; context-aware dynamic calls and global-Codex batches use the same typed domain commands, mutation kernel, and event log.

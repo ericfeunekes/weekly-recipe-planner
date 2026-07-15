@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { householdDomain } from "../lib/household-domain.ts";
+import { BROWSER_PROVENANCE } from "../lib/planner-operation-contract.ts";
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
 import { openPlannerStore } from "../server/store/sqlite-store.ts";
 
@@ -88,6 +89,7 @@ test("legacy leftover sources normalize atomically and idempotently before start
         eventId: "event-legacy",
         requestId: "request-legacy",
         actor: "Household",
+        provenance: BROWSER_PROVENANCE,
         command: {
           type: "captureWeekLesson",
           weekId: WEEK_ID,

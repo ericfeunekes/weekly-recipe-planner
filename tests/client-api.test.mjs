@@ -11,16 +11,23 @@ import {
   readLegacyImport,
   readHistoryPage,
   readWorkspace,
+  replayAuthorityOperation,
   retryChatTurn,
   shouldAcceptWorkspace,
   submitChatTurn,
   undoLatest,
 } from "../app/planner-api.ts";
+import { readAuthorityOperations } from "../app/authority-operation-journal.ts";
+import {
+  DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+  DIAGNOSTIC_EXPORT_KIND,
+  DIAGNOSTIC_EXPORT_WARNING,
+} from "../lib/planner-api-contract.ts";
 
 function initializedWorkspace(syncRevision = 3, plannerVersion = 2) {
   return {
     initialized: true,
-    schemaVersion: 1,
+    schemaVersion: 2,
     plannerVersion,
     syncRevision,
     state: {
@@ -41,6 +48,24 @@ async function withFetch(mock, run) {
     await run();
   } finally {
     globalThis.fetch = previous;
+  }
+}
+
+async function withBrowserSessionStorage(run, overrides = {}) {
+  const previousWindow = globalThis.window;
+  const entries = new Map();
+  const sessionStorage = {
+    getItem: (key) => entries.get(key) ?? null,
+    setItem: (key, value) => entries.set(key, String(value)),
+    removeItem: (key) => entries.delete(key),
+    ...overrides,
+  };
+  globalThis.window = { sessionStorage, dispatchEvent() {} };
+  try {
+    await run(sessionStorage);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
   }
 }
 
@@ -89,22 +114,27 @@ test("aborted conditional reads stay neutral instead of becoming offline errors"
 
 test("expected command conflicts are decision responses, not transport errors", async () => {
   const workspace = initializedWorkspace(10, 8);
-  await withFetch(async (path, init) => {
-    assert.equal(path, "/api/commands");
-    assert.equal(init.method, "POST");
-    assert.equal(init.credentials, "same-origin");
-    return new Response(JSON.stringify({
-      decision: { status: "version_conflict", expectedVersion: 7, actualVersion: 8 },
-      workspace,
-    }), { status: 409, headers: { "Content-Type": "application/json" } });
-  }, async () => {
-    const result = await applyPlannerCommand({
-      requestId: "request-1",
-      basePlannerVersion: 7,
-      command: { type: "activateWeek", weekId: "2026-07-06" },
+  await withBrowserSessionStorage(async () => {
+    await withFetch(async (path, init) => {
+      assert.equal(path, "/api/commands");
+      assert.equal(init.method, "POST");
+      assert.equal(init.credentials, "same-origin");
+      return new Response(JSON.stringify({
+        decision: { status: "version_conflict", expectedVersion: 7, actualVersion: 8 },
+        workspace,
+      }), { status: 409, headers: { "Content-Type": "application/json" } });
+    }, async () => {
+      const result = await applyPlannerCommand({
+        requestId: "request-1",
+        basePlannerVersion: 7,
+        command: { type: "activateWeek", weekId: "2026-07-06" },
+      }, { label: "Activate dinner week" });
+      assert.equal(result.decision.status, "version_conflict");
+      assert.equal(result.workspace.syncRevision, 10);
+      const [pending] = readAuthorityOperations();
+      assert.match(pending.resolution.message, /Someone else changed the plan/);
+      assert.match(pending.resolution.message, /Activate dinner week/);
     });
-    assert.equal(result.decision.status, "version_conflict");
-    assert.equal(result.workspace.syncRevision, 10);
   });
 });
 
@@ -130,6 +160,30 @@ test("ambiguous POST transport failures replay the exact request ID once", async
   assert.equal(requests.length, 2);
   assert.deepEqual(requests[1], requests[0]);
   assert.equal(requests[1].requestId, "stable-request-id");
+});
+
+test("journal storage failure blocks a shared POST before network dispatch", async () => {
+  let fetchCount = 0;
+  await withBrowserSessionStorage(async () => {
+    await withFetch(async () => {
+      fetchCount += 1;
+      throw new Error("fetch must not run");
+    }, async () => {
+      await assert.rejects(
+        applyPlannerCommand({
+          requestId: "blocked-before-send",
+          basePlannerVersion: 8,
+          command: { type: "activateWeek", weekId: "2026-07-06" },
+        }),
+        (error) => error?.code === "STORAGE_UNAVAILABLE",
+      );
+    });
+  }, {
+    setItem() {
+      throw new Error("quota unavailable");
+    },
+  });
+  assert.equal(fetchCount, 0);
 });
 
 test("ambiguous POST envelopes replay only for the original request ID", async (t) => {
@@ -180,6 +234,7 @@ test("ambiguous POST envelopes replay only for the original request ID", async (
         basePlannerVersion: 8,
         message: "Move dinner to Tuesday",
         context: { view: "week", weekId: "2026-07-06" },
+        intent: { kind: "planner", archiveContextWeek: false },
       },
       run: submitChatTurn,
       response: chatResponse,
@@ -208,21 +263,29 @@ test("ambiguous POST envelopes replay only for the original request ID", async (
         : semanticFields;
       const laterRetry = { ...refreshedFields, requestId: operation.first.requestId };
       const deliberateOperation = { ...refreshedFields, requestId: `${operation.name}-deliberate-id` };
-      await withFetch(async (path, init) => {
-        requests.push({ path, rawBody: init.body, body: JSON.parse(init.body) });
-        if (requests.length <= 2) throw new TypeError("response disappeared after commit");
-        return new Response(JSON.stringify(operation.response), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }, async () => {
-        await assert.rejects(
-          operation.run(operation.first),
-          (error) => error instanceof PlannerApiError && error.code === "NETWORK_ERROR",
-        );
+      await withBrowserSessionStorage(async () => {
+        await withFetch(async (path, init) => {
+          requests.push({ path, rawBody: init.body, body: JSON.parse(init.body) });
+          if (requests.length <= 2) throw new TypeError("response disappeared after commit");
+          return new Response(JSON.stringify(operation.response), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }, async () => {
+          await assert.rejects(
+            operation.run(operation.first),
+            (error) => error instanceof PlannerApiError && error.code === "NETWORK_ERROR",
+          );
 
-        await operation.run(deliberateOperation);
-        await operation.run(laterRetry);
+          await operation.run(deliberateOperation);
+          await assert.rejects(
+            operation.run(laterRetry),
+            (error) => error?.code === "REQUEST_ID_REUSE",
+          );
+          const [pending] = readAuthorityOperations();
+          assert.equal(pending.requestId, operation.first.requestId);
+          await replayAuthorityOperation(pending);
+        });
       });
 
       assert.equal(requests.length, 4);
@@ -294,19 +357,27 @@ test("ambiguous planner retries cannot drift with canonical add-step or prep sta
   for (const operation of cases) {
     await t.test(operation.name, async () => {
       const requests = [];
-      await withFetch(async (_path, init) => {
-        requests.push(JSON.parse(init.body));
-        if (requests.length <= 2) throw new TypeError("response disappeared after commit");
-        return new Response(JSON.stringify({
-          decision: { status: "accepted", eventId: "event-1", plannerVersion: 9 },
-          workspace,
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
-      }, async () => {
-        await assert.rejects(
-          applyPlannerCommand(operation.first),
-          (error) => error instanceof PlannerApiError && error.code === "NETWORK_ERROR",
-        );
-        await applyPlannerCommand(operation.reconstructed);
+      await withBrowserSessionStorage(async () => {
+        await withFetch(async (_path, init) => {
+          requests.push(JSON.parse(init.body));
+          if (requests.length <= 2) throw new TypeError("response disappeared after commit");
+          return new Response(JSON.stringify({
+            decision: { status: "accepted", eventId: "event-1", plannerVersion: 9 },
+            workspace,
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }, async () => {
+          await assert.rejects(
+            applyPlannerCommand(operation.first),
+            (error) => error instanceof PlannerApiError && error.code === "NETWORK_ERROR",
+          );
+          await assert.rejects(
+            applyPlannerCommand(operation.reconstructed),
+            (error) => error?.code === "REQUEST_ID_REUSE",
+          );
+          const [pending] = readAuthorityOperations();
+          assert.equal(pending.requestId, operation.first.requestId);
+          await replayAuthorityOperation(pending);
+        });
       });
 
       assert.equal(requests.length, 3);
@@ -357,8 +428,8 @@ test("legacy import accepts only the exact v2 envelope", () => {
 test("older initialized workspaces cannot replace the latest read model", () => {
   assert.equal(shouldAcceptWorkspace(initializedWorkspace(12), initializedWorkspace(11)), false);
   assert.equal(shouldAcceptWorkspace(initializedWorkspace(12), initializedWorkspace(12)), true);
-  assert.equal(shouldAcceptWorkspace({ initialized: false, schemaVersion: 1 }, initializedWorkspace(1)), true);
-  assert.equal(shouldAcceptWorkspace(initializedWorkspace(12), { initialized: false, schemaVersion: 1 }), false);
+  assert.equal(shouldAcceptWorkspace({ initialized: false, schemaVersion: 2 }, initializedWorkspace(1)), true);
+  assert.equal(shouldAcceptWorkspace(initializedWorkspace(12), { initialized: false, schemaVersion: 2 }), false);
 });
 
 test("history paging uses the canonical exclusive cursor query", async () => {
@@ -377,6 +448,10 @@ test("history paging uses the canonical exclusive cursor query", async () => {
 test("workspace export accepts the canonical export envelope", async () => {
   const workspace = initializedWorkspace(14, 9);
   const envelope = {
+    kind: DIAGNOSTIC_EXPORT_KIND,
+    formatVersion: DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+    restorable: false,
+    warning: DIAGNOSTIC_EXPORT_WARNING,
     schemaVersion: workspace.schemaVersion,
     exportedAt: 1_783_700_000_000,
     plannerVersion: workspace.plannerVersion,

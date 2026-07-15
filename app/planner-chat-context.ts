@@ -3,9 +3,10 @@ import type { PlannerChatContext, PlannerView } from "../lib/planner-chat-contra
 
 export function plannerChatContextForView(
   view: PlannerView,
-  week: WeekPlan,
+  week: WeekPlan | null,
   today: IsoDate,
 ): PlannerChatContext {
+  if (week === null) return { view };
   if (view !== "tonight") return { view, weekId: week.id };
 
   const leftover = week.data.leftovers.find(

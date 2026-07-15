@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 const LOOPBACK_HOST = "127.0.0.1";
 const DEVELOPMENT_API_PORT = 8788;
 const DEVELOPMENT_WEB_PORT = 3001;
@@ -9,17 +11,29 @@ function origin(host, port) {
   return `http://${host}:${port}`;
 }
 
-function authorityProcess(environment, overrides) {
+function processOptions(environment, workingDirectory) {
   return {
-    command: process.execPath,
-    args: ["--experimental-strip-types", "server/index.ts"],
-    options: {
-      env: { ...environment, ...overrides },
-    },
+    env: environment,
+    ...(workingDirectory === undefined ? {} : { cwd: workingDirectory }),
   };
 }
 
-function vinextProcess(environment, command, port) {
+function authorityProcess(environment, overrides, workingDirectory) {
+  return {
+    command: process.execPath,
+    args: [
+      "--disable-warning=ExperimentalWarning",
+      "--experimental-strip-types",
+      "server/index.ts",
+    ],
+    options: processOptions(
+      { ...environment, ...overrides },
+      workingDirectory,
+    ),
+  };
+}
+
+function vinextProcess(environment, command, port, workingDirectory) {
   return {
     command: process.execPath,
     args: [
@@ -30,14 +44,15 @@ function vinextProcess(environment, command, port) {
       "--port",
       String(port),
     ],
-    options: {
-      env: {
+    options: processOptions(
+      {
         ...environment,
         PLANNER_WEB_PORT: String(port),
         WRANGLER_LOG_PATH:
           environment.WRANGLER_LOG_PATH ?? ".wrangler/wrangler.log",
       },
-    },
+      workingDirectory,
+    ),
   };
 }
 
@@ -62,18 +77,60 @@ export function createDevelopmentProcessSpecifications(
 
 export function createProductionProcessSpecifications(
   environment = process.env,
+  { workingDirectory } = {},
 ) {
   const publicPort = environment.PLANNER_PORT ?? String(PRODUCTION_PUBLIC_PORT);
   const publicHost = environment.PLANNER_HOST ?? LOOPBACK_HOST;
   const webOrigin = origin(LOOPBACK_HOST, PRODUCTION_WEB_PORT);
 
   return [
-    vinextProcess(environment, "start", PRODUCTION_WEB_PORT),
+    vinextProcess(
+      environment,
+      "start",
+      PRODUCTION_WEB_PORT,
+      workingDirectory,
+    ),
     authorityProcess(environment, {
       PLANNER_MODE: "front",
       PLANNER_HOST: publicHost,
       PLANNER_PORT: publicPort,
       PLANNER_WEB_ORIGIN: webOrigin,
-    }),
+    }, workingDirectory),
   ];
+}
+
+export function createInstalledProcessSpecifications(
+  {
+    appDirectory,
+    agentDirectory,
+    dataDirectory,
+    runDirectory,
+    activationId,
+    operatorSha256,
+    activationSha256,
+  },
+  environment = process.env,
+) {
+  if (
+    [activationId, operatorSha256, activationSha256].some(
+      (value) => typeof value !== "string" || value.length === 0,
+    )
+  ) {
+    throw new TypeError("Installed process specifications require bound release identities.");
+  }
+  const installedEnvironment = {
+    ...environment,
+    PLANNER_CODEX_HOME: agentDirectory,
+    PLANNER_CODEX_CWD: appDirectory,
+    PLANNER_DATA_DIR: dataDirectory,
+    PLANNER_RUNTIME_OWNER_SOCKET: join(runDirectory, "runtime-owner.sock"),
+    PLANNER_INSTALLED_RUNTIME: "1",
+    PLANNER_EXPECTED_ACTIVATION_ID: activationId,
+    PLANNER_EXPECTED_OPERATOR_SHA256: operatorSha256,
+    PLANNER_EXPECTED_ACTIVATION_SHA256: activationSha256,
+    WRANGLER_LOG_PATH: join(runDirectory, "logs", "wrangler.log"),
+  };
+  return createProductionProcessSpecifications(installedEnvironment, {
+    workingDirectory: appDirectory,
+  });
 }

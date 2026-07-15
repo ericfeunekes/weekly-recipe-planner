@@ -31,6 +31,7 @@ import {
   MAX_TIMER_DURATION_SECONDS,
   type HouseholdCommand,
 } from "./household-command-contract.ts";
+import { isSourceRecipe } from "./sourced-recipe-contract.ts";
 
 export type HouseholdStateValidation =
   | { ok: true }
@@ -62,6 +63,10 @@ export type HouseholdCommandContext = {
 
 export interface HouseholdDomainPort {
   validateState(state: HouseholdPlannerState): HouseholdStateValidation;
+  validateCanonicalBatchBase(
+    state: HouseholdPlannerState,
+    commands: readonly HouseholdCommand[],
+  ): { ok: true } | { ok: false; operationIndex: number; message: string };
   execute(
     state: HouseholdPlannerState,
     command: HouseholdCommand,
@@ -268,6 +273,7 @@ function validateMeal(
       "ingredients",
       "instructions",
     ],
+    ["yieldText", "sourceRecipe"],
   );
   if (!isId(value.id)) addIssue(issues, `${path}.id`, "Must be a nonempty bounded ID.");
   if (!isIsoDate(value.date)) {
@@ -279,6 +285,12 @@ function validateMeal(
     addIssue(issues, `${path}.slot`, "Must be a supported meal slot.");
   }
   if (!isText(value.title, 300, { nonempty: true })) addIssue(issues, `${path}.title`, "Must be a nonempty title up to 300 characters.");
+  if (value.yieldText !== undefined && !isText(value.yieldText, 80, { nonempty: true })) {
+    addIssue(issues, `${path}.yieldText`, "Must be a nonempty yield up to 80 characters.");
+  }
+  if (value.sourceRecipe !== undefined && !isSourceRecipe(value.sourceRecipe)) {
+    addIssue(issues, `${path}.sourceRecipe`, "Must be a canonical informational source reference.");
+  }
   if (!isText(value.subtitle, 1_000)) addIssue(issues, `${path}.subtitle`, "Must be at most 1,000 characters.");
   if (!isText(value.venue, 300, { nonempty: true })) addIssue(issues, `${path}.venue`, "Must be a nonempty venue up to 300 characters.");
   if (!MEAL_STATUSES.includes(value.status as (typeof MEAL_STATUSES)[number])) addIssue(issues, `${path}.status`, "Must be a supported meal status.");
@@ -545,6 +557,9 @@ function cloneStep(step: InstructionStep): InstructionStep {
 function cloneMeal(meal: Meal): Meal {
   return {
     ...meal,
+    ...(meal.sourceRecipe === undefined
+      ? {}
+      : { sourceRecipe: { ...meal.sourceRecipe } }),
     ingredients: [...meal.ingredients],
     instructions: meal.instructions.map(cloneStep),
   };
@@ -658,11 +673,57 @@ function leftoverPortions(meal: Meal): number {
   const match = meal.leftoverNote.match(
     /\b(\d{1,2})(?:\s+[A-Za-z][A-Za-z'-]*){0,2}\s+(?:portions?|servings?|lunch(?:es)?)\b/i,
   );
-  return match ? Math.max(1, Number(match[1])) : 2;
+  return match ? Number(match[1]) : 2;
 }
 
 function equalJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export type SourcedRecipeReplacementEligibility =
+  | { ok: true }
+  | { ok: false; message: string };
+
+export function validateSourcedRecipeReplacementEligibility(
+  state: HouseholdPlannerState,
+  command: Extract<HouseholdCommand, { type: "replaceMealRecipeFromSource" }>,
+): SourcedRecipeReplacementEligibility {
+  const week = findWeek(state, command.weekId);
+  if (!week) return { ok: false, message: "Week not found." };
+  if (week.status !== "planned" && week.status !== "active") {
+    return { ok: false, message: "Only planned or active weeks accept sourced recipe replacement." };
+  }
+  const meal = week.data.meals.find((candidate) => candidate.id === command.mealId);
+  if (!meal) return { ok: false, message: "Meal not found." };
+  if (meal.status !== "planned" && meal.status !== "moved") {
+    return { ok: false, message: "Only planned or moved meals accept sourced recipe replacement." };
+  }
+  if (meal.instructions.some((step) => step.complete)) {
+    return { ok: false, message: "Completed instruction steps must be cleared in an earlier change." };
+  }
+  if (meal.instructions.some((step) => step.note !== undefined)) {
+    return { ok: false, message: "Instruction notes must be cleared in an earlier change." };
+  }
+  if (meal.instructions.some((step) => step.timerStartedAt !== undefined)) {
+    return { ok: false, message: "Running instruction timers must be stopped in an earlier change." };
+  }
+  const stepIds = new Set(meal.instructions.map((step) => step.id));
+  if (week.data.prep.some((reference) => stepIds.has(reference.stepId))) {
+    return { ok: false, message: "Prep references must be removed in an earlier change." };
+  }
+  return { ok: true };
+}
+
+export function validateCanonicalHouseholdBatchBase(
+  state: HouseholdPlannerState,
+  commands: readonly HouseholdCommand[],
+): { ok: true } | { ok: false; operationIndex: number; message: string } {
+  for (const [operationIndex, command] of commands.entries()) {
+    if (command.type !== "replaceMealRecipeFromSource") continue;
+    const eligible = validateSourcedRecipeReplacementEligibility(state, command);
+    if (!eligible.ok) return { ...eligible, operationIndex };
+  }
+  return { ok: true };
 }
 
 export function executeHouseholdCommand(
@@ -772,10 +833,62 @@ export function executeHouseholdCommand(
         leftoverNote: meal.leftoverNote,
         notes: meal.notes,
         ingredients: meal.ingredients,
+        yieldText: meal.yieldText ?? null,
       };
       if (equalJson(previous, command.changes)) return failure(state, "Meal snapshot is unchanged.");
-      Object.assign(meal, command.changes, { ingredients: [...command.changes.ingredients] });
+      meal.title = command.changes.title;
+      meal.subtitle = command.changes.subtitle;
+      meal.venue = command.changes.venue;
+      meal.prepNote = command.changes.prepNote;
+      meal.leftoverNote = command.changes.leftoverNote;
+      meal.notes = command.changes.notes;
+      meal.ingredients = [...command.changes.ingredients];
+      if (command.changes.yieldText === null) delete meal.yieldText;
+      else meal.yieldText = command.changes.yieldText;
       return success(state, next, `Updated ${meal.title}`, meal.id, ["Week-local recipe details were updated"]);
+    }
+
+    case "replaceMealRecipeFromSource": {
+      const eligible = validateSourcedRecipeReplacementEligibility(state, command);
+      if (!eligible.ok) return failure(state, eligible.message);
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const meal = week.data.meals.find((item) => item.id === command.mealId);
+      if (!meal) return failure(state, "Meal not found.");
+      const existingStepIds = new Set(
+        week.data.meals.flatMap((item) => item.instructions.map((step) => step.id)),
+      );
+      const instructions: InstructionStep[] = [];
+      const createdIds: Record<string, string> = {};
+      for (const [index, recipeStep] of command.recipe.steps.entries()) {
+        const id = materializeId(context, "step", existingStepIds);
+        if (!id) return failure(state, "Could not materialize a unique instruction-step ID.");
+        createdIds[`instructionStep.${index}`] = id;
+        instructions.push({
+          id,
+          inputs: recipeStep.inputs.map((input) => ({ ...input })),
+          instruction: recipeStep.instruction,
+          complete: false,
+          ...(recipeStep.timerDurationSeconds === undefined
+            ? {}
+            : { timerDurationSeconds: recipeStep.timerDurationSeconds }),
+        });
+      }
+      meal.title = command.recipe.title;
+      if (command.recipe.yieldText === undefined) delete meal.yieldText;
+      else meal.yieldText = command.recipe.yieldText;
+      meal.sourceRecipe = { ...command.recipe.source };
+      meal.ingredients = command.recipe.steps.flatMap((step) =>
+        step.inputs.map((input) => `${input.amount} ${input.ingredient}`)
+      );
+      meal.instructions = instructions;
+      return success(
+        state,
+        next,
+        `Replaced recipe for ${meal.title}`,
+        meal.id,
+        ["Recipe title, yield, ingredients, instructions, and source were replaced"],
+        createdIds,
+      );
     }
 
     case "addInstructionStep": {
@@ -880,7 +993,14 @@ export function executeHouseholdCommand(
 
     case "setPrepPlan": {
       if (!week) return rejectMissingWeek(state, command.weekId);
-      for (const entry of command.entries) {
+      const plannedStepIds = new Set<string>();
+      for (const [index, entry] of command.entries.entries()) {
+        if (plannedStepIds.has(entry.stepId)) {
+          return failure(state, "Prep plan contains a duplicate instruction step.", {
+            [`entries[${index}].stepId`]: "Each instruction step may appear in prep once.",
+          });
+        }
+        plannedStepIds.add(entry.stepId);
         if (!findStep(week, entry.stepId)) return failure(state, "Prep plan references an unknown instruction step.", { stepId: entry.stepId });
         if (!weekContainsPrepDate(week.id, entry.prepDate)) return failure(state, "Prep date is outside the allowed interval.", { prepDate: entry.prepDate });
       }
@@ -1178,6 +1298,7 @@ export function executeHouseholdCommand(
           date: input.date,
           slot: input.slot,
           title: input.title,
+          ...(input.yieldText === undefined ? {} : { yieldText: input.yieldText }),
           subtitle: input.subtitle,
           venue: input.venue,
           status: input.status ?? "planned",
@@ -1234,5 +1355,6 @@ export function executeHouseholdCommand(
 
 export const householdDomain: HouseholdDomainPort = {
   validateState: validateHouseholdState,
+  validateCanonicalBatchBase: validateCanonicalHouseholdBatchBase,
   execute: executeHouseholdCommand,
 };

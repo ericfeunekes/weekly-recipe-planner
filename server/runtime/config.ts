@@ -1,4 +1,9 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+
+import {
+  parseCodexFollowUpConfig,
+  type FollowUpConfigResult,
+} from "./codex-follow-up/deployment.ts";
 
 export type RuntimeMode = "api" | "front";
 
@@ -10,6 +15,7 @@ export type PlannerRuntimeConfig = {
   databasePath: string;
   webOrigin: URL;
   allowedOrigins: ReadonlySet<string>;
+  codexFollowUp: FollowUpConfigResult;
 };
 
 function parsePort(value: string | undefined, fallback: number, name: string) {
@@ -73,12 +79,18 @@ function parseAllowedOrigins(
   const origins = new Set<string>();
   for (const entry of entries) {
     const origin = new URL(entry);
+    const loopbackHttp =
+      origin.protocol === "http:" &&
+      ["127.0.0.1", "[::1]", "localhost"].includes(origin.hostname);
+    const tailnetHttps =
+      origin.protocol === "https:" && origin.hostname.endsWith(".ts.net");
     if (
-      origin.protocol !== "http:" ||
-      !["127.0.0.1", "[::1]", "localhost"].includes(origin.hostname) ||
+      (!loopbackHttp && !tailnetHttps) ||
       origin.origin !== entry
     ) {
-      throw new TypeError("PLANNER_ALLOWED_ORIGINS must contain loopback HTTP origins.");
+      throw new TypeError(
+        "PLANNER_ALLOWED_ORIGINS must contain loopback HTTP or exact Tailnet HTTPS origins.",
+      );
     }
     origins.add(origin.origin);
   }
@@ -91,7 +103,11 @@ function assertDataDirectoryOutsideBuildOutput(dataDirectory: string) {
     const pathFromOutput = relative(outputDirectory, dataDirectory);
     if (
       pathFromOutput === "" ||
-      (!pathFromOutput.startsWith("..") && !isAbsolute(pathFromOutput))
+      (
+        pathFromOutput !== ".." &&
+        !pathFromOutput.startsWith(`..${sep}`) &&
+        !isAbsolute(pathFromOutput)
+      )
     ) {
       throw new TypeError("PLANNER_DATA_DIR must be outside build output.");
     }
@@ -129,5 +145,6 @@ export function readRuntimeConfig(
       port,
       webOrigin,
     ),
+    codexFollowUp: parseCodexFollowUpConfig(environment, dataDirectory),
   };
 }

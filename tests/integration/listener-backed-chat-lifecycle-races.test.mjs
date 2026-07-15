@@ -1,22 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { startPlannerRuntime } from "../../server/runtime/planner-runtime.ts";
+import { createDeterministicCodexRuntime } from "../support/e2e-runtime.mjs";
 
 const BROWSER_ORIGIN = "http://localhost:3001";
 const REQUEST_TIMEOUT_MS = 4_000;
 const TEST_TIMEOUT_MS = 10_000;
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
+const APP_CWD = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 async function withDeadline(promise, label, timeoutMs = REQUEST_TIMEOUT_MS) {
   let timeout;
@@ -35,46 +30,48 @@ async function withDeadline(promise, label, timeoutMs = REQUEST_TIMEOUT_MS) {
   }
 }
 
-class GatedAuthenticatedCodexAdapter {
-  calls = [];
-  statusCalls = 0;
-  #completionStarted = deferred();
-  #completionRelease = deferred();
-
-  async readStatus() {
-    this.statusCalls += 1;
-    return { available: true, authenticated: true, detail: "authenticated fixture" };
-  }
-
-  async complete(request) {
-    this.calls.push({ turnId: request.turnId, prompt: request.prompt });
-    this.#completionStarted.resolve();
-    return this.#completionRelease.promise;
-  }
-
-  waitForCompletionStart() {
-    return withDeadline(this.#completionStarted.promise, "Codex completion start");
-  }
-
-  releaseCompletion() {
-    this.#completionRelease.resolve({
-      reply: "The winning request completed.",
-      command: null,
-    });
+async function waitForPath(path, label) {
+  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+  while (true) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      if (Date.now() >= deadline) {
+        throw new Error(`${label} did not complete within ${REQUEST_TIMEOUT_MS}ms.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   }
 }
 
-const unavailableCodexAdapter = {
-  async readStatus() {
-    return { available: false, authenticated: null, detail: "not used" };
-  },
-  async complete() {
-    throw new Error("Codex is outside the lifecycle-command race fixture.");
-  },
-};
+function instrumentCodexRuntime(runtime) {
+  const stats = { spawnCalls: 0 };
+  return {
+    stats,
+    runtime: {
+      evaluate: (...argumentsValue) => runtime.evaluate(...argumentsValue),
+      readStatus: (...argumentsValue) => runtime.readStatus(...argumentsValue),
+      spawnAppServer: (...argumentsValue) => {
+        stats.spawnCalls += 1;
+        return runtime.spawnAppServer(...argumentsValue);
+      },
+      close: (...argumentsValue) => runtime.close(...argumentsValue),
+    },
+  };
+}
 
-async function startListenerRuntime(t, prefix, codexAdapter) {
+async function startListenerRuntime(t, prefix, codexState) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
+  const overlapStartedMarkerPath = join(directory, ".held-overlap-started");
+  const overlapReleaseMarkerPath = join(directory, ".held-overlap-release");
+  const instrumentedCodex = instrumentCodexRuntime(
+    createDeterministicCodexRuntime(codexState, {
+      fixedCwd: APP_CWD,
+      overlapStartedMarkerPath,
+      overlapReleaseMarkerPath,
+    }),
+  );
   let runtime;
   t.after(async () => {
     await runtime?.close();
@@ -90,7 +87,8 @@ async function startListenerRuntime(t, prefix, codexAdapter) {
       webOrigin: new URL(BROWSER_ORIGIN),
       allowedOrigins: new Set([BROWSER_ORIGIN]),
     },
-    codexAdapter,
+    codexRuntime: instrumentedCodex.runtime,
+    codexFixedCwd: APP_CWD,
     webProbe: async () => true,
     shutdownGracePeriodMs: 1_000,
   });
@@ -100,6 +98,11 @@ async function startListenerRuntime(t, prefix, codexAdapter) {
   return {
     runtime,
     baseUrl: `http://127.0.0.1:${address.port}`,
+    codexStats: instrumentedCodex.stats,
+    waitForCompletionStart: () =>
+      waitForPath(overlapStartedMarkerPath, "Codex completion start"),
+    releaseCompletion: () =>
+      writeFile(overlapReleaseMarkerPath, "release\n", { flag: "wx" }),
   };
 }
 
@@ -141,12 +144,12 @@ test(
   "overlapping listener-backed chat submissions admit one authenticated Codex completion",
   { timeout: TEST_TIMEOUT_MS },
   async (t) => {
-    const adapter = new GatedAuthenticatedCodexAdapter();
-    const { baseUrl } = await startListenerRuntime(
+    const fixture = await startListenerRuntime(
       t,
       "planner-chat-http-overlap-",
-      adapter,
+      "compatible",
     );
+    const { baseUrl } = fixture;
     const bootstrap = await postJson(baseUrl, "/api/bootstrap", {
       requestId: "bootstrap-chat-overlap",
       mode: "seed",
@@ -158,7 +161,7 @@ test(
 
     const winnerRequestId = "chat-overlap-winner";
     const loserRequestId = "chat-overlap-loser";
-    const winnerMessage = "Hold this request open while the other submission arrives.";
+    const winnerMessage = "Propose conflicting meal change during retry isolation.";
     const loserMessage = "This request must observe the durable busy turn.";
     const submit = (requestId, message) =>
       postJson(baseUrl, "/api/chat/submit", {
@@ -166,13 +169,29 @@ test(
         basePlannerVersion: initial.plannerVersion,
         message,
         context: { view: "week", weekId },
+        intent: { kind: "planner", archiveContextWeek: false },
       });
 
     const winnerPromise = submit(winnerRequestId, winnerMessage);
     void winnerPromise.catch(() => {});
     let winnerResponse;
     try {
-      await adapter.waitForCompletionStart();
+      const startOutcome = await Promise.race([
+        fixture.waitForCompletionStart().then(() => ({ status: "started" })),
+        winnerPromise.then((response) => ({ status: "completed_early", response })),
+      ]);
+      assert.equal(
+        startOutcome.status,
+        "started",
+        `Winning chat completed before the controlled Codex barrier: ${JSON.stringify(
+          startOutcome.status === "completed_early"
+            ? {
+                status: startOutcome.response.status,
+                decision: startOutcome.response.body.decision,
+              }
+            : startOutcome,
+        )}`,
+      );
 
       // The winner's listener request remains open at the adapter while this
       // second request traverses the same real HTTP and SQLite boundaries.
@@ -197,10 +216,9 @@ test(
         pendingUserEntries[0].turnId,
         pendingReadback.body.chatTurns[0].turnId,
       );
-      assert.equal(adapter.calls.length, 1);
-      assert.equal(adapter.statusCalls, 1);
+      assert.equal(fixture.codexStats.spawnCalls, 1);
 
-      adapter.releaseCompletion();
+      await fixture.releaseCompletion();
       winnerResponse = await withDeadline(winnerPromise, "winning chat HTTP response");
       assert.equal(winnerResponse.status, 202);
       assert.equal(winnerResponse.body.decision.status, "accepted");
@@ -226,9 +244,11 @@ test(
         finalReadback.body.transcriptEntries.some((entry) => entry.text === loserMessage),
         false,
       );
-      assert.equal(adapter.calls.length, 1);
+      assert.equal(fixture.codexStats.spawnCalls, 1);
     } finally {
-      adapter.releaseCompletion();
+      await fixture.releaseCompletion().catch((error) => {
+        if (error?.code !== "EEXIST") throw error;
+      });
       if (!winnerResponse) await winnerPromise.catch(() => {});
     }
   },
@@ -238,11 +258,12 @@ test(
   "same-version archive and handoff HTTP commands commit one canonical lifecycle",
   { timeout: TEST_TIMEOUT_MS },
   async (t) => {
-    const { baseUrl } = await startListenerRuntime(
+    const fixture = await startListenerRuntime(
       t,
       "planner-lifecycle-http-race-",
-      unavailableCodexAdapter,
+      "unavailable",
     );
+    const { baseUrl } = fixture;
     const bootstrap = await postJson(baseUrl, "/api/bootstrap", {
       requestId: "bootstrap-lifecycle-race",
       mode: "seed",
@@ -357,5 +378,6 @@ test(
       finalReadback.body.events.some((event) => event.requestId === conflicted.requestId),
       false,
     );
+    assert.equal(fixture.codexStats.spawnCalls, 0);
   },
 );

@@ -50,6 +50,7 @@ import {
 import {
   MAX_COMMAND_TEXT_LENGTH,
   MAX_GROCERY_ITEM_LENGTH,
+  MAX_ID_LENGTH,
   MAX_INGREDIENT_LINE_LENGTH,
   MAX_INGREDIENT_LINES,
   MAX_MEAL_SUBTITLE_LENGTH,
@@ -58,6 +59,7 @@ import {
   MAX_STEP_INPUT_AMOUNT_LENGTH,
   MAX_STEP_INPUT_INGREDIENT_LENGTH,
   MAX_STEP_INPUTS,
+  isHouseholdCommand,
   type HouseholdCommand,
 } from "@/lib/household-command-contract";
 import {
@@ -83,6 +85,7 @@ import {
   type WorkspaceResponse,
 } from "@/lib/planner-api-contract";
 import type {
+  ChatTurnIntent,
   ChatTurn,
   PlannerChatContext,
   PlannerView,
@@ -105,6 +108,16 @@ import {
   undoLatest,
   type LegacyImportCandidate,
 } from "./planner-api";
+import {
+  AUTHORITY_OPERATION_JOURNAL_EVENT,
+  clearAuthorityOperationJournalAfterReadback,
+  discardAuthorityOperation,
+  operationKey,
+  readAuthorityOperations,
+  replaceResolvedAuthorityOperation,
+  updateAuthorityOperationDraft,
+  type PendingAuthorityOperation,
+} from "./authority-operation-journal";
 import {
   hasValidationIssues,
   validateGroceryDraft,
@@ -130,6 +143,7 @@ type MutateOptions = {
   onConflict?: (plannerVersion: number) => void;
 };
 type PendingAuthorityRetry = {
+  operation: PendingAuthorityOperation;
   label: string;
   message: string;
   tone: "warning" | "error";
@@ -147,12 +161,111 @@ type PendingAuthorityRetry = {
       onAccepted?: () => void;
     }
   | { kind: "chat-retry"; request: RetryChatTurnRequest }
-  | { kind: "undo"; request: UndoLatestRequest; event: PlannerEvent }
+  | { kind: "undo"; request: UndoLatestRequest }
 );
 type PendingRetryChannel = "planner" | "chat";
+type PendingRetryVolatile = {
+  options?: MutateOptions;
+  onAccepted?: () => void;
+};
+
+type MealSnapshotRecoveryCommand = Extract<HouseholdCommand, { type: "updateMealSnapshot" }>;
+
+function hasExactRecordKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index]);
+}
+
+function isMealSnapshotRecoveryCommand(value: unknown): value is MealSnapshotRecoveryCommand {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const command = value as Record<string, unknown>;
+  if (!hasExactRecordKeys(command, ["type", "weekId", "mealId", "changes"]) ||
+      command.type !== "updateMealSnapshot" ||
+      typeof command.weekId !== "string" || command.weekId.length === 0 || command.weekId.length > MAX_ID_LENGTH ||
+      typeof command.mealId !== "string" || command.mealId.length === 0 || command.mealId.length > MAX_ID_LENGTH ||
+      command.changes === null || typeof command.changes !== "object" || Array.isArray(command.changes)) {
+    return false;
+  }
+  const changes = command.changes as Record<string, unknown>;
+  if (!hasExactRecordKeys(changes, [
+    "title",
+    "subtitle",
+    "venue",
+    "prepNote",
+    "leftoverNote",
+    "notes",
+    "ingredients",
+    "yieldText",
+  ])) return false;
+  return typeof changes.title === "string" && changes.title.length <= MAX_MEAL_TITLE_LENGTH &&
+    typeof changes.subtitle === "string" && changes.subtitle.length <= MAX_MEAL_SUBTITLE_LENGTH &&
+    typeof changes.venue === "string" && changes.venue.length <= MAX_MEAL_VENUE_LENGTH &&
+    typeof changes.prepNote === "string" && changes.prepNote.length <= MAX_COMMAND_TEXT_LENGTH &&
+    typeof changes.leftoverNote === "string" && changes.leftoverNote.length <= MAX_COMMAND_TEXT_LENGTH &&
+    typeof changes.notes === "string" && changes.notes.length <= MAX_COMMAND_TEXT_LENGTH &&
+    Array.isArray(changes.ingredients) && changes.ingredients.length <= MAX_INGREDIENT_LINES &&
+    changes.ingredients.every((ingredient) =>
+      typeof ingredient === "string" && ingredient.length <= MAX_INGREDIENT_LINE_LENGTH
+    ) &&
+    (changes.yieldText === null ||
+      (typeof changes.yieldText === "string" && changes.yieldText.length <= 80));
+}
 
 function pendingRetryChannel(retry: PendingAuthorityRetry): PendingRetryChannel {
   return retry.kind === "chat-submit" || retry.kind === "chat-retry" ? "chat" : "planner";
+}
+
+function pendingRetryFromOperation(
+  operation: PendingAuthorityOperation,
+): PendingAuthorityRetry {
+  const request: unknown = JSON.parse(operation.serializedBody);
+  const resolved = operation.state === "resolved_conflict";
+  const message = resolved
+    ? operation.resolution?.message ?? `“${operation.label}” was not accepted. Review the latest shared plan.`
+    : `The response for “${operation.label}” was interrupted. Reconnect, then resolve that exact request.`;
+  const shared = {
+    operation,
+    label: operation.label,
+    tone: resolved ? "warning" as const : "error" as const,
+    message,
+  };
+  if (operation.kind === "planner") {
+    const original = request as ApplyPlannerCommandRequest;
+    const editableCommand = resolved &&
+        (isMealSnapshotRecoveryCommand(operation.editableDraft) ||
+          isHouseholdCommand(operation.editableDraft)) &&
+        operation.editableDraft.type === original.command.type
+      ? operation.editableDraft
+      : original.command;
+    return {
+      ...shared,
+      kind: operation.kind,
+      mode: resolved ? "latest-version" : "same-envelope",
+      request: { ...original, command: editableCommand },
+    };
+  }
+  if (operation.kind === "bootstrap") {
+    return { ...shared, kind: operation.kind, request: request as BootstrapWorkspaceRequest };
+  }
+  if (operation.kind === "chat-submit") {
+    const original = request as SubmitChatTurnRequest;
+    return {
+      ...shared,
+      kind: operation.kind,
+      request: {
+        ...original,
+        message: resolved && typeof operation.editableDraft === "string"
+          ? operation.editableDraft
+          : original.message,
+      },
+    };
+  }
+  if (operation.kind === "chat-retry") {
+    return { ...shared, kind: operation.kind, request: request as RetryChatTurnRequest };
+  }
+  return { ...shared, kind: operation.kind, request: request as UndoLatestRequest };
 }
 type AuthorityRecoveryProps = {
   notice: Notice;
@@ -172,12 +285,19 @@ type SendContextMessage = (
   message: string,
   context: PlannerChatContext,
   onAccepted?: () => void,
+  intent?: ChatTurnIntent,
 ) => Promise<boolean>;
+
+const DEFAULT_CHAT_INTENT: ChatTurnIntent = Object.freeze({
+  kind: "planner",
+  archiveContextWeek: false,
+});
 
 const PLANNER_ACTION_LABELS = {
   moveMeal: "Move dinner",
   updateMealStatus: "Change dinner status",
   updateMealSnapshot: "Save recipe details",
+  replaceMealRecipeFromSource: "Replace sourced recipe",
   addInstructionStep: "Add recipe step",
   updateInstructionStep: "Save recipe step",
   moveInstructionStep: "Reorder recipe step",
@@ -372,9 +492,23 @@ function AuthorityNotice(props: {
   retryDisabled?: boolean;
   onDiscardPending?: () => void;
   onDismiss?: () => void;
+  recoveryActionLabel?: string;
+  onRecoveryAction?: () => void;
+  recoveryActionDisabled?: boolean;
   className?: string;
 }) {
-  const { notice, pendingRetryLabel, onRetryPending, retryDisabled = false, onDiscardPending, onDismiss, className = "" } = props;
+  const {
+    notice,
+    pendingRetryLabel,
+    onRetryPending,
+    retryDisabled = false,
+    onDiscardPending,
+    onDismiss,
+    recoveryActionLabel,
+    onRecoveryAction,
+    recoveryActionDisabled = false,
+    className = "",
+  } = props;
   return (
     <div className={`authority-banner ${notice.tone} ${className}`.trim()} role={notice.tone === "error" ? "alert" : "status"}>
       <span>{notice.message}</span>
@@ -386,6 +520,11 @@ function AuthorityNotice(props: {
         ) : null}
         {pendingRetryLabel && onDiscardPending ? (
           <button className="text-button" type="button" onClick={onDiscardPending}>Discard retry</button>
+        ) : null}
+        {!pendingRetryLabel && recoveryActionLabel && onRecoveryAction ? (
+          <button className="secondary-button" type="button" disabled={recoveryActionDisabled} onClick={onRecoveryAction}>
+            <RotateCcw size={14} /> {recoveryActionLabel}
+          </button>
         ) : null}
         {!pendingRetryLabel && onDismiss ? (
           <button className="icon-button" type="button" title="Dismiss" onClick={onDismiss}><X size={16} /></button>
@@ -439,8 +578,23 @@ function BootstrapScreen(props: {
   onRetry: () => void;
   pendingRetryLabel?: string;
   onRetryPending?: () => void;
+  onDiscardPending?: () => void;
+  onClearLocalRecovery?: () => void;
+  localRecoveryBusy?: boolean;
 }) {
-  const { candidate, busy, notice, onFresh, onImport, onRetry, pendingRetryLabel, onRetryPending } = props;
+  const {
+    candidate,
+    busy,
+    notice,
+    onFresh,
+    onImport,
+    onRetry,
+    pendingRetryLabel,
+    onRetryPending,
+    onDiscardPending,
+    onClearLocalRecovery,
+    localRecoveryBusy = false,
+  } = props;
   return (
     <main className="bootstrap-shell">
       <section className="bootstrap-panel" aria-labelledby="bootstrap-title">
@@ -468,8 +622,19 @@ function BootstrapScreen(props: {
           </button>
         </div>
         {pendingRetryLabel && onRetryPending ? (
-          <button className="text-button" type="button" disabled={busy} onClick={onRetryPending}>
-            Retry {pendingRetryLabel.toLowerCase()}
+          <div className="bootstrap-recovery-actions">
+            <button className="text-button" type="button" disabled={busy} onClick={onRetryPending}>
+              Retry {pendingRetryLabel.toLowerCase()}
+            </button>
+            {onDiscardPending ? (
+              <button className="text-button" type="button" disabled={busy} onClick={onDiscardPending}>
+                Discard retry
+              </button>
+            ) : null}
+          </div>
+        ) : onClearLocalRecovery ? (
+          <button className="text-button" type="button" disabled={localRecoveryBusy} onClick={onClearLocalRecovery}>
+            Review latest plan and clear local recovery
           </button>
         ) : notice?.tone === "error" ? (
           <button className="text-button" type="button" onClick={onRetry}>Retry connection</button>
@@ -506,10 +671,13 @@ export default function PlannerApp() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
+  const [chatIntent, setChatIntent] = useState<ChatTurnIntent>(DEFAULT_CHAT_INTENT);
   const [plannerPending, setPlannerPending] = useState(false);
   const [chatPending, setChatPending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingRetries, setPendingRetries] = useState<PendingAuthorityRetry[]>([]);
+  const [journalError, setJournalError] = useState<string | null>(null);
+  const [journalRecoveryPending, setJournalRecoveryPending] = useState(false);
   const [legacyCandidate, setLegacyCandidate] = useState<LegacyImportCandidate>({
     present: false,
     payload: null,
@@ -519,35 +687,183 @@ export default function PlannerApp() {
   const etagRef = useRef<string | null>(null);
   const serverOffsetRef = useRef(0);
   const workspaceRef = useRef<WorkspaceResponse | null>(null);
-  const refreshInFlight = useRef<Promise<void> | null>(null);
+  const refreshInFlight = useRef<Promise<boolean> | null>(null);
   const plannerMutationInFlight = useRef(false);
   const chatRequestInFlight = useRef(false);
-  const pendingRetryRef = useRef(new Map<PendingRetryChannel, PendingAuthorityRetry>());
+  const pendingRetryRef = useRef<PendingAuthorityRetry[]>([]);
+  const pendingRetryVolatileRef = useRef(new Map<string, PendingRetryVolatile>());
+  const chatMessageRef = useRef(chatMessage);
   const appContentRef = useRef<HTMLDivElement>(null);
   const chatTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
+  const mealTriggerRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
-  const setPendingRetry = useCallback((retry: PendingAuthorityRetry) => {
-    pendingRetryRef.current.set(pendingRetryChannel(retry), retry);
-    setPendingRetries([...pendingRetryRef.current.values()]);
+  const setChatMessageWithRecovery = useCallback<Dispatch<SetStateAction<string>>>((action) => {
+    const next = typeof action === "function" ? action(chatMessageRef.current) : action;
+    chatMessageRef.current = next;
+    setChatMessage(next);
+    const pending = pendingRetryRef.current.find((retry) =>
+      pendingRetryChannel(retry) === "chat" && retry.operation.state !== "prepared"
+    );
+    if (pending?.kind !== "chat-submit") return;
+    try {
+      updateAuthorityOperationDraft(pending.operation, next);
+    } catch (error) {
+      setNotice({ tone: "error", message: errorMessage(error) });
+    }
   }, []);
+
+  const syncPendingRetries = useCallback(() => {
+    try {
+      const operations = readAuthorityOperations()
+        .filter((operation) => !(
+          operation.state === "prepared" &&
+          (operation.kind === "chat-submit" || operation.kind === "chat-retry"
+            ? chatRequestInFlight.current
+            : plannerMutationInFlight.current)
+        ))
+        .sort((left, right) => left.createdAt - right.createdAt);
+      const liveKeys = new Set(operations.map(operationKey));
+      for (const key of pendingRetryVolatileRef.current.keys()) {
+        if (!liveKeys.has(key)) pendingRetryVolatileRef.current.delete(key);
+      }
+      const retries = operations.map((operation) => {
+        const retry = pendingRetryFromOperation(operation);
+        const volatile = pendingRetryVolatileRef.current.get(operationKey(operation));
+        if (retry.kind === "planner" && volatile?.options) {
+          return { ...retry, options: volatile.options };
+        }
+        if (retry.kind === "chat-submit" && volatile?.onAccepted) {
+          return { ...retry, onAccepted: volatile.onAccepted };
+        }
+        return retry;
+      });
+      pendingRetryRef.current = retries;
+      setPendingRetries(retries);
+      setJournalError(null);
+      const pendingChat = retries.find((retry) => retry.kind === "chat-submit");
+      if (pendingChat?.kind === "chat-submit") {
+        const recoveryMessage = typeof pendingChat.operation.editableDraft === "string"
+          ? pendingChat.operation.editableDraft
+          : pendingChat.request.message;
+        const next = chatMessageRef.current || recoveryMessage;
+        chatMessageRef.current = next;
+        setChatMessage(next);
+      }
+      const pendingMeal = retries.find((retry) =>
+        retry.kind === "planner" && retry.request.command.type === "updateMealSnapshot"
+      );
+      if (pendingMeal?.kind === "planner" && pendingMeal.request.command.type === "updateMealSnapshot") {
+        setSelectedWeekId(pendingMeal.request.command.weekId);
+        setSelectedMealId(pendingMeal.request.command.mealId);
+      }
+    } catch (error) {
+      const message = errorMessage(error);
+      pendingRetryRef.current = [];
+      setPendingRetries([]);
+      setJournalError(message);
+      setNotice({ tone: "error", message });
+    }
+  }, []);
+
+  const setPendingRetry = useCallback((retry: unknown) => {
+    if (retry !== null && typeof retry === "object" && "kind" in retry && "request" in retry) {
+      const candidate = retry as {
+        kind?: unknown;
+        request?: { requestId?: unknown };
+        options?: MutateOptions;
+        onAccepted?: () => void;
+      };
+      if (
+        typeof candidate.kind === "string" &&
+        typeof candidate.request?.requestId === "string"
+      ) {
+        pendingRetryVolatileRef.current.set(
+          `${candidate.kind}:${candidate.request.requestId}`,
+          {
+            ...(candidate.options ? { options: candidate.options } : {}),
+            ...(candidate.onAccepted ? { onAccepted: candidate.onAccepted } : {}),
+          },
+        );
+      }
+    }
+    syncPendingRetries();
+  }, [syncPendingRetries]);
 
   const clearPendingRetry = useCallback((channel: PendingRetryChannel) => {
-    pendingRetryRef.current.delete(channel);
-    setPendingRetries([...pendingRetryRef.current.values()]);
+    void channel;
+    syncPendingRetries();
+  }, [syncPendingRetries]);
+
+  const discardResolvedPendingRetry = useCallback((channel: PendingRetryChannel) => {
+    for (const retry of pendingRetryRef.current) {
+      if (
+        pendingRetryChannel(retry) === channel &&
+        retry.operation.state === "resolved_conflict"
+      ) {
+        discardAuthorityOperation(retry.operation);
+      }
+    }
+    syncPendingRetries();
+  }, [syncPendingRetries]);
+
+  const updatePlannerRecoveryDraft = useCallback((command: HouseholdCommand) => {
+    const pending = pendingRetryRef.current.find((retry) =>
+      pendingRetryChannel(retry) === "planner" &&
+      retry.operation.state !== "prepared" &&
+      retry.kind === "planner"
+    );
+    if (!pending || pending.kind !== "planner") return;
+    if (pending.request.command.type !== command.type) return;
+    try {
+      updateAuthorityOperationDraft(pending.operation, command);
+    } catch (error) {
+      setNotice({ tone: "error", message: errorMessage(error) });
+    }
   }, []);
 
-  const blockForPendingRetry = useCallback(() => {
-    const pending = pendingRetryRef.current.values().next().value as PendingAuthorityRetry | undefined;
+  const blockForPendingRetry = useCallback((channel: PendingRetryChannel) => {
+    if (journalError) {
+      setNotice({ tone: "error", message: journalError });
+      return true;
+    }
+    const pending = pendingRetryRef.current.find((retry) => pendingRetryChannel(retry) === channel);
     if (!pending) return false;
     setNotice({
       tone: "warning",
       message: `Resolve “${pending.label}” before starting another shared change.`,
     });
     return true;
-  }, []);
+  }, [journalError]);
 
-  const pendingRetry = pendingRetries[0] ?? null;
+  const plannerRetry = pendingRetries.find((retry) => pendingRetryChannel(retry) === "planner") ?? null;
+  const chatRetry = pendingRetries.find((retry) => pendingRetryChannel(retry) === "chat") ?? null;
+  const pendingRetry = plannerRetry ?? chatRetry;
+  const selectedMealAvailable = Boolean(
+    selectedMealId &&
+    workspace?.initialized &&
+    (
+      workspace.state.weeks.find((item) => item.id === selectedWeekId) ??
+      workspace.state.weeks.at(-1)
+    )?.data.meals.some((meal) => meal.id === selectedMealId),
+  );
+  const activeOverlay = selectedMealAvailable
+    ? "meal"
+    : historyOpen && workspace?.initialized
+      ? "history"
+      : mobile && chatOpen && workspace?.initialized
+        ? "chat"
+        : null;
+
+  useEffect(() => {
+    const initialSync = window.setTimeout(syncPendingRetries, 0);
+    window.addEventListener(AUTHORITY_OPERATION_JOURNAL_EVENT, syncPendingRetries);
+    return () => {
+      window.clearTimeout(initialSync);
+      window.removeEventListener(AUTHORITY_OPERATION_JOURNAL_EVENT, syncPendingRetries);
+    };
+  }, [syncPendingRetries]);
 
   const navigate = useCallback((nextView: PlannerView) => {
     setView(nextView);
@@ -575,10 +891,10 @@ export default function PlannerApp() {
     }
   }, []);
 
-  const refresh = useCallback(async (force = false): Promise<void> => {
+  const refresh = useCallback(async (force = false): Promise<boolean> => {
     if (refreshInFlight.current) {
-      await refreshInFlight.current;
-      if (!force) return;
+      const succeeded = await refreshInFlight.current;
+      if (!force) return succeeded;
     }
     const task = (async () => {
       try {
@@ -594,10 +910,12 @@ export default function PlannerApp() {
         if (result.kind === "workspace") acceptWorkspace(result.workspace);
         setConnection("online");
         setInitialError(null);
+        return true;
       } catch (error) {
-        if (isAbortError(error)) return;
+        if (isAbortError(error)) return false;
         setConnection("offline");
         if (!workspaceRef.current) setInitialError(errorMessage(error));
+        return false;
       }
     })().finally(() => {
       refreshInFlight.current = null;
@@ -605,6 +923,32 @@ export default function PlannerApp() {
     refreshInFlight.current = task;
     return task;
   }, [acceptWorkspace]);
+
+  const clearLocalRecoveryAfterReadback = useCallback(async () => {
+    if (!journalError || journalRecoveryPending) return;
+    setJournalRecoveryPending(true);
+    try {
+      const readbackSucceeded = await refresh(true);
+      const authoritativeWorkspace = workspaceRef.current;
+      if (!readbackSucceeded || !authoritativeWorkspace) {
+        setNotice({
+          tone: "error",
+          message: "The latest shared plan could not be read. Local recovery data was kept.",
+        });
+        return;
+      }
+      clearAuthorityOperationJournalAfterReadback(authoritativeWorkspace.schemaVersion);
+      syncPendingRetries();
+      setNotice({
+        tone: "info",
+        message: "Latest shared plan reviewed. Damaged local recovery data was cleared.",
+      });
+    } catch (error) {
+      setNotice({ tone: "error", message: errorMessage(error) });
+    } finally {
+      setJournalRecoveryPending(false);
+    }
+  }, [journalError, journalRecoveryPending, refresh, syncPendingRetries]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setLegacyCandidate(readLegacyImport(window.localStorage)), 0);
@@ -653,11 +997,18 @@ export default function PlannerApp() {
   useEffect(() => {
     const element = appContentRef.current as (HTMLDivElement & { inert: boolean }) | null;
     if (!element) return;
-    element.inert = mobile && chatOpen;
+    element.inert = activeOverlay !== null;
     return () => {
       element.inert = false;
     };
-  }, [mobile, chatOpen]);
+  }, [activeOverlay]);
+
+  const openMeal = useCallback((mealId: string, trigger: HTMLElement) => {
+    mealTriggerRef.current = trigger;
+    setHistoryOpen(false);
+    setChatOpen(false);
+    setSelectedMealId(mealId);
+  }, []);
 
   const executeBootstrap = useCallback(async (request: BootstrapWorkspaceRequest) => {
     if (plannerMutationInFlight.current) return;
@@ -665,7 +1016,10 @@ export default function PlannerApp() {
     setPlannerPending(true);
     setNotice(null);
     try {
-      const result = await bootstrapWorkspace(request);
+      const result = await bootstrapWorkspace(request, {
+        label: "Set up shared planner",
+        submittedDraft: request,
+      });
       acceptWorkspace(result.workspace);
       clearPendingRetry("planner");
       // Browser data is removed only after the server has durably accepted bootstrap.
@@ -707,7 +1061,7 @@ export default function PlannerApp() {
   }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
 
   const bootstrap = useCallback(async (mode: "seed" | "import-v2") => {
-    if (blockForPendingRetry() || plannerMutationInFlight.current) return;
+    if (blockForPendingRetry("planner") || plannerMutationInFlight.current) return;
     const importPayload = legacyCandidate.payload;
     if (mode === "import-v2" && !importPayload) return;
     const request: BootstrapWorkspaceRequest = mode === "seed"
@@ -730,7 +1084,10 @@ export default function PlannerApp() {
     setPlannerPending(true);
     setNotice(null);
     try {
-      const result = await applyPlannerCommand(request);
+      const result = await applyPlannerCommand(request, {
+        label: actionLabel,
+        submittedDraft: request.command,
+      });
       acceptWorkspace(result.workspace);
       if (result.decision.status === "accepted") {
         clearPendingRetry("planner");
@@ -800,7 +1157,7 @@ export default function PlannerApp() {
       !current?.initialized ||
       plannerMutationInFlight.current ||
       connection !== "online" ||
-      blockForPendingRetry()
+      blockForPendingRetry("planner")
     ) return false;
     const visiblePlannerVersion = workspace?.initialized
       ? workspace.plannerVersion
@@ -829,7 +1186,10 @@ export default function PlannerApp() {
     setChatPending(true);
     setNotice(null);
     try {
-      const response = await submitChatTurn(request);
+      const response = await submitChatTurn(request, {
+        label: "Send ChatGPT message",
+        submittedDraft: request.message,
+      });
       acceptWorkspace(response.workspace);
       clearPendingRetry("chat");
       if (response.decision.status === "accepted") {
@@ -850,6 +1210,11 @@ export default function PlannerApp() {
         return true;
       }
       const decision = response.decision;
+      if (decision.status === "codex_unavailable") {
+        discardResolvedPendingRetry("chat");
+      } else {
+        clearPendingRetry("chat");
+      }
       const messageText =
         decision.status === "turn_busy"
           ? "ChatGPT is finishing another household request. Your message was kept."
@@ -879,7 +1244,7 @@ export default function PlannerApp() {
           message: "The ChatGPT response was interrupted. Reconnect, then resolve that exact request.",
         });
       } else {
-        clearPendingRetry("chat");
+        discardResolvedPendingRetry("chat");
         setNotice({ tone: "error", message: errorMessage(error) });
       }
       return false;
@@ -887,15 +1252,20 @@ export default function PlannerApp() {
       chatRequestInFlight.current = false;
       setChatPending(false);
     }
-  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
+  }, [acceptWorkspace, clearPendingRetry, discardResolvedPendingRetry, refresh, setPendingRetry]);
 
-  const sendContextMessage: SendContextMessage = useCallback(async (message, context, onAccepted) => {
+  const sendContextMessage: SendContextMessage = useCallback(async (
+    message,
+    context,
+    onAccepted,
+    intent = DEFAULT_CHAT_INTENT,
+  ) => {
     const current = workspaceRef.current;
     if (
       !current?.initialized ||
       chatRequestInFlight.current ||
       connection !== "online" ||
-      blockForPendingRetry()
+      blockForPendingRetry("chat")
     ) return false;
     if (current.chatTurns.some((turn) => turn.status === "running")) {
       setNotice({ tone: "warning", message: "ChatGPT is already working on a household request. Your draft was kept." });
@@ -910,6 +1280,7 @@ export default function PlannerApp() {
       basePlannerVersion: current.plannerVersion,
       message,
       context,
+      intent,
     }, onAccepted);
   }, [blockForPendingRetry, connection, executeChatSubmit, health]);
 
@@ -919,7 +1290,10 @@ export default function PlannerApp() {
     setChatPending(true);
     setNotice(null);
     try {
-      const response = await retryChatTurn(request);
+      const response = await retryChatTurn(request, {
+        label: "Retry ChatGPT request",
+        submittedDraft: request,
+      });
       acceptWorkspace(response.workspace);
       clearPendingRetry("chat");
       if (response.decision.status !== "accepted") {
@@ -954,7 +1328,7 @@ export default function PlannerApp() {
       !current?.initialized ||
       chatRequestInFlight.current ||
       connection !== "online" ||
-      blockForPendingRetry()
+      blockForPendingRetry("chat")
     ) return;
     await executeChatRetry({
       requestId: createRequestId(),
@@ -963,13 +1337,16 @@ export default function PlannerApp() {
     });
   }, [blockForPendingRetry, connection, executeChatRetry]);
 
-  const executeUndo = useCallback(async (request: UndoLatestRequest, event: PlannerEvent) => {
+  const executeUndo = useCallback(async (request: UndoLatestRequest) => {
     if (plannerMutationInFlight.current) return;
     plannerMutationInFlight.current = true;
     setPlannerPending(true);
     setNotice(null);
     try {
-      const result = await undoLatest(request);
+      const result = await undoLatest(request, {
+        label: "Undo latest change",
+        submittedDraft: request,
+      });
       acceptWorkspace(result.workspace);
       clearPendingRetry("planner");
       if (result.decision.status === "accepted") {
@@ -993,7 +1370,6 @@ export default function PlannerApp() {
           tone: "error",
           message: "The undo response was interrupted. Reconnect, then resolve that exact request.",
           request,
-          event,
         });
         if (error.code === "NETWORK_ERROR") setConnection("offline");
         setNotice({ tone: "error", message: "The undo response was interrupted. Reconnect, then resolve that exact request." });
@@ -1013,46 +1389,143 @@ export default function PlannerApp() {
       !current?.initialized ||
       plannerMutationInFlight.current ||
       connection !== "online" ||
-      blockForPendingRetry()
+      blockForPendingRetry("planner")
     ) return;
     await executeUndo({
       requestId: createRequestId(),
       basePlannerVersion: current.plannerVersion,
       targetEventId: event.eventId,
-    }, event);
+    });
   }, [blockForPendingRetry, connection, executeUndo]);
 
-  const retryPendingOperation = useCallback(async () => {
-    const pending = pendingRetryRef.current.values().next().value as PendingAuthorityRetry | undefined;
+  const retryPendingOperation = useCallback(async (channel?: PendingRetryChannel) => {
+    const pending = channel
+      ? pendingRetryRef.current.find((retry) => pendingRetryChannel(retry) === channel)
+      : pendingRetryRef.current[0];
     if (!pending) return;
     if (pending.kind !== "bootstrap" && connection !== "online") return;
+    const current = workspaceRef.current;
+    const resolved = pending.operation.state === "resolved_conflict";
     if (pending.kind === "planner") {
-      const request = pending.mode === "latest-version"
+      const request = resolved
         ? {
             ...pending.request,
             requestId: createRequestId(),
-            basePlannerVersion: workspaceRef.current?.initialized
-              ? workspaceRef.current.plannerVersion
+            basePlannerVersion: current?.initialized
+              ? current.plannerVersion
               : pending.request.basePlannerVersion,
           }
         : pending.request;
+      if (resolved) {
+        replaceResolvedAuthorityOperation(pending.operation, {
+          kind: "planner",
+          path: pending.operation.path,
+          body: request,
+          label: pending.label,
+          submittedDraft: request.command,
+        });
+      }
       await executePlannerMutation(request, pending.options);
       return;
     }
     if (pending.kind === "bootstrap") {
-      await executeBootstrap(pending.request);
+      const request = resolved
+        ? { ...pending.request, requestId: createRequestId() }
+        : pending.request;
+      if (resolved) {
+        replaceResolvedAuthorityOperation(pending.operation, {
+          kind: "bootstrap",
+          path: pending.operation.path,
+          body: request,
+          label: pending.label,
+          submittedDraft: request,
+        });
+      }
+      await executeBootstrap(request);
       return;
     }
     if (pending.kind === "chat-submit") {
-      await executeChatSubmit(pending.request, pending.onAccepted);
+      const request = resolved
+        ? {
+            ...pending.request,
+            requestId: createRequestId(),
+            basePlannerVersion: current?.initialized
+              ? current.plannerVersion
+              : pending.request.basePlannerVersion,
+          }
+        : pending.request;
+      if (resolved) {
+        replaceResolvedAuthorityOperation(pending.operation, {
+          kind: "chat-submit",
+          path: pending.operation.path,
+          body: request,
+          label: pending.label,
+          submittedDraft: request.message,
+        });
+      }
+      await executeChatSubmit(request, pending.onAccepted ?? (() => {
+        setChatMessageWithRecovery((current) =>
+          current.trim() === request.message ? "" : current
+        );
+      }));
       return;
     }
     if (pending.kind === "chat-retry") {
-      await executeChatRetry(pending.request);
+      const request = resolved
+        ? {
+            ...pending.request,
+            requestId: createRequestId(),
+            basePlannerVersion: current?.initialized
+              ? current.plannerVersion
+              : pending.request.basePlannerVersion,
+          }
+        : pending.request;
+      if (resolved) {
+        replaceResolvedAuthorityOperation(pending.operation, {
+          kind: "chat-retry",
+          path: pending.operation.path,
+          body: request,
+          label: pending.label,
+          submittedDraft: request,
+        });
+      }
+      await executeChatRetry(request);
       return;
     }
-    await executeUndo(pending.request, pending.event);
-  }, [connection, executeBootstrap, executeChatRetry, executeChatSubmit, executePlannerMutation, executeUndo]);
+    const request = resolved
+      ? {
+          ...pending.request,
+          requestId: createRequestId(),
+          basePlannerVersion: current?.initialized
+            ? current.plannerVersion
+            : pending.request.basePlannerVersion,
+        }
+      : pending.request;
+    if (resolved) {
+      replaceResolvedAuthorityOperation(pending.operation, {
+        kind: "undo",
+        path: pending.operation.path,
+        body: request,
+        label: pending.label,
+        submittedDraft: request,
+      });
+    }
+    await executeUndo(request);
+  }, [connection, executeBootstrap, executeChatRetry, executeChatSubmit, executePlannerMutation, executeUndo, setChatMessageWithRecovery]);
+
+  const discardPendingOperation = useCallback((channel?: PendingRetryChannel) => {
+    const pending = channel
+      ? pendingRetryRef.current.find((retry) => pendingRetryChannel(retry) === channel)
+      : pendingRetryRef.current[0];
+    if (!pending || pending.operation.state !== "resolved_conflict") return;
+    try {
+      discardAuthorityOperation(pending.operation);
+      syncPendingRetries();
+      setNotice(null);
+    } catch (error) {
+      setNotice({ tone: "error", message: errorMessage(error) });
+    }
+  }, [syncPendingRetries]);
 
   if (!workspace) return <InitialLoading error={initialError} onRetry={() => void refresh(true)} />;
   if (!workspace.initialized) {
@@ -1064,8 +1537,13 @@ export default function PlannerApp() {
         onImport={() => void bootstrap("import-v2")}
         onFresh={() => void bootstrap("seed")}
         onRetry={() => void refresh(true)}
-        pendingRetryLabel={pendingRetry?.kind === "bootstrap" ? pendingRetry.label : undefined}
-        onRetryPending={() => void retryPendingOperation()}
+        pendingRetryLabel={plannerRetry?.kind === "bootstrap" ? plannerRetry.label : undefined}
+        onRetryPending={() => void retryPendingOperation("planner")}
+        onDiscardPending={plannerRetry?.kind === "bootstrap" && plannerRetry.operation.state === "resolved_conflict"
+          ? () => discardPendingOperation("planner")
+          : undefined}
+        onClearLocalRecovery={journalError ? () => void clearLocalRecoveryAfterReadback() : undefined}
+        localRecoveryBusy={journalRecoveryPending}
       />
     );
   }
@@ -1078,19 +1556,44 @@ export default function PlannerApp() {
   const now = clockNow + serverOffset;
   const today = isoDateForTimeZone(now, initialized.state.householdTimeZone);
   const selectedMeal = week?.data.meals.find((meal) => meal.id === selectedMealId) ?? null;
-  const isReadOnly = connection !== "online" || plannerPending || Boolean(pendingRetry) || week?.status === "archived";
+  const recoveryDraftCommand = plannerRetry?.kind === "planner" &&
+      (isMealSnapshotRecoveryCommand(plannerRetry.operation.editableDraft) ||
+        isHouseholdCommand(plannerRetry.operation.editableDraft))
+    ? plannerRetry.operation.editableDraft
+    : plannerRetry?.kind === "planner"
+      ? plannerRetry.request.command
+      : null;
+  const recoveryMealCommand = recoveryDraftCommand?.type === "updateMealSnapshot" &&
+      selectedMeal && week &&
+      recoveryDraftCommand.weekId === week.id &&
+      recoveryDraftCommand.mealId === selectedMeal.id
+    ? recoveryDraftCommand
+    : null;
+  const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
   const heading = view === "tonight" ? "Tonight" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
     : notice;
-  const authorityRecovery: AuthorityRecoveryProps = {
-    notice: authorityNotice,
-    pendingRetryLabel: pendingRetry?.label,
-    onRetryPending: () => void retryPendingOperation(),
+  const plannerAuthorityRecovery: AuthorityRecoveryProps = {
+    notice: plannerRetry ? { tone: plannerRetry.tone, message: plannerRetry.message } : notice,
+    pendingRetryLabel: plannerRetry?.label,
+    onRetryPending: () => void retryPendingOperation("planner"),
     retryDisabled: connection !== "online" || plannerPending || chatPending,
-    onDiscardPending: pendingRetry?.kind === "planner" && pendingRetry.mode === "latest-version"
-      ? () => { clearPendingRetry("planner"); setNotice(null); }
+    onDiscardPending: plannerRetry?.operation.state === "resolved_conflict"
+      ? () => discardPendingOperation("planner")
+      : undefined,
+    onDismissNotice: () => setNotice(null),
+    offline: connection === "offline",
+    onReconnect: () => void refresh(true),
+  };
+  const chatAuthorityRecovery: AuthorityRecoveryProps = {
+    notice: chatRetry ? { tone: chatRetry.tone, message: chatRetry.message } : notice,
+    pendingRetryLabel: chatRetry?.label,
+    onRetryPending: () => void retryPendingOperation("chat"),
+    retryDisabled: connection !== "online" || plannerPending || chatPending,
+    onDiscardPending: chatRetry?.operation.state === "resolved_conflict"
+      ? () => discardPendingOperation("chat")
       : undefined,
     onDismissNotice: () => setNotice(null),
     offline: connection === "offline",
@@ -1129,7 +1632,11 @@ export default function PlannerApp() {
             </label>
           </div>
           <div className="header-actions">
-            <button className="icon-button" type="button" title="Change history" onClick={() => setHistoryOpen(true)}>
+            <button ref={historyTriggerRef} className="icon-button" type="button" title="Change history" onClick={() => {
+              setSelectedMealId(null);
+              setChatOpen(false);
+              setHistoryOpen(true);
+            }}>
               <History size={19} />
             </button>
             <button
@@ -1137,7 +1644,11 @@ export default function PlannerApp() {
               className="primary-button"
               type="button"
               onClick={() => {
-                if (mobile) setChatOpen(true);
+                if (mobile) {
+                  setSelectedMealId(null);
+                  setHistoryOpen(false);
+                  setChatOpen(true);
+                }
                 else document.querySelector<HTMLTextAreaElement>('.chat-rail textarea[aria-label="Message ChatGPT"]')?.focus();
               }}
               aria-expanded={mobile ? chatOpen : undefined}
@@ -1170,12 +1681,17 @@ export default function PlannerApp() {
             <AuthorityNotice
               notice={authorityNotice}
               pendingRetryLabel={pendingRetry?.label}
-              onRetryPending={() => void retryPendingOperation()}
+              onRetryPending={() => void retryPendingOperation(
+                pendingRetry ? pendingRetryChannel(pendingRetry) : undefined,
+              )}
               retryDisabled={connection !== "online" || plannerPending || chatPending}
-              onDiscardPending={pendingRetry?.kind === "planner" && pendingRetry.mode === "latest-version"
-                ? () => { clearPendingRetry("planner"); setNotice(null); }
+              onDiscardPending={pendingRetry?.operation.state === "resolved_conflict"
+                ? () => discardPendingOperation(pendingRetryChannel(pendingRetry))
                 : undefined}
               onDismiss={pendingRetry ? undefined : () => setNotice(null)}
+              recoveryActionLabel={journalError ? "Review latest plan and clear local recovery" : undefined}
+              onRecoveryAction={journalError ? () => void clearLocalRecoveryAfterReadback() : undefined}
+              recoveryActionDisabled={journalRecoveryPending}
             />
           ) : null}
           {connection === "offline" ? (
@@ -1209,17 +1725,16 @@ export default function PlannerApp() {
             ) : null}
           </div>
 
-          {!week ? (
-            <section className="lifecycle-surface empty-workspace">
-              <CalendarDays size={30} />
-              <h2>No weeks yet</h2>
-              <p>Ask ChatGPT to build the first week plan.</p>
-            </section>
-          ) : (
-            <div className="workspace">
-              <section className="primary-workspace">
-                {view === "week" ? (
-                  <WeekView week={week} today={today} onOpenMeal={setSelectedMealId} onNavigate={navigate} />
+          <div className="workspace">
+            <section className="primary-workspace">
+              {!week ? (
+                <section className="lifecycle-surface empty-workspace">
+                  <CalendarDays size={30} />
+                  <h2>No weeks yet</h2>
+                  <p>Ask ChatGPT to build the first week plan.</p>
+                </section>
+              ) : view === "week" ? (
+                  <WeekView week={week} today={today} onOpenMeal={openMeal} onNavigate={navigate} />
                 ) : view === "tonight" ? (
                   <TonightView
                     week={week}
@@ -1227,7 +1742,7 @@ export default function PlannerApp() {
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
-                    onOpenMeal={setSelectedMealId}
+                    onOpenMeal={openMeal}
                   />
                 ) : view === "prep" ? (
                   <PrepView
@@ -1236,30 +1751,31 @@ export default function PlannerApp() {
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
-                    onOpenMeal={setSelectedMealId}
+                    onOpenMeal={openMeal}
                   />
                 ) : view === "groceries" ? (
                   <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
                 ) : (
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
-                )}
-              </section>
-              {!mobile ? (
-                <ChatPanel
-                  workspace={initialized}
-                  week={week}
-                  view={view}
-                  today={today}
-                  disabled={connection !== "online" || chatPending || Boolean(pendingRetry) || (health !== null && health.codex.status !== "ready")}
-                  health={health}
-                  message={chatMessage}
-                  onMessageChange={setChatMessage}
-                  onSend={sendContextMessage}
-                  onRetry={retryTurn}
-                />
-              ) : null}
-            </div>
-          )}
+              )}
+            </section>
+            {!mobile ? (
+              <ChatPanel
+                workspace={initialized}
+                week={week}
+                view={view}
+                today={today}
+                disabled={connection !== "online" || chatPending || Boolean(chatRetry) || (health !== null && health.codex.status !== "ready")}
+                health={health}
+                message={chatMessage}
+                onMessageChange={setChatMessageWithRecovery}
+                intent={chatIntent}
+                onIntentChange={setChatIntent}
+                onSend={sendContextMessage}
+                onRetry={retryTurn}
+              />
+            ) : null}
+          </div>
         </main>
 
         <nav className="mobile-nav" aria-label="Planner views">
@@ -1272,44 +1788,55 @@ export default function PlannerApp() {
             );
           })}
         </nav>
+      </div>
 
-        {selectedMeal && week ? (
+      {activeOverlay === "meal" && selectedMeal && week ? (
           <MealDrawer
-            key={selectedMeal.id}
+            key={`${selectedMeal.id}:${plannerRetry?.operation.state === "resolved_conflict"
+              ? plannerRetry.operation.requestId
+              : "stable"}`}
             meal={selectedMeal}
             week={week}
             disabled={isReadOnly}
             mutate={mutate}
             sendContextMessage={sendContextMessage}
-            {...authorityRecovery}
-            onClose={() => setSelectedMealId(null)}
+            recoveryCommand={recoveryMealCommand}
+            onRecoveryDraftChange={updatePlannerRecoveryDraft}
+            restoreFocusRef={mealTriggerRef}
+            {...plannerAuthorityRecovery}
+            onClose={() => {
+              setSelectedMealId(null);
+              mealTriggerRef.current = null;
+            }}
           />
         ) : null}
-        {historyOpen ? (
+      {activeOverlay === "history" ? (
           <HistoryDrawer
             workspace={initialized}
-            disabled={connection !== "online" || plannerPending || Boolean(pendingRetry)}
+            disabled={connection !== "online" || plannerPending || Boolean(plannerRetry)}
             onUndo={runUndo}
-            {...authorityRecovery}
+            restoreFocusRef={historyTriggerRef}
+            {...plannerAuthorityRecovery}
             onClose={() => setHistoryOpen(false)}
           />
         ) : null}
-      </div>
 
-      {mobile && chatOpen && week ? (
+      {activeOverlay === "chat" ? (
         <ModalChat onClose={() => setChatOpen(false)} restoreFocusRef={chatTriggerRef}>
           <ChatPanel
             workspace={initialized}
             week={week}
             view={view}
             today={today}
-            disabled={connection !== "online" || chatPending || Boolean(pendingRetry) || (health !== null && health.codex.status !== "ready")}
+            disabled={connection !== "online" || chatPending || Boolean(chatRetry) || (health !== null && health.codex.status !== "ready")}
             health={health}
             message={chatMessage}
-            onMessageChange={setChatMessage}
+            onMessageChange={setChatMessageWithRecovery}
+            intent={chatIntent}
+            onIntentChange={setChatIntent}
             onSend={sendContextMessage}
             onRetry={retryTurn}
-            {...authorityRecovery}
+            {...chatAuthorityRecovery}
             modal
             onClose={() => setChatOpen(false)}
           />
@@ -1321,7 +1848,7 @@ export default function PlannerApp() {
   );
 }
 
-function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; today: IsoDate; onOpenMeal: (id: string) => void; onNavigate: (view: PlannerView) => void }) {
+function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; today: IsoDate; onOpenMeal: (id: string, trigger: HTMLElement) => void; onNavigate: (view: PlannerView) => void }) {
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   return (
     <div className="week-view">
@@ -1348,7 +1875,7 @@ function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; tod
                   <span className="meal-meta">Assigned family dinner</span>
                 </div>
               ) : meal ? (
-                <button className="meal-card" type="button" onClick={() => onOpenMeal(meal.id)}>
+                <button className="meal-card" type="button" onClick={(event) => onOpenMeal(meal.id, event.currentTarget)}>
                   <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
                   <strong className="meal-title">{meal.title}</strong>
                   <span className="meal-subtitle">{meal.subtitle}</span>
@@ -1382,7 +1909,7 @@ function TonightView(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
-  onOpenMeal: (id: string) => void;
+  onOpenMeal: (id: string, trigger: HTMLElement) => void;
 }) {
   const { week, today, disabled, mutate, sendContextMessage, onOpenMeal } = props;
   const meal = week.data.meals.find((item) => item.date === today && item.slot === "dinner");
@@ -1438,12 +1965,21 @@ function TonightView(props: {
           <div>
             <p className="eyebrow">{dayName(today)} dinner · {meal.venue}</p>
             <h2>{meal.title}</h2>
-            <p>{meal.subtitle}</p>
+            <p className="meal-subtitle">{meal.subtitle}</p>
+            {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
+            {meal.sourceRecipe ? (
+              <p className="recipe-source">
+                <span>Informational recipe source</span>
+                <a href={meal.sourceRecipe.url} target="_blank" rel="noopener noreferrer">
+                  {meal.sourceRecipe.identity}
+                </a>
+              </p>
+            ) : null}
           </div>
           <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
         </div>
         <div className="tonight-actions">
-          <button className="secondary-button" type="button" onClick={() => onOpenMeal(meal.id)}><PencilLine size={16} /> Recipe</button>
+          <button className="secondary-button" type="button" onClick={(event) => onOpenMeal(meal.id, event.currentTarget)}><PencilLine size={16} /> Recipe</button>
           {meal.status !== "cooking" && meal.status !== "cooked" ? (
             <button className="primary-button" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooking" })}><Play size={16} /> Start cooking</button>
           ) : null}
@@ -1516,6 +2052,7 @@ function StepCard(props: {
   editable?: boolean;
 }) {
   const { step, meal, stepNumber, week, disabled, mutate, sendContextMessage, contextView, actions, editable = false } = props;
+  const archived = week.status === "archived";
   const controlTarget = stepControlTarget(meal, step, stepNumber);
   const [comment, setComment] = useState("");
   const [editAttempted, setEditAttempted] = useState(false);
@@ -1604,7 +2141,7 @@ function StepCard(props: {
           ><X size={14} /></button>
         </div>
       ) : null}
-      {editable ? (
+      {editable && !archived ? (
         <details className="step-comment">
           <summary aria-label={`Edit ${controlTarget}`}><PencilLine size={14} /> Edit instruction</summary>
           <div className="step-comment-body">
@@ -1621,7 +2158,7 @@ function StepCard(props: {
           </div>
         </details>
       ) : null}
-      <details className="step-comment">
+      {!archived ? <details className="step-comment">
         <summary aria-label={`Add note or ask ChatGPT about ${controlTarget}`}><MessageSquareText size={14} /> Add note or ask ChatGPT</summary>
         <div className="step-comment-body">
           <textarea aria-label={`Note or ChatGPT request for ${controlTarget}`} maxLength={MAX_COMMAND_TEXT_LENGTH} value={comment} onChange={(event) => { noteDraft.begin(); setComment(event.target.value); }} placeholder="What changed, or what should ChatGPT help with?" />
@@ -1655,7 +2192,7 @@ function StepCard(props: {
             ><Bot size={14} /> Send to ChatGPT</button>
           </div>
         </div>
-      </details>
+      </details> : null}
     </article>
   );
 }
@@ -1665,7 +2202,7 @@ function PrepView(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
-  onOpenMeal: (id: string) => void;
+  onOpenMeal: (id: string, trigger: HTMLElement) => void;
 }) {
   const { week, disabled, mutate, sendContextMessage, onOpenMeal } = props;
   const [stepId, setStepId] = useState("");
@@ -1717,8 +2254,8 @@ function PrepView(props: {
                 if (!resolved) return null;
                 const target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
                 const actions = (
-                  <div className="prep-reference-actions">
-                    <button className="step-meal-link" type="button" aria-label={`Open recipe for ${target}`} onClick={() => onOpenMeal(resolved.meal.id)}>{resolved.meal.title}<ChevronRight size={13} /></button>
+                  <div className="prep-reference-actions prep-schedule-actions">
+                    <button className="step-meal-link" type="button" aria-label={`Open recipe for ${target}`} onClick={(event) => onOpenMeal(resolved.meal.id, event.currentTarget)}>{resolved.meal.title}<ChevronRight size={13} /></button>
                     <button className="icon-button" type="button" title={`Move ${target} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
                     <button className="icon-button" type="button" title={`Move ${target} down`} disabled={disabled || index === references.length - 1} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
                     <select value={reference.prepDate} disabled={disabled} aria-label={`Prep date for ${target}`} onChange={(event) => void mutate({ type: "reschedulePrepReference", weekId: week.id, referenceId: reference.id, prepDate: event.target.value as IsoDate })}>
@@ -1765,12 +2302,12 @@ function GroceryView({ week, disabled, mutate }: { week: WeekPlan; disabled: boo
             {(["all", "open", "done"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value}</button>)}
           </div>
         </div>
-        <div className="grocery-add-row">
+        {week.status !== "archived" ? <div className="grocery-add-row">
           <select value={section} onChange={(event) => { groceryDraft.begin(); setSection(event.target.value as GroceryItem["section"]); }} aria-label="Grocery section">{GROCERY_SECTIONS.map((value) => <option key={value}>{value}</option>)}</select>
           <label className="compact-field"><input maxLength={MAX_GROCERY_ITEM_LENGTH} value={item} onChange={(event) => { groceryDraft.begin(); setItem(event.target.value); }} placeholder="Item" aria-label="New grocery item" aria-invalid={addAttempted && Boolean(addIssues.item)} aria-describedby={addAttempted && addIssues.item ? "grocery-item-error" : undefined} />{addAttempted && addIssues.item ? <small id="grocery-item-error" className="field-error" role="alert">{addIssues.item}</small> : null}</label>
           <label className="compact-field"><input maxLength={MAX_COMMAND_TEXT_LENGTH} value={detail} onChange={(event) => { groceryDraft.begin(); setDetail(event.target.value); }} placeholder="Amount or detail" aria-label="Grocery detail" aria-invalid={addAttempted && Boolean(addIssues.detail)} aria-describedby={addAttempted && addIssues.detail ? "grocery-detail-error" : undefined} />{addAttempted && addIssues.detail ? <small id="grocery-detail-error" className="field-error" role="alert">{addIssues.detail}</small> : null}</label>
           <button className="secondary-button" type="button" disabled={disabled} onClick={addGrocery}><Plus size={15} /> Add</button>
-        </div>
+        </div> : null}
         {GROCERY_SECTIONS.map((group) => {
           const entries = visible.filter((entry) => entry.section === group);
           if (!entries.length) return null;
@@ -1890,6 +2427,11 @@ function MealDrawer(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
+  recoveryCommand: Extract<HouseholdCommand, { type: "updateMealSnapshot" }> | null;
+  onRecoveryDraftChange: (
+    command: Extract<HouseholdCommand, { type: "updateMealSnapshot" }>,
+  ) => void;
+  restoreFocusRef: { current: HTMLElement | null };
   onClose: () => void;
 } & AuthorityRecoveryProps) {
   const {
@@ -1898,6 +2440,9 @@ function MealDrawer(props: {
     disabled,
     mutate,
     sendContextMessage,
+    recoveryCommand,
+    onRecoveryDraftChange,
+    restoreFocusRef,
     onClose,
     notice,
     pendingRetryLabel,
@@ -1908,6 +2453,9 @@ function MealDrawer(props: {
     offline,
     onReconnect,
   } = props;
+  const archived = week.status === "archived";
+  const [retainedRecoveryCommand] = useState(recoveryCommand);
+  const visibleRecoveryCommand = recoveryCommand ?? retainedRecoveryCommand;
   const [targetDate, setTargetDate] = useState<IsoDate>(meal.date);
   const [newInstruction, setNewInstruction] = useState("");
   const [newInputs, setNewInputs] = useState("");
@@ -1915,13 +2463,13 @@ function MealDrawer(props: {
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [newStepAttempted, setNewStepAttempted] = useState(false);
   const canonicalRecipeDraft = {
-    title: meal.title,
-    subtitle: meal.subtitle,
-    venue: meal.venue,
-    prepNote: meal.prepNote,
-    leftoverNote: meal.leftoverNote,
-    notes: meal.notes,
-    ingredients: meal.ingredients.join("\n"),
+    title: visibleRecoveryCommand?.changes.title ?? meal.title,
+    subtitle: visibleRecoveryCommand?.changes.subtitle ?? meal.subtitle,
+    venue: visibleRecoveryCommand?.changes.venue ?? meal.venue,
+    prepNote: visibleRecoveryCommand?.changes.prepNote ?? meal.prepNote,
+    leftoverNote: visibleRecoveryCommand?.changes.leftoverNote ?? meal.leftoverNote,
+    notes: visibleRecoveryCommand?.changes.notes ?? meal.notes,
+    ingredients: (visibleRecoveryCommand?.changes.ingredients ?? meal.ingredients).join("\n"),
   };
   const recipeDraft = useVersionedDraft<typeof canonicalRecipeDraft>();
   const moveDraft = useVersionedDraft();
@@ -1948,6 +2496,36 @@ function MealDrawer(props: {
     ingredients: draftIngredients,
   });
   const newStepIssues = validateStepDraft({ inputs: newInputs, instruction: newInstruction, timerMinutes: newTimer });
+  const editRecipeField = <Key extends keyof typeof canonicalRecipeDraft>(
+    field: Key,
+    value: (typeof canonicalRecipeDraft)[Key],
+  ) => {
+    recipeDraft.edit(canonicalRecipeDraft, field, value);
+    if (!visibleRecoveryCommand) return;
+    const next = {
+      title: draftTitle,
+      subtitle: draftSubtitle,
+      venue: draftVenue,
+      prepNote: draftPrepNote,
+      leftoverNote: draftLeftoverNote,
+      notes: draftNotes,
+      ingredients: draftIngredients,
+      [field]: value,
+    };
+    onRecoveryDraftChange({
+      ...visibleRecoveryCommand,
+      changes: {
+        title: next.title.trim(),
+        subtitle: next.subtitle.trim(),
+        venue: next.venue.trim(),
+        prepNote: next.prepNote.trim(),
+        leftoverNote: next.leftoverNote.trim(),
+        notes: next.notes.trim(),
+        ingredients: next.ingredients.split("\n").map((line) => line.trim()).filter(Boolean),
+        yieldText: visibleRecoveryCommand.changes.yieldText ?? null,
+      },
+    });
+  };
   const save = () => {
     setSaveAttempted(true);
     if (hasValidationIssues(mealIssues)) return;
@@ -1959,6 +2537,7 @@ function MealDrawer(props: {
         changes: {
           title: draftTitle.trim(), subtitle: draftSubtitle.trim(), venue: draftVenue.trim(), prepNote: draftPrepNote.trim(), leftoverNote: draftLeftoverNote.trim(), notes: draftNotes.trim(),
           ingredients: draftIngredients.split("\n").map((line) => line.trim()).filter(Boolean),
+          yieldText: meal.yieldText ?? null,
         },
       },
       recipeDraft.mutationOptions(() => setSaveAttempted(false)),
@@ -1980,8 +2559,8 @@ function MealDrawer(props: {
     );
   };
   return (
-    <ModalDrawer title={meal.title} className="meal-drawer" onClose={onClose}>
-      <div className="drawer-body">
+    <ModalDrawer title={meal.title} className="meal-drawer" onClose={onClose} restoreFocusRef={restoreFocusRef}>
+      <div className="drawer-body" tabIndex={0} aria-label={`${meal.title} recipe details`}>
         {notice ? (
           <AuthorityNotice
             notice={notice}
@@ -1999,22 +2578,31 @@ function MealDrawer(props: {
           </div>
         ) : null}
         {week.status === "archived" ? <p className="inline-alert warning">Archived weeks are read-only.</p> : null}
+        {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
+        {meal.sourceRecipe ? (
+          <p className="recipe-source">
+            <span>Informational recipe source</span>
+            <a href={meal.sourceRecipe.url} target="_blank" rel="noopener noreferrer">
+              {meal.sourceRecipe.identity}
+            </a>
+          </p>
+        ) : null}
         <div className="field-grid">
-          <label><span>Title</span><input aria-label="Title" maxLength={MAX_MEAL_TITLE_LENGTH} value={draftTitle} aria-invalid={saveAttempted && Boolean(mealIssues.title)} aria-describedby={saveAttempted && mealIssues.title ? "meal-title-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "title", event.target.value)} /><FieldError id="meal-title-error" message={saveAttempted ? mealIssues.title : undefined} /></label>
-          <label><span>Venue</span><input aria-label="Venue" maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
+          <label><span>Title</span><input aria-label="Title" disabled={archived} maxLength={MAX_MEAL_TITLE_LENGTH} value={draftTitle} aria-invalid={saveAttempted && Boolean(mealIssues.title)} aria-describedby={saveAttempted && mealIssues.title ? "meal-title-error" : undefined} onChange={(event) => editRecipeField("title", event.target.value)} /><FieldError id="meal-title-error" message={saveAttempted ? mealIssues.title : undefined} /></label>
+          <label><span>Venue</span><input aria-label="Venue" disabled={archived} maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => editRecipeField("venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
         </div>
-        <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
-        <label className="full-field"><span>Ingredients, one per line</span><textarea aria-label="Ingredients" rows={5} maxLength={MAX_INGREDIENT_TEXT_LENGTH} value={draftIngredients} aria-invalid={saveAttempted && Boolean(mealIssues.ingredients)} aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "ingredients", event.target.value)} /><FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} /></label>
-        <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
+        <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" disabled={archived} maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => editRecipeField("subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
+        <label className="full-field"><span>Ingredients, one per line</span><textarea aria-label="Ingredients" disabled={archived} rows={5} maxLength={MAX_INGREDIENT_TEXT_LENGTH} value={draftIngredients} aria-invalid={saveAttempted && Boolean(mealIssues.ingredients)} aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined} onChange={(event) => editRecipeField("ingredients", event.target.value)} /><FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} /></label>
+        <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" disabled={archived} rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => editRecipeField("notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
         <div className="field-grid">
-          <label><span>Prep note</span><textarea aria-label="Prep note" maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>
-          <label><span>Leftover note</span><textarea aria-label="Leftover note" maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLeftoverNote} aria-invalid={saveAttempted && Boolean(mealIssues.leftoverNote)} aria-describedby={saveAttempted && mealIssues.leftoverNote ? "meal-leftover-note-error" : undefined} onChange={(event) => recipeDraft.edit(canonicalRecipeDraft, "leftoverNote", event.target.value)} /><FieldError id="meal-leftover-note-error" message={saveAttempted ? mealIssues.leftoverNote : undefined} /></label>
+          <label><span>Prep note</span><textarea aria-label="Prep note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => editRecipeField("prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>
+          <label><span>Leftover note</span><textarea aria-label="Leftover note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLeftoverNote} aria-invalid={saveAttempted && Boolean(mealIssues.leftoverNote)} aria-describedby={saveAttempted && mealIssues.leftoverNote ? "meal-leftover-note-error" : undefined} onChange={(event) => editRecipeField("leftoverNote", event.target.value)} /><FieldError id="meal-leftover-note-error" message={saveAttempted ? mealIssues.leftoverNote : undefined} /></label>
         </div>
         <button className="primary-button" type="button" disabled={disabled} onClick={save}><Check size={15} /> Save recipe details</button>
         <div className="snapshot-section">
           <h3>Schedule and status</h3>
           <div className="inline-control-row">
-            <select value={draftTargetDate} disabled={disabled} onChange={(event) => { moveDraft.begin(); setTargetDate(event.target.value as IsoDate); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select>
+            <select aria-label={`Dinner date for ${meal.title}`} value={draftTargetDate} disabled={disabled} onChange={(event) => { moveDraft.begin(); setTargetDate(event.target.value as IsoDate); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select>
             <button className="secondary-button" type="button" disabled={disabled || draftTargetDate === meal.date} onClick={() => void mutate({ type: "moveMeal", weekId: week.id, mealId: meal.id, targetDate: draftTargetDate, slot: "dinner" }, moveDraft.mutationOptions())}>Move dinner</button>
           </div>
           <div className="segmented-control status-control">{MEAL_STATUSES.map((status) => <button key={status} type="button" aria-pressed={meal.status === status} className={meal.status === status ? "active" : ""} disabled={disabled || meal.status === status} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status })}>{status}</button>)}</div>
@@ -2033,8 +2621,8 @@ function MealDrawer(props: {
                 mutate={mutate}
                 sendContextMessage={sendContextMessage}
                 contextView="week"
-                editable
-                actions={<div className="prep-reference-actions">
+                editable={!archived}
+                actions={<div className="prep-reference-actions recipe-step-actions">
                   <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
                   <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} down`} disabled={disabled || index === meal.instructions.length - 1} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
                   <button className="icon-button danger" type="button" title={`Delete ${stepControlTarget(meal, step, index + 1)}`} disabled={disabled || week.data.prep.some((reference) => reference.stepId === step.id)} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></button>
@@ -2042,12 +2630,12 @@ function MealDrawer(props: {
               />
             ))}
           </div>
-          <div className="instruction-step new-step-form">
+          {!archived ? <div className="instruction-step new-step-form">
             <label className="full-field"><span>Amounts: amount | ingredient</span><textarea aria-label="New amounts" maxLength={MAX_STEP_INPUT_TEXT_LENGTH} value={newInputs} aria-invalid={newStepAttempted && Boolean(newStepIssues.inputs)} aria-describedby={newStepAttempted && newStepIssues.inputs ? "new-step-inputs-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewInputs(event.target.value); }} /><FieldError id="new-step-inputs-error" message={newStepAttempted ? newStepIssues.inputs : undefined} /></label>
             <label className="full-field"><span>New instruction</span><textarea aria-label="New instruction" maxLength={MAX_COMMAND_TEXT_LENGTH} value={newInstruction} aria-invalid={newStepAttempted && Boolean(newStepIssues.instruction)} aria-describedby={newStepAttempted && newStepIssues.instruction ? "new-step-instruction-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewInstruction(event.target.value); }} /><FieldError id="new-step-instruction-error" message={newStepAttempted ? newStepIssues.instruction : undefined} /></label>
             <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input aria-label="New timer minutes" type="number" min="0.5" max="1440" step="0.5" value={newTimer} aria-invalid={newStepAttempted && Boolean(newStepIssues.timer)} aria-describedby={newStepAttempted && newStepIssues.timer ? "new-step-timer-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewTimer(event.target.value); }} /><FieldError id="new-step-timer-error" message={newStepAttempted ? newStepIssues.timer : undefined} /></label>
             <button className="secondary-button" type="button" disabled={disabled} onClick={addInstruction}><Plus size={15} /> Add instruction</button>
-          </div>
+          </div> : null}
         </div>
       </div>
       <div className="drawer-footer"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
@@ -2057,13 +2645,15 @@ function MealDrawer(props: {
 
 function ChatPanel(props: {
   workspace: InitializedWorkspace;
-  week: WeekPlan;
+  week: WeekPlan | null;
   view: PlannerView;
   today: IsoDate;
   disabled: boolean;
   health: HealthResponse | null;
   message: string;
   onMessageChange: Dispatch<SetStateAction<string>>;
+  intent: ChatTurnIntent;
+  onIntentChange: Dispatch<SetStateAction<ChatTurnIntent>>;
   onSend: SendContextMessage;
   onRetry: (turn: ChatTurn) => void;
   notice?: Notice;
@@ -2086,6 +2676,8 @@ function ChatPanel(props: {
     health,
     message,
     onMessageChange,
+    intent,
+    onIntentChange,
     onSend,
     onRetry,
     notice,
@@ -2114,10 +2706,10 @@ function ChatPanel(props: {
       turn.status === "completed" &&
       (turn.mutationOutcome === "version_conflict" || turn.mutationOutcome === "domain_rejected"),
   );
-  const tonightMeal = view === "tonight"
+  const tonightMeal = view === "tonight" && week
     ? week.data.meals.find((meal) => meal.date === today && meal.slot === "dinner")
     : null;
-  const tonightLeftover = view === "tonight"
+  const tonightLeftover = view === "tonight" && week
     ? week.data.leftovers.find(
         (leftover) =>
           leftover.state === "assigned" &&
@@ -2126,18 +2718,38 @@ function ChatPanel(props: {
       )
     : null;
   const context = plannerChatContextForView(view, week, today);
+  const activeIntent = week ? intent : DEFAULT_CHAT_INTENT;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const submittedMessage = message.trim();
     if (!submittedMessage) return;
     void onSend(submittedMessage, context, () => {
       onMessageChange((current) => current.trim() === submittedMessage ? "" : current);
-    });
+      onIntentChange(DEFAULT_CHAT_INTENT);
+    }, activeIntent);
   };
+  useEffect(() => {
+    if (!week && intent.kind !== "planner") onIntentChange(DEFAULT_CHAT_INTENT);
+  }, [intent.kind, onIntentChange, week]);
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [entries.length, running?.status]);
   const codexReady = health?.codex.status === "ready";
+  const codexStatusLabel = !health || health.codex.state === "checking"
+    ? "Checking ChatGPT"
+    : health.codex.state === "compatible"
+      ? "ChatGPT ready"
+      : health.codex.state === "unauthenticated"
+        ? "Planner ready · ChatGPT needs sign-in"
+        : health.codex.state === "incompatible"
+          ? "Planner ready · ChatGPT runtime incompatible"
+          : "Planner ready · ChatGPT unavailable";
+  const recoveryOnlyRetry = Boolean(
+    retryable && (retryable.acceptedEffectCount > 0 || retryable.mode === "recovery"),
+  );
+  const retryLabel = recoveryOnlyRetry
+    ? "Recover the reply (planner changes will not run again)"
+    : "Retry the interrupted ChatGPT request";
   return (
     <aside className={`ops-rail chat-rail ${modal ? "open" : ""}`} aria-label={modal ? undefined : "ChatGPT household chat"}>
       <div className="chat-panel">
@@ -2146,9 +2758,9 @@ function ChatPanel(props: {
           {modal ? <button className="icon-button chat-close" type="button" title="Close chat" onClick={onClose}><X size={18} /></button> : null}
         </div>
         <div className={`bridge-status ${codexReady ? "bridge-ready" : "bridge-unavailable"}`}>
-          <span /><small>{health ? (codexReady ? "ChatGPT ready" : "Planner ready · ChatGPT unavailable") : "Checking ChatGPT"}</small>
+          <span /><small>{codexStatusLabel}</small>
         </div>
-        <div className="chat-context"><Home size={12} /> {view} · week {week.id}{tonightLeftover ? ` · ${tonightLeftover.label} leftovers` : tonightMeal ? ` · ${tonightMeal.title}` : ""}</div>
+        <div className="chat-context"><Home size={12} /> {view}{week ? ` · week ${week.id}` : " · household workspace"}{tonightLeftover ? ` · ${tonightLeftover.label} leftovers` : tonightMeal ? ` · ${tonightMeal.title}` : ""}</div>
         {modal && notice ? (
           <AuthorityNotice
             notice={notice}
@@ -2166,11 +2778,17 @@ function ChatPanel(props: {
             <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
           </div>
         ) : null}
-        <div className="chat-messages" aria-live="polite">
-          {!entries.length ? <p className="empty-copy">Ask about this week or request a planner change.</p> : null}
+        <div
+          className="chat-messages"
+          role="log"
+          aria-label="Shared ChatGPT transcript"
+          aria-live="polite"
+          tabIndex={0}
+        >
+          {!entries.length ? <p className="empty-copy">{week ? "Ask about this week or request a planner change." : "Ask ChatGPT to create the first shared week plan."}</p> : null}
           {entries.map((entry) => (
             <div key={entry.entryId} className={`chat-message ${entry.role}`}>
-              {entry.context ? <span className="chat-message-context">{entry.context.view} · {entry.context.weekId}</span> : null}
+              {entry.context ? <span className="chat-message-context">{entry.context.view}{entry.context.weekId ? ` · ${entry.context.weekId}` : " · household"}</span> : null}
               <p>{entry.text}</p>
             </div>
           ))}
@@ -2182,10 +2800,58 @@ function ChatPanel(props: {
                 : "The proposed change did not fit the current plan. Review it, then ask ChatGPT again."}</p>
             </div>
           ))}
-          {running ? <div className="chat-message"><span className="chat-message-context">Working</span><p><LoaderCircle className="spin inline-spinner" size={14} /> ChatGPT is updating the shared plan…</p></div> : null}
+          {retryable ? (
+            <div className={`chat-message ${recoveryOnlyRetry ? "effect-recovery" : "unapplied"}`}>
+              <span className="chat-message-context">
+                {recoveryOnlyRetry ? "Planner changes saved · reply interrupted" : "ChatGPT request interrupted"}
+              </span>
+              <p>{recoveryOnlyRetry
+                ? "The accepted planner changes are already durable. Recovery reconstructs the reply without running them again."
+                : "No planner changes were accepted. Retry starts a new attempt."}</p>
+            </div>
+          ) : null}
+          {running ? <div className="chat-message"><span className="chat-message-context">Working</span><p><LoaderCircle className="spin inline-spinner" size={14} /> {running.researchKind === "sourced_recipe" ? "ChatGPT is researching a recipe…" : "ChatGPT is updating the shared plan…"}</p></div> : null}
           <div ref={endRef} />
         </div>
-        {retryable ? <button className="suggestion-button" type="button" disabled={disabled || Boolean(running)} onClick={() => onRetry(retryable)}><RotateCcw size={14} /> Retry the interrupted ChatGPT request</button> : null}
+        {retryable ? <button className="suggestion-button" type="button" disabled={disabled || Boolean(running)} onClick={() => onRetry(retryable)}><RotateCcw size={14} /> {retryLabel}</button> : null}
+        <fieldset className="chat-intent-controls" disabled={disabled || Boolean(running)}>
+          <legend>ChatGPT task</legend>
+          <label className={activeIntent.kind === "planner" ? "active" : ""}>
+            <input
+              type="radio"
+              name={`chat-intent-${modal ? "modal" : "rail"}`}
+              checked={activeIntent.kind === "planner"}
+              onChange={() => onIntentChange(DEFAULT_CHAT_INTENT)}
+            />
+            Plan
+          </label>
+          <label className={activeIntent.kind === "sourced_recipe" ? "active" : ""} aria-disabled={!week}>
+            <input
+              type="radio"
+              name={`chat-intent-${modal ? "modal" : "rail"}`}
+              checked={activeIntent.kind === "sourced_recipe"}
+              disabled={!week}
+              onChange={() => onIntentChange({ kind: "sourced_recipe" })}
+            />
+            Research recipe
+          </label>
+        </fieldset>
+        {activeIntent.kind === "planner" && week ? (
+          <label className="archive-chat-grant">
+            <input
+              type="checkbox"
+              checked={activeIntent.archiveContextWeek}
+              disabled={disabled || Boolean(running)}
+              onChange={(event) => onIntentChange({
+                kind: "planner",
+                archiveContextWeek: event.target.checked,
+              })}
+            />
+            Allow archiving week {week.id} for this message
+          </label>
+        ) : activeIntent.kind === "sourced_recipe" ? (
+          <p className="chat-research-note">Search the web, then replace one meal only after the source is validated.</p>
+        ) : <p className="chat-research-note">ChatGPT can create the first week without inventing a selected week context.</p>}
         <form className="chat-form" onSubmit={submit}>
           <label className="chat-input-field"><textarea data-autofocus={modal ? "true" : undefined} maxLength={MAX_COMMAND_TEXT_LENGTH} value={message} onChange={(event) => onMessageChange(event.target.value)} placeholder="Ask or change the plan…" aria-label="Message ChatGPT" /><small className="field-limit">{message.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
           <button type="submit" title="Send to ChatGPT" disabled={disabled || Boolean(running) || !message.trim()}>{disabled || running ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>
@@ -2199,12 +2865,14 @@ function HistoryDrawer(props: {
   workspace: InitializedWorkspace;
   disabled: boolean;
   onUndo: (event: PlannerEvent) => void;
+  restoreFocusRef: { current: HTMLElement | null };
   onClose: () => void;
 } & AuthorityRecoveryProps) {
   const {
     workspace,
     disabled,
     onUndo,
+    restoreFocusRef,
     onClose,
     notice,
     pendingRetryLabel,
@@ -2219,7 +2887,7 @@ function HistoryDrawer(props: {
   const latest = events[0];
   const canUndo = latest && latest.command.type !== "undoLatest";
   return (
-    <ModalDrawer title="Recent changes" className="history-drawer" onClose={onClose}>
+    <ModalDrawer title="Recent changes" className="history-drawer" onClose={onClose} restoreFocusRef={restoreFocusRef}>
       {notice ? (
         <AuthorityNotice
           notice={notice}
@@ -2251,9 +2919,21 @@ function HistoryDrawer(props: {
   );
 }
 
-function ModalDrawer({ title, className = "", onClose, children }: { title: string; className?: string; onClose: () => void; children: ReactNode }) {
+function ModalDrawer({
+  title,
+  className = "",
+  onClose,
+  restoreFocusRef,
+  children,
+}: {
+  title: string;
+  className?: string;
+  onClose: () => void;
+  restoreFocusRef?: { current: HTMLElement | null };
+  children: ReactNode;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  useDialogFocus(ref, onClose);
+  useDialogFocus(ref, onClose, restoreFocusRef);
   return (
     <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={ref} className={`drawer ${className}`} role="dialog" aria-modal="true" aria-label={title}>
@@ -2287,7 +2967,10 @@ function useDialogFocus(
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const restoreFocus = restoreFocusRef?.current;
     const root = ref.current;
-    const focusable = () => root ? Array.from(root.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')) : [];
+    const focusable = () => root
+      ? Array.from(root.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+        .filter((element) => element.getClientRects().length > 0 && !element.closest("[inert]"))
+      : [];
     const preferred = root?.querySelector<HTMLElement>("[data-autofocus]");
     (preferred ?? focusable()[0])?.focus();
     const previousOverflow = document.body.style.overflow;
@@ -2302,21 +2985,52 @@ function useDialogFocus(
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
+    const onFocusIn = (event: FocusEvent) => {
+      if (!root || !(event.target instanceof Node) || root.contains(event.target)) return;
+      focusable()[0]?.focus();
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || !root || root.contains(document.activeElement)) return;
+      const items = focusable();
+      (event.shiftKey ? items.at(-1) : items[0])?.focus();
+    };
     document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
+    document.addEventListener("focusin", onFocusIn);
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
-      window.requestAnimationFrame(() => {
+      document.removeEventListener("keyup", onKeyUp);
+      document.removeEventListener("focusin", onFocusIn);
+      const restoreAfterUnmount = (attempt = 0) => {
+        const activeDialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+        if (activeDialog === root) {
+          if (attempt < 8) window.setTimeout(() => restoreAfterUnmount(attempt + 1), 16);
+          return;
+        }
+        if (activeDialog) return;
         const fallback = Array.from(document.querySelectorAll<HTMLElement>(
-          ".mobile-nav button, .view-nav button, .header-actions button",
+          '[title="Change history"], .mobile-nav button, .view-nav button, .header-actions button',
         )).find((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
-        const focusTarget = restoreFocus?.isConnected
+        const isRestorable = (element: HTMLElement | null | undefined) => Boolean(
+          element?.isConnected &&
+          element !== document.body &&
+          element !== document.documentElement &&
+          element.getClientRects().length > 0 &&
+          !element.closest("[inert]"),
+        );
+        const focusTarget = isRestorable(restoreFocus)
           ? restoreFocus
-          : previous?.isConnected
+          : isRestorable(previous)
             ? previous
             : fallback;
-        focusTarget?.focus();
-      });
+        if (!focusTarget || focusTarget.closest("[inert]")) {
+          if (attempt < 8) window.setTimeout(() => restoreAfterUnmount(attempt + 1), 16);
+          return;
+        }
+        focusTarget.focus();
+      };
+      window.setTimeout(restoreAfterUnmount, 0);
     };
   }, [ref, restoreFocusRef]);
 }

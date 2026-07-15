@@ -11,23 +11,33 @@ import {
   type HouseholdDomainPort,
 } from "../../lib/household-domain.ts";
 import type {
+  GlobalCodexHealth,
   HealthResponse,
   LegacyV2Payload,
   LegacyV2TransformResult,
 } from "../../lib/planner-api-contract.ts";
 import { createPlannerApplicationService } from "../application/planner-service.ts";
 import type {
+  ChatApplicationService,
   Clock,
-  CodexPlannerAdapter,
   FailureInjector,
   IdFactory,
 } from "../application/ports.ts";
-import { createChatApplicationService } from "../chat/index.ts";
+import {
+  createEmbeddedChatApplicationService,
+  createManagedEmbeddedChatApplicationService,
+  type ResearchWebSearchEvidenceObservation,
+} from "../chat/index.ts";
+import type { GlobalCodexIngress } from "../global-ingress/index.ts";
 import { createApplicationRouter } from "../http/application-router.ts";
 import { createFrontController, type HttpHandler } from "../http/front-controller.ts";
 import { closeHttpServer, listenHttpServer } from "../http/server.ts";
 import { openPlannerStore, type SqlitePlannerStore } from "../store/sqlite-store.ts";
 import type { PlannerRuntimeConfig } from "./config.ts";
+import type {
+  CodexFollowUpRuntime,
+  CodexFollowUpStatus,
+} from "./codex-follow-up/index.ts";
 
 const NO_FAILURES: FailureInjector = { hit() {} };
 const SYSTEM_CLOCK: Clock = { now: () => Date.now() };
@@ -37,10 +47,26 @@ const RANDOM_IDS: IdFactory = {
   },
 };
 
+type RuntimeGlobalCodexIngress = {
+  readStatus(): GlobalCodexHealth;
+  close(): Promise<void>;
+};
+
+const INACTIVE_GLOBAL_CODEX_INGRESS: RuntimeGlobalCodexIngress = Object.freeze({
+  readStatus: (): GlobalCodexHealth => ({
+    status: "unavailable",
+    reason: "Global Codex ingress is not configured.",
+  }),
+  close: async () => undefined,
+});
+
 export type PlannerRuntimeOptions = {
   config: PlannerRuntimeConfig;
-  codexAdapter: CodexPlannerAdapter;
-  closeCodex?: () => void | Promise<void>;
+  codexRuntime: CodexFollowUpRuntime;
+  codexFixedCwd: string | null;
+  globalCodexIngressFactory?: (
+    planner: ReturnType<typeof createPlannerApplicationService>,
+  ) => Promise<GlobalCodexIngress>;
   clock?: Clock;
   idFactory?: IdFactory;
   failureInjector?: FailureInjector;
@@ -50,14 +76,17 @@ export type PlannerRuntimeOptions = {
   legacyTransformer?: (payload: LegacyV2Payload) => LegacyV2TransformResult;
   webProbe?: (origin: URL) => Promise<boolean>;
   shutdownGracePeriodMs?: number;
+  researchEvidenceObserver?: (observation: ResearchWebSearchEvidenceObservation) => void;
 };
 
 export type PlannerRuntime = {
   server: Server;
   store: SqlitePlannerStore;
   planner: ReturnType<typeof createPlannerApplicationService>;
-  chat: ReturnType<typeof createChatApplicationService>;
+  chat: ChatApplicationService;
   interruptedTurns: number;
+  evaluate(): Promise<CodexFollowUpStatus>;
+  readCodexStatus(): CodexFollowUpStatus;
   close(): Promise<void>;
 };
 
@@ -87,13 +116,15 @@ function createHealthReader({
   config,
   store,
   planner,
-  codexAdapter,
+  codexRuntime,
+  globalCodexIngress,
   webProbe,
 }: {
   config: PlannerRuntimeConfig;
   store: SqlitePlannerStore;
   planner: ReturnType<typeof createPlannerApplicationService>;
-  codexAdapter: CodexPlannerAdapter;
+  codexRuntime: Pick<CodexFollowUpRuntime, "readStatus">;
+  globalCodexIngress: Pick<RuntimeGlobalCodexIngress, "readStatus">;
   webProbe: (origin: URL) => Promise<boolean>;
 }) {
   return async (): Promise<HealthResponse> => {
@@ -118,21 +149,36 @@ function createHealthReader({
       }
     }
 
-    const [webReady, codex] = await Promise.all([
-      webProbe(config.webOrigin).catch(() => false),
-      codexAdapter.readStatus().catch(() => ({
-        available: false,
+    const webReady = await webProbe(config.webOrigin).catch(() => false);
+    let codex: CodexFollowUpStatus;
+    try {
+      codex = codexRuntime.readStatus();
+    } catch {
+      codex = {
+        state: "unavailable",
         authenticated: null,
-        detail: "Codex status is unavailable.",
-      })),
-    ]);
-    const codexStatus =
-      codex.available && codex.authenticated === true
-        ? "ready"
-        : codex.available
-          ? "degraded"
-          : "unavailable";
+        protocolCompatible: null,
+        cacheHit: false,
+        evidence: null,
+        detail: "Embedded Codex status is unavailable.",
+      };
+    }
+    const codexStatus = codex.state === "compatible" &&
+        codex.authenticated === true && codex.protocolCompatible === true
+      ? "ready"
+      : codex.state === "checking" || codex.state === "unauthenticated"
+        ? "degraded"
+        : "unavailable";
     const coreReady = storeReady && applicationReady && webReady;
+    let globalCodex = INACTIVE_GLOBAL_CODEX_INGRESS.readStatus();
+    try {
+      globalCodex = globalCodexIngress.readStatus();
+    } catch {
+      globalCodex = {
+        status: "unavailable",
+        reason: "Global Codex ingress status is unavailable.",
+      };
+    }
 
     return {
       status: !coreReady ? "unavailable" : codexStatus === "ready" ? "ready" : "degraded",
@@ -147,8 +193,11 @@ function createHealthReader({
       },
       codex: {
         status: codexStatus,
+        state: codex.state,
         authenticated: codex.authenticated,
+        protocolCompatible: codex.protocolCompatible,
       },
+      globalCodex,
     };
   };
 }
@@ -161,6 +210,7 @@ export async function startPlannerRuntime(
   const failureInjector = options.failureInjector ?? NO_FAILURES;
   const store =
     options.store ?? openPlannerStore({ filename: options.config.databasePath });
+  let globalCodexIngress = INACTIVE_GLOBAL_CODEX_INGRESS;
   try {
     const context = () => bootstrapContext(clock, idFactory);
     const planner = createPlannerApplicationService({
@@ -174,7 +224,20 @@ export async function startPlannerRuntime(
       idFactory,
       failureInjector,
     });
-    const chat = createChatApplicationService({
+    if (options.globalCodexIngressFactory !== undefined) {
+      try {
+        globalCodexIngress = await options.globalCodexIngressFactory(planner);
+      } catch {
+        globalCodexIngress = {
+          readStatus: () => ({
+            status: "unavailable",
+            reason: "Global Codex ingress could not start.",
+          }),
+          close: async () => undefined,
+        };
+      }
+    }
+    const chatDependencies = {
       transactionRunner: store,
       persistence: store,
       plannerMutationKernel: planner,
@@ -182,8 +245,26 @@ export async function startPlannerRuntime(
       clock,
       idFactory,
       failureInjector,
-      codexAdapter: options.codexAdapter,
-    });
+      ...(options.researchEvidenceObserver === undefined
+        ? {}
+        : { researchEvidenceObserver: options.researchEvidenceObserver }),
+      isCodexReady: () => {
+        try {
+          const status = options.codexRuntime.readStatus();
+          return status.state === "compatible" &&
+            status.authenticated === true && status.protocolCompatible === true;
+        } catch {
+          return false;
+        }
+      },
+    };
+    const chat = options.codexFixedCwd === null
+      ? createEmbeddedChatApplicationService(chatDependencies)
+      : createManagedEmbeddedChatApplicationService({
+          ...chatDependencies,
+          executionProvider: options.codexRuntime,
+          fixedCwd: options.codexFixedCwd,
+        });
     const interruptedTurns = chat.interruptRunningTurns();
     const apiHandler = createApplicationRouter(
       {
@@ -193,7 +274,8 @@ export async function startPlannerRuntime(
           config: options.config,
           store,
           planner,
-          codexAdapter: options.codexAdapter,
+          codexRuntime: options.codexRuntime,
+          globalCodexIngress,
           webProbe: options.webProbe ?? probeWebOrigin,
         }),
       },
@@ -225,9 +307,14 @@ export async function startPlannerRuntime(
         });
         let closeError: unknown;
         try {
-          await options.closeCodex?.();
+          await options.codexRuntime.close();
         } catch (error) {
           closeError = error;
+        }
+        try {
+          await globalCodexIngress.close();
+        } catch (error) {
+          closeError ??= error;
         }
         try {
           await serverClose;
@@ -244,10 +331,24 @@ export async function startPlannerRuntime(
       return closePromise;
     };
 
-    return { server, store, planner, chat, interruptedTurns, close };
+    return {
+      server,
+      store,
+      planner,
+      chat,
+      interruptedTurns,
+      evaluate: () => options.codexRuntime.evaluate(),
+      readCodexStatus: () => options.codexRuntime.readStatus(),
+      close,
+    };
   } catch (error) {
     try {
-      await options.closeCodex?.();
+      await options.codexRuntime.close();
+    } catch {
+      // Startup failure remains the primary diagnostic.
+    }
+    try {
+      await globalCodexIngress.close();
     } catch {
       // Startup failure remains the primary diagnostic.
     }

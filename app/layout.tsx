@@ -17,6 +17,10 @@ export async function generateMetadata(): Promise<Metadata> {
     title: "Weekly Recipe Planner",
     description:
       "A shared household planner for meals, prep, groceries, leftovers, and family feedback.",
+    icons: {
+      icon: "/og.png",
+      apple: "/og.png",
+    },
     openGraph: {
       title: "Weekly Recipe Planner",
       description: "Keep the whole cooking week under control.",
@@ -35,9 +39,6 @@ export async function generateMetadata(): Promise<Metadata> {
       title: "Weekly Recipe Planner",
       description: "Keep the whole cooking week under control.",
       images: [imageUrl],
-    },
-    icons: {
-      icon: "/og.png",
     },
   };
 }

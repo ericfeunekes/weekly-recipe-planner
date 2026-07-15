@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createDevelopmentProcessSpecifications,
+  createInstalledProcessSpecifications,
   createProductionProcessSpecifications,
 } from "../scripts/runtime-processes.mjs";
 import { readRuntimeConfig } from "../server/runtime/config.ts";
@@ -16,6 +17,7 @@ test("development launch fixes the API and web processes to the proxy topology",
 
   assert.equal(authority.command, process.execPath);
   assert.deepEqual(authority.args, [
+    "--disable-warning=ExperimentalWarning",
     "--experimental-strip-types",
     "server/index.ts",
   ]);
@@ -76,4 +78,46 @@ test("production launch defaults to one public loopback origin", () => {
   assert.equal(config.host, "127.0.0.1");
   assert.equal(config.port, 3000);
   assert.ok(config.allowedOrigins.has("http://127.0.0.1:3000"));
+});
+
+test("installed launch fixes both children to the selected app and materializes disjoint roots", () => {
+  const [web, authority] = createInstalledProcessSpecifications(
+    {
+      appDirectory: "/opt/meal-planner/app",
+      agentDirectory: "/opt/meal-planner/agent",
+      dataDirectory: "/opt/meal-planner/data",
+      runDirectory: "/opt/meal-planner/run",
+      activationId: "activation-1",
+      operatorSha256: "operator-sha",
+      activationSha256: "activation-sha",
+    },
+    {
+      HOME: "/Users/planner",
+      PATH: "/usr/bin:/bin",
+      PLANNER_PORT: "3200",
+    },
+  );
+
+  assert.equal(web.options.cwd, "/opt/meal-planner/app");
+  assert.equal(authority.options.cwd, "/opt/meal-planner/app");
+  assert.equal(authority.options.env.HOME, "/Users/planner");
+  assert.equal(authority.options.env.PLANNER_CODEX_HOME, "/opt/meal-planner/agent");
+  assert.equal(authority.options.env.PLANNER_CODEX_CWD, "/opt/meal-planner/app");
+  assert.equal(authority.options.env.PLANNER_DATA_DIR, "/opt/meal-planner/data");
+  assert.equal(
+    authority.options.env.PLANNER_RUNTIME_OWNER_SOCKET,
+    "/opt/meal-planner/run/runtime-owner.sock",
+  );
+  assert.equal("PLANNER_RUNTIME_OWNER_LEASE" in authority.options.env, false);
+  assert.equal("PLANNER_RUNTIME_OWNER_TOKEN" in authority.options.env, false);
+  assert.equal(authority.options.env.PLANNER_INSTALLED_RUNTIME, "1");
+  assert.equal(authority.options.env.PLANNER_EXPECTED_ACTIVATION_ID, "activation-1");
+  assert.equal(authority.options.env.PLANNER_EXPECTED_OPERATOR_SHA256, "operator-sha");
+  assert.equal(authority.options.env.PLANNER_EXPECTED_ACTIVATION_SHA256, "activation-sha");
+  assert.equal(
+    web.options.env.WRANGLER_LOG_PATH,
+    "/opt/meal-planner/run/logs/wrangler.log",
+  );
+  assert.equal(authority.options.env.PLANNER_MODE, "front");
+  assert.equal(authority.options.env.PLANNER_PORT, "3200");
 });

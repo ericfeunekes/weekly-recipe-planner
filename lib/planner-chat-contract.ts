@@ -1,5 +1,10 @@
 import type { HouseholdCommand } from "./household-command-contract";
+import type { ForegroundAuthority } from "./planner-tool-contract.ts";
 import { isWeekId, type WeekId } from "./household-contract.ts";
+import {
+  isResearchCandidateReference,
+  type ResearchCandidateReference,
+} from "./sourced-recipe-contract.ts";
 
 export const CHAT_TURN_STATUSES = [
   "running",
@@ -19,10 +24,31 @@ export const CHAT_MUTATION_OUTCOMES = [
 
 export type ChatTurnStatus = (typeof CHAT_TURN_STATUSES)[number];
 export type ChatMutationOutcome = (typeof CHAT_MUTATION_OUTCOMES)[number];
+export const CHAT_TURN_MODES = ["normal", "recovery"] as const;
+export const CHAT_RESEARCH_KINDS = ["none", "sourced_recipe"] as const;
+export const CHAT_TURN_TERMINAL_OUTCOMES = [
+  "completed_no_effect",
+  "completed_with_effects",
+  "failed_no_effect",
+  "failed_after_effect",
+  "interrupted_no_effect",
+  "interrupted_after_effect",
+  "recovery_completed",
+  "recovery_failed",
+] as const;
+export type ChatTurnMode = (typeof CHAT_TURN_MODES)[number];
+export type ChatResearchKind = (typeof CHAT_RESEARCH_KINDS)[number];
+export type ChatTurnTerminalOutcome =
+  (typeof CHAT_TURN_TERMINAL_OUTCOMES)[number];
 export type TranscriptRole = "user" | "assistant" | "system";
 export type PlannerView = "week" | "tonight" | "prep" | "groceries" | "closeout";
 
+export type ChatTurnIntent =
+  | { kind: "planner"; archiveContextWeek: boolean }
+  | { kind: "sourced_recipe" };
+
 type PlannerContextReference =
+  | { weekId?: never; mealId?: never; stepId?: never; leftoverId?: never }
   | { weekId: WeekId; mealId?: never; stepId?: never; leftoverId?: never }
   | { weekId: WeekId; mealId: string; stepId?: never; leftoverId?: never }
   | { weekId: WeekId; mealId: string; stepId: string; leftoverId?: never }
@@ -40,7 +66,34 @@ export type TranscriptEntry = {
   occurredAt: number;
 };
 
-export type ChatTurn = {
+export type ChatResearchLifecycle =
+  | { mode: "normal"; researchKind: "none"; researchCandidate: null }
+  | {
+      mode: "normal";
+      researchKind: "sourced_recipe";
+      researchCandidate: ResearchCandidateReference | null;
+    }
+  | { mode: "recovery"; researchKind: "none"; researchCandidate: null };
+
+export type NewChatResearchLifecycle =
+  | { mode: "normal"; researchKind: "none"; researchCandidate: null }
+  | { mode: "normal"; researchKind: "sourced_recipe"; researchCandidate: null }
+  | { mode: "recovery"; researchKind: "none"; researchCandidate: null };
+
+export function isChatResearchLifecycle(value: unknown): value is ChatResearchLifecycle {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.mode === "recovery") {
+    return candidate.researchKind === "none" && candidate.researchCandidate === null;
+  }
+  if (candidate.mode !== "normal") return false;
+  if (candidate.researchKind === "none") return candidate.researchCandidate === null;
+  return candidate.researchKind === "sourced_recipe" &&
+    (candidate.researchCandidate === null ||
+      isResearchCandidateReference(candidate.researchCandidate));
+}
+
+export type ChatTurnBase = {
   turnId: string;
   requestId: string;
   turnSequence: number;
@@ -52,6 +105,14 @@ export type ChatTurn = {
   proposedCommand: HouseholdCommand | null;
   mutationOutcome: ChatMutationOutcome | null;
   retryOfTurnId: string | null;
+  completionTokenHash: string | null;
+  appServerThreadId: string | null;
+  appServerTurnId: string | null;
+  foregroundAuthority: ForegroundAuthority;
+  acceptedEffectCount: number;
+  lastEffectSequence: number;
+  recoveryOfTurnId: string | null;
+  terminalOutcome: ChatTurnTerminalOutcome | null;
   errorCode: string | null;
   errorDetail: string | null;
   createdAt: number;
@@ -59,11 +120,14 @@ export type ChatTurn = {
   completedAt: number | null;
 };
 
+export type ChatTurn = ChatTurnBase & ChatResearchLifecycle;
+
 export type SubmitChatTurnRequest = {
   requestId: string;
   basePlannerVersion: number;
   message: string;
   context: PlannerChatContext;
+  intent: ChatTurnIntent;
 };
 
 export type RetryChatTurnRequest = {
@@ -104,12 +168,12 @@ export function isPlannerChatContext(value: unknown): value is PlannerChatContex
   if (
     !keys.every((key) => ["view", "weekId", "mealId", "stepId", "leftoverId"].includes(key)) ||
     !keys.includes("view") ||
-    !keys.includes("weekId") ||
-    !PLANNER_VIEWS.includes(candidate.view as PlannerView) ||
-    !isWeekId(candidate.weekId)
+    !PLANNER_VIEWS.includes(candidate.view as PlannerView)
   ) {
     return false;
   }
+  if (!keys.includes("weekId")) return keys.length === 1;
+  if (!isWeekId(candidate.weekId)) return false;
   const isId = (id: unknown) =>
     typeof id === "string" && id.trim().length > 0 && id.length <= 200;
   if (candidate.mealId !== undefined && !isId(candidate.mealId)) return false;
@@ -119,4 +183,18 @@ export function isPlannerChatContext(value: unknown): value is PlannerChatContex
     return candidate.mealId === undefined && candidate.stepId === undefined;
   }
   return candidate.stepId === undefined || candidate.mealId !== undefined;
+}
+
+export function isChatTurnIntent(value: unknown): value is ChatTurnIntent {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (candidate.kind === "sourced_recipe") {
+    return keys.length === 1 && keys[0] === "kind";
+  }
+  return candidate.kind === "planner" &&
+    keys.length === 2 &&
+    keys[0] === "archiveContextWeek" &&
+    keys[1] === "kind" &&
+    typeof candidate.archiveContextWeek === "boolean";
 }

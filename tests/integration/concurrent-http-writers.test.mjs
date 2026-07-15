@@ -7,13 +7,24 @@ import test from "node:test";
 import { startPlannerRuntime } from "../../server/runtime/planner-runtime.ts";
 
 const browserOrigin = "http://localhost:3001";
-const codexAdapter = {
-  async readStatus() {
-    return { available: false, authenticated: null, detail: "not used" };
+const codexRuntime = {
+  async evaluate() {
+    return this.readStatus();
   },
-  async complete() {
+  readStatus() {
+    return {
+      state: "unavailable",
+      authenticated: null,
+      protocolCompatible: null,
+      cacheHit: false,
+      evidence: null,
+      detail: "not used",
+    };
+  },
+  async spawnAppServer() {
     throw new Error("Codex is outside this writer-race fixture.");
   },
+  async close() {},
 };
 
 test("simultaneous HTTP writers resolve to one accepted commit and one authoritative conflict", async (t) => {
@@ -29,7 +40,8 @@ test("simultaneous HTTP writers resolve to one accepted commit and one authorita
       webOrigin: new URL(browserOrigin),
       allowedOrigins: new Set([browserOrigin]),
     },
-    codexAdapter,
+    codexRuntime,
+    codexFixedCwd: null,
     webProbe: async () => true,
   });
   t.after(() => runtime.close());

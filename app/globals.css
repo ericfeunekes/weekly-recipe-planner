@@ -5,7 +5,7 @@
   --surface-muted: #f0f2ef;
   --ink: #202826;
   --ink-soft: #52605d;
-  --muted: #62716d;
+  --muted: #52605d;
   --line: #d7ddda;
   --line-strong: #bdc8c3;
   --green: #2f6f5e;
@@ -89,6 +89,13 @@ select:focus-visible {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+input[readonly],
+textarea[readonly] {
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  cursor: default;
 }
 
 svg {
@@ -444,6 +451,8 @@ svg {
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 8px 0 0 8px;
+  container-name: primary-workspace;
+  container-type: inline-size;
   min-width: 0;
   overflow: hidden;
 }
@@ -630,9 +639,9 @@ svg {
 
 .chat-rail {
   align-self: start;
-  height: calc(100vh - 230px);
-  max-height: 820px;
-  min-height: 510px;
+  height: min(820px, calc(100dvh - 310px));
+  max-height: calc(100dvh - 310px);
+  min-height: 0;
   position: sticky;
   top: 154px;
 }
@@ -641,7 +650,8 @@ svg {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 510px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-header {
@@ -727,6 +737,7 @@ svg {
   flex: 1;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
   overflow-y: auto;
   padding: 14px;
 }
@@ -750,6 +761,11 @@ svg {
   border-left: 3px solid var(--amber);
 }
 
+.chat-message.effect-recovery {
+  background: var(--green-soft);
+  border-left: 3px solid var(--green);
+}
+
 .chat-message p {
   font-size: 11px;
   line-height: 1.45;
@@ -757,13 +773,17 @@ svg {
 }
 
 .chat-message-context {
+  color: var(--ink-soft);
   display: block;
   font-family: var(--font-mono);
   font-size: 8px;
   line-height: 1.35;
   margin-bottom: 5px;
-  opacity: 0.72;
   overflow-wrap: anywhere;
+}
+
+.chat-message.user .chat-message-context {
+  color: #ffffff;
 }
 
 .chat-message ul {
@@ -795,12 +815,76 @@ svg {
   text-align: left;
 }
 
+.chat-intent-controls {
+  border: 0;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0 10px 8px;
+  min-width: 0;
+  padding: 0;
+}
+
+.chat-intent-controls legend {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.chat-intent-controls label {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  cursor: pointer;
+  display: flex;
+  font-size: 9px;
+  gap: 6px;
+  min-height: 38px;
+  padding: 7px 8px;
+}
+
+.chat-intent-controls label.active {
+  background: var(--green-soft);
+  border-color: var(--green);
+  color: var(--green-dark);
+}
+
+.chat-intent-controls input,
+.archive-chat-grant input {
+  accent-color: var(--green);
+}
+
+.archive-chat-grant,
+.chat-research-note {
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.35;
+  margin: 0 12px 9px;
+}
+
+.archive-chat-grant {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  gap: 7px;
+}
+
+.chat-research-note {
+  background: var(--surface-muted);
+  border-radius: 6px;
+  padding: 7px 8px;
+}
+
 .chat-form {
   align-items: flex-end;
   border-top: 1px solid var(--line);
   display: flex;
+  flex: 0 0 auto;
   gap: 7px;
   padding: 10px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
 
 .chat-input-field {
@@ -890,10 +974,45 @@ svg {
   max-width: 18ch;
 }
 
-.tonight-hero p:last-child {
+.tonight-hero .meal-subtitle {
   color: var(--muted);
   font-size: 14px;
   margin-top: 8px;
+}
+
+.recipe-yield {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-top: 8px;
+}
+
+.recipe-source {
+  align-items: flex-start;
+  background: var(--surface-muted);
+  border-left: 3px solid var(--green);
+  border-radius: 0 6px 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 10px 0 14px;
+  max-width: 56ch;
+  padding: 8px 10px;
+}
+
+.recipe-source span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.recipe-source a {
+  color: var(--green-dark);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .tonight-actions {
@@ -976,9 +1095,10 @@ svg {
 .prep-reference-actions {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 5px;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .prep-reference-actions .icon-button,
@@ -1292,6 +1412,13 @@ svg {
 .grocery-row > span:nth-child(2) {
   display: grid;
   gap: 3px;
+  min-width: 0;
+}
+
+.grocery-row strong,
+.grocery-row small {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .grocery-row strong {
@@ -1346,7 +1473,7 @@ svg {
 }
 
 .grocery-row {
-  align-items: center;
+  align-items: start;
   border-bottom: 1px solid var(--line);
   display: grid;
   gap: 10px;
@@ -2113,6 +2240,12 @@ textarea[aria-invalid="true"] {
   margin-top: 4px;
 }
 
+.bootstrap-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
 .inline-alert,
 .authority-banner {
   border: 1px solid var(--line);
@@ -2312,6 +2445,87 @@ textarea[aria-invalid="true"] {
   min-height: 44px;
 }
 
+@container primary-workspace (max-width: 720px) {
+  .week-grid {
+    display: block;
+  }
+
+  .day-column,
+  .day-column:last-child {
+    border-bottom: 1px solid var(--line);
+    border-right: 0;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: 66px minmax(0, 1fr);
+    padding: 10px;
+  }
+
+  .day-column:last-child {
+    border-bottom: 0;
+  }
+
+  .day-column.today {
+    box-shadow: inset 3px 0 0 var(--green);
+  }
+
+  .day-heading {
+    align-content: start;
+    display: grid;
+    height: auto;
+    justify-content: stretch;
+    padding: 4px 2px;
+  }
+
+  .day-heading strong {
+    font-size: 24px;
+    grid-row: 2;
+  }
+
+  .meal-card {
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .tonight-layout,
+  .grocery-layout,
+  .closeout-layout {
+    display: block;
+  }
+
+  .tonight-side,
+  .farm-box-panel,
+  .closeout-notes {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .instruction-step-heading {
+    align-items: flex-start;
+    display: grid;
+  }
+
+  .prep-reference-actions {
+    width: 100%;
+  }
+
+  .prep-schedule-actions {
+    display: grid;
+    grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
+    justify-content: stretch;
+  }
+
+  .prep-schedule-actions .step-meal-link {
+    grid-column: 1 / -1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .prep-schedule-actions select {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 @media (max-width: 1180px) {
   .app-header {
     grid-template-columns: minmax(190px, 1fr) auto minmax(170px, 1fr);
@@ -2427,13 +2641,14 @@ textarea[aria-invalid="true"] {
   .ops-rail.chat-rail.open {
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 12px 12px 0 0;
+    border-radius: 0;
     bottom: 0;
     box-shadow: 0 -14px 40px rgba(22, 31, 28, 0.2);
     display: block;
-    height: min(68vh, 650px);
+    height: 100dvh;
     left: 0;
     min-height: 0;
+    max-height: 100dvh;
     position: fixed;
     right: 0;
     z-index: 90;
@@ -2441,6 +2656,18 @@ textarea[aria-invalid="true"] {
 
   .chat-panel {
     min-height: 0;
+  }
+
+  .mobile-chat-dialog {
+    height: 100dvh;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  .mobile-chat-dialog .ops-rail.chat-rail.open {
+    border-radius: 0;
+    height: 100%;
+    max-height: none;
   }
 
   .chat-close {
@@ -2608,7 +2835,8 @@ textarea[aria-invalid="true"] {
     border-left: 0;
     border-radius: 0 8px 8px 0;
     display: block;
-    height: calc(100dvh - 350px);
+    height: min(820px, calc(100dvh - 310px));
+    max-height: calc(100dvh - 310px);
     min-height: 0;
     position: sticky;
     top: 136px;
@@ -2665,13 +2893,24 @@ textarea[aria-invalid="true"] {
   }
 
   .prep-reference-actions {
-    justify-content: flex-start;
     width: 100%;
   }
 
-  .prep-reference-actions select {
-    flex: 1;
-    min-width: 130px;
+  .prep-schedule-actions {
+    display: grid;
+    grid-template-columns: 44px 44px minmax(0, 1fr) 44px;
+    justify-content: stretch;
+  }
+
+  .prep-schedule-actions .step-meal-link {
+    grid-column: 1 / -1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .prep-schedule-actions select {
+    min-width: 0;
+    width: 100%;
   }
 
   .step-comment-actions {
@@ -2684,12 +2923,11 @@ textarea[aria-invalid="true"] {
   }
 
   .grocery-row {
-    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr) auto;
   }
 
   .farm-tag {
-    grid-column: 2;
-    justify-self: start;
+    justify-self: end;
   }
 
   .drawer {

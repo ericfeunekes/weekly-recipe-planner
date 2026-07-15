@@ -8,31 +8,46 @@ import type {
   OperationReceipt,
   PageRequest,
   PlannerEventPage,
-  PlannerActor,
   UndoLatestRequest,
   TranscriptPage,
   WorkspaceResponse,
 } from "../../lib/planner-api-contract.ts";
 import type {
   ChatTurn,
+  ChatTurnBase,
   ChatTurnDecision,
+  NewChatResearchLifecycle,
   RetryChatTurnRequest,
   SubmitChatTurnRequest,
   TranscriptEntry,
 } from "../../lib/planner-chat-contract.ts";
-import type { HouseholdCommand } from "../../lib/household-command-contract.ts";
+import type {
+  ApplyPlannerOperationsRequest,
+  ApplyPlannerOperationsResponse,
+  PlannerMutationContext,
+  PreviewPlannerOperationsRequest,
+  PreviewPlannerOperationsResponse,
+} from "../../lib/planner-operation-contract.ts";
+import type {
+  PlannerToolName,
+  PlannerToolResult,
+} from "../../lib/planner-tool-contract.ts";
+import type { ResearchCandidateReference } from "../../lib/sourced-recipe-contract.ts";
 
 export interface TransactionRunner<Transaction> {
   transaction<Result>(work: (transaction: Transaction) => Result): Result;
 }
 
 export interface PlannerMutationKernel<Transaction> {
-  applyPlannerCommand(
+  previewPlannerOperations(
     transaction: Transaction,
-    request: ApplyPlannerCommandRequest,
-    actor: PlannerActor,
-    options?: { chatTurnId?: string; now?: number },
-  ): ApplyPlannerCommandResponse;
+    request: PreviewPlannerOperationsRequest,
+  ): PreviewPlannerOperationsResponse;
+  applyPlannerOperations(
+    transaction: Transaction,
+    request: ApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse;
 }
 
 export interface PlannerApplicationService {
@@ -40,6 +55,13 @@ export interface PlannerApplicationService {
   readEventPage(request: PageRequest): PlannerEventPage;
   readTranscriptPage(request: PageRequest): TranscriptPage;
   applyCommand(request: ApplyPlannerCommandRequest): ApplyPlannerCommandResponse;
+  applyOperations(
+    request: ApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse;
+  previewOperations(
+    request: PreviewPlannerOperationsRequest,
+  ): PreviewPlannerOperationsResponse;
   undoLatest(request: UndoLatestRequest): ApplyPlannerCommandResponse;
   bootstrap(request: BootstrapWorkspaceRequest): BootstrapWorkspaceResponse;
   exportWorkspace(): ExportEnvelope;
@@ -56,32 +78,18 @@ export type ChatServiceResponse = {
   workspace: InitializedWorkspace;
 };
 
-export type CodexCompletionRequest = {
-  turnId: string;
-  prompt: string;
-  signal: AbortSignal;
-};
-
-export type CodexCompletionResult = {
-  reply: string;
-  command: HouseholdCommand | null;
-};
-
-export interface CodexPlannerAdapter {
-  complete(request: CodexCompletionRequest): Promise<CodexCompletionResult>;
-  readStatus(): Promise<{
-    available: boolean;
-    authenticated: boolean | null;
-    detail: string;
-  }>;
-}
-
 export const APPLICATION_FAILPOINTS = [
   "after_workspace_update",
   "after_event_insert",
   "after_receipt_insert",
   "after_planner_mutation",
   "after_chat_terminal_write",
+  "after_tool_reservation",
+  "before_tool_effect_commit",
+  "after_tool_effect_commit",
+  "after_tool_response",
+  "after_embedded_terminal_reply",
+  "after_research_candidate_attachment",
   "before_commit",
 ] as const;
 
@@ -93,46 +101,8 @@ export interface FailureInjector {
 
 export type NewTranscriptEntry = Omit<TranscriptEntry, "sequence">;
 
-export type ChatTurnTerminalUpdate =
-  | {
-      status: "completed";
-      replyEntryId: string;
-      proposedCommand: null;
-      mutationOutcome: "no_command";
-      errorCode: null;
-      errorDetail: null;
-      completedAt: number;
-    }
-  | {
-      status: "completed";
-      replyEntryId: string;
-      proposedCommand: HouseholdCommand;
-      mutationOutcome: "applied" | "version_conflict" | "domain_rejected";
-      errorCode: null;
-      errorDetail: null;
-      completedAt: number;
-    }
-  | {
-      status: "failed";
-      replyEntryId: null;
-      proposedCommand: null;
-      mutationOutcome: "model_failed" | "timed_out";
-      errorCode: string;
-      errorDetail: string | null;
-      completedAt: number;
-    }
-  | {
-      status: "interrupted";
-      replyEntryId: null;
-      proposedCommand: null;
-      mutationOutcome: null;
-      errorCode: string;
-      errorDetail: string | null;
-      completedAt: number;
-    };
-
 export type NewRunningChatTurn = Omit<
-  ChatTurn,
+  ChatTurnBase,
   | "turnSequence"
   | "status"
   | "replyEntryId"
@@ -149,6 +119,85 @@ export type NewRunningChatTurn = Omit<
   errorCode: null;
   errorDetail: null;
   completedAt: null;
+} & NewChatResearchLifecycle;
+
+export const PLANNER_TOOL_CALL_STATUSES = [
+  "running",
+  "succeeded",
+  "rejected",
+  "cancelled",
+  "timed_out",
+  "abandoned",
+] as const;
+
+export type PlannerToolCallStatus =
+  (typeof PLANNER_TOOL_CALL_STATUSES)[number];
+
+export type EmbeddedTurnIdentity = {
+  turnId: string;
+  completionTokenHash: string;
+  appServerThreadId: string;
+  appServerTurnId: string;
+};
+
+export type PlannerToolCallIdentity = EmbeddedTurnIdentity & {
+  toolCallId: string;
+  appServerCallId: string;
+  callbackIdentityHash: string;
+  tool: PlannerToolName;
+  argumentHash: string;
+};
+
+export type PlannerToolCall = PlannerToolCallIdentity & {
+  sequence: number;
+  status: PlannerToolCallStatus;
+  resultCode: string | null;
+  operationKind: "embedded_codex_apply_planner_operations_v1" | null;
+  requestId: string | null;
+  eventId: string | null;
+  basePlannerVersion: number | null;
+  resultPlannerVersion: number | null;
+  resultEnvelope: PlannerToolResult | null;
+  effectSequence: number | null;
+  createdAt: number;
+  completedAt: number | null;
+};
+
+export type PlannerToolCallReservation = PlannerToolCallIdentity & {
+  createdAt: number;
+};
+
+export type PlannerToolCallReservationDecision =
+  | { status: "reserved"; call: PlannerToolCall }
+  | { status: "replay"; call: PlannerToolCall }
+  | { status: "orphaned"; call: PlannerToolCall }
+  | { status: "duplicate_mismatch" }
+  | { status: "late_call" }
+  | { status: "turn_not_running" }
+  | { status: "turn_unbound" }
+  | { status: "call_limit" };
+
+export type PlannerToolCallCompletion = PlannerToolCallIdentity & {
+  status: Exclude<PlannerToolCallStatus, "running">;
+  resultCode: string;
+  resultEnvelope: PlannerToolResult;
+  completedAt: number;
+  operationKind?: "embedded_codex_apply_planner_operations_v1";
+  requestId?: string;
+  eventId?: string;
+  basePlannerVersion?: number;
+  resultPlannerVersion?: number;
+  effectSequence?: number;
+};
+
+export type EmbeddedTurnTerminalUpdate = {
+  status: "completed" | "failed" | "interrupted";
+  replyEntryId: string | null;
+  mutationOutcome: "no_command" | "model_failed" | "timed_out" | null;
+  errorCode: string | null;
+  errorDetail: string | null;
+  terminalOutcome: ChatTurn["terminalOutcome"];
+  completedAt: number;
 };
 
 export interface ChatPersistencePort<Transaction> {
@@ -173,12 +222,47 @@ export interface ChatPersistencePort<Transaction> {
     transaction: Transaction,
     turn: NewRunningChatTurn,
   ): ChatTurn;
-  updateTurnIfRunning(
+  interruptRunningTurns(transaction: Transaction, completedAt: number): number;
+  bindEmbeddedTurn(
     transaction: Transaction,
     turnId: string,
-    update: ChatTurnTerminalUpdate,
+    completionTokenHash: string,
+    appServerThreadId: string,
+    appServerTurnId: string,
   ): boolean;
-  interruptRunningTurns(transaction: Transaction, completedAt: number): number;
+  attachResearchCandidate(
+    transaction: Transaction,
+    turnId: string,
+    completionTokenHash: string,
+    reference: ResearchCandidateReference,
+  ): boolean;
+  reservePlannerToolCall(
+    transaction: Transaction,
+    reservation: PlannerToolCallReservation,
+  ): PlannerToolCallReservationDecision;
+  completePlannerToolCall(
+    transaction: Transaction,
+    completion: PlannerToolCallCompletion,
+  ): boolean;
+  incrementEmbeddedTurnEffect(
+    transaction: Transaction,
+    identity: EmbeddedTurnIdentity,
+  ): number | null;
+  terminalizeEmbeddedTurn(
+    transaction: Transaction,
+    identity: EmbeddedTurnIdentity,
+    update: EmbeddedTurnTerminalUpdate,
+  ): boolean;
+  terminalizeUnboundEmbeddedTurn(
+    transaction: Transaction,
+    turnId: string,
+    completionTokenHash: string,
+    update: EmbeddedTurnTerminalUpdate,
+  ): boolean;
+  readPlannerToolCalls(
+    transaction: Transaction,
+    turnId: string,
+  ): PlannerToolCall[];
   incrementSyncRevision(transaction: Transaction, updatedAt: number): number;
 }
 

@@ -1,0 +1,54 @@
+forced_login_method = "chatgpt"
+cli_auth_credentials_store = "file"
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+check_for_update_on_startup = false
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[features]
+apps = false
+artifact = false
+browser_use = false
+browser_use_external = false
+browser_use_full_cdp_access = false
+code_mode = false
+code_mode_only = false
+computer_use = false
+current_time_reminder = false
+deferred_executor = false
+enable_fanout = false
+enable_mcp_apps = false
+goals = false
+image_generation = false
+imagegenext = false
+in_app_browser = false
+memories = false
+multi_agent = false
+multi_agent_v2 = false
+network_proxy = false
+plugins = false
+remote_plugin = false
+request_permissions_tool = false
+shell_tool = false
+sleep_tool = false
+standalone_web_search = false
+token_budget = false
+tool_suggest = false
+unified_exec = false
+unified_exec_zsh_fork = false
+workspace_dependencies = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false
+
+[orchestrator.skills]
+enabled = false
+
+[orchestrator.mcp]
+enabled = false

@@ -2,16 +2,25 @@ import assert from "node:assert/strict";
 import { createServer, request as requestHttp } from "node:http";
 import test from "node:test";
 
+import { householdDomain } from "../lib/household-domain.ts";
+import {
+  DIAGNOSTIC_EXPORT_FILENAME,
+  DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+  DIAGNOSTIC_EXPORT_KIND,
+  DIAGNOSTIC_EXPORT_WARNING,
+} from "../lib/planner-api-contract.ts";
+import { createPlannerApplicationService } from "../server/application/planner-service.ts";
 import { createApplicationRouter } from "../server/http/application-router.ts";
 import { createFrontController } from "../server/http/front-controller.ts";
 import {
   closeHttpServer,
   listenHttpServer,
 } from "../server/http/server.ts";
+import { openPlannerStore } from "../server/store/sqlite-store.ts";
 
 const WORKSPACE = {
   initialized: true,
-  schemaVersion: 1,
+  schemaVersion: 2,
   plannerVersion: 2,
   syncRevision: 3,
   state: {
@@ -58,7 +67,11 @@ function createDependencies() {
       return { workspace: WORKSPACE, imported: request.mode === "import-v2" };
     },
     exportWorkspace: () => ({
-      schemaVersion: 1,
+      kind: DIAGNOSTIC_EXPORT_KIND,
+      formatVersion: DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+      restorable: false,
+      warning: DIAGNOSTIC_EXPORT_WARNING,
+      schemaVersion: 2,
       exportedAt: 1,
       plannerVersion: 2,
       syncRevision: 3,
@@ -117,7 +130,16 @@ function createDependencies() {
         web: { status: "ready" },
         application: { status: "ready", initialized: true },
         store: { status: "ready", quickCheck: "ok" },
-        codex: { status: "unavailable", authenticated: null },
+        codex: {
+          status: "unavailable",
+          state: "unavailable",
+          authenticated: null,
+          protocolCompatible: null,
+        },
+        globalCodex: {
+          status: "unavailable",
+          reason: "Global Codex ingress is not configured.",
+        },
       }),
     },
     calls,
@@ -134,6 +156,100 @@ async function startApplication(t) {
   t.after(() => closeHttpServer(server));
   const address = server.address();
   return { baseUrl: `http://127.0.0.1:${address.port}`, calls };
+}
+
+async function startRealSourcedApplication(t) {
+  const store = openPlannerStore({ filename: ":memory:" });
+  t.after(() => store.close());
+  let id = 0;
+  let now = 1_800_000_000_000;
+  const seed = {
+    householdTimeZone: "America/Halifax",
+    activeWeekId: "2026-07-06",
+    weeks: [{
+      id: "2026-07-06",
+      weekStartDate: "2026-07-06",
+      status: "active",
+      data: {
+        meals: [{
+          id: "meal-1",
+          date: "2026-07-07",
+          slot: "dinner",
+          title: "Placeholder",
+          subtitle: "Keep subtitle",
+          venue: "Home",
+          status: "planned",
+          protein: "none",
+          prepNote: "",
+          leftoverNote: "",
+          notes: "Keep note",
+          ingredients: [],
+          instructions: [],
+        }],
+        prep: [], groceries: [], leftovers: [], farmBoxReconciled: false,
+        feedback: {}, weekLesson: "",
+      },
+    }],
+  };
+  const planner = createPlannerApplicationService({
+    store,
+    domain: householdDomain,
+    seedFactory: () => structuredClone(seed),
+    transformLegacyV2: () => ({ state: structuredClone(seed), transcriptEntries: [], discardedEventCount: 0 }),
+    clock: { now: () => now++ },
+    idFactory: { createId: (prefix) => `${prefix}-${++id}` },
+  });
+  planner.bootstrap({ requestId: "bootstrap-source-http", mode: "seed" });
+  const handler = createApplicationRouter({
+    planner,
+    chat: {
+      submit: async () => { throw new Error("chat outside sourced ingress proof"); },
+      retry: async () => { throw new Error("chat outside sourced ingress proof"); },
+      interruptRunningTurns: () => 0,
+    },
+    readHealth: () => ({
+      status: "ready",
+      web: { status: "ready" },
+      application: { status: "ready", initialized: true },
+      store: { status: "ready", quickCheck: "ok" },
+      codex: {
+        status: "unavailable",
+        state: "unavailable",
+        authenticated: null,
+        protocolCompatible: null,
+      },
+      globalCodex: { status: "unavailable", reason: "not configured" },
+    }),
+  }, {
+    allowedOrigins: new Set(["http://localhost:3001"]),
+    allowOriginlessMutations: false,
+  });
+  const server = await listenHttpServer({ handler, port: 0 });
+  t.after(() => closeHttpServer(server));
+  const address = server.address();
+  return { baseUrl: `http://127.0.0.1:${address.port}`, planner, store };
+}
+
+function sourcedHttpCommand() {
+  return {
+    type: "replaceMealRecipeFromSource",
+    weekId: "2026-07-06",
+    mealId: "meal-1",
+    recipe: {
+      title: "HTTP lentil soup",
+      yieldText: "4 bowls",
+      source: {
+        kind: "web",
+        identity: "Example Kitchen",
+        url: "https://example.com/recipes/lentil-soup",
+        retrievedAt: 1_750_000_000_000,
+      },
+      steps: [{
+        inputs: [{ amount: "1 cup", ingredient: "lentils" }],
+        instruction: "Simmer until tender.",
+      }],
+    },
+  };
 }
 
 function rawHttpRequest(options, body = "") {
@@ -175,6 +291,74 @@ test("workspace reads use a complete sync-revision ETag and pages normalize curs
   assert.equal((await fetch(`${baseUrl}/api/history?limit=101`)).status, 400);
 });
 
+test("diagnostic export is explicitly non-restorable and bootstrap rejects it without a call", async (t) => {
+  const { baseUrl, calls } = await startApplication(t);
+  const response = await fetch(`${baseUrl}/api/export`);
+  assert.equal(response.status, 200);
+  assert.equal(
+    response.headers.get("content-disposition"),
+    `attachment; filename="${DIAGNOSTIC_EXPORT_FILENAME}"`,
+  );
+  assert.equal(response.headers.get("x-meal-planner-export-kind"), DIAGNOSTIC_EXPORT_KIND);
+  assert.equal(
+    response.headers.get("x-meal-planner-export-version"),
+    String(DIAGNOSTIC_EXPORT_FORMAT_VERSION),
+  );
+  assert.equal(response.headers.get("x-meal-planner-export-restorable"), "false");
+  const diagnostic = await response.json();
+  assert.equal(diagnostic.kind, DIAGNOSTIC_EXPORT_KIND);
+  assert.equal(diagnostic.formatVersion, DIAGNOSTIC_EXPORT_FORMAT_VERSION);
+  assert.equal(diagnostic.restorable, false);
+  assert.equal(diagnostic.warning, DIAGNOSTIC_EXPORT_WARNING);
+
+  const rejected = await fetch(`${baseUrl}/api/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
+    body: JSON.stringify(diagnostic),
+  });
+  assert.equal(rejected.status, 400);
+  assert.deepEqual(await rejected.json(), {
+    error: { code: "INVALID_REQUEST", message: DIAGNOSTIC_EXPORT_WARNING },
+  });
+  assert.deepEqual(calls, []);
+});
+
+test("large diagnostic exports remain downloadable but cannot cross the bootstrap body limit", async (t) => {
+  const { dependencies, calls } = createDependencies();
+  const baseExport = dependencies.planner.exportWorkspace();
+  dependencies.planner.exportWorkspace = () => ({
+    ...baseExport,
+    events: Array.from({ length: 2_200 }, (_, index) => ({
+      sequence: index + 1,
+      eventId: `event-${index}`,
+      summary: "diagnostic event".padEnd(160, "x"),
+    })),
+  });
+  const handler = createApplicationRouter(dependencies, {
+    allowedOrigins: new Set(["http://localhost:3001"]),
+    allowOriginlessMutations: false,
+  });
+  const server = await listenHttpServer({ handler, port: 0 });
+  t.after(() => closeHttpServer(server));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const response = await fetch(`${baseUrl}/api/export`);
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.ok(Buffer.byteLength(body) > 256 * 1024);
+  assert.equal(JSON.parse(body).restorable, false);
+
+  const rejected = await fetch(`${baseUrl}/api/bootstrap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
+    body,
+  });
+  assert.equal(rejected.status, 413);
+  assert.match((await rejected.json()).error.message, /too large/i);
+  assert.deepEqual(calls, []);
+});
+
 test("mutations reject foreign origins and accept only typed command envelopes", async (t) => {
   const { baseUrl, calls } = await startApplication(t);
   const body = JSON.stringify({
@@ -209,6 +393,55 @@ test("mutations reject foreign origins and accept only typed command envelopes",
   });
   assert.equal(spoofed.status, 400);
   assert.equal(calls.length, 1);
+});
+
+test("household HTTP sourced replacement reaches shared reducer without embedded admission", async (t) => {
+  const { baseUrl, store } = await startRealSourcedApplication(t);
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
+  const request = {
+    requestId: "source-http-1",
+    basePlannerVersion: 0,
+    command: sourcedHttpCommand(),
+  };
+  const accepted = await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(request),
+  });
+  assert.equal(accepted.status, 200);
+  const acceptedBody = await accepted.json();
+  assert.equal(acceptedBody.decision.status, "accepted");
+  const meal = acceptedBody.workspace.state.weeks[0].data.meals[0];
+  assert.equal(meal.title, "HTTP lentil soup");
+  assert.equal(meal.subtitle, "Keep subtitle");
+  assert.deepEqual(meal.sourceRecipe, sourcedHttpCommand().recipe.source);
+  assert.deepEqual(meal.ingredients, ["1 cup lentils"]);
+
+  const replay = await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(request),
+  });
+  assert.equal(replay.status, 200);
+  assert.deepEqual((await replay.json()).decision, acceptedBody.decision);
+  const changed = structuredClone(request);
+  changed.command.recipe.title = "Changed reuse";
+  assert.equal((await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(changed),
+  })).status, 409);
+  const stale = await fetch(`${baseUrl}/api/commands`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ ...request, requestId: "source-http-stale" }),
+  });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).decision.status, "version_conflict");
+  const forbidden = structuredClone(request);
+  forbidden.requestId = "source-http-forbidden";
+  forbidden.basePlannerVersion = 1;
+  forbidden.command.recipe.candidateId = "forbidden";
+  assert.equal((await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(forbidden),
+  })).status, 400);
+  assert.equal(store.database.prepare(
+    "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'planner_command'",
+  ).get().count, 2);
 });
 
 test("IPv6 loopback browser origins can mutate through the configured authority", async (t) => {
@@ -247,6 +480,43 @@ test("IPv6 loopback browser origins can mutate through the configured authority"
   assert.equal(calls.length, 1);
 });
 
+test("an explicitly configured Tailnet HTTPS host and origin can mutate", async (t) => {
+  const tailnetOrigin = "https://robie-imac.tailae8a7b.ts.net:8642";
+  const { dependencies, calls } = createDependencies();
+  const handler = createApplicationRouter(dependencies, {
+    allowedOrigins: new Set([tailnetOrigin]),
+    allowOriginlessMutations: false,
+  });
+  const server = await listenHttpServer({ handler, port: 0 });
+  t.after(() => closeHttpServer(server));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const body = JSON.stringify({
+    requestId: "tailnet-request",
+    basePlannerVersion: 2,
+    command: {
+      type: "captureWeekLesson",
+      weekId: "2026-07-06",
+      weekLesson: "Prep sauces separately.",
+    },
+  });
+  const response = await rawHttpRequest({
+    hostname: "127.0.0.1",
+    port: address.port,
+    path: "/api/commands",
+    method: "POST",
+    headers: {
+      Host: "robie-imac.tailae8a7b.ts.net:8642",
+      Origin: tailnetOrigin,
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+    },
+  }, body);
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(response.text).decision.status, "accepted");
+  assert.equal(calls.length, 1);
+});
+
 test("chat accepts structured canonical context and returns its durable running turn", async (t) => {
   const { baseUrl, calls } = await startApplication(t);
   const response = await fetch(`${baseUrl}/api/chat/submit`, {
@@ -257,11 +527,46 @@ test("chat accepts structured canonical context and returns its durable running 
       basePlannerVersion: 2,
       message: "What can I prep now?",
       context: { view: "prep", weekId: "2026-07-06" },
+      intent: { kind: "planner", archiveContextWeek: false },
     }),
   });
   assert.equal(response.status, 202);
   assert.equal((await response.json()).decision.turn.status, "running");
   assert.equal(calls[0][0], "chat");
+  assert.deepEqual(calls[0][1].intent, {
+    kind: "planner",
+    archiveContextWeek: false,
+  });
+});
+
+test("chat submit rejects missing, mixed, extra, and unknown intent without calling chat", async (t) => {
+  const { baseUrl, calls } = await startApplication(t);
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
+  const base = {
+    requestId: "chat-intent-invalid",
+    basePlannerVersion: 2,
+    message: "Plan dinner.",
+    context: { view: "week", weekId: "2026-07-06" },
+  };
+  for (const [label, body] of [
+    ["missing", base],
+    ["mixed", { ...base, intent: { kind: "sourced_recipe", archiveContextWeek: false } }],
+    ["extra", { ...base, intent: { kind: "planner", archiveContextWeek: false, target: "week-x" } }],
+    ["unknown", { ...base, intent: { kind: "other" } }],
+    ["raw grant", {
+      ...base,
+      intent: { kind: "planner", archiveContextWeek: false },
+      foregroundAuthority: [{ commandType: "archiveWeek", target: "week-x" }],
+    }],
+  ]) {
+    const response = await fetch(`${baseUrl}/api/chat/submit`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 400, label);
+  }
+  assert.deepEqual(calls, []);
 });
 
 test("undo and chat lifecycle rejections preserve their durable conflict status", async (t) => {
@@ -300,7 +605,7 @@ test("service failures retain field errors and authoritative workspace readback"
       code: "INVALID_REQUEST",
       httpStatus: 422,
       fieldErrors: { "data.prep[0].due": "Use a known v2 prep date." },
-      workspace: { initialized: false, schemaVersion: 1 },
+      workspace: { initialized: false, schemaVersion: 2 },
     });
   };
   const handler = createApplicationRouter(dependencies, {
@@ -326,7 +631,7 @@ test("service failures retain field errors and authoritative workspace readback"
       message: "Legacy prep date is invalid.",
       fieldErrors: { "data.prep[0].due": "Use a known v2 prep date." },
     },
-    workspace: { initialized: false, schemaVersion: 1 },
+    workspace: { initialized: false, schemaVersion: 2 },
   });
 });
 

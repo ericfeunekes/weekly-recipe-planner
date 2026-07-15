@@ -1,6 +1,12 @@
 import type { HouseholdCommand } from "./household-command-contract";
 import type { HouseholdPlannerState } from "./household-contract";
 import type {
+  OperationKind,
+  PlannerActor,
+  PlannerBatchEventCommand,
+  PlannerEventProvenance,
+} from "./planner-operation-contract.ts";
+import type {
   ChatTurn,
   PlannerChatContext,
   RetryChatTurnRequest,
@@ -25,18 +31,19 @@ export const API_ERROR_CODES = [
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
-export type PlannerActor = "Household" | "Codex";
 
-export const OPERATION_KINDS = [
-  "planner_command",
-  "planner_chat_command",
-  "planner_undo",
-  "workspace_bootstrap",
-  "chat_submit",
-  "chat_retry",
-] as const;
-
-export type OperationKind = (typeof OPERATION_KINDS)[number];
+export { OPERATION_KINDS } from "./planner-operation-contract.ts";
+export type {
+  ApplyPlannerOperationsRequest,
+  ApplyPlannerOperationsResponse,
+  OperationKind,
+  PlannerActor,
+  PlannerEventProvenance,
+  PlannerMutationContext,
+  PlannerOperationsDecision,
+  PreviewPlannerOperationsRequest,
+  PreviewPlannerOperationsResponse,
+} from "./planner-operation-contract.ts";
 
 export type OperationReceipt = {
   operationKind: OperationKind;
@@ -49,6 +56,7 @@ export type OperationReceipt = {
 
 export type PlannerEventCommand =
   | HouseholdCommand
+  | PlannerBatchEventCommand
   | { type: "undoLatest"; targetEventId: string };
 
 export type ApiError = {
@@ -62,6 +70,7 @@ export type PlannerEvent = {
   eventId: string;
   requestId: string;
   actor: PlannerActor;
+  provenance: PlannerEventProvenance;
   command: PlannerEventCommand;
   baseVersion: number;
   resultVersion: number;
@@ -171,7 +180,17 @@ export type ChatTurnResponse = {
   turn: ChatTurn;
 };
 
-export type ExportEnvelope = {
+export const DIAGNOSTIC_EXPORT_KIND = "meal-planner-diagnostic-export" as const;
+export const DIAGNOSTIC_EXPORT_FORMAT_VERSION = 1 as const;
+export const DIAGNOSTIC_EXPORT_FILENAME = "meal-planner-diagnostic-export.json" as const;
+export const DIAGNOSTIC_EXPORT_WARNING =
+  "Diagnostic export only. This JSON file is not a database backup and cannot restore planner data." as const;
+
+export type DiagnosticExportEnvelope = {
+  kind: typeof DIAGNOSTIC_EXPORT_KIND;
+  formatVersion: typeof DIAGNOSTIC_EXPORT_FORMAT_VERSION;
+  restorable: false;
+  warning: typeof DIAGNOSTIC_EXPORT_WARNING;
   schemaVersion: number;
   exportedAt: number;
   plannerVersion: number;
@@ -182,14 +201,100 @@ export type ExportEnvelope = {
   chatTurns: ChatTurn[];
 };
 
+/** @deprecated Prefer the purpose-specific DiagnosticExportEnvelope name. */
+export type ExportEnvelope = DiagnosticExportEnvelope;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+): boolean {
+  const allowed = new Set(required);
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isRequestId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 200;
+}
+
+export function isBootstrapWorkspaceRequest(value: unknown): value is BootstrapWorkspaceRequest {
+  if (!isRecord(value) || !isRequestId(value.requestId)) return false;
+  if (value.mode === "seed") {
+    return hasExactKeys(value, ["requestId", "mode"]);
+  }
+  return value.mode === "import-v2" &&
+    hasExactKeys(value, ["requestId", "mode", "payload"]) &&
+    isRecord(value.payload) &&
+    hasExactKeys(value.payload, ["data", "events", "chatMessages"]);
+}
+
+export function isDiagnosticExportMarker(value: unknown): boolean {
+  return isRecord(value) &&
+    value.kind === DIAGNOSTIC_EXPORT_KIND &&
+    value.formatVersion === DIAGNOSTIC_EXPORT_FORMAT_VERSION &&
+    value.restorable === false;
+}
+
+export function isDiagnosticExportEnvelope(value: unknown): value is DiagnosticExportEnvelope {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "kind",
+    "formatVersion",
+    "restorable",
+    "warning",
+    "schemaVersion",
+    "exportedAt",
+    "plannerVersion",
+    "syncRevision",
+    "state",
+    "events",
+    "transcriptEntries",
+    "chatTurns",
+  ])) {
+    return false;
+  }
+  return isDiagnosticExportMarker(value) &&
+    value.warning === DIAGNOSTIC_EXPORT_WARNING &&
+    Number.isSafeInteger(value.schemaVersion) && Number(value.schemaVersion) >= 1 &&
+    Number.isFinite(value.exportedAt) && Number(value.exportedAt) >= 0 &&
+    Number.isSafeInteger(value.plannerVersion) && Number(value.plannerVersion) >= 0 &&
+    Number.isSafeInteger(value.syncRevision) && Number(value.syncRevision) >= 0 &&
+    isRecord(value.state) &&
+    Array.isArray(value.events) &&
+    Array.isArray(value.transcriptEntries) &&
+    Array.isArray(value.chatTurns);
+}
+
 export type ReadinessStatus = "ready" | "degraded" | "unavailable";
+
+export type CodexRuntimeState =
+  | "checking"
+  | "compatible"
+  | "unauthenticated"
+  | "incompatible"
+  | "unavailable";
+
+export type CodexHealth = {
+  status: ReadinessStatus;
+  state: CodexRuntimeState;
+  authenticated: boolean | null;
+  protocolCompatible: boolean | null;
+};
+
+export type GlobalCodexHealth =
+  | { status: "ready" }
+  | { status: "unavailable"; reason: string };
 
 export type HealthResponse = {
   status: ReadinessStatus;
   web: { status: ReadinessStatus };
   application: { status: ReadinessStatus; initialized: boolean };
   store: { status: ReadinessStatus; quickCheck: "ok" | "failed" };
-  codex: { status: ReadinessStatus; authenticated: boolean | null };
+  codex: CodexHealth;
+  globalCodex: GlobalCodexHealth;
 };
 
 export type ApiFailure = { error: ApiError; workspace?: WorkspaceResponse };

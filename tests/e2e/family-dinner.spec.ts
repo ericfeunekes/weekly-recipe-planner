@@ -1,6 +1,24 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
 
 type ExpectedFailurePhase = "normal" | "recipe-loss" | "dual-loss" | "offline" | "restart";
+const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
+const sameProcessAuthority = process.env.PLANNER_E2E_EXTERNAL_SERVERS === "1";
+
+function isRestartTransportError(errorText: string) {
+  return /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(errorText) ||
+    /WebKit encountered an internal error/.test(errorText);
+}
+
+function isOfflineTransportError(errorText: string) {
+  return /ERR_INTERNET_DISCONNECTED/.test(errorText) ||
+    /WebKit encountered an internal error/.test(errorText);
+}
+
+function isInjectedAbortError(errorText: string) {
+  return /ERR_FAILED/.test(errorText) ||
+    /WebKit encountered an internal error/.test(errorText) ||
+    /Blocked by Web Inspector/.test(errorText);
+}
 
 function requestFailureLabel(request: Request, errorText: string, phase: ExpectedFailurePhase) {
   const path = apiPath(request.url());
@@ -43,14 +61,14 @@ function requestFailureLabel(request: Request, errorText: string, phase: Expecte
   if (
     phase === "offline" &&
     (path === "/api/workspace" || path === "/api/health") &&
-    /ERR_INTERNET_DISCONNECTED/.test(errorText)
+    isOfflineTransportError(errorText)
   ) {
     return "injected-offline-read";
   }
   if (
     phase === "restart" &&
     (path === "/api/workspace" || path === "/api/health") &&
-    /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(errorText)
+    isRestartTransportError(errorText)
   ) {
     return "authority-crash-read";
   }
@@ -59,36 +77,84 @@ function requestFailureLabel(request: Request, errorText: string, phase: Expecte
 
 function watchRuntime(page: Page) {
   const pageErrors: string[] = [];
+  const injectedPageErrors: Array<{ phase: ExpectedFailurePhase; text: string }> = [];
   const consoleErrors: Array<{ phase: ExpectedFailurePhase; text: string; url: string }> = [];
-  const failedResponses: Array<{ phase: ExpectedFailurePhase; status: number; url: string }> = [];
+  const failedResponses: Array<{
+    phase: ExpectedFailurePhase;
+    requestMessage: string | null;
+    status: number;
+    url: string;
+  }> = [];
   const requestFailures: Array<{ errorText: string; label: string; phase: ExpectedFailurePhase; url: string }> = [];
   let expectedFailurePhase: ExpectedFailurePhase = "normal";
-  page.on("pageerror", (error) => pageErrors.push(error.message));
+  let restartTransportGraceUntil = 0;
+  page.on("pageerror", (error) => {
+    if (
+      expectedFailurePhase === "offline" &&
+      /api\/(workspace|health).*due to access control checks/.test(error.message)
+    ) {
+      injectedPageErrors.push({ phase: expectedFailurePhase, text: error.message });
+      return;
+    }
+    pageErrors.push(error.message);
+  });
   page.on("console", (message) => {
     if (message.type() === "error") {
-      consoleErrors.push({ phase: expectedFailurePhase, text: message.text(), url: message.location().url });
+      const text = message.text();
+      const url = message.location().url;
+      const path = apiPath(url);
+      const phase = expectedFailurePhase === "normal" &&
+          Date.now() <= restartTransportGraceUntil &&
+          (path === "/api/workspace" || path === "/api/health") &&
+          isRestartTransportError(text)
+        ? "restart"
+        : expectedFailurePhase;
+      consoleErrors.push({ phase, text, url });
     }
   });
   page.on("response", (response) => {
     if (response.status() >= 500) {
-      failedResponses.push({ phase: expectedFailurePhase, status: response.status(), url: response.url() });
+      let requestMessage: string | null = null;
+      try {
+        const body = response.request().postDataJSON() as { message?: unknown } | null;
+        requestMessage = typeof body?.message === "string" ? body.message : null;
+      } catch {
+        requestMessage = null;
+      }
+      failedResponses.push({
+        phase: expectedFailurePhase,
+        requestMessage,
+        status: response.status(),
+        url: response.url(),
+      });
     }
   });
   page.on("requestfailed", (request) => {
     const errorText = request.failure()?.errorText ?? "unknown";
+    const path = apiPath(request.url());
+    const phase = expectedFailurePhase === "normal" &&
+        Date.now() <= restartTransportGraceUntil &&
+        (path === "/api/workspace" || path === "/api/health") &&
+        isRestartTransportError(errorText)
+      ? "restart"
+      : expectedFailurePhase;
     requestFailures.push({
       errorText,
-      label: requestFailureLabel(request, errorText, expectedFailurePhase),
-      phase: expectedFailurePhase,
+      label: requestFailureLabel(request, errorText, phase),
+      phase,
       url: request.url(),
     });
   });
   return {
     pageErrors,
+    injectedPageErrors,
     consoleErrors,
     failedResponses,
     requestFailures,
     setExpectedFailurePhase(phase: ExpectedFailurePhase) {
+      if (expectedFailurePhase === "restart" && phase === "normal") {
+        restartTransportGraceUntil = Date.now() + 2_000;
+      }
       expectedFailurePhase = phase;
     },
   };
@@ -99,7 +165,7 @@ async function openView(page: Page, name: string) {
 }
 
 async function setPlannerClock(page: Page, peers: Page[], now: number) {
-  const response = await page.request.post(`http://127.0.0.1:8878/clock?now=${now}`);
+  const response = await page.request.post(`${controlOrigin}/clock?now=${now}`);
   expect(response.ok()).toBe(true);
   await Promise.all(
     peers.map((peer) =>
@@ -127,10 +193,22 @@ function expectInjectedTransportNoise(
     (error) =>
       error.phase === "restart" &&
       (apiPath(error.url) === "/api/workspace" || apiPath(error.url) === "/api/health") &&
-      /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(error.text),
+      (isRestartTransportError(error.text) ||
+        (!sameProcessAuthority && /502 \(Bad Gateway\)/.test(error.text))),
+  );
+  const clientBRestartServerFailures = runtimeB.failedResponses.filter(
+    (response) =>
+      !sameProcessAuthority &&
+      response.phase === "restart" &&
+      response.status === 502 &&
+      (apiPath(response.url) === "/api/workspace" || apiPath(response.url) === "/api/health"),
   );
   expect(clientBConflicts).toHaveLength(1);
+  expect(runtimeA.injectedPageErrors.length).toBeLessThanOrEqual(3);
+  expect(runtimeB.injectedPageErrors.length).toBeLessThanOrEqual(3);
   expect(runtimeB.consoleErrors).toHaveLength(clientBConflicts.length + clientBRestartErrors.length);
+  expect(clientBRestartServerFailures.length).toBeLessThanOrEqual(3);
+  expect(runtimeB.failedResponses).toEqual(clientBRestartServerFailures);
   expect(
     runtimeB.requestFailures.every((failure) =>
       failure.label === "authority-crash-read" || failure.label === "conditional-read-abort"),
@@ -149,21 +227,27 @@ function expectInjectedTransportNoise(
     const injectedAbort =
       (error.phase === "recipe-loss" || error.phase === "dual-loss") &&
       path === "/api/commands" &&
-      /ERR_FAILED/.test(error.text);
+      isInjectedAbortError(error.text);
     const injectedChatInterruption =
       (error.phase === "dual-loss" || error.phase === "restart") &&
       path === "/api/chat/submit" &&
-      (/ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(error.text) ||
-        (error.phase === "restart" && /502 \(Bad Gateway\)/.test(error.text)));
+      (isRestartTransportError(error.text) ||
+        (error.phase === "restart" && /502 \(Bad Gateway\)/.test(error.text)) ||
+        (sameProcessAuthority && error.phase === "restart" &&
+          /500 \(Internal Server Error\)/.test(error.text)));
     const injectedOffline =
       error.phase === "offline" &&
       (path === "/api/workspace" || path === "/api/health") &&
-      /ERR_INTERNET_DISCONNECTED/.test(error.text);
+      isOfflineTransportError(error.text);
     const injectedRestartRead =
       error.phase === "restart" &&
       (path === "/api/workspace" || path === "/api/health") &&
-      /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(error.text);
-    expect(expectedConflict || injectedAbort || injectedChatInterruption || injectedOffline || injectedRestartRead, `${error.text} at ${error.url}`).toBe(true);
+      (isRestartTransportError(error.text) ||
+        (!sameProcessAuthority && /502 \(Bad Gateway\)/.test(error.text)));
+    expect(
+      expectedConflict || injectedAbort || injectedChatInterruption || injectedOffline || injectedRestartRead,
+      `${error.phase}: ${error.text} at ${error.url}`,
+    ).toBe(true);
   }
 
   const commandFailures = runtimeA.requestFailures.filter((failure) => failure.label === "injected-command-response-loss");
@@ -174,22 +258,37 @@ function expectInjectedTransportNoise(
   const restartReadFailures = runtimeA.requestFailures.filter((failure) => failure.label === "authority-crash-read");
   const conditionalReadAborts = runtimeA.requestFailures.filter((failure) => failure.label === "conditional-read-abort");
   const unexpectedFailures = runtimeA.requestFailures.filter((failure) => failure.label === "unexpected");
-  const restartChatBadGateways = runtimeA.failedResponses.filter((response) =>
-    response.phase === "restart" && response.status === 502 && apiPath(response.url) === "/api/chat/submit");
+  const installedRestartInternalErrors = runtimeA.failedResponses.filter((response) =>
+    sameProcessAuthority && response.phase === "restart" && response.status === 500 &&
+    apiPath(response.url) === "/api/chat/submit" &&
+    response.requestMessage === "Wait through restart once.");
+  const restartChatServerFailures = runtimeA.failedResponses.filter((response) =>
+    response.phase === "restart" && apiPath(response.url) === "/api/chat/submit" &&
+    response.requestMessage === "Wait through restart once." &&
+    (response.status === 502 || (sameProcessAuthority && response.status === 500)));
+  const restartReadServerFailures = runtimeA.failedResponses.filter((response) =>
+    !sameProcessAuthority && response.phase === "restart" && response.status === 502 &&
+    (apiPath(response.url) === "/api/workspace" || apiPath(response.url) === "/api/health"));
   expect(commandFailures).toHaveLength(2);
-  expect(commandFailures.every((failure) => /ERR_FAILED/.test(failure.errorText))).toBe(true);
+  expect(commandFailures.every((failure) => isInjectedAbortError(failure.errorText))).toBe(true);
   expect(recipeFailures).toHaveLength(2);
-  expect(recipeFailures.every((failure) => /ERR_FAILED/.test(failure.errorText))).toBe(true);
+  expect(recipeFailures.every((failure) => isInjectedAbortError(failure.errorText))).toBe(true);
   expect(chatFailures).toHaveLength(2);
-  expect(chatFailures.every((failure) => /ERR_FAILED/.test(failure.errorText))).toBe(true);
-  expect(crashFailures.length + restartChatBadGateways.length).toBeGreaterThanOrEqual(1);
-  expect(crashFailures.every((failure) => /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(failure.errorText))).toBe(true);
+  expect(chatFailures.every((failure) => isInjectedAbortError(failure.errorText))).toBe(true);
+  expect(installedRestartInternalErrors).toHaveLength(sameProcessAuthority ? 1 : 0);
+  expect(crashFailures.length + restartChatServerFailures.length).toBeGreaterThanOrEqual(1);
+  expect(restartReadServerFailures.length).toBeLessThanOrEqual(3);
+  expect(crashFailures.every((failure) => isRestartTransportError(failure.errorText))).toBe(true);
   expect(offlineFailures.length).toBeLessThanOrEqual(3);
-  expect(offlineFailures.every((failure) => /ERR_INTERNET_DISCONNECTED/.test(failure.errorText))).toBe(true);
-  expect(restartReadFailures.every((failure) => /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(failure.errorText))).toBe(true);
+  expect(offlineFailures.every((failure) => isOfflineTransportError(failure.errorText))).toBe(true);
+  expect(restartReadFailures.every((failure) => isRestartTransportError(failure.errorText))).toBe(true);
   expect(conditionalReadAborts.every((failure) =>
     apiPath(failure.url) === "/api/workspace" && /ERR_ABORTED/.test(failure.errorText))).toBe(true);
-  expect(runtimeA.failedResponses).toEqual(restartChatBadGateways);
+  expect(
+    runtimeA.failedResponses.every((response) =>
+      restartChatServerFailures.includes(response) || restartReadServerFailures.includes(response)),
+    JSON.stringify(runtimeA.failedResponses),
+  ).toBe(true);
   expect(unexpectedFailures).toEqual([]);
 }
 
@@ -337,7 +436,9 @@ test.describe.serial("family dinner authority", () => {
     await expect(staleMealDrawer.getByText(/Someone else changed the plan/)).toBeVisible();
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Remote accepted dinner title");
     await staleTitle.fill("Harissa chicken traybake");
-    await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
+    const retryEditedRecipe = staleMealDrawer.getByRole("button", { name: "Retry Save recipe details" });
+    await expect(retryEditedRecipe).toBeVisible();
+    await retryEditedRecipe.click();
     await expect(pageB.getByRole("dialog", { name: "Harissa chicken traybake" })).toBeVisible({ timeout: 8_000 });
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
@@ -438,7 +539,7 @@ test.describe.serial("family dinner authority", () => {
     await pageB.getByTitle("Send to ChatGPT").click();
     try {
       await expect.poll(async () => {
-        const status = await pageA.request.get("http://127.0.0.1:8878/status");
+        const status = await pageA.request.get(`${controlOrigin}/status`);
         return (await status.json() as { conflictTurnStarted: boolean }).conflictTurnStarted;
       }).toBe(true);
       await expect(pageB.getByText("ChatGPT is updating the shared plan…")).toBeVisible();
@@ -446,7 +547,7 @@ test.describe.serial("family dinner authority", () => {
       await chickenGroceryCheckbox.click();
       await expect(chickenGroceryCheckbox).toBeChecked();
     } finally {
-      const releaseHeldConflictResponse = await pageA.request.post("http://127.0.0.1:8878/release-conflict");
+      const releaseHeldConflictResponse = await pageA.request.post(`${controlOrigin}/release-conflict`);
       expect(releaseHeldConflictResponse.ok()).toBe(true);
     }
     await expect(pageB.getByText("The shared plan changed first. Review it, then ask ChatGPT again.")).toBeVisible({ timeout: 8_000 });
@@ -487,7 +588,7 @@ test.describe.serial("family dinner authority", () => {
     });
     try {
       await expect.poll(async () => {
-        const status = await pageA.request.get("http://127.0.0.1:8878/status");
+        const status = await pageA.request.get(`${controlOrigin}/status`);
         return (await status.json() as { overlapTurnStarted: boolean }).overlapTurnStarted;
       }).toBe(true);
       await expect(pageA.getByText("ChatGPT is updating the shared plan…")).toBeVisible();
@@ -498,7 +599,7 @@ test.describe.serial("family dinner authority", () => {
       await expect(pageA.getByLabel("New grocery item")).toHaveValue("Transport parsley");
       expect(lostResponses).toBe(2);
     } finally {
-      const releaseOverlapResponse = await pageA.request.post("http://127.0.0.1:8878/release-overlap");
+      const releaseOverlapResponse = await pageA.request.post(`${controlOrigin}/release-overlap`);
       expect(releaseOverlapResponse.ok()).toBe(true);
     }
     const retryLostGrocery = pageA.getByRole("button", { name: "Retry Add grocery item" });
@@ -578,29 +679,70 @@ test.describe.serial("family dinner authority", () => {
     await pageB.getByTitle("Send to ChatGPT").click();
     await expect(pageB.getByText("Tonight is Harissa chicken traybake leftovers.")).toBeVisible();
 
-    const statusBefore = await pageA.request.get("http://127.0.0.1:8878/status");
+    const statusBefore = await pageA.request.get(`${controlOrigin}/status`);
     expect(statusBefore.ok()).toBe(true);
-    const authorityBefore = await statusBefore.json() as { authorityPid: number; ready: boolean };
+    const authorityBefore = await statusBefore.json() as {
+      authorityGeneration?: number;
+      authorityPid: number;
+      ready: boolean;
+    };
     expect(authorityBefore.ready).toBe(true);
     runtimeA.setExpectedFailurePhase("restart");
     runtimeB.setExpectedFailurePhase("restart");
     await overlapChatInputA.fill("Wait through restart once.");
     await pageA.getByTitle("Send to ChatGPT").click();
     await expect.poll(async () => {
-      const status = await pageA.request.get("http://127.0.0.1:8878/status");
+      const status = await pageA.request.get(`${controlOrigin}/status`);
       return (await status.json() as { hangMarkerExists: boolean }).hangMarkerExists;
     }, { timeout: 8_000 }).toBe(true);
-    const restart = await pageA.request.post("http://127.0.0.1:8878/restart");
+    const restart = await pageA.request.post(`${controlOrigin}/restart`);
     expect(restart.ok()).toBe(true);
-    const statusAfter = await pageA.request.get("http://127.0.0.1:8878/status");
-    const authorityAfter = await statusAfter.json() as { authorityPid: number; ready: boolean };
+    const statusAfter = await pageA.request.get(`${controlOrigin}/status`);
+    const authorityAfter = await statusAfter.json() as {
+      authorityGeneration?: number;
+      authorityPid: number;
+      lastRestartProof?: {
+        authorityGenerationAdvanced: boolean;
+        durableRunningBeforeStartup: boolean;
+        listenerClosed: boolean;
+        mode: string;
+        sameProcessLeaseRetained: boolean;
+        startupInterrupted: boolean;
+        storeClosed: boolean;
+        terminalRollbackCount: number;
+      };
+      ready: boolean;
+    };
     expect(authorityAfter.ready).toBe(true);
-    expect(authorityAfter.authorityPid).not.toBe(authorityBefore.authorityPid);
+    if (sameProcessAuthority) {
+      expect(authorityAfter.authorityPid).toBe(authorityBefore.authorityPid);
+      expect(authorityAfter.authorityGeneration).toBeGreaterThan(
+        authorityBefore.authorityGeneration ?? 0,
+      );
+      expect(authorityAfter.lastRestartProof).toEqual({
+        mode: "crash",
+        authorityGenerationAdvanced: true,
+        sameProcessLeaseRetained: true,
+        listenerClosed: true,
+        storeClosed: true,
+        terminalRollbackCount: 1,
+        durableRunningBeforeStartup: true,
+        startupInterrupted: true,
+      });
+    } else {
+      expect(authorityAfter.authorityPid).not.toBe(authorityBefore.authorityPid);
+    }
     await pageA.reload({ waitUntil: "domcontentloaded" });
     await pageB.reload({ waitUntil: "domcontentloaded" });
     await expect(pageA.getByText("Family dinner planner")).toBeVisible({ timeout: 20_000 });
+    const resolveInterruptedSubmit = pageA.getByRole("button", { name: "Retry Send ChatGPT message" });
     const retryInterrupted = pageA.getByRole("button", { name: "Retry the interrupted ChatGPT request" });
-    await expect(retryInterrupted).toBeVisible({ timeout: 20_000 });
+    await expect(resolveInterruptedSubmit.or(retryInterrupted).first()).toBeVisible({ timeout: 20_000 });
+    if (await resolveInterruptedSubmit.isVisible()) {
+      await resolveInterruptedSubmit.click();
+      await expect(resolveInterruptedSubmit).toHaveCount(0);
+    }
+    await expect(retryInterrupted).toBeEnabled({ timeout: 20_000 });
     await retryInterrupted.click();
     await expect(pageA.getByText("I recovered the interrupted household request.")).toBeVisible({ timeout: 20_000 });
     const workspaceAfterRetry = await (await pageA.request.get("/api/workspace")).json();
@@ -672,7 +814,6 @@ test.describe.serial("family dinner authority", () => {
     expect(runtimeA.pageErrors).toEqual([]);
     expect(runtimeB.pageErrors).toEqual([]);
     expectInjectedTransportNoise(runtimeA, runtimeB);
-    expect(runtimeB.failedResponses).toEqual([]);
     await contextA.close();
     await contextB.close();
   });
@@ -793,7 +934,7 @@ test.describe.serial("family dinner authority", () => {
     for (const error of phoneRuntime.consoleErrors) {
       expect(error.phase).toBe("offline");
       expect(["/api/workspace", "/api/health"]).toContain(apiPath(error.url));
-      expect(error.text).toMatch(/ERR_INTERNET_DISCONNECTED/);
+      expect(isOfflineTransportError(error.text)).toBe(true);
     }
     expect(phoneRuntime.failedResponses).toEqual([]);
     expect(

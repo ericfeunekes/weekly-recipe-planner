@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
 
-import type { HouseholdDomainPort } from "../../lib/household-domain.ts";
+import {
+  validateCanonicalHouseholdBatchBase,
+  type HouseholdDomainPort,
+} from "../../lib/household-domain.ts";
 import type { HouseholdPlannerState } from "../../lib/household-contract.ts";
 import {
+  DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+  DIAGNOSTIC_EXPORT_KIND,
+  DIAGNOSTIC_EXPORT_WARNING,
+  isBootstrapWorkspaceRequest,
+  isDiagnosticExportMarker,
   normalizePageRequest,
   type ApiErrorCode,
   type ApplyPlannerCommandRequest,
@@ -14,13 +22,27 @@ import {
   type LegacyV2TransformResult,
   type OperationKind,
   type OperationReceipt,
-  type PlannerActor,
   type PlannerCommandDecision,
   type PlannerEventPage,
   type TranscriptPage,
   type UndoLatestRequest,
   type WorkspaceResponse,
 } from "../../lib/planner-api-contract.ts";
+import {
+  BROWSER_PROVENANCE,
+  GENERATED_AFTER_APPLY,
+  isApplyPlannerOperationsRequest,
+  isPreviewPlannerOperationsRequest,
+  isValidPlannerMutationContext,
+  plannerActorForProvenance,
+  type ApplyPlannerOperationsRequest,
+  type ApplyPlannerOperationsResponse,
+  type PlannerMutationContext,
+  type PlannerOperationPreview,
+  type PlannerOperationsDecision,
+  type PreviewPlannerOperationsRequest,
+  type PreviewPlannerOperationsResponse,
+} from "../../lib/planner-operation-contract.ts";
 import type {
   Clock,
   FailureInjector,
@@ -81,7 +103,7 @@ export class PlannerServiceError extends Error {
 
 type StoredPlannerDecision = {
   kind: "planner_decision";
-  decision: PlannerCommandDecision;
+  decision: PlannerCommandDecision | PlannerOperationsDecision;
 };
 
 type StoredBootstrapDecision =
@@ -149,6 +171,48 @@ function assertReceiptPayload(existing: OperationReceipt, payloadHash: string): 
   }
 }
 
+function asPlannerOperationsDecision(
+  decision: PlannerCommandDecision | PlannerOperationsDecision,
+): PlannerOperationsDecision {
+  return decision.status === "domain_rejected" && !("operationIndex" in decision)
+    ? { ...decision, operationIndex: 0 }
+    : decision;
+}
+
+function asPlannerCommandDecision(
+  decision: PlannerOperationsDecision,
+): PlannerCommandDecision {
+  return decision.status === "domain_rejected"
+    ? { status: "domain_rejected", message: decision.message }
+    : decision;
+}
+
+function plannerOperationsPayloadForHash(
+  request: ApplyPlannerOperationsRequest,
+  context: PlannerMutationContext,
+): unknown {
+  if (context.operationKind === "planner_command" || context.operationKind === "planner_chat_command") {
+    return {
+      requestId: request.requestId,
+      basePlannerVersion: request.basePlannerVersion,
+      command: request.operations[0]?.command,
+    };
+  }
+  return {
+    basePlannerVersion: request.basePlannerVersion,
+    operations: request.operations,
+  };
+}
+
+function replaceGeneratedIds(text: string, generatedIds: string[]): string {
+  return [...generatedIds]
+    .sort((left, right) => right.length - left.length)
+    .reduce(
+      (redacted, generatedId) => redacted.split(generatedId).join(GENERATED_AFTER_APPLY),
+      text,
+    );
+}
+
 function validateState(
   domain: HouseholdDomainPort,
   state: HouseholdPlannerState,
@@ -170,6 +234,16 @@ function validateState(
       { httpStatus, fieldErrors },
     );
   }
+}
+
+function validateCanonicalBatchBase(
+  domain: HouseholdDomainPort,
+  state: HouseholdPlannerState,
+  commands: Parameters<HouseholdDomainPort["validateCanonicalBatchBase"]>[1],
+) {
+  return typeof domain.validateCanonicalBatchBase === "function"
+    ? domain.validateCanonicalBatchBase(state, commands)
+    : validateCanonicalHouseholdBatchBase(state, commands);
 }
 
 export class PlannerApplicationServiceImpl
@@ -245,9 +319,27 @@ export class PlannerApplicationServiceImpl
   }
 
   applyCommand(request: ApplyPlannerCommandRequest): ApplyPlannerCommandResponse {
+    const response = this.applyOperations(
+      {
+        requestId: request.requestId,
+        basePlannerVersion: request.basePlannerVersion,
+        operations: [{ command: request.command }],
+      },
+      { operationKind: "planner_command", provenance: BROWSER_PROVENANCE },
+    );
+    return {
+      decision: asPlannerCommandDecision(response.decision),
+      workspace: response.workspace,
+    };
+  }
+
+  applyOperations(
+    request: ApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse {
     try {
       return this.store.transaction((transaction) => {
-        const response = this.applyPlannerCommand(transaction, request, "Household");
+        const response = this.applyPlannerOperations(transaction, request, context);
         this.failureInjector.hit("before_commit");
         return response;
       });
@@ -256,17 +348,124 @@ export class PlannerApplicationServiceImpl
     }
   }
 
-  applyPlannerCommand(
+  previewOperations(
+    request: PreviewPlannerOperationsRequest,
+  ): PreviewPlannerOperationsResponse {
+    try {
+      return this.store.readTransaction((transaction) =>
+        this.previewPlannerOperations(transaction, request),
+      );
+    } catch (error) {
+      return mapStoreError(error);
+    }
+  }
+
+  previewPlannerOperations(
     transaction: SqliteTransaction,
-    request: ApplyPlannerCommandRequest,
-    actor: PlannerActor,
-    options: { chatTurnId?: string; now?: number } = {},
-  ): ApplyPlannerCommandResponse {
-    const operationKind = options.chatTurnId
-      ? ("planner_chat_command" as const)
-      : ("planner_command" as const);
-    const payloadHash = hashCanonicalPayload(operationKind, request);
-    const existing = this.store.findReceipt(transaction, operationKind, request.requestId);
+    request: PreviewPlannerOperationsRequest,
+  ): PreviewPlannerOperationsResponse {
+    if (!isPreviewPlannerOperationsRequest(request)) {
+      throw new PlannerServiceError(
+        "INVALID_REQUEST",
+        "Planner preview requires one to sixteen valid ordered operations.",
+        { httpStatus: 400 },
+      );
+    }
+    const workspace = this.store.readInitializedWorkspace(transaction);
+    if (request.basePlannerVersion !== workspace.plannerVersion) {
+      return {
+        decision: {
+          status: "version_conflict" as const,
+          expectedVersion: request.basePlannerVersion,
+          actualVersion: workspace.plannerVersion,
+        },
+      };
+    }
+
+    const canonicalBase = validateCanonicalBatchBase(
+      this.domain,
+      workspace.state,
+      request.operations.map((operation) => operation.command),
+    );
+    if (!canonicalBase.ok) {
+      return {
+        decision: {
+          status: "domain_rejected" as const,
+          operationIndex: canonicalBase.operationIndex,
+          message: canonicalBase.message,
+        },
+      };
+    }
+
+    let candidate = workspace.state;
+    let previewId = 0;
+    const now = this.clock.now();
+    const outcomes: PlannerOperationPreview[] = [];
+    const generatedIds = new Set<string>();
+    for (let operationIndex = 0; operationIndex < request.operations.length; operationIndex += 1) {
+      const result = this.domain.execute(candidate, request.operations[operationIndex].command, {
+        now,
+        createId: (prefix) => `preview-${prefix}-${++previewId}`,
+      });
+      if (!result.ok) {
+        return {
+          decision: {
+            status: "domain_rejected" as const,
+            operationIndex,
+            message: result.message,
+          },
+        };
+      }
+      candidate = result.state;
+      for (const generatedId of Object.values(result.createdIds)) generatedIds.add(generatedId);
+      outcomes.push({
+        operationIndex,
+        summary: result.summary,
+        target: result.target,
+        changes: result.changes,
+      });
+    }
+
+    const allGeneratedIds = [...generatedIds];
+    return {
+      decision: {
+        status: "previewed" as const,
+        plannerVersion: workspace.plannerVersion,
+        outcomes: outcomes.map((outcome) => ({
+          operationIndex: outcome.operationIndex,
+          summary: replaceGeneratedIds(outcome.summary, allGeneratedIds),
+          target: replaceGeneratedIds(outcome.target, allGeneratedIds),
+          changes: outcome.changes.map((change) => replaceGeneratedIds(change, allGeneratedIds)),
+        })),
+      },
+    };
+  }
+
+  applyPlannerOperations(
+    transaction: SqliteTransaction,
+    request: ApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse {
+    if (!isApplyPlannerOperationsRequest(request)) {
+      throw new PlannerServiceError(
+        "INVALID_REQUEST",
+        "Planner apply requires one to sixteen valid ordered operations.",
+        { httpStatus: 400 },
+      );
+    }
+    if (!isValidPlannerMutationContext(context, request.operations.length)) {
+      throw new PlannerServiceError(
+        "INVALID_REQUEST",
+        "Planner mutation context does not match its trusted operation kind.",
+        { httpStatus: 400 },
+      );
+    }
+
+    const payloadHash = hashCanonicalPayload(
+      context.operationKind,
+      plannerOperationsPayloadForHash(request, context),
+    );
+    const existing = this.store.findReceipt(transaction, context.operationKind, request.requestId);
     if (existing) {
       assertReceiptPayload(existing, payloadHash);
       const stored = existing.decision as StoredPlannerDecision;
@@ -276,15 +475,15 @@ export class PlannerApplicationServiceImpl
         });
       }
       return {
-        decision: stored.decision,
+        decision: asPlannerOperationsDecision(stored.decision),
         workspace: this.store.readInitializedWorkspace(transaction),
       };
     }
 
     const workspace = this.store.readInitializedWorkspace(transaction);
-    const now = options.now ?? this.clock.now();
-    let decision: PlannerCommandDecision;
-    let httpStatus: number;
+    const now = context.now ?? this.clock.now();
+    let decision: PlannerOperationsDecision | undefined;
+    let httpStatus: number | undefined;
 
     if (request.basePlannerVersion !== workspace.plannerVersion) {
       decision = {
@@ -294,21 +493,52 @@ export class PlannerApplicationServiceImpl
       };
       httpStatus = 409;
     } else {
-      const result = this.domain.execute(workspace.state, request.command, {
-        now,
-        createId: (prefix) => this.idFactory.createId(prefix),
-      });
-      if (!result.ok) {
-        decision = { status: "domain_rejected", message: result.message };
+      const canonicalBase = validateCanonicalBatchBase(
+        this.domain,
+        workspace.state,
+        request.operations.map((operation) => operation.command),
+      );
+      if (!canonicalBase.ok) {
+        decision = {
+          status: "domain_rejected",
+          operationIndex: canonicalBase.operationIndex,
+          message: canonicalBase.message,
+        };
         httpStatus = 422;
       } else {
-        validateState(this.domain, result.state, {
+        let candidate = workspace.state;
+        const outcomes: PlannerOperationPreview[] = [];
+        for (let operationIndex = 0; operationIndex < request.operations.length; operationIndex += 1) {
+          const result = this.domain.execute(candidate, request.operations[operationIndex].command, {
+            now,
+            createId: (prefix) => this.idFactory.createId(prefix),
+          });
+          if (!result.ok) {
+            decision = {
+              status: "domain_rejected",
+              operationIndex,
+              message: result.message,
+            };
+            httpStatus = 422;
+            break;
+          }
+          candidate = result.state;
+          outcomes.push({
+            operationIndex,
+            summary: result.summary,
+            target: result.target,
+            changes: result.changes,
+          });
+        }
+
+        if (outcomes.length === request.operations.length) {
+        validateState(this.domain, candidate, {
           code: "INTERNAL_ERROR",
           httpStatus: 500,
         });
         const versions = this.store.updateWorkspace(
           transaction,
-          result.state,
+          candidate,
           workspace.plannerVersion,
           now,
         );
@@ -322,20 +552,31 @@ export class PlannerApplicationServiceImpl
         this.failureInjector.hit("after_workspace_update");
 
         const eventId = this.idFactory.createId("event");
+        const one = outcomes[0];
+        const isBatch = request.operations.length > 1;
         this.store.insertPlannerEvent(
           transaction,
           {
             eventId,
             requestId: request.requestId,
-            actor,
-            command: request.command,
+            actor: plannerActorForProvenance(context.provenance),
+            provenance: context.provenance,
+            command: isBatch
+              ? { type: "plannerBatch", operations: request.operations }
+              : request.operations[0].command,
             baseVersion: workspace.plannerVersion,
             resultVersion: versions.plannerVersion,
-            summary: result.summary,
-            target: result.target,
-            changes: result.changes,
+            summary: isBatch
+              ? `Applied ${request.operations.length} planner operations`
+              : one.summary,
+            target: isBatch ? "Multiple planner targets" : one.target,
+            changes: isBatch
+              ? outcomes.flatMap((outcome) =>
+                  outcome.changes.map((change) => `${outcome.operationIndex + 1}. ${change}`),
+                )
+              : one.changes,
             revertsEventId: null,
-            chatTurnId: options.chatTurnId ?? null,
+            chatTurnId: context.chatTurnId ?? null,
             occurredAt: now,
           },
           workspace.state,
@@ -347,13 +588,22 @@ export class PlannerApplicationServiceImpl
           plannerVersion: versions.plannerVersion,
         };
         httpStatus = 200;
+        }
       }
+    }
+
+    if (decision === undefined || httpStatus === undefined) {
+      throw new PlannerServiceError(
+        "INTERNAL_ERROR",
+        "Planner operation evaluation did not reach a terminal decision.",
+        { httpStatus: 500 },
+      );
     }
 
     this.store.insertReceipt(
       transaction,
       receipt(
-        operationKind,
+        context.operationKind,
         request.requestId,
         payloadHash,
         httpStatus,
@@ -384,7 +634,7 @@ export class PlannerApplicationServiceImpl
             });
           }
           return {
-            decision: stored.decision,
+            decision: asPlannerCommandDecision(asPlannerOperationsDecision(stored.decision)),
             workspace: this.store.readInitializedWorkspace(transaction),
           };
         }
@@ -439,6 +689,7 @@ export class PlannerApplicationServiceImpl
                 eventId,
                 requestId: request.requestId,
                 actor: "Household",
+                provenance: BROWSER_PROVENANCE,
                 command: { type: "undoLatest", targetEventId: request.targetEventId },
                 baseVersion: workspace.plannerVersion,
                 resultVersion: versions.plannerVersion,
@@ -486,6 +737,15 @@ export class PlannerApplicationServiceImpl
   }
 
   bootstrap(request: BootstrapWorkspaceRequest): BootstrapWorkspaceResponse {
+    if (!isBootstrapWorkspaceRequest(request)) {
+      throw new PlannerServiceError(
+        "INVALID_REQUEST",
+        isDiagnosticExportMarker(request)
+          ? DIAGNOSTIC_EXPORT_WARNING
+          : "Bootstrap must select seed or an exact v2 import.",
+        { httpStatus: 400 },
+      );
+    }
     type BootstrapOutcome =
       | { ok: true; response: BootstrapWorkspaceResponse }
       | { ok: false; error: PlannerServiceError };
@@ -626,6 +886,10 @@ export class PlannerApplicationServiceImpl
         const workspace = this.store.readInitializedWorkspace(transaction);
         validateState(this.domain, workspace.state);
         return {
+          kind: DIAGNOSTIC_EXPORT_KIND,
+          formatVersion: DIAGNOSTIC_EXPORT_FORMAT_VERSION,
+          restorable: false,
+          warning: DIAGNOSTIC_EXPORT_WARNING,
           schemaVersion: workspace.schemaVersion,
           exportedAt: this.clock.now(),
           plannerVersion: workspace.plannerVersion,

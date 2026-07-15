@@ -13,6 +13,8 @@ export const MEAL_STATUSES = [
 export const FEEDBACK_VALUES = ["repeat", "modify", "drop"] as const;
 export const LEFTOVER_QUALITIES = ["good", "mixed", "poor"] as const;
 
+import type { SourceRecipe } from "./sourced-recipe-contract.ts";
+
 declare const ISO_DATE_BRAND: unique symbol;
 declare const WEEK_ID_BRAND: unique symbol;
 
@@ -44,6 +46,8 @@ export type Meal = {
   date: IsoDate;
   slot: MealSlot;
   title: string;
+  yieldText?: string;
+  sourceRecipe?: SourceRecipe;
   subtitle: string;
   venue: string;
   status: MealStatus;
@@ -114,7 +118,7 @@ export type InstructionStepPlanInput = {
 
 export type MealPlanInput = Omit<
   Meal,
-  "id" | "status" | "instructions"
+  "id" | "status" | "instructions" | "sourceRecipe"
 > & {
   status?: MealStatus;
   instructions: InstructionStepPlanInput[];
@@ -139,7 +143,7 @@ export type MealSnapshotInput = Pick<
   | "leftoverNote"
   | "notes"
   | "ingredients"
->;
+> & { yieldText: string | null };
 
 export type InstructionStepContentInput = Omit<
   InstructionStepPlanInput,
