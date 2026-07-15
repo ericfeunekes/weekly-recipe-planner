@@ -13,7 +13,9 @@ import {
   semanticSchemaProjection,
   validateRequiredCodexSchema,
 } from "../server/runtime/codex-follow-up/compatibility.ts";
-import { evaluateObservedCapabilityRequests } from "../server/runtime/codex-follow-up/capability-probe.ts";
+import {
+  evaluateObservedCapabilityRequests as evaluateObservedCapabilityRequestsRaw,
+} from "../server/runtime/codex-follow-up/capability-probe.ts";
 import { PLANNER_DYNAMIC_TOOL_NAMESPACE } from "../lib/planner-tool-contract.ts";
 import {
   createCodexSchemaDocuments,
@@ -36,15 +38,37 @@ const capability = Object.freeze({
   researchWebSearchMode: "live",
   researchTools: ["update_plan", "web_search"],
   plannerTools: ["update_plan", "planner"],
+  workerTools: [
+    "update_plan", "request_user_input", "spawn_agent", "send_message",
+    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+    "skills", "web_search",
+  ],
   plannerNamespaceMembers: ["read", "preview", "apply"],
   forbiddenHits: [],
   unexpectedRpcMethods: [],
+  plannerReadObserved: true,
+  workerWaitCallObserved: true,
+  workerWaitResultObserved: true,
+  workerResultObserved: true,
+  userInputRoundTripObserved: true,
   dependentResultObserved: true,
   outboundPolicyRejected: true,
+  approvalPolicy: "never",
   permissionProfile: ":read-only",
   effectiveSandbox: "read-only-network-disabled",
-  probeRuntimeFiles: ["config.toml"],
+  probeRuntimeFiles: ["config.toml", ".planner-unified-native-thread-v1"],
 });
+
+function evaluateObservedCapabilityRequests(requests, options) {
+  return evaluateObservedCapabilityRequestsRaw(requests, {
+    plannerReadObserved: true,
+    workerWaitCallObserved: true,
+    workerWaitResultObserved: true,
+    workerResultObserved: true,
+    userInputRoundTripObserved: true,
+    ...options,
+  });
+}
 
 const readback = Object.freeze({
   authenticated: true,
@@ -121,20 +145,147 @@ test("required protocol and dynamic response drift fail validation", () => {
   assert.ok(validateRequiredCodexSchema(widenedNullableCapability).some(
     (failure) => failure.includes("InitializeCapabilities"),
   ));
+
+  const missingThreadFilter = createCodexSchemaDocuments("compatible-a");
+  delete missingThreadFilter["v2/ThreadListParams.json"].properties.sourceKinds;
+  assert.ok(validateRequiredCodexSchema(missingThreadFilter).some(
+    (failure) => failure.includes("sourceKinds"),
+  ));
+
+  const missingSteerClientId = createCodexSchemaDocuments("compatible-a");
+  delete missingSteerClientId["v2/TurnSteerParams.json"].properties.clientUserMessageId;
+  assert.ok(validateRequiredCodexSchema(missingSteerClientId).some(
+    (failure) => failure.includes("clientUserMessageId"),
+  ));
+
+  const missingWorkerItem = createCodexSchemaDocuments("compatible-a");
+  missingWorkerItem["v2/ThreadReadResponse.json"].definitions.ThreadItem.oneOf =
+    missingWorkerItem["v2/ThreadReadResponse.json"].definitions.ThreadItem.oneOf.filter(
+      (variant) => variant.properties.type.enum[0] !== "collabAgentToolCall",
+    );
+  assert.ok(validateRequiredCodexSchema(missingWorkerItem).some(
+    (failure) => failure.includes("collabAgentToolCall"),
+  ));
+
+  const missingLiveWorkerItem = createCodexSchemaDocuments("compatible-a");
+  missingLiveWorkerItem["v2/ItemStartedNotification.json"].definitions.ThreadItem.oneOf =
+    missingLiveWorkerItem["v2/ItemStartedNotification.json"].definitions.ThreadItem.oneOf.filter(
+      (variant) => variant.properties.type.enum[0] !== "subAgentActivity",
+    );
+  assert.ok(validateRequiredCodexSchema(missingLiveWorkerItem).some(
+    (failure) => failure.includes("native worker ThreadItems"),
+  ));
+
+  const missingReasoningSummary = createCodexSchemaDocuments("compatible-a");
+  const reasoning = missingReasoningSummary["v2/ThreadReadResponse.json"]
+    .definitions.ThreadItem.oneOf.find(
+      (variant) => variant.properties.type.enum[0] === "reasoning",
+    );
+  delete reasoning.properties.summary;
+  assert.ok(validateRequiredCodexSchema(missingReasoningSummary).some(
+    (failure) => failure.includes("reasoning summary"),
+  ));
+
+  const rewiredUserInput = createCodexSchemaDocuments("compatible-a");
+  const userInputEnvelope = rewiredUserInput["ServerRequest.json"].oneOf.find(
+    (variant) => variant.properties.method.enum[0] === "item/tool/requestUserInput",
+  );
+  userInputEnvelope.properties.params.$ref = "#/definitions/UnrelatedParams";
+  assert.ok(validateRequiredCodexSchema(rewiredUserInput).some(
+    (failure) => failure.includes("item/tool/requestUserInput"),
+  ));
+
+  const missingApprovalTimestamp = createCodexSchemaDocuments("compatible-a");
+  missingApprovalTimestamp["CommandExecutionRequestApprovalParams.json"].required =
+    missingApprovalTimestamp["CommandExecutionRequestApprovalParams.json"].required.filter(
+      (field) => field !== "startedAtMs",
+    );
+  assert.ok(validateRequiredCodexSchema(missingApprovalTimestamp).some(
+    (failure) => failure.includes("startedAtMs"),
+  ));
+
+  const approvalCannotDecline = createCodexSchemaDocuments("compatible-a");
+  approvalCannotDecline["CommandExecutionRequestApprovalResponse.json"]
+    .definitions.CommandExecutionApprovalDecision.oneOf =
+      approvalCannotDecline["CommandExecutionRequestApprovalResponse.json"]
+        .definitions.CommandExecutionApprovalDecision.oneOf.filter(
+          (variant) => !variant.enum.includes("decline"),
+        );
+  assert.ok(validateRequiredCodexSchema(approvalCannotDecline).some(
+    (failure) => failure.includes("missing decline decision"),
+  ));
+
+  const missingAnswerEnvelope = createCodexSchemaDocuments("compatible-a");
+  missingAnswerEnvelope["ToolRequestUserInputResponse.json"].required = [];
+  assert.ok(validateRequiredCodexSchema(missingAnswerEnvelope).some(
+    (failure) => failure.includes("answers"),
+  ));
+
+  const missingWorkerNotification = createCodexSchemaDocuments("compatible-a");
+  missingWorkerNotification["ServerNotification.json"].oneOf =
+    missingWorkerNotification["ServerNotification.json"].oneOf.filter(
+      (variant) => variant.properties.method.enum[0] !== "item/started",
+    );
+  assert.ok(validateRequiredCodexSchema(missingWorkerNotification).some(
+    (failure) => failure.includes("item/started"),
+  ));
 });
 
 test("compatibility contract freezes exact capability manifests and RPC allowlists", () => {
   assert.equal(CODEX_FOLLOW_UP_TOOL_MANIFESTS.researchWebSearchMode, "live");
+  assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.nativeThread, [
+    "update_plan", "request_user_input", "spawn_agent", "send_message",
+    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+    "skills", "planner", "web_search",
+  ]);
+  assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.workerRequired, [
+    "update_plan", "request_user_input", "spawn_agent", "send_message",
+    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+    "skills", "web_search",
+  ]);
+  assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.skillsNamespace, ["list", "read"]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.research, ["update_plan", "web_search"]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.planner, ["update_plan", "planner"]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.plannerNamespace, ["read", "preview", "apply"]);
-  assert.deepEqual(CODEX_FOLLOW_UP_RPC_POLICY.serverRequests, ["item/tool/call"]);
+  assert.deepEqual(CODEX_FOLLOW_UP_RPC_POLICY.serverRequests, [
+    "item/tool/call",
+    "item/tool/requestUserInput",
+  ]);
+  assert.deepEqual(CODEX_FOLLOW_UP_RPC_POLICY.rejectedServerRequests, [
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+    "mcpServer/elicitation/request",
+    "applyPatchApproval",
+    "execCommandApproval",
+  ]);
   assert.deepEqual(CODEX_FOLLOW_UP_RPC_POLICY.consumedNotifications, [
+    "thread/started",
+    "thread/status/changed",
+    "thread/archived",
+    "thread/name/updated",
+    "turn/started",
+    "item/started",
+    "item/agentMessage/delta",
+    "item/plan/delta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/summaryTextDelta",
     "item/completed",
+    "serverRequest/resolved",
     "turn/completed",
     "error",
   ]);
+  for (const method of [
+    "thread/list", "thread/read", "thread/resume", "thread/start", "thread/archive",
+    "turn/start", "turn/steer", "turn/interrupt",
+  ]) {
+    assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.clientRequests.includes(method), true);
+  }
   assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("warning"), true);
+  assert.equal(
+    CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("item/reasoning/textDelta"),
+    true,
+  );
   assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.clientRequests.includes("command/exec"), false);
   assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.clientRequests.includes("mcpServer/tool/call"), false);
 });
@@ -152,8 +303,8 @@ test("observed capability inspection requires exact ordered arrays and dependent
   for (const toolName of ["preview", "apply"]) {
     const projectedTool = plannerNamespace.tools.find((tool) => tool.name === toolName);
     assert.ok(
-      Buffer.byteLength(JSON.stringify(projectedTool.parameters), "utf8") <= 3_750,
-      `${toolName} provider schema keeps safety margin below Codex 0.142.5's 4,000-byte compaction limit`,
+      Buffer.byteLength(JSON.stringify(projectedTool.parameters), "utf8") < 4_000,
+      `${toolName} provider schema remains below Codex 0.142.5's 4,000-byte compaction limit`,
     );
     const commandAlternatives = projectedTool.parameters.properties.operations.items
       .properties.command.anyOf;
@@ -164,37 +315,68 @@ test("observed capability inspection requires exact ordered arrays and dependent
       `${toolName} provider schema preserves every command discriminator`,
     );
   }
+  const functionTool = (name) => ({
+    type: "function",
+    name,
+    strict: false,
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  });
+  const nativeFunctions = [
+    "update_plan", "request_user_input", "spawn_agent", "send_message",
+    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+  ].map(functionTool);
+  const skillsNamespace = {
+    type: "namespace",
+    name: "skills",
+    tools: [functionTool("list"), functionTool("read")],
+  };
+  const webSearch = { type: "web_search", external_web_access: true };
+  const rootTools = [...nativeFunctions, skillsNamespace, plannerNamespace, webSearch];
+  const workerTools = [...nativeFunctions, skillsNamespace, webSearch];
   const requests = [
-    {
-      input: [{ text: "RESEARCH_CONTEXT_PROBE" }],
-      tools: [
-        { type: "update_plan" },
-        { type: "web_search", external_web_access: true },
+    ...Array.from({ length: 7 }, (_, index) => ({
+      input: [
+        { text: `NATIVE_THREAD_CAPABILITY_PROBE ${index}` },
+        ...(index === 1 ? [{
+          type: "function_call",
+          name: "spawn_agent",
+          arguments: {
+            task_name: "capability_worker",
+            message: "WORKER_CONTEXT_PROBE: finish without calling tools",
+            fork_turns: "none",
+          },
+        }] : []),
       ],
-    },
-    ...Array.from({ length: 3 }, (_, index) => ({
-      input: [{ text: `PLANNER_DEPENDENCY_PROBE ${index}` }],
       parallel_tool_calls: false,
-      tools: [
-        { type: "update_plan" },
-        plannerNamespace,
-      ],
+      tools: structuredClone(rootTools),
     })),
+    {
+      input: [{ text: "WORKER_CONTEXT_PROBE" }],
+      parallel_tool_calls: false,
+      tools: structuredClone(workerTools),
+    },
   ];
   const result = evaluateObservedCapabilityRequests(requests, {
     dependentResultObserved: true,
     permissionProfileVerified: true,
     outboundPolicyRejected: true,
-    probeRuntimeFiles: ["config.toml"],
+    probeRuntimeFiles: ["config.toml", ".planner-unified-native-thread-v1"],
   });
   assert.equal(result.researchWebSearchMode, "live");
   assert.deepEqual(result.researchTools, ["update_plan", "web_search"]);
   assert.deepEqual(result.plannerTools, ["update_plan", "planner"]);
+  assert.deepEqual(result.workerTools, CODEX_FOLLOW_UP_TOOL_MANIFESTS.workerRequired);
   assert.deepEqual(result.plannerNamespaceMembers, ["read", "preview", "apply"]);
+  assert.equal(result.plannerReadObserved, true);
+  assert.equal(result.workerWaitCallObserved, true);
+  assert.equal(result.workerWaitResultObserved, true);
+  assert.equal(result.workerResultObserved, true);
+  assert.equal(result.userInputRoundTripObserved, true);
+  assert.equal(result.approvalPolicy, "never");
 
   const functionProjectedUpdatePlan = structuredClone(requests);
   for (const request of functionProjectedUpdatePlan) {
-    request.tools[0] = { type: "function", name: "update_plan" };
+    request.tools[0] = functionTool("update_plan");
   }
   const currentProjection = evaluateObservedCapabilityRequests(functionProjectedUpdatePlan, {
     dependentResultObserved: true,
@@ -210,7 +392,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
     dependentResultObserved: true,
     permissionProfileVerified: true,
     outboundPolicyRejected: true,
-  }), /Research tools changed/);
+  }), /Native thread tools changed/);
   assert.throws(() => evaluateObservedCapabilityRequests([
     ...requests,
     { input: [{ text: "UNCLASSIFIED" }], tools: [] },
@@ -218,7 +400,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
     dependentResultObserved: true,
     permissionProfileVerified: true,
     outboundPolicyRejected: true,
-  }), /exactly four local provider calls/);
+  }), /exactly eight local provider calls/);
 
   const extra = structuredClone(requests);
   extra[1].tools.push({ type: "shell" });
@@ -226,7 +408,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
     dependentResultObserved: true,
     permissionProfileVerified: true,
     outboundPolicyRejected: true,
-  }), /Planner tools changed|Forbidden/);
+  }), /Native thread tools changed|Forbidden/);
   assert.throws(() => evaluateObservedCapabilityRequests(requests, {
     dependentResultObserved: false,
     permissionProfileVerified: true,
@@ -240,7 +422,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
   }), /Unexpected app-server methods/);
 
   const wrongSearch = structuredClone(requests);
-  wrongSearch[0].tools[1].index_gated_web_access = true;
+  wrongSearch[0].tools.at(-1).index_gated_web_access = true;
   assert.throws(() => evaluateObservedCapabilityRequests(wrongSearch, {
     dependentResultObserved: true,
     permissionProfileVerified: true,
@@ -248,7 +430,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
   }), /live hosted-search/);
 
   const renamedIndexGate = structuredClone(requests);
-  renamedIndexGate[0].tools[1].indexed_web_access = true;
+  renamedIndexGate[0].tools.at(-1).indexed_web_access = true;
   assert.throws(() => evaluateObservedCapabilityRequests(renamedIndexGate, {
     dependentResultObserved: true,
     permissionProfileVerified: true,
@@ -256,7 +438,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
   }), /live hosted-search/);
 
   const disabledExternalSearch = structuredClone(requests);
-  disabledExternalSearch[0].tools[1].external_web_access = false;
+  disabledExternalSearch[0].tools.at(-1).external_web_access = false;
   assert.throws(() => evaluateObservedCapabilityRequests(disabledExternalSearch, {
     dependentResultObserved: true,
     permissionProfileVerified: true,
@@ -264,7 +446,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
   }), /live hosted-search/);
 
   const wrongNamespace = structuredClone(requests);
-  wrongNamespace[1].tools[1].tools.push({ type: "function", name: "shell" });
+  wrongNamespace[1].tools.at(-2).tools.push({ type: "function", name: "shell" });
   assert.throws(() => evaluateObservedCapabilityRequests(wrongNamespace, {
     dependentResultObserved: true,
     permissionProfileVerified: true,
@@ -272,8 +454,8 @@ test("observed capability inspection requires exact ordered arrays and dependent
   }), /namespace description or input schemas/);
 
   const strippedCommandUnion = structuredClone(requests);
-  for (const request of strippedCommandUnion.slice(1)) {
-    for (const tool of request.tools[1].tools) {
+  for (const request of strippedCommandUnion.slice(0, 7)) {
+    for (const tool of request.tools.at(-2).tools) {
       if (tool.name === "preview" || tool.name === "apply") {
         tool.parameters.properties.operations.items.properties.command = {};
       }
@@ -286,8 +468,8 @@ test("observed capability inspection requires exact ordered arrays and dependent
   }), /namespace description or input schemas/);
 
   const missingCommandAlternative = structuredClone(requests);
-  for (const request of missingCommandAlternative.slice(1)) {
-    for (const tool of request.tools[1].tools) {
+  for (const request of missingCommandAlternative.slice(0, 7)) {
+    for (const tool of request.tools.at(-2).tools) {
       if (tool.name === "preview" || tool.name === "apply") {
         tool.parameters.properties.operations.items.properties.command.anyOf.pop();
       }
@@ -305,15 +487,46 @@ test("observed capability inspection requires exact ordered arrays and dependent
     dependentResultObserved: true,
     permissionProfileVerified: true,
     outboundPolicyRejected: true,
-  }), /Research tools changed/);
+  }), /Native thread tools changed/);
 
   const malformedNamespaceMember = structuredClone(requests);
-  malformedNamespaceMember[1].tools[1].tools[0] = { name: "read" };
+  malformedNamespaceMember[1].tools.at(-2).tools[0] = { name: "read" };
   assert.throws(() => evaluateObservedCapabilityRequests(malformedNamespaceMember, {
     dependentResultObserved: true,
     permissionProfileVerified: true,
     outboundPolicyRejected: true,
   }), /namespace description or input schemas/);
+
+  const strippedWorker = structuredClone(requests);
+  strippedWorker[7].tools = strippedWorker[7].tools.filter((tool) => tool.name !== "skills");
+  assert.throws(() => evaluateObservedCapabilityRequests(strippedWorker, {
+    dependentResultObserved: true,
+    permissionProfileVerified: true,
+    outboundPolicyRejected: true,
+  }), /Worker tools changed/);
+
+  const futureWorkerPlanner = structuredClone(requests);
+  futureWorkerPlanner[7].tools.splice(-1, 0, structuredClone(plannerNamespace));
+  assert.throws(() => evaluateObservedCapabilityRequests(futureWorkerPlanner, {
+    dependentResultObserved: true,
+    permissionProfileVerified: true,
+    outboundPolicyRejected: true,
+  }), /Worker tools changed/);
+
+  for (const [option, pattern] of [
+    ["plannerReadObserved", /planner\.read result/],
+    ["workerWaitCallObserved", /exact bounded wait_agent call/],
+    ["workerWaitResultObserved", /exact successful wait_agent result/],
+    ["workerResultObserved", /spawned worker report/],
+    ["userInputRoundTripObserved", /request_user_input answer/],
+  ]) {
+    assert.throws(() => evaluateObservedCapabilityRequests(requests, {
+      dependentResultObserved: true,
+      permissionProfileVerified: true,
+      outboundPolicyRejected: true,
+      [option]: false,
+    }), pattern);
+  }
 
   assert.throws(() => evaluateObservedCapabilityRequests(requests, {
     dependentResultObserved: true,
@@ -349,6 +562,13 @@ test("atomic evidence reuses only exact positive identity plus semantic fingerpr
   await writeFile(
     store.lastAcceptedPath,
     `${JSON.stringify({ ...evidence, capability: obsoleteCapability })}\n`,
+  );
+  assert.equal(await store.readReusablePositive(identity, fingerprint), null);
+  const widenedWorkerCapability = structuredClone(capability);
+  widenedWorkerCapability.workerTools.splice(-1, 0, "planner");
+  await writeFile(
+    store.lastAcceptedPath,
+    `${JSON.stringify({ ...evidence, capability: widenedWorkerCapability })}\n`,
   );
   assert.equal(await store.readReusablePositive(identity, fingerprint), null);
   await writeFile(

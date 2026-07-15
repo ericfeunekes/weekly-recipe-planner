@@ -25,6 +25,10 @@ import type {
   ChatApplicationService,
   PlannerApplicationService,
 } from "../application/ports.ts";
+import {
+  createCodexRouter,
+  type CodexThreadServicePort,
+} from "./codex-router.ts";
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_ID_LENGTH = 200;
@@ -33,6 +37,7 @@ const MAX_CHAT_MESSAGE_LENGTH = 4_000;
 export type ApplicationRouterDependencies = {
   planner: PlannerApplicationService;
   chat: ChatApplicationService;
+  codex?: CodexThreadServicePort;
   readHealth(): Promise<HealthResponse> | HealthResponse;
 };
 
@@ -274,6 +279,9 @@ export function createApplicationRouter(
   const routeByPath = new Map<string, { method: "GET" | "POST"; path: string }>(
     Object.values(PLANNER_API_ROUTES).map((route) => [route.path, route]),
   );
+  const codexRouter = dependencies.codex
+    ? createCodexRouter(dependencies.codex, options)
+    : null;
 
   return async function applicationRouter(
     request: IncomingMessage,
@@ -283,6 +291,7 @@ export function createApplicationRouter(
     if (Number.isFinite(responseTime)) {
       response.setHeader("Date", new Date(responseTime).toUTCString());
     }
+    if (codexRouter && await codexRouter(request, response)) return;
     try {
       if (!isAllowedRequestHost(request.headers.host, options.allowedOrigins)) {
         throw new ApiRouteError(

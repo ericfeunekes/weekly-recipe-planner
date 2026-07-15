@@ -10,6 +10,9 @@ import {
   CodexCompatibilityError,
 } from "../server/runtime/codex-follow-up/compatibility.ts";
 import {
+  CodexCapabilityProbeError,
+} from "../server/runtime/codex-follow-up/capability-probe.ts";
+import {
   parseCodexFollowUpConfig,
   validateCodexFollowUpDeployment,
 } from "../server/runtime/codex-follow-up/deployment.ts";
@@ -57,11 +60,22 @@ const CONTROL_CAPABILITY = Object.freeze({
   researchWebSearchMode: "live",
   researchTools: ["update_plan", "web_search"],
   plannerTools: ["update_plan", "planner"],
+  workerTools: [
+    "update_plan", "request_user_input", "spawn_agent", "send_message",
+    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+    "skills", "web_search",
+  ],
   plannerNamespaceMembers: ["read", "preview", "apply"],
   forbiddenHits: [],
   unexpectedRpcMethods: [],
+  plannerReadObserved: true,
+  workerWaitCallObserved: true,
+  workerWaitResultObserved: true,
+  workerResultObserved: true,
+  userInputRoundTripObserved: true,
   dependentResultObserved: true,
   outboundPolicyRejected: true,
+  approvalPolicy: "never",
   permissionProfile: ":read-only",
   effectiveSandbox: "read-only-network-disabled",
   probeRuntimeFiles: [],
@@ -92,7 +106,7 @@ function createControlledRuntime(executionFactory, options = {}) {
     deployment: CONTROL_DEPLOYMENT,
   }, {
     sourceEnvironment: { HOME: CONTROL_DEPLOYMENT.normalHome },
-    evaluationTimeoutMs: 5_000,
+    evaluationTimeoutMs: options.evaluationTimeoutMs ?? 5_000,
     dependencies: {
       validateDeployment: async () => ({ ok: true, deployment: CONTROL_DEPLOYMENT }),
       captureIdentity: async (...args) => {
@@ -102,7 +116,7 @@ function createControlledRuntime(executionFactory, options = {}) {
       },
       generateSchema: async (...args) =>
         options.onGenerateSchema?.(captures, ...args) ?? CONTROL_SCHEMA,
-      runCapabilityProbe: async () => CONTROL_CAPABILITY,
+      runCapabilityProbe: options.runCapabilityProbe ?? (async () => CONTROL_CAPABILITY),
       readDeployment: async () => CONTROL_READBACK,
       createEvidenceStore: () => ({
         async publishChecking() {},
@@ -121,6 +135,45 @@ function createControlledRuntime(executionFactory, options = {}) {
     executionCount: () => executions,
   };
 }
+
+test("capability deadline aborts are unavailable while exact protocol failures stay incompatible", async () => {
+  let observedAbort = false;
+  const transient = createControlledRuntime(() => ({ close() {} }), {
+    evaluationTimeoutMs: 25,
+    runCapabilityProbe: async (_identity, _deployment, options) =>
+      new Promise((_resolve, reject) => {
+        const onAbort = () => {
+          observedAbort = true;
+          reject(new CodexCapabilityProbeError(
+            "PROBE_TIMEOUT",
+            "capability probe deadline expired",
+          ));
+        };
+        if (options.signal?.aborted) onAbort();
+        else options.signal?.addEventListener("abort", onAbort, { once: true });
+      }),
+  });
+  const transientStatus = await transient.runtime.evaluate();
+  assert.equal(observedAbort, true);
+  assert.equal(transientStatus.state, "unavailable");
+  assert.equal(transientStatus.protocolCompatible, null);
+  assert.match(transientStatus.detail, /deadline expired|timed out/);
+  await transient.runtime.close();
+
+  const protocol = createControlledRuntime(() => ({ close() {} }), {
+    runCapabilityProbe: async () => {
+      throw new CodexCapabilityProbeError(
+        "PROBE_PROTOCOL",
+        "exact provider protocol violation",
+      );
+    },
+  });
+  const protocolStatus = await protocol.runtime.evaluate();
+  assert.equal(protocolStatus.state, "incompatible");
+  assert.equal(protocolStatus.protocolCompatible, false);
+  assert.match(protocolStatus.detail, /exact provider protocol violation/);
+  await protocol.runtime.close();
+});
 
 async function waitUntil(predicate, detail) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -540,15 +593,24 @@ for (const [variant, expectedState, pattern] of [
   ["wrong-thread-policy", "incompatible", /read-only, no-network/],
   ["extra-tool", "incompatible", /tools changed|Forbidden/],
   ["wrong-web-flags", "incompatible", /live hosted-search/],
-  ["name-only-update-plan", "incompatible", /Research tools changed/],
-  ["other-function-tool", "incompatible", /Research tools changed/],
+  ["name-only-update-plan", "incompatible", /Native thread tools changed|malformed update_plan/],
+  ["other-function-tool", "incompatible", /Native thread tools changed/],
   ["wrong-planner-members", "incompatible", /namespace description or input schemas/],
   ["malformed-planner-member", "incompatible", /namespace description or input schemas/],
   ["stripped-planner-schemas", "incompatible", /namespace description or input schemas/],
   ["broadened-planner-schemas", "incompatible", /namespace description or input schemas/],
   ["stripped-planner-command-union", "incompatible", /namespace description or input schemas/],
   ["parallel-tools", "incompatible", /parallel tool calls/],
-  ["extra-provider-call", "incompatible", /exactly four local provider calls/],
+  ["extra-provider-call", "incompatible", /exactly eight local provider calls/],
+  ["missing-worker-provider-call", "incompatible", /worker never reached the local provider/],
+  ["stripped-worker-capability", "incompatible", /Worker tools changed/],
+  ["worker-planner-namespace", "incompatible", /Worker tools changed/],
+  ["worker-wrong-parent", "incompatible", /bind the spawned worker to its exact parent/],
+  ["worker-wait-call-not-returned", "incompatible", /exact bounded wait_agent call/],
+  ["worker-wait-result-not-returned", "incompatible", /exact successful wait_agent result/],
+  ["worker-report-not-returned", "incompatible", /spawned worker report/],
+  ["unexpected-approval-request", "incompatible", /Unexpected app-server methods/],
+  ["provider-violation-then-stall", "incompatible", /outside its exact route/],
   ["wrong-terminal-thread", "incompatible", /mismatched or unsuccessful terminal/],
   ["failed-terminal-status", "incompatible", /mismatched or unsuccessful terminal/],
   ["rpc-unknown-notification", "incompatible", /undeclared notification/],
@@ -606,7 +668,7 @@ for (const [variant, expectedState, pattern] of [
       evaluationTimeoutMs: 10_000,
     });
     const status = await runtime.evaluate();
-    assert.equal(status.state, expectedState);
+    assert.equal(status.state, expectedState, JSON.stringify(status));
     assert.match(status.detail, pattern);
     assert.equal(typeof runtime.spawnAppServer, "function");
     await runtime.close();
@@ -678,5 +740,20 @@ test("the overall evaluation deadline aborts a blocked subprocess boundary fail 
   assert.equal(status.state, "unavailable");
   assert.match(status.detail, /timed out/);
   assert.ok(Date.now() - startedAt < 1_000);
+  await runtime.close();
+});
+
+test("a deadline during the disposable app-server capability turn is transient", async (t) => {
+  const fixture = await createCodexRuntimeFixture({ variant: "capability-hang" });
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
+    sourceEnvironment: fixture.environment,
+    evaluationTimeoutMs: 5_000,
+  });
+
+  const status = await runtime.evaluate();
+  assert.equal(status.state, "unavailable", JSON.stringify(status));
+  assert.equal(status.protocolCompatible, null);
+  assert.match(status.detail, /capability observation was aborted/);
   await runtime.close();
 });

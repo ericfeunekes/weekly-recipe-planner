@@ -28,11 +28,18 @@ import {
   createManagedEmbeddedChatApplicationService,
   type ResearchWebSearchEvidenceObservation,
 } from "../chat/index.ts";
+import { createNativeCodexSession } from "../codex/native-session.ts";
+import { createNativePlannerEffectHost } from "../codex/planner-effect-host.ts";
+import {
+  createNativeCodexThreadService,
+  type NativeCodexThreadService,
+} from "../codex/thread-service.ts";
 import type { GlobalCodexIngress } from "../global-ingress/index.ts";
 import { createApplicationRouter } from "../http/application-router.ts";
 import { createFrontController, type HttpHandler } from "../http/front-controller.ts";
 import { closeHttpServer, listenHttpServer } from "../http/server.ts";
 import { openPlannerStore, type SqlitePlannerStore } from "../store/sqlite-store.ts";
+import { createSqliteCodexThreadStore } from "../store/codex-thread-store.ts";
 import type { PlannerRuntimeConfig } from "./config.ts";
 import type {
   CodexFollowUpRuntime,
@@ -77,6 +84,11 @@ export type PlannerRuntimeOptions = {
   webProbe?: (origin: URL) => Promise<boolean>;
   shutdownGracePeriodMs?: number;
   researchEvidenceObserver?: (observation: ResearchWebSearchEvidenceObservation) => void;
+  /**
+   * Host-only proof that the caller already owns the exclusive planner runtime
+   * lease and may adopt native admissions left by a crashed predecessor.
+   */
+  recoverCodexAdmissionsAfterOwnership?: boolean;
 };
 
 export type PlannerRuntime = {
@@ -84,6 +96,7 @@ export type PlannerRuntime = {
   store: SqlitePlannerStore;
   planner: ReturnType<typeof createPlannerApplicationService>;
   chat: ChatApplicationService;
+  codexThreads: NativeCodexThreadService | null;
   interruptedTurns: number;
   evaluate(): Promise<CodexFollowUpStatus>;
   readCodexStatus(): CodexFollowUpStatus;
@@ -265,11 +278,37 @@ export async function startPlannerRuntime(
           executionProvider: options.codexRuntime,
           fixedCwd: options.codexFixedCwd,
         });
+    let nativeSession: ReturnType<typeof createNativeCodexSession> | null = null;
+    let codexThreads: NativeCodexThreadService | null = null;
+    if (options.codexFixedCwd !== null) {
+      const codexStore = createSqliteCodexThreadStore(store);
+      const plannerEffectHost = createNativePlannerEffectHost({
+        planner,
+        store: codexStore,
+        isEligibleCall: (threadId, turnId) =>
+          nativeSession?.isEligibleRootTurn(threadId, turnId) === true,
+        now: () => clock.now(),
+      });
+      nativeSession = createNativeCodexSession({
+        execution: options.codexRuntime,
+        fixedCwd: options.codexFixedCwd,
+        dispatchPlannerTool: (params) => plannerEffectHost.handle(params),
+        now: () => clock.now(),
+      });
+      codexThreads = createNativeCodexThreadService({
+        session: nativeSession,
+        store: codexStore,
+        now: () => clock.now(),
+        recoverAdmissionsOnStartup:
+          options.recoverCodexAdmissionsAfterOwnership === true,
+      });
+    }
     const interruptedTurns = chat.interruptRunningTurns();
     const apiHandler = createApplicationRouter(
       {
         planner,
         chat,
+        ...(codexThreads === null ? {} : { codex: codexThreads }),
         readHealth: createHealthReader({
           config: options.config,
           store,
@@ -307,9 +346,14 @@ export async function startPlannerRuntime(
         });
         let closeError: unknown;
         try {
-          await options.codexRuntime.close();
+          await codexThreads?.close();
         } catch (error) {
           closeError = error;
+        }
+        try {
+          await options.codexRuntime.close();
+        } catch (error) {
+          closeError ??= error;
         }
         try {
           await globalCodexIngress.close();
@@ -336,6 +380,7 @@ export async function startPlannerRuntime(
       store,
       planner,
       chat,
+      codexThreads,
       interruptedTurns,
       evaluate: () => options.codexRuntime.evaluate(),
       readCodexStatus: () => options.codexRuntime.readStatus(),

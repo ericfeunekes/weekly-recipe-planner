@@ -234,8 +234,8 @@ async function setupTransaction(t, options = {}) {
     initialized: options.initialized ?? true,
     sha256: "b".repeat(64),
     quickCheck: "ok",
-    schemaVersion: 5,
-    workspaceSchemaVersion: 5,
+    schemaVersion: 8,
+    workspaceSchemaVersion: 8,
     plannerVersion: 16,
   };
   const stage = createReleaseArtifact({

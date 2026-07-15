@@ -86,7 +86,28 @@ if (args[0] === "app-server" && args[1] === "generate-json-schema") {
   const authDocuments = createGeneratedCodexAuthSchemaDocuments();
   authDocuments["v1/InitializeParams.json"].description =
     protocolDocuments["v1/InitializeParams.json"].description;
-  const documents = { ...protocolDocuments, ...authDocuments };
+  const protocolNotifications = protocolDocuments["ServerNotification.json"];
+  const authNotifications = authDocuments["ServerNotification.json"];
+  const protocolMethods = new Set(protocolNotifications.oneOf.map(
+    (entry) => entry.properties.method.enum[0],
+  ));
+  const documents = {
+    ...protocolDocuments,
+    ...authDocuments,
+    "ServerNotification.json": {
+      ...protocolNotifications,
+      oneOf: [
+        ...protocolNotifications.oneOf,
+        ...authNotifications.oneOf.filter(
+          (entry) => !protocolMethods.has(entry.properties.method.enum[0]),
+        ),
+      ],
+      definitions: {
+        ...protocolNotifications.definitions,
+        ...authNotifications.definitions,
+      },
+    },
+  };
   for (const file of Object.keys(documents).sort()) {
     const path = join(outputDirectory, file);
     await mkdir(dirname(path), { recursive: true });
@@ -135,43 +156,43 @@ function toolsFor(thread) {
   const updatePlan = fixtureVariant === "name-only-update-plan"
     ? { name: "update_plan" }
     : fixtureVariant === "other-function-tool"
-      ? { type: "function", name: "calendar" }
-      : { type: "function", name: "update_plan" };
-  if (thread.kind === "research") {
-    return [
-      updatePlan,
-      {
-        type: "web_search",
-        external_web_access: true,
-        ...(fixtureVariant === "wrong-web-flags"
-          ? { index_gated_web_access: true }
-          : {}),
-      },
-      ...(fixtureVariant === "extra-tool" ? [{ type: "shell" }] : []),
-    ];
-  }
-  const projected = projectDynamicToolSpecsForProvider(thread.dynamicTools);
-  const plannerNamespace = structuredClone(projected.find((tool) =>
-    tool.type === "namespace" && tool.name === "planner"));
-  if (fixtureVariant === "wrong-planner-members") {
+      ? { type: "function", name: "calendar", strict: false, parameters: closedParameters() }
+      : { type: "function", name: "update_plan", strict: false, parameters: closedParameters() };
+  const functionTool = (name) => ({
+    type: "function",
+    name,
+    strict: false,
+    parameters: closedParameters(),
+  });
+  const skillsNamespace = {
+    type: "namespace",
+    name: "skills",
+    description: "Tools in the skills namespace.",
+    tools: [functionTool("list"), functionTool("read")],
+  };
+  const projected = projectDynamicToolSpecsForProvider(thread.dynamicTools ?? []);
+  const projectedPlanner = projected.find((tool) =>
+    tool.type === "namespace" && tool.name === "planner");
+  const plannerNamespace = projectedPlanner ? structuredClone(projectedPlanner) : null;
+  if (plannerNamespace && fixtureVariant === "wrong-planner-members") {
     plannerNamespace.tools.push({ type: "function", name: "shell" });
   }
-  if (fixtureVariant === "malformed-planner-member") {
+  if (plannerNamespace && fixtureVariant === "malformed-planner-member") {
     delete plannerNamespace.tools.find((tool) => tool.name === "read").type;
   }
-  if (fixtureVariant === "stripped-planner-schemas") {
+  if (plannerNamespace && fixtureVariant === "stripped-planner-schemas") {
     for (const tool of plannerNamespace.tools) {
       if (tool.name === "preview" || tool.name === "apply") delete tool.parameters;
     }
   }
-  if (fixtureVariant === "broadened-planner-schemas") {
+  if (plannerNamespace && fixtureVariant === "broadened-planner-schemas") {
     for (const tool of plannerNamespace.tools) {
       if (tool.name === "preview" || tool.name === "apply") {
         tool.parameters.additionalProperties = true;
       }
     }
   }
-  if (fixtureVariant === "stripped-planner-command-union") {
+  if (plannerNamespace && fixtureVariant === "stripped-planner-command-union") {
     for (const tool of plannerNamespace.tools) {
       if (tool.name !== "preview" && tool.name !== "apply") continue;
       const command = tool.parameters?.properties?.operations?.items?.properties?.command;
@@ -181,11 +202,34 @@ function toolsFor(thread) {
       tool.parameters.properties.operations.items.properties.command = {};
     }
   }
-  return [
+  const tools = [
     updatePlan,
-    plannerNamespace,
+    functionTool("request_user_input"),
+    functionTool("spawn_agent"),
+    functionTool("send_message"),
+    functionTool("followup_task"),
+    functionTool("wait_agent"),
+    functionTool("interrupt_agent"),
+    functionTool("list_agents"),
+    skillsNamespace,
+    ...(plannerNamespace ? [plannerNamespace] : []),
+    {
+      type: "web_search",
+      external_web_access: true,
+      ...(fixtureVariant === "wrong-web-flags"
+        ? { index_gated_web_access: true }
+        : {}),
+    },
     ...(fixtureVariant === "extra-tool" ? [{ type: "shell" }] : []),
   ];
+  if (fixtureVariant === "stripped-worker-capability" && thread.kind === "worker") {
+    return tools.filter((tool) => tool.name !== "skills");
+  }
+  return tools;
+}
+
+function closedParameters() {
+  return { type: "object", properties: {}, additionalProperties: false };
 }
 
 async function postProvider(thread, input) {
@@ -206,6 +250,24 @@ async function postProvider(thread, input) {
   if (!response.ok) throw new Error(`fake provider returned ${response.status}`);
 }
 
+async function violateProviderThenStall(thread, input) {
+  const baseUrl = await providerUrl();
+  if (!baseUrl) throw new Error("fake provider URL is missing");
+  const response = await fetch(`${baseUrl}/unexpected-route`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "planner-capability-probe",
+      input,
+      tools: toolsFor(thread),
+      parallel_tool_calls: false,
+      stream: true,
+    }),
+  });
+  await response.arrayBuffer();
+  await new Promise(() => undefined);
+}
+
 function waitForServerResponse(id) {
   return new Promise((resolve, reject) => pendingServerRequests.set(id, { resolve, reject }));
 }
@@ -224,16 +286,156 @@ function sendTurnCompleted(thread, turnId) {
   });
 }
 
-async function runResearch(thread, turnId, text) {
-  await postProvider(thread, [{ type: "message", role: "user", content: text }]);
-  if (fixtureVariant === "extra-provider-call") {
-    await postProvider(thread, [{ type: "message", role: "user", content: "UNCLASSIFIED_PROVIDER_CALL" }]);
+async function runNativeThread(thread, turnId, text) {
+  if (fixtureVariant === "provider-violation-then-stall") {
+    await violateProviderThenStall(thread, [
+      { type: "message", role: "user", content: text },
+    ]);
+    return;
   }
-  sendTurnCompleted(thread, turnId);
-}
-
-async function runPlanner(thread, turnId, text) {
   await postProvider(thread, [{ type: "message", role: "user", content: text }]);
+  const worker = {
+    id: `thread-${nextThread++}`,
+    kind: "worker",
+    parentThreadId: fixtureVariant === "worker-wrong-parent"
+      ? "thread-wrong-parent"
+      : thread.id,
+    cwd: process.cwd(),
+    dynamicTools: fixtureVariant === "worker-planner-namespace"
+      ? structuredClone(thread.dynamicTools ?? [])
+      : [],
+  };
+  threads.set(worker.id, worker);
+  send({
+    method: "item/completed",
+    params: {
+      threadId: thread.id,
+      turnId,
+      item: {
+        type: "subAgentActivity",
+        id: "root-spawn",
+        kind: "started",
+        agentThreadId: worker.id,
+        agentPath: "/root/capability_worker",
+      },
+      completedAtMs: 0,
+    },
+  });
+  if (fixtureVariant !== "missing-worker-provider-call") {
+    await postProvider(worker, [{
+      type: "message",
+      role: "user",
+      content: "WORKER_CONTEXT_PROBE: finish without calling tools",
+    }]);
+  }
+  const rootSpawnHistory = [
+    { type: "message", role: "user", content: text },
+    {
+      type: "function_call",
+      name: "spawn_agent",
+      call_id: "root-spawn",
+      arguments: JSON.stringify({
+        task_name: "capability_worker",
+        message: "WORKER_CONTEXT_PROBE: finish without calling tools",
+        fork_turns: "none",
+      }),
+    },
+    {
+      type: "function_call_output",
+      call_id: "root-spawn",
+      output: JSON.stringify({ task_name: "/root/capability_worker" }),
+    },
+  ];
+  await postProvider(thread, rootSpawnHistory);
+  const rootWaitHistory = [
+    ...rootSpawnHistory,
+    {
+      type: "function_call",
+      name: "wait_agent",
+      call_id: "root-wait",
+      arguments: JSON.stringify(fixtureVariant === "worker-wait-call-not-returned"
+        ? { timeout_ms: 9_999 }
+        : {}),
+    },
+    {
+      type: "function_call_output",
+      call_id: "root-wait",
+      output: JSON.stringify(fixtureVariant === "worker-wait-result-not-returned"
+        ? { message: "Wait timed out.", timed_out: true }
+        : { message: "Wait completed.", timed_out: false }),
+    },
+    {
+      type: "message",
+      role: "developer",
+      content: [{
+        type: "input_text",
+        text: fixtureVariant === "worker-report-not-returned"
+          ? "FINAL_ANSWER worker-report-missing"
+          : "FINAL_ANSWER worker-research-report-complete",
+      }],
+    },
+  ];
+  await postProvider(thread, rootWaitHistory);
+  const inputRequestId = `server-${turnId}-input`;
+  send({
+    id: inputRequestId,
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: thread.id,
+      turnId,
+      itemId: "item-capability-input",
+      questions: [{
+        header: "Probe",
+        id: "question-capability",
+        question: "Continue the compatibility probe?",
+        options: [{
+          label: "Continue",
+          description: "Continue the deterministic probe.",
+        }],
+      }],
+    },
+  });
+  const inputResult = await waitForServerResponse(inputRequestId);
+  await postProvider(thread, [
+    ...rootWaitHistory,
+    { type: "function_call_output", call_id: "root-input", output: inputResult },
+  ]);
+  if (fixtureVariant === "unexpected-approval-request") {
+    const approvalRequestId = `server-${turnId}-approval`;
+    send({
+      id: approvalRequestId,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "approval-capability",
+        startedAtMs: 0,
+        threadId: thread.id,
+        turnId,
+      },
+    });
+    const approvalResult = await waitForServerResponse(approvalRequestId);
+    if (JSON.stringify(approvalResult) !== JSON.stringify({ decision: "decline" })) {
+      throw new Error("capability host did not return the exact command-approval decline");
+    }
+  }
+  const readRequestId = `server-${turnId}-read`;
+  send({
+    id: readRequestId,
+    method: "item/tool/call",
+    params: {
+      arguments: { query: { kind: "workspace" } },
+      callId: "call-read",
+      namespace: "planner",
+      threadId: thread.id,
+      tool: "read",
+      turnId,
+    },
+  });
+  const readResult = await waitForServerResponse(readRequestId);
+  await postProvider(thread, [
+    ...rootWaitHistory,
+    { type: "function_call_output", call_id: "root-input", output: inputResult },
+    { type: "function_call_output", call_id: "call-read", output: readResult },
+  ]);
   const operation = {
     command: {
       type: "captureWeekLesson",
@@ -256,7 +458,9 @@ async function runPlanner(thread, turnId, text) {
   });
   const resultA = await waitForServerResponse(callARequestId);
   await postProvider(thread, [
-    { type: "message", role: "user", content: text },
+    ...rootWaitHistory,
+    { type: "function_call_output", call_id: "root-input", output: inputResult },
+    { type: "function_call_output", call_id: "call-read", output: readResult },
     { type: "function_call_output", call_id: "call-A", output: resultA },
   ]);
   const callBRequestId = `server-${turnId}-B`;
@@ -278,10 +482,15 @@ async function runPlanner(thread, turnId, text) {
   });
   const resultB = await waitForServerResponse(callBRequestId);
   await postProvider(thread, [
-    { type: "message", role: "user", content: text },
+    ...rootWaitHistory,
+    { type: "function_call_output", call_id: "root-input", output: inputResult },
+    { type: "function_call_output", call_id: "call-read", output: readResult },
     { type: "function_call_output", call_id: "call-A", output: resultA },
     { type: "function_call_output", call_id: "call-B", output: resultB },
   ]);
+  if (fixtureVariant === "extra-provider-call") {
+    await postProvider(thread, [{ type: "message", role: "user", content: "UNCLASSIFIED_PROVIDER_CALL" }]);
+  }
   sendTurnCompleted(thread, turnId);
 }
 
@@ -539,8 +748,9 @@ async function handleRequest(message) {
       });
     }
     const threadId = `thread-${nextThread++}`;
-    const kind = Array.isArray(params.dynamicTools) && params.dynamicTools.length ? "planner" :
-      params.config?.web_search === "live" ? "research" : "readback";
+    const kind = Array.isArray(params.dynamicTools) && params.dynamicTools.length
+      ? "native"
+      : "readback";
     const thread = { id: threadId, kind, dynamicTools: structuredClone(params.dynamicTools ?? []) };
     threads.set(threadId, thread);
     const instructionSources = await fileExists(join(codexHome, "AGENTS.md"))
@@ -566,15 +776,27 @@ async function handleRequest(message) {
       thread: { id: threadId },
     } });
   }
+  if (method === "thread/read") {
+    const thread = threads.get(params.threadId);
+    if (!thread) return send({ id, error: { code: -32602, message: "unknown thread" } });
+    return send({ id, result: {
+      thread: {
+        id: thread.id,
+        parentThreadId: thread.parentThreadId ?? null,
+        cwd: thread.cwd ?? process.cwd(),
+      },
+    } });
+  }
   if (method === "turn/start") {
+    if (fixtureVariant === "capability-hang") return;
     const thread = threads.get(params.threadId);
     if (!thread) return send({ id, error: { code: -32602, message: "unknown thread" } });
     const turnId = `turn-${nextTurn++}`;
     send({ id, result: { turn: { id: turnId, items: [], status: "inProgress" } } });
     const text = params.input?.[0]?.text ?? "";
-    const operation = thread.kind === "research"
-      ? runResearch(thread, turnId, text)
-      : runPlanner(thread, turnId, text);
+    const operation = thread.kind === "native"
+      ? runNativeThread(thread, turnId, text)
+      : Promise.resolve().then(() => sendTurnCompleted(thread, turnId));
     operation.catch((error) => send({
       method: "error",
       params: { error: { message: error.message }, threadId: thread.id, turnId, willRetry: false },

@@ -116,10 +116,19 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
       Object.keys(HOUSEHOLD_COMMAND_REGISTRY).sort(),
       `${toolName} exposes every registry command discriminator`,
     );
-    assert.match(toolSchema.description, new RegExp(
-      `Required fields by type: ${canonicalFieldGuide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-    ));
+    assert.match(
+      toolSchema.description,
+      new RegExp(
+        `Required fields by type: ${canonicalFieldGuide.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+      ),
+    );
   }
+
+  const applyTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "apply");
+  assert.match(
+    applyTool.description,
+    /Readback fields by kind: workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
+  );
 });
 
 test("closed read/apply validators reject hidden identity and extra properties", () => {

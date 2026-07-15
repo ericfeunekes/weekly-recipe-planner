@@ -16,6 +16,7 @@ import {
   PLANNER_DYNAMIC_TOOL_NAMESPACE,
   isPlannerApplyArguments,
   isPlannerPreviewArguments,
+  isPlannerReadArguments,
 } from "../../../lib/planner-tool-contract.ts";
 import {
   buildCodexFollowUpChildEnvironment,
@@ -70,6 +71,27 @@ type MessageWaiter = {
   readonly reject: (error: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
 };
+
+function rejectedServerRequestResponse(method: string) {
+  if (method === "item/commandExecution/requestApproval" ||
+      method === "item/fileChange/requestApproval") {
+    return { result: { decision: "decline" } } as const;
+  }
+  if (method === "mcpServer/elicitation/request") {
+    return { result: { action: "decline", content: null, _meta: null } } as const;
+  }
+  if (CODEX_FOLLOW_UP_RPC_POLICY.rejectedServerRequests.includes(
+    method as (typeof CODEX_FOLLOW_UP_RPC_POLICY.rejectedServerRequests)[number],
+  )) {
+    return {
+      error: {
+        code: -32001,
+        message: `The planner does not permit ${method}.`,
+      },
+    } as const;
+  }
+  return null;
+}
 
 export class CodexCapabilityProbeError extends Error {
   readonly code:
@@ -130,6 +152,43 @@ function canonicalText(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function parseJsonObject(value: unknown): JsonObject | null {
+  if (isObject(value)) return value;
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasExactProviderFunctionCall(
+  input: readonly unknown[],
+  callId: string,
+  name: string,
+  argumentsValue: JsonObject,
+) {
+  return input.some((item) =>
+    isObject(item) &&
+    item.type === "function_call" &&
+    item.call_id === callId &&
+    item.name === name &&
+    canonicalText(parseJsonObject(item.arguments)) === canonicalText(argumentsValue));
+}
+
+function hasExactProviderFunctionOutput(
+  input: readonly unknown[],
+  callId: string,
+  outputValue: JsonObject,
+) {
+  return input.some((item) =>
+    isObject(item) &&
+    item.type === "function_call_output" &&
+    item.call_id === callId &&
+    canonicalText(parseJsonObject(item.output)) === canonicalText(outputValue));
+}
+
 function withTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -181,11 +240,14 @@ class JsonlRpcClient {
   #stdoutBytes = 0;
   #frameCount = 0;
   #stderrTail = Buffer.alloc(0);
+  #signal: AbortSignal | null;
+  #onAbort: (() => void) | null = null;
 
   constructor(
     child: ChildProcess,
     allowedRequests: ReadonlySet<string>,
     allowedServerRequests: ReadonlySet<string>,
+    signal?: AbortSignal,
   ) {
     if (!child.stdin || !child.stdout || !child.stderr) {
       throw new CodexCapabilityProbeError(
@@ -196,6 +258,7 @@ class JsonlRpcClient {
     this.child = child;
     this.allowedRequests = allowedRequests;
     this.allowedServerRequests = allowedServerRequests;
+    this.#signal = signal ?? null;
 
     child.stdout.on("data", (chunk: Buffer | string) => this.#handleStdoutChunk(chunk));
     child.stdout.on("error", (error) => this.#fail(
@@ -205,9 +268,17 @@ class JsonlRpcClient {
     child.stderr.on("error", (error) => this.#fail(
       new CodexCapabilityProbeError("PROBE_PROTOCOL", "Codex app-server stderr failed.", error),
     ));
-    child.once("error", (error) => this.#fail(
-      new CodexCapabilityProbeError("PROBE_PROTOCOL", "Codex app-server failed.", error),
-    ));
+    child.once("error", (error) => {
+      const aborted = error.name === "AbortError" ||
+        ("code" in error && error.code === "ABORT_ERR");
+      this.#fail(new CodexCapabilityProbeError(
+        aborted ? "PROBE_TIMEOUT" : "PROBE_PROTOCOL",
+        aborted
+          ? "Codex capability observation was aborted."
+          : "Codex app-server failed.",
+        error,
+      ));
+    });
     child.once("close", (code, signal) => {
       this.#childClosed = true;
       if (this.#closed || this.#failed || this.#closing) return;
@@ -218,6 +289,14 @@ class JsonlRpcClient {
         `Codex app-server exited with ${detail}${stderr ? `: ${stderr}` : "."}`,
       ));
     });
+    if (this.#signal) {
+      this.#onAbort = () => this.#fail(new CodexCapabilityProbeError(
+        "PROBE_TIMEOUT",
+        "Codex capability observation was aborted.",
+      ));
+      if (this.#signal.aborted) this.#onAbort();
+      else this.#signal.addEventListener("abort", this.#onAbort, { once: true });
+    }
   }
 
   request(method: string, params: unknown, timeoutMs = 15_000) {
@@ -263,6 +342,7 @@ class JsonlRpcClient {
   waitFor(
     predicate: (message: JsonRpcMessage) => boolean,
     timeoutMs = 15_000,
+    label = "an app-server event",
   ) {
     if (this.#failure) return Promise.reject(this.#failure);
     const index = this.#messages.findIndex(predicate);
@@ -273,7 +353,7 @@ class JsonlRpcClient {
         if (waiterIndex >= 0) this.#waiters.splice(waiterIndex, 1);
         reject(new CodexCapabilityProbeError(
           "PROBE_TIMEOUT",
-          "Timed out waiting for an app-server event.",
+          `Timed out waiting for ${label}.`,
         ));
       }, timeoutMs);
       timer.unref?.();
@@ -302,6 +382,7 @@ class JsonlRpcClient {
         }
       }
     } finally {
+      this.#detachAbort();
       this.#closed = true;
       this.#closing = false;
     }
@@ -520,10 +601,13 @@ class JsonlRpcClient {
           return;
         }
         this.unexpectedServerRequests.push(rpcMethod!);
-        this.#write({
-          id: rpcId!,
-          error: { code: -32601, message: `Unsupported server request ${rpcMethod}.` },
-        });
+        const rejected = rejectedServerRequestResponse(rpcMethod!);
+        this.#write(rejected
+          ? { id: rpcId!, ...rejected }
+          : {
+              id: rpcId!,
+              error: { code: -32601, message: `Unsupported server request ${rpcMethod}.` },
+            });
         return;
       }
       this.#pushMessage(message);
@@ -586,6 +670,7 @@ class JsonlRpcClient {
   #fail(error: Error) {
     if (this.#failed) return;
     this.#failed = true;
+    this.#detachAbort();
     this.#failure = error;
     this.#stdoutBuffer = Buffer.alloc(0);
     this.#messages.length = 0;
@@ -598,6 +683,14 @@ class JsonlRpcClient {
       clearTimeout(waiter.timer);
       waiter.reject(error);
     }
+  }
+
+  #detachAbort() {
+    if (this.#signal && this.#onAbort) {
+      this.#signal.removeEventListener("abort", this.#onAbort);
+    }
+    this.#onAbort = null;
+    this.#signal = null;
   }
 
   #abortProtocol(error: Error) {
@@ -674,12 +767,36 @@ function dynamicFunctionCall(
   ]);
 }
 
+function ordinaryFunctionCall(
+  responseId: string,
+  callId: string,
+  name: string,
+  argumentsValue: JsonObject,
+) {
+  return sse([
+    responseCreated(responseId),
+    {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        call_id: callId,
+        name,
+        arguments: JSON.stringify(argumentsValue),
+      },
+    },
+    responseCompleted(responseId),
+  ]);
+}
+
 const PLANNER_PROBE_OPERATION = Object.freeze({
   command: Object.freeze({
     type: "captureWeekLesson",
     weekId: "2000-01-03",
     weekLesson: "Compatibility probe",
   }),
+});
+const PLANNER_PROBE_READ_ARGUMENTS = Object.freeze({
+  query: Object.freeze({ kind: "workspace" }),
 });
 const PLANNER_PROBE_PREVIEW_ARGUMENTS = Object.freeze({
   basePlannerVersion: 0,
@@ -706,6 +823,15 @@ const PLANNER_PROBE_PREVIEW_RESULT_TEXT = JSON.stringify({
       changes: ["Validated one disposable operation."],
     }],
   },
+});
+const PLANNER_PROBE_READ_RESULT_TEXT = JSON.stringify({
+  schemaVersion: 1,
+  ok: true,
+  callId: "call-read",
+  plannerVersion: 0,
+  syncRevision: 0,
+  serverTime: 0,
+  data: { kind: "workspace", activeWeekId: null, weeks: [] },
 });
 const PLANNER_PROBE_APPLY_RESULT_TEXT = JSON.stringify({
   schemaVersion: 1,
@@ -761,6 +887,16 @@ async function readJsonBody(
 async function startLocalResponsesServer() {
   const requests: unknown[] = [];
   let dependentPlannerResultObserved = false;
+  let workerRequestObserved = false;
+  let workerWaitCallObserved = false;
+  let workerWaitResultObserved = false;
+  let workerResultObserved = false;
+  let userInputRoundTripObserved = false;
+  let plannerReadObserved = false;
+  let resolveProtocolFailure: (error: CodexCapabilityProbeError) => void = () => undefined;
+  const protocolFailure = new Promise<CodexCapabilityProbeError>((resolve) => {
+    resolveProtocolFailure = resolve;
+  });
   const ingress: ProviderIngressState = { requests: 0, totalBytes: 0, failure: null };
   const server = createServer(async (request, response) => {
     try {
@@ -772,27 +908,93 @@ async function startLocalResponsesServer() {
         );
       }
       requests.push(body);
-      const serializedInput = canonicalText(isObject(body) ? body.input : null);
+      const input = arrayProperty(body, "input");
+      const serializedInput = canonicalText(input);
+      const rootRequest = serializedInput.includes("NATIVE_THREAD_CAPABILITY_PROBE");
+      const workerRequest = !rootRequest && serializedInput.includes("WORKER_CONTEXT_PROBE");
       let payload: Buffer;
-      if (serializedInput.includes("RESEARCH_CONTEXT_PROBE")) {
-        payload = assistantMessage("response-research", "message-research", "research-complete");
-      } else if (serializedInput.includes("PLANNER_DEPENDENCY_PROBE")) {
+      if (workerRequest) {
+        workerRequestObserved = true;
+        payload = assistantMessage(
+          "response-worker",
+          "message-worker",
+          "worker-research-report-complete",
+        );
+      } else if (rootRequest) {
         if (serializedInput.includes("call-B") && serializedInput.includes("accepted")) {
-          payload = assistantMessage("response-planner-3", "message-planner", "planner-complete");
+          payload = assistantMessage("response-root-4", "message-root", "native-thread-complete");
         } else if (serializedInput.includes("call-A") && serializedInput.includes("previewed")) {
           dependentPlannerResultObserved = true;
           payload = dynamicFunctionCall(
-            "response-planner-2",
+            "response-root-3",
             "call-B",
             "apply",
             PLANNER_PROBE_APPLY_ARGUMENTS,
           );
-        } else {
+        } else if (serializedInput.includes("call-read") && serializedInput.includes("workspace")) {
+          plannerReadObserved = true;
           payload = dynamicFunctionCall(
-            "response-planner-1",
+            "response-root-readback",
             "call-A",
             "preview",
             PLANNER_PROBE_PREVIEW_ARGUMENTS,
+          );
+        } else if (serializedInput.includes("question-capability") &&
+                   serializedInput.includes("Continue")) {
+          userInputRoundTripObserved = true;
+          payload = dynamicFunctionCall(
+            "response-root-read",
+            "call-read",
+            "read",
+            PLANNER_PROBE_READ_ARGUMENTS,
+          );
+        } else if (serializedInput.includes("root-wait")) {
+          workerWaitCallObserved = hasExactProviderFunctionCall(
+            input,
+            "root-wait",
+            "wait_agent",
+            {},
+          );
+          workerWaitResultObserved = hasExactProviderFunctionOutput(
+            input,
+            "root-wait",
+            { message: "Wait completed.", timed_out: false },
+          );
+          workerResultObserved = serializedInput.includes("FINAL_ANSWER") &&
+            serializedInput.includes("worker-research-report-complete");
+          payload = ordinaryFunctionCall(
+            "response-root-input",
+            "root-input",
+            "request_user_input",
+            {
+              questions: [{
+                header: "Probe",
+                id: "question-capability",
+                question: "Continue the compatibility probe?",
+                options: [{
+                  label: "Continue",
+                  description: "Continue the deterministic probe.",
+                }],
+              }],
+            },
+          );
+        } else if (serializedInput.includes("root-spawn")) {
+          payload = ordinaryFunctionCall(
+            "response-root-wait",
+            "root-wait",
+            "wait_agent",
+            {},
+          );
+        } else {
+          payload = ordinaryFunctionCall(
+            "response-root-1",
+            "root-spawn",
+            "spawn_agent",
+            {
+              task_name: "capability_worker",
+              message: "WORKER_CONTEXT_PROBE: finish without calling tools",
+              fork_turns: "none",
+            },
           );
         }
       } else {
@@ -812,6 +1014,7 @@ async function startLocalResponsesServer() {
             "Local provider request failed validation.",
             error,
           );
+      resolveProtocolFailure(ingress.failure);
       response.writeHead(500, { "content-type": "application/json", connection: "close" });
       response.end(JSON.stringify({ error: error instanceof Error ? error.message : "provider error" }));
     }
@@ -830,6 +1033,18 @@ async function startLocalResponsesServer() {
     requests,
     ingress,
     dependentPlannerResultObserved: () => dependentPlannerResultObserved,
+    workerRequestObserved: () => workerRequestObserved,
+    workerWaitCallObserved: () => workerWaitCallObserved,
+    workerWaitResultObserved: () => workerWaitResultObserved,
+    workerResultObserved: () => workerResultObserved,
+    userInputRoundTripObserved: () => userInputRoundTripObserved,
+    plannerReadObserved: () => plannerReadObserved,
+    guard<T>(operation: Promise<T>) {
+      return Promise.race([
+        operation,
+        protocolFailure.then((error) => Promise.reject(error)),
+      ]);
+    },
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
   };
 }
@@ -857,7 +1072,6 @@ const DISABLED_FEATURES = [
   "in_app_browser",
   "memories",
   "multi_agent",
-  "multi_agent_v2",
   "network_proxy",
   "plugins",
   "remote_plugin",
@@ -871,6 +1085,7 @@ const DISABLED_FEATURES = [
   "unified_exec_zsh_fork",
   "workspace_dependencies",
 ] as const;
+const UNIFIED_CAPABILITY_MARKER_FILE = ".planner-unified-native-thread-v1";
 
 function disposableProbeConfig(baseUrl: string) {
   const features = DISABLED_FEATURES.map((feature) => `${feature} = false`).join("\n");
@@ -878,23 +1093,25 @@ function disposableProbeConfig(baseUrl: string) {
 model_provider = "planner_local_probe"
 approval_policy = "never"
 sandbox_mode = "read-only"
-web_search = "disabled"
+web_search = "live"
 check_for_update_on_startup = false
 
 [tools.experimental_request_user_input]
-enabled = false
+enabled = true
 
 [features]
 ${features}
+default_mode_request_user_input = true
+multi_agent_v2 = true
 
 [skills]
-include_instructions = false
+include_instructions = true
 
 [skills.bundled]
 enabled = false
 
 [orchestrator.skills]
-enabled = false
+enabled = true
 
 [orchestrator.mcp]
 enabled = false
@@ -911,10 +1128,14 @@ requires_openai_auth = false
 }
 
 function featureOverrides() {
-  return Object.fromEntries(DISABLED_FEATURES.map((feature) => [feature, false]));
+  return {
+    ...Object.fromEntries(DISABLED_FEATURES.map((feature) => [feature, false])),
+    default_mode_request_user_input: true,
+    multi_agent_v2: true,
+  };
 }
 
-function commonProbeThread(appCwd: string, webSearch: "live" | "disabled") {
+function commonProbeThread(appCwd: string) {
   return {
     approvalPolicy: "never",
     permissions: ":read-only",
@@ -928,12 +1149,12 @@ function commonProbeThread(appCwd: string, webSearch: "live" | "disabled") {
     baseInstructions: "This is a deterministic localhost capability probe.",
     developerInstructions: "Use only the capability explicitly provided for this probe.",
     config: {
-      web_search: webSearch,
+      web_search: "live",
       features: featureOverrides(),
-      tools: { experimental_request_user_input: { enabled: false } },
+      tools: { experimental_request_user_input: { enabled: true } },
       mcp_servers: {},
-      orchestrator: { skills: { enabled: false }, mcp: { enabled: false } },
-      skills: { include_instructions: false, bundled: { enabled: false } },
+      orchestrator: { skills: { enabled: true }, mcp: { enabled: false } },
+      skills: { include_instructions: true, bundled: { enabled: false } },
     },
   };
 }
@@ -943,11 +1164,10 @@ function topLevelToolName(tool: unknown) {
   if (tool.type === "namespace") return stringProperty(tool, "name") ?? "<unknown>";
   if (tool.type === "function") {
     const name = stringProperty(tool, "name") ?? "<unknown>";
-    // Codex 0.142.5 projects the built-in update_plan capability through the
-    // Responses API's ordinary function-tool shape. Older compatible builds
-    // used the native update_plan type. Normalize only that exact logical tool;
-    // every other function remains visible to the closed-manifest comparison.
-    return name === "update_plan" ? "update_plan" : `function:${name}`;
+    // The closed manifest and schema checks below classify ordinary function
+    // tools by logical name while independently validating their exact
+    // function/strict/closed-parameters transport shape.
+    return name;
   }
   return stringProperty(tool, "type") ?? "<unknown>";
 }
@@ -1164,65 +1384,13 @@ function forbiddenToolFragment(tool: unknown) {
     "app/",
     "browser",
     "computer",
-    "spawn_agent",
-    "send_message",
-    "wait_agent",
-    "followup_task",
-    "interrupt_agent",
-    "list_agents",
     "spawn_agents_on_csv",
   ];
   return fragments.find((fragment) => text.includes(fragment)) ?? null;
 }
 
-export function evaluateObservedCapabilityRequests(
-  requests: readonly unknown[],
-  options: {
-    readonly dependentResultObserved: boolean;
-    readonly unexpectedRpcMethods?: readonly string[];
-    readonly probeRuntimeFiles?: readonly string[];
-    readonly permissionProfileVerified?: boolean;
-    readonly outboundPolicyRejected?: boolean;
-  },
-): CodexCapabilityEvidence {
-  if (requests.length !== 4) {
-    throw new CodexCapabilityProbeError(
-      "PROBE_CAPABILITY",
-      `Expected exactly four local provider calls; observed ${requests.length}.`,
-    );
-  }
-  const research = requests.filter((request) =>
-    canonicalText(isObject(request) ? request.input : null).includes("RESEARCH_CONTEXT_PROBE")
-  );
-  const planner = requests.filter((request) =>
-    canonicalText(isObject(request) ? request.input : null).includes("PLANNER_DEPENDENCY_PROBE")
-  );
-  if (research.length !== 1 || planner.length !== 3) {
-    throw new CodexCapabilityProbeError(
-      "PROBE_CAPABILITY",
-      `Expected one research and three planner provider calls; observed ${research.length} and ${planner.length}.`,
-    );
-  }
-
-  const researchTools = arrayProperty(research[0], "tools");
-  const plannerToolSets = planner.map((request) => arrayProperty(request, "tools"));
-  const researchNames = researchTools.map(topLevelToolName);
-  const plannerNames = plannerToolSets.map((tools) => tools.map(topLevelToolName));
-  const expectedResearch = [...CODEX_FOLLOW_UP_TOOL_MANIFESTS.research];
-  const expectedPlanner = [...CODEX_FOLLOW_UP_TOOL_MANIFESTS.planner];
-  if (canonicalText(researchNames) !== canonicalText(expectedResearch)) {
-    throw new CodexCapabilityProbeError(
-      "PROBE_CAPABILITY",
-      `Research tools changed: ${JSON.stringify(researchNames)}.`,
-    );
-  }
-  if (plannerNames.some((names) => canonicalText(names) !== canonicalText(expectedPlanner))) {
-    throw new CodexCapabilityProbeError(
-      "PROBE_CAPABILITY",
-      `Planner tools changed: ${JSON.stringify(plannerNames)}.`,
-    );
-  }
-  const hostedSearch = researchTools.find((tool) => topLevelToolName(tool) === "web_search");
+function assertHostedSearch(tools: readonly unknown[], context: string) {
+  const hostedSearch = tools.find((tool) => topLevelToolName(tool) === "web_search");
   if (
     !isObject(hostedSearch) ||
     hostedSearch.type !== "web_search" ||
@@ -1232,26 +1400,145 @@ export function evaluateObservedCapabilityRequests(
   ) {
     throw new CodexCapabilityProbeError(
       "PROBE_CAPABILITY",
-      "Research did not expose the exact live hosted-search capability.",
+      `${context} did not expose the exact live hosted-search capability.`,
     );
   }
-  for (const request of planner) {
-    const tools = arrayProperty(request, "tools");
-    const plannerNamespace = tools.find((tool) =>
-      isObject(tool) && tool.type === "namespace" && tool.name === "planner");
-    const expectedNamespace = expectedProviderPlannerNamespace();
-    if (canonicalText(plannerNamespace) !== canonicalText(expectedNamespace)) {
+}
+
+function assertSkillsNamespace(tools: readonly unknown[], context: string) {
+  const namespace = tools.find((tool) =>
+    isObject(tool) && tool.type === "namespace" && tool.name === "skills");
+  const members = isObject(namespace) && Array.isArray(namespace.tools)
+    ? namespace.tools
+    : [];
+  const names = members.map((member) =>
+    isObject(member) && member.type === "function" ? stringProperty(member, "name") : null);
+  if (
+    canonicalText(names) !== canonicalText(CODEX_FOLLOW_UP_TOOL_MANIFESTS.skillsNamespace) ||
+    members.some((member) =>
+      !isObject(member) || member.strict !== false || !isObject(member.parameters) ||
+      member.parameters.type !== "object" || member.parameters.additionalProperties !== false)
+  ) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      `${context} did not expose the exact bounded skills namespace.`,
+    );
+  }
+}
+
+const REQUIRED_NATIVE_FUNCTIONS = Object.freeze([
+  "update_plan",
+  "request_user_input",
+  "spawn_agent",
+  "send_message",
+  "followup_task",
+  "wait_agent",
+  "interrupt_agent",
+  "list_agents",
+]);
+
+function assertNativeFunctions(tools: readonly unknown[], context: string) {
+  for (const name of REQUIRED_NATIVE_FUNCTIONS) {
+    const tool = tools.find((candidate) =>
+      isObject(candidate) && candidate.type === "function" && candidate.name === name);
+    if (!isObject(tool) || tool.strict !== false || !isObject(tool.parameters) ||
+        tool.parameters.type !== "object" || tool.parameters.additionalProperties !== false) {
       throw new CodexCapabilityProbeError(
         "PROBE_CAPABILITY",
-        "Planner namespace description or input schemas changed in provider transport.",
+        `${context} exposed a malformed ${name} function tool.`,
       );
     }
+  }
+}
+
+function assertPlannerNamespace(tools: readonly unknown[], context: string) {
+  const plannerNamespace = tools.find((tool) =>
+    isObject(tool) && tool.type === "namespace" && tool.name === "planner");
+  if (canonicalText(plannerNamespace) !== canonicalText(expectedProviderPlannerNamespace())) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      `${context} planner namespace description or input schemas changed in provider transport.`,
+    );
+  }
+}
+
+export function evaluateObservedCapabilityRequests(
+  requests: readonly unknown[],
+  options: {
+    readonly dependentResultObserved: boolean;
+    readonly plannerReadObserved?: boolean;
+    readonly workerWaitCallObserved?: boolean;
+    readonly workerWaitResultObserved?: boolean;
+    readonly workerResultObserved?: boolean;
+    readonly userInputRoundTripObserved?: boolean;
+    readonly unexpectedRpcMethods?: readonly string[];
+    readonly probeRuntimeFiles?: readonly string[];
+    readonly permissionProfileVerified?: boolean;
+    readonly outboundPolicyRejected?: boolean;
+  },
+): CodexCapabilityEvidence {
+  if (requests.length !== 8) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      `Expected exactly eight local provider calls; observed ${requests.length}.`,
+    );
+  }
+  const nativeThread = requests.filter((request) =>
+    canonicalText(isObject(request) ? request.input : null)
+      .includes("NATIVE_THREAD_CAPABILITY_PROBE")
+  );
+  const workers = requests.filter((request) =>
+    !canonicalText(isObject(request) ? request.input : null)
+      .includes("NATIVE_THREAD_CAPABILITY_PROBE") &&
+    canonicalText(isObject(request) ? request.input : null).includes("WORKER_CONTEXT_PROBE")
+  );
+  if (nativeThread.length !== 7 || workers.length !== 1) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      `Expected seven native-thread and one worker provider calls; observed ${nativeThread.length} and ${workers.length}.`,
+    );
+  }
+
+  const expectedRoot = [...CODEX_FOLLOW_UP_TOOL_MANIFESTS.nativeThread];
+  const expectedWorker = [...CODEX_FOLLOW_UP_TOOL_MANIFESTS.workerRequired];
+  const nativeToolSets = nativeThread.map((request) => arrayProperty(request, "tools"));
+  for (const [index, request] of nativeThread.entries()) {
+    const tools = arrayProperty(request, "tools");
+    const names = tools.map(topLevelToolName);
+    if (canonicalText(names) !== canonicalText(expectedRoot)) {
+      throw new CodexCapabilityProbeError(
+        "PROBE_CAPABILITY",
+        `Native thread tools changed on provider call ${index + 1}: ${JSON.stringify(names)}.`,
+      );
+    }
+    assertHostedSearch(tools, "Native thread");
+    assertNativeFunctions(tools, "Native thread");
+    assertSkillsNamespace(tools, "Native thread");
+    assertPlannerNamespace(tools, "Native thread");
     if (!isObject(request) || request.parallel_tool_calls !== false) {
       throw new CodexCapabilityProbeError(
         "PROBE_CAPABILITY",
-        "Planner provider execution did not disable parallel tool calls.",
+        "Native-thread provider execution did not disable parallel tool calls.",
       );
     }
+  }
+
+  const workerTools = arrayProperty(workers[0], "tools");
+  const workerNames = workerTools.map(topLevelToolName);
+  if (canonicalText(workerNames) !== canonicalText(expectedWorker)) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      `Worker tools changed: ${JSON.stringify(workerNames)}.`,
+    );
+  }
+  assertHostedSearch(workerTools, "Worker");
+  assertNativeFunctions(workerTools, "Worker");
+  assertSkillsNamespace(workerTools, "Worker");
+  if (!isObject(workers[0]) || workers[0].parallel_tool_calls !== false) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "Worker provider execution did not disable parallel tool calls.",
+    );
   }
   if (!options.permissionProfileVerified) {
     throw new CodexCapabilityProbeError(
@@ -1267,7 +1554,7 @@ export function evaluateObservedCapabilityRequests(
   }
 
   const forbiddenHits: string[] = [];
-  for (const [context, toolSets] of [["research", [researchTools]], ["planner", plannerToolSets]] as const) {
+  for (const [context, toolSets] of [["native", nativeToolSets], ["worker", [workerTools]]] as const) {
     for (const tools of toolSets) {
       for (const tool of tools) {
         const fragment = forbiddenToolFragment(tool);
@@ -1287,6 +1574,36 @@ export function evaluateObservedCapabilityRequests(
       "The second synthetic planner call did not consume the first host result.",
     );
   }
+  if (!options.plannerReadObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The native thread did not consume an exact planner.read result.",
+    );
+  }
+  if (!options.workerWaitCallObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The owning native thread did not issue the exact bounded wait_agent call.",
+    );
+  }
+  if (!options.workerWaitResultObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The owning native thread did not receive the exact successful wait_agent result.",
+    );
+  }
+  if (!options.workerResultObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The owning native thread did not receive the spawned worker report.",
+    );
+  }
+  if (!options.userInputRoundTripObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The native request_user_input answer did not return to the owning thread.",
+    );
+  }
   const unexpectedRpcMethods = [...new Set(options.unexpectedRpcMethods ?? [])].sort();
   if (unexpectedRpcMethods.length > 0) {
     throw new CodexCapabilityProbeError(
@@ -1296,15 +1613,22 @@ export function evaluateObservedCapabilityRequests(
   }
   return Object.freeze({
     researchWebSearchMode: CODEX_FOLLOW_UP_RESEARCH_WEB_SEARCH_MODE,
-    researchTools: Object.freeze(researchNames),
-    plannerTools: Object.freeze(expectedPlanner),
+    researchTools: Object.freeze([...CODEX_FOLLOW_UP_TOOL_MANIFESTS.research]),
+    plannerTools: Object.freeze([...CODEX_FOLLOW_UP_TOOL_MANIFESTS.planner]),
+    workerTools: Object.freeze([...workerNames]),
     plannerNamespaceMembers: Object.freeze([
       ...CODEX_FOLLOW_UP_TOOL_MANIFESTS.plannerNamespace,
     ]),
     forbiddenHits: Object.freeze(forbiddenHits),
     unexpectedRpcMethods: Object.freeze(unexpectedRpcMethods),
+    plannerReadObserved: true,
+    workerWaitCallObserved: true,
+    workerWaitResultObserved: true,
+    workerResultObserved: true,
+    userInputRoundTripObserved: true,
     dependentResultObserved: true,
     outboundPolicyRejected: true,
+    approvalPolicy: "never",
     permissionProfile: ":read-only",
     effectiveSandbox: "read-only-network-disabled",
     probeRuntimeFiles: Object.freeze([...(options.probeRuntimeFiles ?? [])]),
@@ -1499,6 +1823,7 @@ export async function runDisposableCapabilityProbe(
       child,
       new Set(CODEX_FOLLOW_UP_RPC_POLICY.clientRequests),
       new Set(CODEX_FOLLOW_UP_RPC_POLICY.serverRequests),
+      options.signal,
     );
     await initializeClient(client, timeoutMs);
     const permissionProfiles = await collectPaginated(
@@ -1509,39 +1834,129 @@ export async function runDisposableCapabilityProbe(
     );
     assertReadOnlyPermissionProfiles(permissionProfiles, "PROBE_CAPABILITY");
 
-    const researchResult = await client.request("thread/start", {
-      ...commonProbeThread(deployment.appCwd, "live"),
-      dynamicTools: [],
-    }, timeoutMs);
-    const researchThreadId = assertReadOnlyThread(researchResult, deployment.appCwd, "PROBE_CAPABILITY");
-    const researchTurn = await client.request("turn/start", {
-      threadId: researchThreadId,
-      input: turnInput("RESEARCH_CONTEXT_PROBE: finish without calling a tool"),
-    }, timeoutMs);
-    const researchTurnId = resultTurnId(researchTurn);
-    assertCompletedTurnNotification(
-      await client.waitFor((message) => messageMethod(message, "turn/completed"), timeoutMs),
-      researchThreadId,
-      researchTurnId,
-    );
-    await client.request("thread/unsubscribe", { threadId: researchThreadId }, timeoutMs);
-
-    const plannerResult = await client.request("thread/start", {
-      ...commonProbeThread(deployment.appCwd, "disabled"),
+    const nativeResult = await client.request("thread/start", {
+      ...commonProbeThread(deployment.appCwd),
       dynamicTools: [PLANNER_DYNAMIC_TOOL_NAMESPACE],
     }, timeoutMs);
-    const plannerThreadId = assertReadOnlyThread(plannerResult, deployment.appCwd, "PROBE_CAPABILITY");
-    const plannerTurn = await client.request("turn/start", {
-      threadId: plannerThreadId,
-      input: turnInput("PLANNER_DEPENDENCY_PROBE: preview then apply"),
-    }, timeoutMs);
-    const plannerTurnId = resultTurnId(plannerTurn);
+    const nativeThreadId = assertReadOnlyThread(nativeResult, deployment.appCwd, "PROBE_CAPABILITY");
+    const nativeTurn = await provider.guard(client.request("turn/start", {
+      threadId: nativeThreadId,
+      input: turnInput(
+        "NATIVE_THREAD_CAPABILITY_PROBE: spawn one worker, ask one question, then read, preview, and apply",
+      ),
+    }, timeoutMs));
+    const nativeTurnId = resultTurnId(nativeTurn);
 
-    const callA = await client.waitFor((message) => messageMethod(message, "item/tool/call"), timeoutMs);
+    const workerActivity = await provider.guard(client.waitFor((message) => {
+      const params = isObject(message.params) ? message.params : null;
+      const item = params && isObject(params.item) ? params.item : null;
+      return message.method === "item/completed" &&
+        stringProperty(params, "threadId") === nativeThreadId &&
+        stringProperty(params, "turnId") === nativeTurnId &&
+        Number.isSafeInteger(params?.completedAtMs) &&
+        stringProperty(item, "type") === "subAgentActivity" &&
+        stringProperty(item, "id") === "root-spawn" &&
+        stringProperty(item, "kind") === "started";
+    }, timeoutMs, "the spawned worker activity"));
+    const workerActivityParams = isObject(workerActivity.params) ? workerActivity.params : null;
+    const workerActivityItem = workerActivityParams && isObject(workerActivityParams.item)
+      ? workerActivityParams.item
+      : null;
+    const workerThreadId = workerActivityItem
+      ? stringProperty(workerActivityItem, "agentThreadId")
+      : null;
+    const workerPath = workerActivityItem
+      ? stringProperty(workerActivityItem, "agentPath")
+      : null;
+    if (!workerThreadId || workerThreadId === nativeThreadId || !workerPath) {
+      throw new CodexCapabilityProbeError(
+        "PROBE_PROTOCOL",
+        "The native thread did not publish an exact spawned-worker activity.",
+      );
+    }
+    const workerRead = await provider.guard(client.request("thread/read", {
+      threadId: workerThreadId,
+      includeTurns: false,
+    }, timeoutMs));
+    const workerThread = isObject(workerRead) && isObject(workerRead.thread)
+      ? workerRead.thread
+      : null;
+    if (
+      stringProperty(workerThread, "id") !== workerThreadId ||
+      stringProperty(workerThread, "parentThreadId") !== nativeThreadId ||
+      stringProperty(workerThread, "cwd") !== deployment.appCwd
+    ) {
+      throw new CodexCapabilityProbeError(
+        "PROBE_PROTOCOL",
+        "thread/read did not bind the spawned worker to its exact parent and cwd.",
+      );
+    }
+
+    const inputRequest = await provider.guard(client.waitFor(
+      (message) => messageMethod(message, "item/tool/requestUserInput"),
+      timeoutMs,
+      "the request_user_input callback",
+    ));
+    const inputParams = isObject(inputRequest.params) ? inputRequest.params : null;
+    const questions = inputParams ? arrayProperty(inputParams, "questions") : [];
+    const question = questions.length === 1 && isObject(questions[0]) ? questions[0] : null;
+    const optionsForQuestion = question ? arrayProperty(question, "options") : [];
+    const onlyOption = optionsForQuestion.length === 1 && isObject(optionsForQuestion[0])
+      ? optionsForQuestion[0]
+      : null;
+    if (
+      stringProperty(inputParams, "threadId") !== nativeThreadId ||
+      stringProperty(inputParams, "turnId") !== nativeTurnId ||
+      stringProperty(inputParams, "itemId") === null ||
+      stringProperty(question, "id") !== "question-capability" ||
+      stringProperty(question, "header") !== "Probe" ||
+      stringProperty(question, "question") !== "Continue the compatibility probe?" ||
+      stringProperty(onlyOption, "label") !== "Continue" ||
+      stringProperty(onlyOption, "description") !== "Continue the deterministic probe."
+    ) {
+      throw new CodexCapabilityProbeError(
+        "PROBE_PROTOCOL",
+        "The native request_user_input request changed identity or bounded question shape.",
+      );
+    }
+    client.respond(inputRequest, {
+      answers: { "question-capability": { answers: ["Continue"] } },
+    });
+
+    const readCall = await provider.guard(client.waitFor(
+      (message) => messageMethod(message, "item/tool/call"),
+      timeoutMs,
+      "the planner.read callback",
+    ));
+    const readArguments = isObject(readCall.params) ? readCall.params.arguments : null;
+    if (
+      stringProperty(readCall.params, "threadId") !== nativeThreadId ||
+      stringProperty(readCall.params, "turnId") !== nativeTurnId ||
+      stringProperty(readCall.params, "callId") !== "call-read" ||
+      stringProperty(readCall.params, "namespace") !== "planner" ||
+      stringProperty(readCall.params, "tool") !== "read" ||
+      !isPlannerReadArguments(readArguments) ||
+      canonicalText(readArguments) !== canonicalText(PLANNER_PROBE_READ_ARGUMENTS)
+    ) {
+      throw new CodexCapabilityProbeError(
+        "PROBE_PROTOCOL",
+        "Synthetic planner read changed identity or canonical arguments.",
+      );
+    }
+    client.respond(readCall, {
+      success: true,
+      contentItems: [{ type: "inputText", text: PLANNER_PROBE_READ_RESULT_TEXT }],
+    });
+
+    const callA = await provider.guard(client.waitFor(
+      (message) => messageMethod(message, "item/tool/call"),
+      timeoutMs,
+      "the planner.preview callback",
+    ));
     const callAArguments = isObject(callA.params) ? callA.params.arguments : null;
     if (
-      stringProperty(callA.params, "threadId") !== plannerThreadId ||
-      stringProperty(callA.params, "turnId") !== plannerTurnId ||
+      stringProperty(callA.params, "threadId") !== nativeThreadId ||
+      stringProperty(callA.params, "turnId") !== nativeTurnId ||
       stringProperty(callA.params, "callId") !== "call-A" ||
       stringProperty(callA.params, "namespace") !== "planner" ||
       stringProperty(callA.params, "tool") !== "preview" ||
@@ -1558,13 +1973,17 @@ export async function runDisposableCapabilityProbe(
       contentItems: [{ type: "inputText", text: PLANNER_PROBE_PREVIEW_RESULT_TEXT }],
     });
 
-    const callB = await client.waitFor((message) => messageMethod(message, "item/tool/call"), timeoutMs);
+    const callB = await provider.guard(client.waitFor(
+      (message) => messageMethod(message, "item/tool/call"),
+      timeoutMs,
+      "the planner.apply callback",
+    ));
     const callBArguments = isObject(callB.params) && isObject(callB.params.arguments)
       ? callB.params.arguments
       : null;
     const dependentResultObserved =
-      stringProperty(callB.params, "threadId") === plannerThreadId &&
-      stringProperty(callB.params, "turnId") === plannerTurnId &&
+      stringProperty(callB.params, "threadId") === nativeThreadId &&
+      stringProperty(callB.params, "turnId") === nativeTurnId &&
       stringProperty(callB.params, "callId") === "call-B" &&
       stringProperty(callB.params, "namespace") === "planner" &&
       stringProperty(callB.params, "tool") === "apply" &&
@@ -1579,11 +1998,16 @@ export async function runDisposableCapabilityProbe(
       contentItems: [{ type: "inputText", text: PLANNER_PROBE_APPLY_RESULT_TEXT }],
     });
     assertCompletedTurnNotification(
-      await client.waitFor((message) => messageMethod(message, "turn/completed"), timeoutMs),
-      plannerThreadId,
-      plannerTurnId,
+      await provider.guard(client.waitFor((message) => {
+        if (!messageMethod(message, "turn/completed") || !isObject(message.params) ||
+            !isObject(message.params.turn)) return false;
+        return stringProperty(message.params.turn, "id") === nativeTurnId;
+      }, timeoutMs, "the terminal native turn")),
+      nativeThreadId,
+      nativeTurnId,
     );
-    await client.request("thread/unsubscribe", { threadId: plannerThreadId }, timeoutMs);
+    await client.request("thread/unsubscribe", { threadId: workerThreadId }, timeoutMs);
+    await client.request("thread/unsubscribe", { threadId: nativeThreadId }, timeoutMs);
 
     // The client policy must reject a dangerous method locally without putting
     // it on the app-server channel.
@@ -1601,10 +2025,27 @@ export async function runDisposableCapabilityProbe(
     client.assertHealthy();
     if (provider.ingress.failure) throw provider.ingress.failure;
 
+    const workerObserved = provider.workerRequestObserved();
+    if (!workerObserved) {
+      throw new CodexCapabilityProbeError(
+        "PROBE_CAPABILITY",
+        "The spawned worker never reached the local provider.",
+      );
+    }
+    await writeFile(join(probeHome, UNIFIED_CAPABILITY_MARKER_FILE), "v1\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
     const runtimeFiles = await inventoryRelativeFiles(probeHome);
     const providerRequests = Object.freeze([...provider.requests]);
     return evaluateObservedCapabilityRequests(providerRequests, {
       dependentResultObserved,
+      plannerReadObserved: provider.plannerReadObserved(),
+      workerWaitCallObserved: provider.workerWaitCallObserved(),
+      workerWaitResultObserved: provider.workerWaitResultObserved(),
+      workerResultObserved: provider.workerResultObserved(),
+      userInputRoundTripObserved: provider.userInputRoundTripObserved(),
       permissionProfileVerified: true,
       outboundPolicyRejected: policyRejected,
       unexpectedRpcMethods: client.unexpectedServerRequests,
@@ -1921,6 +2362,7 @@ export async function readActualCodexDeployment(
       ...CODEX_FOLLOW_UP_RPC_POLICY.readinessRequests,
     ]),
     new Set(),
+    options.signal,
   );
   try {
     await initializeClient(client, timeoutMs);

@@ -230,13 +230,31 @@ const plannerCommandFieldGuide = Object.entries(HOUSEHOLD_COMMAND_REGISTRY)
     `${type}[${entry.schema.required.filter((field) => field !== "type").join(",")}]`)
   .join("; ");
 
+const readQueryFieldGuide = readQuerySchema.oneOf
+  .map((query) => {
+    const required = query.required as readonly string[];
+    const optional = Object.keys(query.properties).filter((field) =>
+      !required.includes(field)
+    );
+    return `${query.properties.kind.const}[${required.join(",")}${
+      optional.length > 0 ? `; optional ${optional.join(",")}` : ""
+    }]`;
+  })
+  .join("; ");
+
+// Keep apply below Codex 0.142.5's 4,000-byte normalized-schema compaction
+// boundary without weakening host authority. The model sees every readback
+// discriminator and the generated field guide above; isReadQuery remains the
+// canonical validator for fields, types, limits, optionality, and extras.
 const readQueryModelSchema = {
   type: "object",
   required: ["kind"],
-  oneOf: readQuerySchema.oneOf.map((query) => ({
-    required: query.required.filter((field) => field !== "kind"),
-    properties: { kind: query.properties.kind },
-  })),
+  properties: {
+    kind: {
+      type: "string",
+      enum: readQuerySchema.oneOf.map((query) => query.properties.kind.const),
+    },
+  },
 } as const;
 
 const plannerOperationSchema = {
@@ -301,7 +319,7 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
         "Atomically apply one ordered operation batch and return one readback. Example grocery update: " +
         "{command:{type:'updateGroceryItem',weekId:'...',itemId:'...',changes:{" +
         "section:'Pantry',item:'Rice',detail:'2 bags',farmBox:false}}}. Required fields by type: " +
-        plannerCommandFieldGuide,
+        plannerCommandFieldGuide + ". Readback fields by kind: " + readQueryFieldGuide + ".",
       inputSchema: {
         type: "object",
         additionalProperties: false,

@@ -1,5 +1,108 @@
 const objectSchema = () => ({ type: "object", properties: {} });
 
+const taggedItem = (type, required, properties = {}) => ({
+  type: "object",
+  required,
+  properties: {
+    ...properties,
+    type: { type: "string", enum: [type] },
+  },
+});
+
+const nativeThreadDefinitions = () => ({
+  CollabAgentTool: {
+    type: "string",
+    enum: ["spawnAgent", "sendInput", "resumeAgent", "wait", "closeAgent"],
+  },
+  SubAgentActivityKind: {
+    type: "string",
+    enum: ["started", "interacted", "interrupted"],
+  },
+  ThreadItem: {
+    oneOf: [
+      taggedItem("userMessage", ["content", "id", "type"], {
+        content: { type: "array" }, id: { type: "string" },
+      }),
+      taggedItem("agentMessage", ["id", "text", "type"], {
+        id: { type: "string" }, text: { type: "string" }, phase: { type: ["string", "null"] },
+      }),
+      taggedItem("plan", ["id", "text", "type"], {
+        id: { type: "string" }, text: { type: "string" },
+      }),
+      taggedItem("reasoning", ["id", "type"], {
+        id: { type: "string" },
+        summary: { type: "array", items: { type: "string" } },
+        content: { type: "array", items: { type: "string" } },
+      }),
+      taggedItem("dynamicToolCall", ["arguments", "id", "status", "tool", "type"], {
+        arguments: true, id: { type: "string" }, status: { type: "string" }, tool: { type: "string" },
+      }),
+      taggedItem(
+        "collabAgentToolCall",
+        ["agentsStates", "id", "receiverThreadIds", "senderThreadId", "status", "tool", "type"],
+        {
+          agentsStates: { type: "object" }, id: { type: "string" },
+          receiverThreadIds: { type: "array" }, senderThreadId: { type: "string" },
+          status: { type: "string" }, tool: { $ref: "#/definitions/CollabAgentTool" },
+        },
+      ),
+      taggedItem("subAgentActivity", ["agentPath", "agentThreadId", "id", "kind", "type"], {
+        agentPath: { type: "string" }, agentThreadId: { type: "string" }, id: { type: "string" },
+        kind: { $ref: "#/definitions/SubAgentActivityKind" },
+      }),
+      taggedItem("webSearch", ["id", "query", "type"], {
+        id: { type: "string" }, query: { type: "string" },
+      }),
+      taggedItem("contextCompaction", ["id", "type"], { id: { type: "string" } }),
+    ],
+  },
+  Turn: {
+    type: "object",
+    required: ["id", "items", "status"],
+    properties: {
+      id: { type: "string" },
+      items: { type: "array", items: { $ref: "#/definitions/ThreadItem" } },
+      status: { type: "string" },
+    },
+  },
+  Thread: {
+    type: "object",
+    required: [
+      "createdAt", "cwd", "ephemeral", "id", "preview", "source", "status", "turns", "updatedAt",
+    ],
+    properties: {
+      createdAt: { type: "integer" }, cwd: { type: "string" }, ephemeral: { type: "boolean" },
+      id: { type: "string" }, name: { type: ["string", "null"] },
+      parentThreadId: { type: ["string", "null"] }, preview: { type: "string" },
+      source: { type: "string" }, status: { type: "object" },
+      turns: { type: "array", items: { $ref: "#/definitions/Turn" } },
+      updatedAt: { type: "integer" },
+    },
+  },
+});
+
+const methodEnvelope = (method, definition, request = false) => ({
+  type: "object",
+  required: request ? ["id", "method", "params"] : ["method", "params"],
+  properties: {
+    ...(request ? { id: { type: ["integer", "string"] } } : {}),
+    method: { type: "string", enum: [method] },
+    params: { $ref: `#/definitions/${definition}` },
+  },
+});
+
+const lifecycleNotification = (required, definitions = undefined) => ({
+  type: "object",
+  required,
+  properties: Object.fromEntries(required.map((key) => [
+    key,
+    key.endsWith("AtMs") || key === "summaryIndex" ? { type: "integer" } :
+      key === "item" || key === "thread" || key === "turn" || key === "status" ? {} :
+        { type: "string" },
+  ])),
+  ...(definitions ? { definitions } : {}),
+});
+
 export const LEGACY_SIMPLIFIED_PLANNER_NAMESPACE_FIXTURE = Object.freeze({
   type: "namespace",
   name: "planner",
@@ -200,6 +303,7 @@ export function projectDynamicToolSpecsForProvider(dynamicTools) {
 export const REQUIRED_CODEX_SCHEMA_FILES = Object.freeze([
   "v1/InitializeParams.json",
   "ServerNotification.json",
+  "ServerRequest.json",
   "v1/InitializeResponse.json",
   "v2/GetAccountParams.json",
   "v2/GetAccountResponse.json",
@@ -215,17 +319,46 @@ export const REQUIRED_CODEX_SCHEMA_FILES = Object.freeze([
   "v2/AppsListResponse.json",
   "v2/PluginListParams.json",
   "v2/PluginListResponse.json",
+  "v2/ThreadListParams.json",
+  "v2/ThreadListResponse.json",
+  "v2/ThreadReadParams.json",
+  "v2/ThreadReadResponse.json",
+  "v2/ThreadResumeParams.json",
+  "v2/ThreadResumeResponse.json",
   "v2/ThreadStartParams.json",
   "v2/ThreadStartResponse.json",
+  "v2/ThreadArchiveParams.json",
+  "v2/ThreadArchiveResponse.json",
   "v2/ThreadUnsubscribeParams.json",
   "v2/ThreadUnsubscribeResponse.json",
   "v2/TurnStartParams.json",
   "v2/TurnStartResponse.json",
+  "v2/TurnSteerParams.json",
+  "v2/TurnSteerResponse.json",
   "v2/TurnInterruptParams.json",
   "v2/TurnInterruptResponse.json",
+  "ToolRequestUserInputParams.json",
+  "ToolRequestUserInputResponse.json",
+  "CommandExecutionRequestApprovalParams.json",
+  "CommandExecutionRequestApprovalResponse.json",
+  "FileChangeRequestApprovalParams.json",
+  "FileChangeRequestApprovalResponse.json",
+  "PermissionsRequestApprovalParams.json",
+  "PermissionsRequestApprovalResponse.json",
   "DynamicToolCallParams.json",
   "DynamicToolCallResponse.json",
+  "v2/ThreadStartedNotification.json",
+  "v2/ThreadStatusChangedNotification.json",
+  "v2/ThreadArchivedNotification.json",
+  "v2/ThreadNameUpdatedNotification.json",
+  "v2/TurnStartedNotification.json",
+  "v2/ItemStartedNotification.json",
+  "v2/AgentMessageDeltaNotification.json",
+  "v2/PlanDeltaNotification.json",
+  "v2/ReasoningSummaryPartAddedNotification.json",
+  "v2/ReasoningSummaryTextDeltaNotification.json",
   "v2/ItemCompletedNotification.json",
+  "v2/ServerRequestResolvedNotification.json",
   "v2/TurnCompletedNotification.json",
   "v2/ErrorNotification.json",
 ]);
@@ -271,21 +404,51 @@ export function createCodexSchemaDocuments(variant = "compatible-a") {
   };
   documents["ServerNotification.json"] = {
     type: "object",
-    oneOf: [
-      ["account/login/completed", "AccountLoginCompletedNotification"],
-      ["remoteControl/status/changed", "RemoteControlStatusChangedNotification"],
-    ].map(([method, definition]) => ({
-      type: "object",
-      required: ["method", "params"],
-      properties: {
-        method: { type: "string", enum: [method] },
-        params: { $ref: `#/definitions/${definition}` },
-      },
-    })),
-    definitions: {
-      AccountLoginCompletedNotification: { type: "object" },
-      RemoteControlStatusChangedNotification: { type: "object" },
-    },
+    oneOf: Object.entries({
+      error: "ErrorNotification",
+      "thread/started": "ThreadStartedNotification",
+      "thread/status/changed": "ThreadStatusChangedNotification",
+      "thread/archived": "ThreadArchivedNotification",
+      "thread/name/updated": "ThreadNameUpdatedNotification",
+      "turn/started": "TurnStartedNotification",
+      "item/started": "ItemStartedNotification",
+      "item/agentMessage/delta": "AgentMessageDeltaNotification",
+      "item/plan/delta": "PlanDeltaNotification",
+      "item/reasoning/summaryPartAdded": "ReasoningSummaryPartAddedNotification",
+      "item/reasoning/summaryTextDelta": "ReasoningSummaryTextDeltaNotification",
+      "item/completed": "ItemCompletedNotification",
+      "serverRequest/resolved": "ServerRequestResolvedNotification",
+      "turn/completed": "TurnCompletedNotification",
+      "account/login/completed": "AccountLoginCompletedNotification",
+      "remoteControl/status/changed": "RemoteControlStatusChangedNotification",
+    }).map(([method, definition]) => methodEnvelope(method, definition)),
+    definitions: Object.fromEntries([
+      "ErrorNotification", "ThreadStartedNotification", "ThreadStatusChangedNotification",
+      "ThreadArchivedNotification", "ThreadNameUpdatedNotification", "TurnStartedNotification",
+      "ItemStartedNotification", "AgentMessageDeltaNotification", "PlanDeltaNotification",
+      "ReasoningSummaryPartAddedNotification", "ReasoningSummaryTextDeltaNotification",
+      "ItemCompletedNotification", "ServerRequestResolvedNotification", "TurnCompletedNotification",
+      "AccountLoginCompletedNotification", "RemoteControlStatusChangedNotification",
+    ].map((definition) => [definition, { type: "object" }])),
+  };
+  documents["ServerRequest.json"] = {
+    type: "object",
+    oneOf: Object.entries({
+      "item/commandExecution/requestApproval": "CommandExecutionRequestApprovalParams",
+      "item/fileChange/requestApproval": "FileChangeRequestApprovalParams",
+      "item/tool/requestUserInput": "ToolRequestUserInputParams",
+      "mcpServer/elicitation/request": "McpServerElicitationRequestParams",
+      "item/permissions/requestApproval": "PermissionsRequestApprovalParams",
+      "item/tool/call": "DynamicToolCallParams",
+      applyPatchApproval: "ApplyPatchApprovalParams",
+      execCommandApproval: "ExecCommandApprovalParams",
+    }).map(([method, definition]) => methodEnvelope(method, definition, true)),
+    definitions: Object.fromEntries([
+      "CommandExecutionRequestApprovalParams", "FileChangeRequestApprovalParams",
+      "ToolRequestUserInputParams", "McpServerElicitationRequestParams",
+      "PermissionsRequestApprovalParams", "DynamicToolCallParams", "ApplyPatchApprovalParams",
+      "ExecCommandApprovalParams",
+    ].map((definition) => [definition, { type: "object" }])),
   };
   documents["v2/ThreadStartParams.json"] = {
     type: "object",
@@ -356,6 +519,66 @@ export function createCodexSchemaDocuments(variant = "compatible-a") {
     required: ["marketplaces"],
     properties: { marketplaces: { type: "array" } },
   };
+  documents["v2/ThreadListParams.json"] = {
+    type: "object",
+    properties: {
+      archived: { type: ["boolean", "null"] },
+      cursor: { type: ["string", "null"] },
+      cwd: { type: ["string", "null"] },
+      limit: { type: ["integer", "null"] },
+      parentThreadId: { type: ["string", "null"] },
+      sourceKinds: { type: ["array", "null"], items: { type: "string" } },
+    },
+  };
+  documents["v2/ThreadListResponse.json"] = {
+    type: "object",
+    required: ["data"],
+    properties: {
+      data: { type: "array", items: { $ref: "#/definitions/Thread" } },
+      nextCursor: { type: ["string", "null"] },
+      backwardsCursor: { type: ["string", "null"] },
+    },
+    definitions: nativeThreadDefinitions(),
+  };
+  documents["v2/ThreadReadParams.json"] = {
+    type: "object",
+    required: ["threadId"],
+    properties: {
+      includeTurns: { type: "boolean" },
+      threadId: { type: "string" },
+    },
+  };
+  documents["v2/ThreadReadResponse.json"] = {
+    type: "object",
+    required: ["thread"],
+    properties: { thread: { $ref: "#/definitions/Thread" } },
+    definitions: nativeThreadDefinitions(),
+  };
+  documents["v2/ThreadResumeParams.json"] = {
+    type: "object",
+    required: ["threadId"],
+    properties: {
+      config: { type: ["object", "null"] },
+      cwd: { type: ["string", "null"] },
+      permissions: { type: ["string", "null"] },
+      sandbox: { type: ["string", "null"] },
+      threadId: { type: "string" },
+    },
+  };
+  documents["v2/ThreadResumeResponse.json"] = {
+    type: "object",
+    required: ["approvalPolicy", "approvalsReviewer", "cwd", "sandbox", "thread"],
+    properties: {
+      activePermissionProfile: { type: ["object", "null"] },
+      approvalPolicy: { type: "string" },
+      approvalsReviewer: { type: "string" },
+      cwd: { type: "string" },
+      instructionSources: { type: "array" },
+      sandbox: { type: "object" },
+      thread: { $ref: "#/definitions/Thread" },
+    },
+    definitions: nativeThreadDefinitions(),
+  };
   documents["v2/ThreadStartResponse.json"] = {
     type: "object",
     required: ["approvalPolicy", "cwd", "sandbox", "thread"],
@@ -373,13 +596,21 @@ export function createCodexSchemaDocuments(variant = "compatible-a") {
     required: ["threadId"],
     properties: { threadId: { type: "string" } },
   };
+  documents["v2/ThreadArchiveParams.json"] = {
+    type: "object",
+    required: ["threadId"],
+    properties: { threadId: { type: "string" } },
+  };
+  documents["v2/ThreadArchiveResponse.json"] = objectSchema();
   documents["v2/TurnStartParams.json"] = {
     type: "object",
     required: variant === "incompatible-required" ? ["input"] : ["input", "threadId"],
     properties: {
       input: { type: "array" },
       threadId: { type: "string" },
+      clientUserMessageId: { type: ["string", "null"] },
       cwd: { type: ["string", "null"] },
+      effort: { type: ["string", "null"] },
       environments: { type: ["array", "null"] },
       permissions: { type: ["string", "null"] },
     },
@@ -389,10 +620,110 @@ export function createCodexSchemaDocuments(variant = "compatible-a") {
     required: ["turn"],
     properties: { turn: { type: "object" } },
   };
+  documents["v2/TurnSteerParams.json"] = {
+    type: "object",
+    required: ["expectedTurnId", "input", "threadId"],
+    properties: {
+      clientUserMessageId: { type: ["string", "null"] },
+      expectedTurnId: { type: "string" },
+      input: { type: "array" },
+      threadId: { type: "string" },
+    },
+  };
+  documents["v2/TurnSteerResponse.json"] = {
+    type: "object",
+    required: ["turnId"],
+    properties: { turnId: { type: "string" } },
+  };
   documents["v2/TurnInterruptParams.json"] = {
     type: "object",
     required: ["threadId", "turnId"],
     properties: { threadId: { type: "string" }, turnId: { type: "string" } },
+  };
+  documents["ToolRequestUserInputParams.json"] = {
+    type: "object",
+    required: ["itemId", "questions", "threadId", "turnId"],
+    properties: {
+      autoResolutionMs: { type: ["integer", "null"] },
+      itemId: { type: "string" },
+      questions: { type: "array", items: { $ref: "#/definitions/ToolRequestUserInputQuestion" } },
+      threadId: { type: "string" },
+      turnId: { type: "string" },
+    },
+    definitions: {
+      ToolRequestUserInputQuestion: {
+        type: "object",
+        required: ["header", "id", "question"],
+        properties: {
+          header: { type: "string" }, id: { type: "string" }, question: { type: "string" },
+          isOther: { type: "boolean" }, isSecret: { type: "boolean" },
+          options: { type: ["array", "null"], items: { $ref: "#/definitions/ToolRequestUserInputOption" } },
+        },
+      },
+      ToolRequestUserInputOption: {
+        type: "object",
+        required: ["description", "label"],
+        properties: { description: { type: "string" }, label: { type: "string" } },
+      },
+    },
+  };
+  documents["ToolRequestUserInputResponse.json"] = {
+    type: "object",
+    required: ["answers"],
+    properties: {
+      answers: {
+        type: "object",
+        additionalProperties: { $ref: "#/definitions/ToolRequestUserInputAnswer" },
+      },
+    },
+    definitions: {
+      ToolRequestUserInputAnswer: {
+        type: "object",
+        required: ["answers"],
+        properties: { answers: { type: "array", items: { type: "string" } } },
+      },
+    },
+  };
+  for (const [file, required] of Object.entries({
+    "CommandExecutionRequestApprovalParams.json": ["itemId", "startedAtMs", "threadId", "turnId"],
+    "FileChangeRequestApprovalParams.json": ["itemId", "startedAtMs", "threadId", "turnId"],
+    "PermissionsRequestApprovalParams.json": [
+      "cwd", "itemId", "permissions", "startedAtMs", "threadId", "turnId",
+    ],
+  })) {
+    documents[file] = {
+      type: "object",
+      required,
+      properties: Object.fromEntries(required.map((key) => [
+        key,
+        key === "startedAtMs" ? { type: "integer" } :
+          key === "permissions" ? { type: "object" } : { type: "string" },
+      ])),
+    };
+  }
+  for (const [file, definition] of Object.entries({
+    "CommandExecutionRequestApprovalResponse.json": "CommandExecutionApprovalDecision",
+    "FileChangeRequestApprovalResponse.json": "FileChangeApprovalDecision",
+  })) {
+    documents[file] = {
+      type: "object",
+      required: ["decision"],
+      properties: { decision: { $ref: `#/definitions/${definition}` } },
+      definitions: {
+        [definition]: {
+          oneOf: [
+            { type: "string", enum: ["accept"] },
+            { type: "string", enum: ["decline"] },
+            { type: "string", enum: ["cancel"] },
+          ],
+        },
+      },
+    };
+  }
+  documents["PermissionsRequestApprovalResponse.json"] = {
+    type: "object",
+    required: ["permissions"],
+    properties: { permissions: { type: "object" } },
   };
   documents["DynamicToolCallParams.json"] = {
     type: "object",
@@ -431,16 +762,51 @@ export function createCodexSchemaDocuments(variant = "compatible-a") {
       },
     },
   };
-  documents["v2/ItemCompletedNotification.json"] = {
+  const nativeDefinitions = nativeThreadDefinitions();
+  documents["v2/ThreadStartedNotification.json"] = lifecycleNotification(
+    ["thread"], nativeDefinitions,
+  );
+  documents["v2/ThreadStatusChangedNotification.json"] = lifecycleNotification(
+    ["status", "threadId"],
+  );
+  documents["v2/ThreadArchivedNotification.json"] = lifecycleNotification(["threadId"]);
+  documents["v2/ThreadNameUpdatedNotification.json"] = {
     type: "object",
-    required: ["completedAtMs", "item", "threadId", "turnId"],
-    properties: { completedAtMs: { type: "integer" }, item: {}, threadId: { type: "string" }, turnId: { type: "string" } },
+    required: ["threadId"],
+    properties: { threadId: { type: "string" }, threadName: { type: ["string", "null"] } },
   };
-  documents["v2/TurnCompletedNotification.json"] = {
+  documents["v2/TurnStartedNotification.json"] = lifecycleNotification(
+    ["threadId", "turn"], nativeThreadDefinitions(),
+  );
+  documents["v2/ItemStartedNotification.json"] = lifecycleNotification(
+    ["item", "startedAtMs", "threadId", "turnId"], nativeThreadDefinitions(),
+  );
+  documents["v2/AgentMessageDeltaNotification.json"] = lifecycleNotification(
+    ["delta", "itemId", "threadId", "turnId"],
+  );
+  documents["v2/PlanDeltaNotification.json"] = lifecycleNotification(
+    ["delta", "itemId", "threadId", "turnId"],
+  );
+  documents["v2/ReasoningSummaryPartAddedNotification.json"] = lifecycleNotification(
+    ["itemId", "summaryIndex", "threadId", "turnId"],
+  );
+  documents["v2/ReasoningSummaryTextDeltaNotification.json"] = lifecycleNotification(
+    ["delta", "itemId", "summaryIndex", "threadId", "turnId"],
+  );
+  documents["v2/ItemCompletedNotification.json"] = lifecycleNotification(
+    ["completedAtMs", "item", "threadId", "turnId"], nativeThreadDefinitions(),
+  );
+  documents["v2/ServerRequestResolvedNotification.json"] = {
     type: "object",
-    required: ["threadId", "turn"],
-    properties: { threadId: { type: "string" }, turn: {} },
+    required: ["requestId", "threadId"],
+    properties: {
+      requestId: { type: ["integer", "string"] },
+      threadId: { type: "string" },
+    },
   };
+  documents["v2/TurnCompletedNotification.json"] = lifecycleNotification(
+    ["threadId", "turn"], nativeThreadDefinitions(),
+  );
   documents["v2/ErrorNotification.json"] = {
     type: "object",
     required: ["error", "threadId", "turnId", "willRetry"],

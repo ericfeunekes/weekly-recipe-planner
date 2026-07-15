@@ -29,8 +29,12 @@ The operator contract is frozen as follows:
 2. Record and verify SHA-256, byte length, schema version, creation time, and a
    successful `PRAGMA quick_check` in a closed manifest.
 3. Prove full-table identity, including planner state, events and undo bodies,
-   command receipts, transcript and chat rows, research references, tool-call
-   ledgers, and accepted-effect ledgers.
+   command receipts, the selected native-thread pointer/revision, research
+   references, tool-call ledgers, and accepted-effect ledgers. Legacy
+   transcript/chat rows belong only to the separate immutable pre-migration
+   backup and are not restored into a conforming live store. Native Codex
+   thread/item history lives in the retained agent home and is not claimed as
+   part of the planner database backup.
 4. Restore only while the planner authority is exclusively stopped and locked.
    Refuse a live writer instead of racing it.
 5. Preserve an existing target before replacement and use compare-and-swap

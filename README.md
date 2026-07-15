@@ -15,44 +15,56 @@ leftovers, feedback, and recent changes on one shared surface.
   it never copies or reorders the recipe itself.
 - Checking a step in Prep checks it on the meal day, while removing its prep
   reference leaves the instruction and completion state intact.
-- Timer starts, notes, prep order, and the one shared household transcript
-  survive reopening and project consistently across clients.
+- Timer starts, notes, and prep order survive reopening and remain consistent
+  across clients. The target ChatGPT surface reads native Codex thread history
+  rather than persisting another transcript in planner state.
 - UI and Codex changes share event history and recent undo.
 - Grocery scope is weekly food only, with farm-box reconciliation.
 - Closeout preserves repeat/modify/drop feedback and a planning lesson.
 
 The app has one shared household surface without user accounts or private
-threads. **Add note** stores text on an instruction step; **Send to ChatGPT**
-posts the text and stable step context to the global transcript without also
-saving it as a note.
+threads. Multiple household-visible native Codex threads may exist, with one
+selected in the app at a time. **Add note** stores text on an instruction step;
+**Send to ChatGPT** posts the text and stable step context to the selected
+thread without also saving it as a note.
 
 ## Implementation Status
 
 The family runtime uses one local Node authority and one SQLite household
 workspace. It owns optimistic concurrency, idempotent requests, shared planner
-state, durable chat, history, and undo. The Vinext process renders the web
-surface but does not own household data.
+state, the currently implemented durable chat lifecycle, history, and undo. The
+Vinext process renders the web surface but does not own household data. The
+native-thread target below will retire the app transcript as conversation
+authority while retaining the planner effect ledger.
 
 Development and production have deliberately different HTTP topology. In
 development, Vinext is browser-facing and proxies `/api/*` to the authority. In
 production, the authority is the browser-facing front controller: it handles
 `/api/*` and proxies all other requests to a private Vinext process. See
 [the family-readiness plan](docs/family-readiness-remediation-plan.md) and
-[functional spine](docs/functional-spine.md). Diagnostic JSON is explicitly
+[functional spine](docs/functional-spine.md). The current embedded-agent target
+is defined by [the Codex planner runtime requirements](docs/codex-agent-runtime-follow-up-phase.md):
+a thin UI over native Codex thread history, exactly one app-wide selected
+top-level thread, native background workers, standalone/planner skills, hosted
+web search, and planner tools available together. Diagnostic JSON is explicitly
 non-restorable; the future host-only SQLite operator is scoped in
 [the data-recovery follow-up](docs/data-recovery-follow-up.md). Tailscale exposure and the
 authenticated activation of the expanded Codex runtime remain separate release
 gates.
 
-This worktree contains the unreleased single-path Codex follow-up candidate.
-The authority starts the updater-managed `$HOME/.local/bin/codex` app-server
-over stdio with a dedicated `CODEX_HOME` and fixed app cwd; it does not pin a
-Codex version or reuse normal `~/.codex` runtime state. Compatible updater
-changes re-run the generated-schema/capability gate, while incompatible or
-unauthenticated Codex state degrades chat only.
+This worktree contains the additive native Codex thread backend: a typed HTTP
+wrapper for native history/list/read/new/select/archive, start-versus-steer,
+interrupt, completed reasoning summaries, safe activity labels, workers,
+answerable listed-option questions with no free-form response channel, and separately typed blocked approvals. It
+also contains the unified updater-managed capability gate. The separately owned
+browser cutover still has to replace the Plan/Research selector and app-owned
+transcript with this API before an integrated candidate can be described or
+activated as satisfying the revised thread-wrapper requirements.
 
-Codex runs read-only with approvals disabled. OAuth credentials and the raw
-app-server protocol never enter the browser.
+The Codex process keeps approvals disabled and has no general write surface;
+planner mutations are available only through the strict host-owned dynamic
+tools. OAuth credentials and the raw app-server protocol never enter the
+browser.
 
 ## Run Locally
 
@@ -61,7 +73,9 @@ state remains usable without Codex; embedded chat becomes ready only when the
 private `PLANNER_CODEX_HOME` (default `$HOME/meal-planner/agent`) and fixed
 `PLANNER_CODEX_CWD` (default `$HOME/meal-planner/app`) pass deployment,
 provenance, capability, and dedicated ChatGPT-authentication checks. Normal
-`~/.codex` credentials are not the embedded credential surface. Install
+`~/.codex` credentials/config/plugins are not the embedded surface; the normal
+OS `HOME` remains available for standalone skill discovery under
+`~/.agents/skills`. Install
 dependencies and start the development runtime:
 
 ```bash
@@ -95,9 +109,10 @@ authority.
 
 ### Evidence-bound local release
 
-The expanded Codex candidate is installed through one host-only release
-transaction. Staging never selects the candidate and does not pin or package
-Codex. It resolves exact Node `22.15.0` through `mise` (or the canonical
+Any future candidate for the revised Codex requirements must be installed
+through the existing host-only release transaction. Staging never selects the
+candidate and does not pin or package Codex. The historical operator resolves
+exact Node `22.15.0` through `mise` (or the canonical
 absolute `PLANNER_NODE_FLOOR_EXECUTABLE`), performs a clean install, and runs
 lint plus the complete merge suite under that exact runtime before writing
 `stage.json`. The staged and canonical npm dependency graphs must match:
@@ -246,14 +261,15 @@ npm run probe:codex-follow-up -- \
   --output outputs/qa/<run-id>/codex-follow-up/current-binary.json
 ```
 
-The command uses a disposable private `CODEX_HOME` and empty fixed cwd. It
-generates and bounds the current protocol schema, verifies the exact
-`:read-only`/no-network policy, live-hosted-search and planner manifests, dependent
-dynamic calls, and empty MCP/app/plugin readback, then writes one redacted
-mode-`0600` artifact. It does not authenticate, copy credentials, or make chat
-ready. Existing output files are never overwritten. Every later
-app-server spawn revalidates the accepted updater target, dedicated config and
-instructions, absent system config, and empty project capability surface.
+The command uses a disposable private `CODEX_HOME`, generates and bounds the
+current thread list/read/start/resume/archive, turn start/steer/client-message,
+and parent/child protocol, validates the fixed read-only/no-network authority,
+and drives one deterministic native root through worker completion, a bounded
+question answer, and dependent planner calls. It records the exact observed
+worker provider-tool manifest and standalone-skill discovery metadata in one
+redacted mode-`0600` artifact. It does not authenticate, copy credentials, make
+chat ready, or by itself prove the separate browser cutover. Existing output
+files are never overwritten.
 
 ## Verify
 
@@ -276,15 +292,17 @@ npm run smoke:live-chat -- \
   --output outputs/qa/<run-id>/codex-follow-up/release-candidate.json
 ```
 
-That probe never logs in or copies credentials. It uses an already configured,
-authenticated dedicated home; drives the final configured runtime through its
-public HTTP routes; proves dependent planner calls, live sourced-recipe
-replacement, failure-after-effect recovery, second-client readback, and
-embedded-runtime independence through the supported Global UDS client; then
-writes a new private secret-free artifact. The artifact also binds observed
-tool/negative-capability and effective config/instruction isolation evidence,
-dedicated-home retention counts, and a manifest of the complete candidate source
-tree. It does not inventory or fingerprint mutable normal-Codex state.
+The current probe never logs in or copies credentials, but it proves the old
+split-context candidate and therefore cannot authorize a revised release. The
+replacement must use an already authenticated dedicated home; drive the final
+configured runtime through public HTTP; prove at least two native top-level
+threads, history/select/new, shared selection across navigation/new tabs,
+restart/reconnect, a native child worker, hosted search, skills, worker
+result-to-parent flow, dependent parent planner calls, no app transcript authority, failure-after-effect
+recovery, second-client readback, and Global UDS independence; and write
+a new private secret-free artifact bound to the exact candidate. It must not
+inventory or fingerprint mutable normal-Codex state or store raw thread,
+credential, or provider content.
 
 For a standalone local smoke, the read-only verifier can consume that artifact
 without changing auth or deployment state:
@@ -294,12 +312,10 @@ npm run verify:codex-activation -- \
   --artifact outputs/qa/<run-id>/codex-follow-up/release-candidate.json
 ```
 
-The release transaction invokes the same verifier automatically after installed
-QA and immediately before it can publish activation/current receipts. The
-verifier rechecks the accepted managed readiness coordinates, requires exact
-executable/schema/config/instruction/account equality, and rejects any candidate
-binding drift without changing authentication state. A standalone invocation
-does not constitute release evidence. This one-time cutover binding does not pin
-Codex; compatible updater-managed versions continue through the normal dynamic
-gate after activation. Authenticated readback, real listener/UDS, activation,
-and post-activation browser evidence remain separate required gates.
+The existing verifier understands the historical candidate artifact only. It
+must be extended before a revised release so the release transaction can recheck
+the native thread/worker protocol, combined capability, skill discovery,
+executable/schema/config/instruction/account, and complete source coordinates immediately before
+publishing activation/current receipts. A standalone invocation never
+constitutes release evidence. This binding must not pin Codex; compatible
+updater-managed versions continue through the dynamic gate after activation.

@@ -66,6 +66,7 @@ export const OPERATION_KINDS = [
   "chat_submit",
   "chat_retry",
   "embedded_codex_apply_planner_operations_v1",
+  "native_codex_apply_planner_operations_v1",
   "global_codex_apply_planner_batch_v1",
 ] as const;
 
@@ -74,6 +75,7 @@ export type PlannerApplyOperationKind =
   | "planner_command"
   | "planner_chat_command"
   | "embedded_codex_apply_planner_operations_v1"
+  | "native_codex_apply_planner_operations_v1"
   | "global_codex_apply_planner_batch_v1";
 
 export type ApplyPlannerOperationsRequest = {
@@ -206,6 +208,7 @@ function expectedProvenance(
     case "planner_chat_command":
       return EMBEDDED_LEGACY_PROVENANCE;
     case "embedded_codex_apply_planner_operations_v1":
+    case "native_codex_apply_planner_operations_v1":
       return EMBEDDED_CODEX_PROVENANCE;
     case "global_codex_apply_planner_batch_v1":
       return GLOBAL_CODEX_PROVENANCE;

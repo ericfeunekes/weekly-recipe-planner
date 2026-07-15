@@ -23,15 +23,8 @@ import {
   readReleaseArtifact,
 } from "../../scripts/support/planner-release-contract.mjs";
 import { createCodexRuntimeFixture } from "../../scripts/support/codex-runtime-fixture.mjs";
-import {
-  GENERATED_CODEX_AUTH_NOTIFICATION_OPT_OUT_METHODS,
-} from "../support/fixtures/codex-runtime/auth-schema-fixtures.mjs";
 
 const packageRoot = resolve(new URL("../../", import.meta.url).pathname);
-const AUTH_NOTIFICATION_OPT_OUT_METHODS = Object.freeze([
-  ...GENERATED_CODEX_AUTH_NOTIFICATION_OPT_OUT_METHODS,
-  "account/login/completed",
-].sort());
 
 async function pathExists(path) {
   try {
@@ -239,9 +232,13 @@ test("production auth readiness reuses credentials through one fresh auth-readba
   assert.match(artifact.projection.schemaBinding.authSchemaFingerprint, /^[a-f0-9]{64}$/u);
   assert.equal(artifact.projection.schemaBinding.contractKind, "authenticatedReadback");
   assert.equal(Object.hasOwn(artifact.projection.schemaBinding, "selectedLoginType"), false);
+  const generatedNotificationSchema = JSON.parse(await readFile(
+    join(fixture.generatedSchemaDirectories[0], "ServerNotification.json"),
+    "utf8",
+  ));
   assert.equal(
     artifact.projection.environment.notificationOptOutMethodCount,
-    AUTH_NOTIFICATION_OPT_OUT_METHODS.length,
+    generatedNotificationSchema.oneOf.length,
   );
   assert.equal(fixture.generatedSchemaDirectories.length, 1);
   assertAcceptedPrivateAuthSnapshots(

@@ -38,7 +38,10 @@ export const CODEX_FOLLOW_UP_RESOURCE_POLICY = Object.freeze({
   providerIngress: Object.freeze({
     maxRequestBytes: 4 * 1024 * 1024,
     maxTotalBytes: 16 * 1024 * 1024,
-    maxRequests: 8,
+    // The compatible proof requires exactly eight calls. Admit one bounded
+    // negative-probe call so the semantic validator can prove that call nine
+    // is rejected as capability drift rather than being hidden by transport.
+    maxRequests: 9,
   }),
 });
 

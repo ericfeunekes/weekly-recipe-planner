@@ -117,6 +117,8 @@ export async function startConfiguredPlannerRuntime(
       codexFixedCwd: config.codexFollowUp.ok
         ? config.codexFollowUp.deployment.appCwd
         : null,
+      // This path has acquired or revalidated the host-only runtime owner lease.
+      recoverCodexAdmissionsAfterOwnership: true,
       globalCodexIngressFactory: async (planner) =>
         globalCodexParentDirectory === undefined
           ? createGlobalCodexIngress(

@@ -14,7 +14,7 @@ Every implementation merge must keep these deterministic cells green:
 | Domain contracts | Pure canonical state transitions and invariants | `tests/domain-*.test.mjs` |
 | Store transactions | Real temporary SQLite file, OCC, receipts, rollback, restart | `tests/store-*.test.mjs`, `tests/planner-service-*.test.mjs` |
 | HTTP contracts | Real loopback application routes with fake Codex transport | `tests/http-*.test.mjs`, `tests/runtime-*.test.mjs` |
-| Chat lifecycle | Durable embedded transitions, bounded prompts, token/app-server terminal CAS, effect replay fencing, and recovery-only retry | `tests/embedded-tool-lifecycle.test.mjs`, `tests/codex-dynamic-session.test.mjs`, `tests/codex-research-session.test.mjs`, `tests/integration/dynamic-chat-cutover.test.mjs` |
+| Codex wrapper and effect bridge | Native thread/item lifecycle stays Codex-owned; the host persists only selection/effect admission, fences tool replay, and never auto-replays an ambiguous user send | Replacement native-thread/effect integration and architecture tests; the current `tests/embedded-tool-lifecycle.test.mjs`, `tests/codex-dynamic-session.test.mjs`, `tests/codex-research-session.test.mjs`, and `tests/integration/dynamic-chat-cutover.test.mjs` prove only the superseded path |
 | Client contracts | Readback ordering, offline/conflict behavior, draft retention | `tests/client-*.test.mjs` |
 | Architecture closure | No browser/shared-localStorage authority or alternate mutation path | `tests/architecture/**` |
 | Accessibility and fixture capability | Direct Playwright axe integration plus closed D4/D7 runtime seeds | `tests/support/playwright-qa.ts`, `tests/support/e2e-runtime.mjs`, `tests/e2e-runtime-fixtures.test.mjs` |
@@ -72,27 +72,40 @@ material. The implementation must add the owned entrypoint
 always target a disposable data directory and remain outside `npm test`.
 Closeout names the exact run directory used for the final claim.
 
-## Deferred Codex Runtime Follow-Up
+## Codex Planner Runtime Requirements Gate
 
-The expanded Codex runtime is a separate release contract governed by
-`docs/codex-agent-runtime-follow-up-phase.md`. These cells become active only
-for a follow-up phase that claims the corresponding capability; they do not
-enter the current family-readiness signoff merely because the framework exists.
+The embedded Codex runtime is a separate release contract governed by
+`docs/codex-agent-runtime-follow-up-phase.md`. The 2026-07-15 revision requires
+a thin wrapper over native Codex history with one app-wide selected top-level
+thread, native workers, hosted web search, skills, and planner tools available
+together. The current split ephemeral/app-transcript implementation
+and its historical green tests do not satisfy these cells. They become release
+gates for any candidate that claims the revised capability; they do not rewrite
+the completed family-readiness signoff.
 
 ### Follow-Up Merge Gate
 
 | Cell | Required boundary |
 |---|---|
-| Runtime compatibility and isolation | Deterministic current/newer-compatible/incompatible Codex fixtures prove updater-aware schema and capability validation, dedicated-home provenance, minimal launch environment, exact positive tool arrays, and the complete negative capability boundary. Incompatibility disables only embedded-agent readiness. |
-| Dynamic planner protocol | Deterministic app-server scenarios prove exactly `planner.read`, `planner.preview`, and `planner.apply`; dependent calls consume authoritative prior results; unknown, duplicate, changed-payload, timed-out, cancelled, and late calls fail with the specified fencing behavior. |
+| Runtime compatibility and isolation | Deterministic current/newer-compatible/incompatible Codex fixtures prove updater-aware thread list/read/start/resume/archive, turn start/steer/client-message identity, native worker/item schema, dedicated-home provenance, normal-home standalone-skill discovery, minimal launch environment, the exact combined positive surface, and the complete parent/child negative boundary. Incompatibility disables only the affected Codex surface. |
+| Native thread catalogue and selection | At least two real non-ephemeral top-level threads can be created, listed, read/resumed, selected, and revisited; D10 proves every page/cursor of a 100-thread catalogue in stable order with no omission/duplication. With history but no pointer, startup deterministically selects the most recently updated eligible thread; with an empty catalogue, startup creates nothing and first accepted send creates/selects exactly one thread. Navigation/new tabs retain the app-wide pointer; revisioned two-client races converge; selection does not clone/cancel work. Failpoints after native create and before/after selection publication prove ambiguity refreshes history and never auto-retries creation. |
+| Native history authority | Two clients render actual-ID-bound native items plus typed planner-effect/readiness status. Pre-admission failure is not conversation; reconnect re-reads Codex; static/runtime checks prove no planner transcript rows, shadow thread index, or hidden history reconstruction. |
+| Native background workers | One native child agent reports parentage, progress, failure/completion, switch-away-and-back, and read-only drill-down. A child-completed/parent-result-absent fixture cannot fabricate or terminate the top-level assistant reply. The active runtime must prove the worker's exact provider-tool manifest; Codex 0.142.5 gives workers no planner dynamic tools, so cancellation, timeout, out-of-tree identity, and late completion cannot create a worker-owned planner effect. The parent alone may act on a returned worker result. |
+| Skill discovery and provenance | Exact release-owned planner skills and dynamically discovered `$HOME/.agents/skills` entries reach the top-level agent in captured input/readback and live behavior. Any skill guidance actually observed on a worker is inventoried rather than assumed. User-skill changes do not pin the app, and adversarial skill content cannot add tools, RPC methods, grants, or planner commands. |
+| Identity typing | Type-level negatives and runtime cases prove top-level thread, child thread/job, turn, item/call, selection revision, request/idempotency, planner version, and sync revision cannot be interchanged. The normal path contains no Plan/Research discriminator or app-owned transcript contract. |
+| Dynamic planner protocol | Deterministic app-server scenarios prove native turn start/steer plus client-message correlation and exactly `planner.read`, `planner.preview`, and `planner.apply` on the owning top-level turn. An ordinary running turn steers; there is no browser grant or approval-decision field. Dependent parent calls consume authoritative results; unknown, duplicate, changed-payload, out-of-tree, timed-out, cancelled, and late calls fail with the specified fencing behavior. |
 | Planner operation parity | UI, embedded, and global callers exercise the same typed-command registry and mutation authority. One to sixteen ordered operations commit as one version/event/receipt/undo unit or not at all, with authoritative readback and no alternate mutation kernel. |
-| Durable effect lifecycle | Real temporary SQLite tests cover accepted-effect recording, crash points before and after commit/response/reply, restart recovery, immutable replay, no-effect retry, and recovery-only retry after any accepted effect. |
-| Research mediation | Hostile and malformed source fixtures prove that only the bounded sourced candidate crosses from research to planning; raw page material is absent from planner state, shared transcript, and application logs; the informational primary-page source tuple is exactly bound without claiming web-content truth; accepted intake can replace only an existing mutable meal and cannot silently discard execution state or clear it earlier in the same batch. |
+| Durable effect lifecycle | Real temporary SQLite tests cover accepted top-level effects, rejection of child-attributed callbacks, crash points before and after commit/tool-response/reply, restart readback, and immutable tool-call replay. The wrapper never auto-replays an ambiguous user send; after effect/reply loss, any household follow-up is an ordinary new native turn over authoritative planner readback. |
+| Unified capability surface | One native top-level thread tree exposes hosted web search, the exact planner namespace, and skills without a mode/intent switch or hidden research/planner context. It proves an interleaved `planner.read -> web_search -> planner.preview -> planner.apply` path, a worker-assisted path, and a conversational no-tool path. |
+| Web-assisted planning | Hostile/malformed web content may influence reasoning but cannot escape planner schemas, versions, idempotency, protected-state rules, or fixed authority. A real turn binds a completed search observation, informational source reference, accepted effects, and second-client readback without a cross-context candidate or false provenance claim. |
+| No semantic cache | Static ownership checks and deterministic stale-state cases prove there is no native-history/planner/search semantic cache: switches/reconnects read Codex, planner changes force current read/OCC, an explicit search refresh reaches hosted search again, and only immutable idempotency replay returns a stored decision. |
+| Availability and loss | Missing/malformed home, expired auth, history-read/search/app-server/worker/tool failure, restart, and incompatible update leave planner read/write and Global UDS available. Recoverable transport re-reads native history; a readable historical thread that cannot accept the active surface remains visible/unavailable-to-send beside a usable thread, and either can be selected without planner damage or hidden replacement. |
 | Global UDS ingress | A real user-owned Unix socket proves its fixed route set, same-UID permissions, strict payloads, injected provenance, idempotent replay, stale-socket handling, browser-route isolation, and no TCP or SQLite fallback. Its readiness remains independent of embedded Codex compatibility. |
-| Single-path architecture | Structural checks prove one planner mutation authority, no direct database access from agent clients, no model-visible forbidden capability, and no simultaneous live legacy and dynamic embedded mutation paths after cutover. |
-| Local release transaction | Real private directories and SQLite files prove the exact stage/installed/auth/RC/QA/activation hash chain, content-addressed recovery operator, authority-lifetime ownership, one-time legacy drain, one-base `VACUUM INTO` capture, canonical-path build, app/data/config selection, intent/completed crash recovery, sole `current.json` commit, paired rollback pointer publication, newer-data retention, and refusal of an unproved data restore. Model/runtime architecture checks prove the operator is not reachable through any planner, Codex, HTTP, or UDS capability. Owned by `tests/local-release-operator.test.mjs`, `tests/planner-release-lifecycle.test.mjs`, `tests/integration/local-release-transaction.test.mjs`, the focused store/runtime/auth tests, and the release-boundary architecture checks. |
+| Single-path architecture | Structural checks prove Codex exclusively owns native conversation history, the app owns only one selected pointer, one planner mutation authority serves UI/top-level-agent/Global calls, child-attributed calls reject at that boundary, no Plan/Research split or shadow worker system exists, and no agent client imports the database or exposes forbidden authority. |
+| Release retention | Stage, activation, interruption, recovery, and rollback preserve the authenticated agent home/catalogue, revalidate selected metadata, keep synthetic QA ephemeral or journal/archive a required persistent probe before activation, and retain old app transcript rows only in the immutable pre-migration backup rather than the live target store or native history. |
+| Local release transaction | Real private directories and SQLite files prove the exact stage/installed/auth/RC/QA/activation hash chain, content-addressed recovery operator, authority-lifetime ownership, one-time legacy drain, one-base `VACUUM INTO` capture, canonical-path build, app/data/config selection, intent/completed crash recovery, sole `current.json` commit, paired rollback pointer publication, newer-data retention, and refusal of an unproved data restore. Authenticated QA uses only an ephemeral probe or a persistent probe whose opaque native ID is journaled, archived, and verified absent from the default picker before activation; disposable planner data leaves household threads, selection, and planner data unchanged. Model/runtime architecture checks prove the operator is not reachable through any planner, Codex, HTTP, or UDS capability. Owned by `tests/local-release-operator.test.mjs`, `tests/planner-release-lifecycle.test.mjs`, `tests/integration/local-release-transaction.test.mjs`, the focused store/runtime/auth tests, and the release-boundary architecture checks. |
 
-Foundation phases satisfy only the portion of a cell whose caller or boundary they actually ship. In particular, Phase 2 proves the caller-neutral operation kernel under every host provenance variant plus the existing browser/chat facades; real embedded and global transport parity is added by Phases 3 and 4 and rerun at Phase 6 cutover.
+Existing planner-service, effect-ledger, Global UDS, and release-operator tests may support these cells. The additive native-thread backend tests and current-binary probe now own the deterministic API, history/selection, worker-projection, combined-capability, and top-level skill-discovery portions. They do not close the separately owned browser cutover, authenticated hosted-search behavior, installed-runtime, or release cells; every claimed cell is rerun on the final integrated candidate.
 
 The normal baseline remains typecheck, production build, lint, and the existing
 deterministic suite. Fakes at the Codex boundary must be checked against the
@@ -114,7 +127,8 @@ node --disable-warning=ExperimentalWarning --experimental-strip-types --test \
   tests/architecture/codex-runtime-boundaries.test.mjs
 ```
 
-Run the supported probe rather than an ad hoc app-server driver:
+The checked-in probe targets the unified native-thread capability contract. Run
+that supported probe rather than an ad hoc app-server driver:
 
 ```bash
 npm run probe:codex-follow-up -- \
@@ -123,15 +137,19 @@ npm run probe:codex-follow-up -- \
 ```
 
 The artifact must be a newly created mode-`0600` JSON file. Inspect that it
-records the exact executable version/hash, generated schema hashes, allowed
-`:read-only` profile and effective no-network sandbox, exact research/planner
-manifests, dependent-call observation, empty forbidden/unexpected capability
-sets, provenance hashes, empty MCP/app/plugin rows, and
+records the exact executable version/hash, generated thread-list/read/start/
+resume/archive, turn-start/steer/client-message, and parent/child schema hashes,
+allowed `:read-only` profile, the exact combined web/planner surface,
+release-owned planner skill identities/hashes,
+bounded normal standalone-skill discovery metadata, native thread/worker
+observations, dependent-call observation, empty forbidden/unexpected capability sets,
+provenance hashes, empty MCP/app/plugin rows, and
 `normalAuthUnchanged:true`. It must remain inactive and unauthenticated. Do not
-preserve raw config/instruction content, credentials, environment values,
-provider payloads, stderr, disposable paths, or normal-home state. A failed
-cell disables the optional embedded runtime; never weaken a budget or boundary
-to make the installed binary pass.
+preserve raw config/instruction/skill content, credentials, environment values,
+provider payloads, thread content, stderr, disposable paths, or raw/other
+normal-home state beyond the bounded standalone-skill metadata above. A failed
+cell disables the optional embedded runtime; never weaken a
+budget or boundary to make the installed binary pass.
 
 ### Global UDS Operator Smoke
 
@@ -231,9 +249,11 @@ npm run planner:release -- activate \
    fresh updater-managed `codex app-server` with `CODEX_HOME` set to that home and cwd fixed at
    `$HOME/meal-planner/app`, then requires
    `account/read({refreshToken:true})` to return the expected non-null ChatGPT
-   account before the separately bounded planner capability smoke runs. It preserves real OS
-   `HOME` plus standalone-skill discovery while excluding normal `~/.codex`
-   config/plugin/MCP/auth/session sources. Activation never invokes login,
+   account before the separately bounded planner capability smoke runs. It
+   preserves real OS `HOME` and its `$HOME/.agents/skills` discovery surface
+   while excluding normal `~/.codex` config/plugin/MCP/auth/session sources.
+   Exact deployment-owned planner skills plus dynamically inventoried standalone
+   skills may appear in effective readback. Activation never invokes login,
    logout, or login cancellation; copies credentials; or pins Codex. The
    compatibility-named `auth-lifecycle.json` now records this bounded readiness
    result only, with no email, device code/URL, raw response, token, credential
@@ -242,7 +262,9 @@ npm run planner:release -- activate \
    effect and publishes no readiness artifact; it never substitutes the
    updater's new target under old evidence.
 
-The operator invokes the existing live smoke from the canonical installed app:
+The checked-in live smoke remains historical until it is revised to the
+persistent combined-capability contract. A new candidate's operator invokes the
+revised smoke from the canonical installed app:
 
 ```bash
 npm run smoke:live-chat -- \
@@ -260,13 +282,21 @@ npm run smoke:live-chat -- \
   proactively read the restored or reused authenticated account. This count is
   scoped to that readback operator; separate inactive compatibility/provenance
   probes and the planner capability smoke have their own bounded processes.
-  Effective readback must exclude the normal `~/.codex` surface, and the gate
-  must not inventory or fingerprint that mutable user state;
-- exercise real app-server dependent planner calls, bounded research transfer,
-  failure-after-effect recovery, and runtime-content retention inventory against
-  a disposable planner store;
+  Effective readback must exclude the normal `~/.codex` surface while allowing
+  `$HOME/.agents/skills`; the gate must not fingerprint mutable skill contents;
+- exercise at least two real persistent top-level threads across selection,
+  multiple turns, a process restart, and one native child worker, with hosted
+  search, skills, worker result-to-parent flow, and dependent parent planner
+  calls co-present; prove
+  failure-after-effect recovery and runtime-content retention against a
+  disposable planner store;
+- prove authenticated smoke uses an ephemeral probe where possible; if a
+  persistent probe is required, journal only its opaque ID, archive it through
+  the native RPC, and verify it absent from the default picker before activation.
+  Never write household native threads, selected-thread metadata, or production
+  planner data;
 - exercise the real Unix-socket client independently and prove an incompatible
-  embedded-runtime fixture leaves planner/store/transcript and global ingress
+  embedded-runtime fixture leaves planner/store/native history and global ingress
   available; and
 - bind the complete `stage -> installed -> auth-lifecycle -> release-candidate
   -> qa -> activation -> current pointer` chain. Run installed-path verification
@@ -330,11 +360,15 @@ release ownership, failed clean install/build, manifest drift, missing or
 corrupt prior release, backup failure, migration failure, first and second app
 rename failure, installed-coordinate drift, QA failure, app-only/data-only
 rollback attempts, interrupted recovery, exact replay, rollback pointer
-publication, and post-commit planner/transcript/chat/tool/receipt changes.
+publication, and post-commit planner/selected-thread/effect/tool/receipt changes.
 The same matrix covers authenticated-home adoption before the production
 dynamic readback, stale-pending supersession through the installed operator,
 malformed reconciled histories, invalid replacement states, stale-old fencing,
 and intent/effect crashes on both sides of the no-gap pending-pointer CAS.
+It also injects crashes after persistent-probe thread creation, opaque-ID journal
+intent, native archive request/completion, and default-list exclusion readback;
+recovery resumes the same archive effect, and activation cannot commit while a
+probe remains selectable.
 Automatic data restore requires a fresh closed whole-store snapshot SHA-256 to
 equal the activation snapshot; otherwise restore fails unless the operator
 supplies the exact activation/current/restore authorization, and the newer data
@@ -343,16 +377,31 @@ destructive intent and requires new authorization if the store changed. `run/`, 
 credentials, normal-home state, and the updater-managed Codex target never enter
 the release payload or database backup.
 
-### Follow-Up Exploratory QA Gate
+### Codex Runtime Exploratory QA Gate
 
 Record follow-up evidence under `outputs/qa/<run-id>/codex-follow-up/`, separate
 from the family-readiness run. Inspect:
 
-- a foreground household request that researches a recipe and replaces the
-  recipe snapshot of an existing meal with a visible informational source
-  reference;
-- several dependent planner calls with authoritative readback;
-- a visible after-effect/reply-failed state and recovery-only Retry;
+- one composer with no Plan/Research control and draft continuity across the
+  responsive chat surfaces;
+- at least two native top-level threads listed from Codex history; history/select/new,
+  one app-wide selected pointer across planner navigation/new tabs, selection
+  conflict convergence, and exact native context after app-server restart;
+- a natural foreground request in which one selected thread tree uses hosted search,
+  standalone/planner skills, and a native child worker, then replaces an existing meal recipe with a visible
+  informational source reference through dependent planner calls and
+  authoritative readback;
+- native worker progress/failure/completion and read-only drill-down while its
+  top-level thread is temporarily unselected, with no late or duplicate effect;
+- a visible after-effect/reply-failed state whose accepted planner effects are
+  read back exactly once; the wrapper does not replay the user send, and any
+  household follow-up is an ordinary new native turn;
+- a deliberately unavailable selected thread that remains visible while the
+  household selects another native thread or explicitly starts a new one;
+- the first revised release retaining old app transcript/chat rows only in the
+  immutable migration backup, absent from the live target store and native history/model context;
+- static and runtime evidence that planner storage has no authoritative
+  transcript, assistant-message, child-thread, or shadow-history rows;
 - embedded-agent unavailable and incompatible states while ordinary planner use
   and the global UDS client remain healthy; and
 - an equivalent sourced recipe or planner batch submitted by a normal global

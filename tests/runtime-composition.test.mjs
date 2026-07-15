@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -8,6 +9,7 @@ import test from "node:test";
 import { startPlannerRuntime } from "../server/runtime/planner-runtime.ts";
 import { closeHttpServer } from "../server/http/server.ts";
 import { openPlannerStore } from "../server/store/sqlite-store.ts";
+import { createSqliteCodexThreadStore } from "../server/store/codex-thread-store.ts";
 
 const ALLOWED_ORIGIN = "http://localhost:3001";
 
@@ -56,6 +58,37 @@ function runtimeBaseUrl(runtime) {
   assert.notEqual(address, null);
   assert.equal(typeof address, "object");
   return `http://127.0.0.1:${address.port}`;
+}
+
+function createNativeCodexRuntime(children, options = {}) {
+  const status = {
+    state: "compatible",
+    authenticated: true,
+    protocolCompatible: true,
+    cacheHit: false,
+    evidence: null,
+    detail: "compatible",
+  };
+  const fixture = new URL(
+    "./support/fixtures/codex-runtime/fake-native-app-server.mjs",
+    import.meta.url,
+  );
+  return {
+    evaluate: async () => status,
+    readStatus: () => status,
+    async spawnAppServer() {
+      const child = spawn(process.execPath, [fixture.pathname], {
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(child);
+      return child;
+    },
+    async close() {
+      await options.onClose?.();
+    },
+  };
 }
 
 test("composed authority bootstraps once and survives a real process restart", async (t) => {
@@ -112,6 +145,84 @@ test("composed authority bootstraps once and survives a real process restart", a
   assert.equal(readback.initialized, true);
   assert.equal(readback.state.activeWeekId, "2026-07-06");
   assert.equal(readback.plannerVersion, 0);
+});
+
+test("runtime composes the native Codex thread API and owns its app-server lifecycle", async (t) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "planner-native-codex-runtime-"));
+  t.after(() => rm(dataDirectory, { recursive: true, force: true }));
+  const children = [];
+  let runtimeClosed = false;
+  const runtime = await startPlannerRuntime({
+    config: createConfig(dataDirectory),
+    codexRuntime: createNativeCodexRuntime(children, {
+      onClose: () => {
+        runtimeClosed = true;
+      },
+    }),
+    codexFixedCwd: process.cwd(),
+    webProbe: async () => true,
+  });
+  assert.notEqual(runtime.codexThreads, null);
+  const baseUrl = runtimeBaseUrl(runtime);
+
+  const created = await fetch(`${baseUrl}/api/codex/threads/new`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: ALLOWED_ORIGIN },
+    body: JSON.stringify({ requestId: "new-native-thread", expectedSelectionRevision: 0 }),
+  });
+  assert.equal(created.status, 201);
+  const creation = await created.json();
+  assert.equal(creation.thread.id, creation.selection.threadId);
+  assert.equal(creation.selection.revision, 1);
+  assert.equal(children.length, 1);
+
+  const history = await (await fetch(`${baseUrl}/api/codex/threads`)).json();
+  assert.equal(history.threads.length, 1);
+  assert.equal(history.threads[0].id, creation.thread.id);
+  const read = await (await fetch(
+    `${baseUrl}/api/codex/thread?threadId=${encodeURIComponent(creation.thread.id)}`,
+  )).json();
+  assert.equal(read.thread.id, creation.thread.id);
+  assert.deepEqual(read.interactions, []);
+
+  const firstClose = runtime.close();
+  assert.equal(runtime.close(), firstClose);
+  await firstClose;
+  assert.equal(runtimeClosed, true);
+  assert.equal(children[0].exitCode !== null || children[0].signalCode !== null, true);
+});
+
+test("direct runtime construction cannot adopt a foreign native admission without owner proof", async (t) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "planner-native-owner-proof-"));
+  t.after(() => rm(dataDirectory, { recursive: true, force: true }));
+  const store = openPlannerStore({ filename: join(dataDirectory, "planner.sqlite") });
+  const codexStore = createSqliteCodexThreadStore(store);
+  assert.equal(codexStore.beginThreadStartAdmission({
+    requestId: "foreign-runtime-admission",
+    ownerId: "foreign-live-runtime",
+    payloadHash: "a".repeat(64),
+    expectedSelectionRevision: 0,
+    newestBeforeCreatedAtSeconds: null,
+    newestBeforeRootThreadIds: [],
+    createdAt: 1,
+  }).status, "started");
+  const children = [];
+  const runtime = await startPlannerRuntime({
+    config: createConfig(dataDirectory),
+    store,
+    codexRuntime: createNativeCodexRuntime(children),
+    codexFixedCwd: process.cwd(),
+    webProbe: async () => true,
+  });
+  t.after(() => runtime.close());
+
+  await assert.rejects(
+    runtime.codexThreads.listThreads({}),
+    (error) => error.code === "CODEX_UNAVAILABLE" &&
+      /another live planner runtime/iu.test(error.message),
+  );
+  assert.equal(createSqliteCodexThreadStore(runtime.store)
+    .readThreadStartAdmission().ownerId, "foreign-live-runtime");
 });
 
 test("front-controller health fails when the internal web process is unavailable", async (t) => {

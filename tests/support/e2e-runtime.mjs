@@ -660,6 +660,8 @@ async function runAuthorityChild() {
     config: runtimeConfig(),
     codexRuntime,
     codexFixedCwd: process.cwd(),
+    // The harness owns one authority child at a time and deliberately exercises restart recovery.
+    recoverCodexAdmissionsAfterOwnership: true,
     clock: { now: () => currentTime },
     seedFactory: () => createE2eFixtureSeed(configuredFixture, {
       now: E2E_DINNER_NOW,

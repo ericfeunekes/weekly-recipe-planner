@@ -29,7 +29,7 @@ test("release-managed Codex deployment inputs are loadable and capability-closed
   assert.match(config, /^cli_auth_credentials_store = "file"$/mu);
   assert.match(config, /^approval_policy = "never"$/mu);
   assert.match(config, /^sandbox_mode = "read-only"$/mu);
-  assert.match(config, /^web_search = "disabled"$/mu);
+  assert.match(config, /^web_search = "live"$/mu);
   for (const capability of [
     "apps",
     "browser_use",
@@ -37,7 +37,6 @@ test("release-managed Codex deployment inputs are loadable and capability-closed
     "computer_use",
     "enable_mcp_apps",
     "multi_agent",
-    "multi_agent_v2",
     "plugins",
     "request_permissions_tool",
     "shell_tool",
@@ -45,8 +44,16 @@ test("release-managed Codex deployment inputs are loadable and capability-closed
   ]) {
     assert.match(config, new RegExp(`^${capability} = false$`, "mu"));
   }
+  assert.match(config, /^multi_agent_v2 = true$/mu);
+  assert.match(config, /^include_instructions = true$/mu);
+  assert.match(config, /^\[tools\.experimental_request_user_input\]\nenabled = true$/mu);
+  assert.match(config, /^\[orchestrator\.skills\]\nenabled = true$/mu);
+  assert.match(config, /^\[orchestrator\.mcp\]\nenabled = false$/mu);
+  assert.match(instructions, /history may contain many top-level threads/iu);
+  assert.match(instructions, /selects one at a time/iu);
+  assert.match(instructions, /no separate planning and research\s+modes/iu);
+  assert.match(instructions, /rejects command, file, permission, and MCP approval requests/u);
   assert.doesNotMatch(config, /^\s*(?:model_provider|base_url|mcp_servers)\s*=/mu);
-  assert.doesNotMatch(config, /^\s*\w+\s*=\s*true\s*$/mu);
 });
 
 test("follow-up deployment config is nested, absolute, immutable, and fixed to HOME launcher", async (t) => {

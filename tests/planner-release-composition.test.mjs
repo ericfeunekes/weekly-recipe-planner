@@ -313,9 +313,9 @@ test("stage data inspection is store-aware and rejects a non-SQLite nonempty fil
     plannerVersion: projection.plannerVersion,
   }, {
     quickCheck: "ok",
-    schemaVersion: 5,
+    schemaVersion: 8,
     initialized: true,
-    workspaceSchemaVersion: 5,
+    workspaceSchemaVersion: 8,
     plannerVersion: 0,
   });
 
@@ -333,7 +333,7 @@ test("stage data inspection is store-aware and rejects a non-SQLite nonempty fil
     emptyAuthority,
   );
   assert.equal(emptyProjection.initialized, false);
-  assert.equal(emptyProjection.schemaVersion, 5);
+  assert.equal(emptyProjection.schemaVersion, 8);
   assert.equal(emptyProjection.workspaceSchemaVersion, null);
   assert.equal(emptyProjection.plannerVersion, null);
   value.store.close();
@@ -374,7 +374,7 @@ test("legacy drain holds one source reservation and derives candidate data from 
   assert.equal(sourceSnapshots, 1);
   assert.equal(drain.rollback.quickCheck, "ok");
   assert.equal(drain.rollback.initialized, true);
-  assert.equal(drain.candidate.schemaVersion, 5);
+  assert.equal(drain.candidate.schemaVersion, 8);
   assert.equal(drain.candidate.plannerVersion, 0);
   assert.throws(
     () => value.store.transaction(() => assert.fail("reserved source writer entered")),
@@ -486,7 +486,7 @@ test("migration failure preserves the one base snapshot and recovery rebuilds on
   const recovered = await drainLegacyPlannerRuntime(context, dependencies);
   await recovered.prepare();
   assert.equal(sourceSnapshots, 1, "recovery reuses the first verified base snapshot");
-  assert.equal(recovered.candidate.schemaVersion, 5);
+  assert.equal(recovered.candidate.schemaVersion, 8);
   assert.equal(recovered.candidate.initialized, true);
   await recovered.close();
   value.store.close();

@@ -233,7 +233,7 @@ test("migration 003 backs up v2 and deterministically extends legacy chat lifecy
   assert.ok(store.migrationBackupPath);
   assert.equal((await stat(store.migrationBackupPath)).isFile(), true);
   const workspace = store.readInitializedWorkspace();
-  assert.equal(workspace.schemaVersion, 5);
+  assert.equal(workspace.schemaVersion, 8);
   const turn = workspace.chatTurns[0];
   assert.equal(turn.mode, "normal");
   assert.equal(turn.acceptedEffectCount, 1);

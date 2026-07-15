@@ -2,11 +2,11 @@ forced_login_method = "chatgpt"
 cli_auth_credentials_store = "file"
 approval_policy = "never"
 sandbox_mode = "read-only"
-web_search = "disabled"
+web_search = "live"
 check_for_update_on_startup = false
 
 [tools.experimental_request_user_input]
-enabled = false
+enabled = true
 
 [features]
 apps = false
@@ -27,7 +27,7 @@ imagegenext = false
 in_app_browser = false
 memories = false
 multi_agent = false
-multi_agent_v2 = false
+multi_agent_v2 = true
 network_proxy = false
 plugins = false
 remote_plugin = false
@@ -42,13 +42,13 @@ unified_exec_zsh_fork = false
 workspace_dependencies = false
 
 [skills]
-include_instructions = false
+include_instructions = true
 
 [skills.bundled]
 enabled = false
 
 [orchestrator.skills]
-enabled = false
+enabled = true
 
 [orchestrator.mcp]
 enabled = false

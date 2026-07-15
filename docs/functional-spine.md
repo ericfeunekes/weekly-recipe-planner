@@ -1,6 +1,6 @@
 # Weekly Recipe Planner Functional Spine
 
-Working interview artifact. This is the product/process spine that should guide design-system setup and the first overview views. It is not an implementation plan.
+Current product and experience requirements. This spine guides design and implementation, but it is not an implementation plan. The detailed embedded-agent boundary is owned by [the Codex planner runtime requirements](codex-agent-runtime-follow-up-phase.md).
 
 ## Done-When
 
@@ -11,6 +11,7 @@ The functional spine is locked when a designer or coding agent can trace one mea
 3. The selected week shows meals, prep, groceries, leftovers, and status clearly enough to execute or revise.
 4. Either the user or Codex can mutate the same data through the UI or app-server commands.
 5. The active week closes into an archive summary with feedback and promotable lessons.
+6. The household can use a thin native Codex thread wrapper: see prior threads, keep exactly one selected across planner views/new tabs, start or select a conversation, and observe native background workers while every planner effect still crosses the shared mutation service.
 
 ## Product Job
 
@@ -24,7 +25,7 @@ The central unit is the planned meal instance inside a week, not a canonical rec
 - **Codex planner/operator**: runs app-server commands over the same data to import plans, update meal/recipe snapshots and instruction steps, arrange advance-prep references, reconcile groceries, shift days, and prepare future weeks.
 - **App data store**: canonical state for the planner after import. Obsidian/NYT/cookbooks can be sources or archive targets, but not the live active-week authority.
 
-All household members use the same planner state and one global ChatGPT transcript. The product does not attribute household actions or notes to individual people.
+All household members use the same planner state, shared native Codex thread catalogue, and app-wide selected top-level thread. Codex owns thread/item history and child-agent topology; the application owns only the selected-thread reference and planner-effect/readiness decoration. The product does not attribute household actions or notes to individual people, and it has no private per-person threads.
 
 ## Calendar And Week Lifecycle
 
@@ -49,12 +50,12 @@ Past weeks do not need to remain fully active editing surfaces. They should pres
 - **GroceryItem**: active-week/planned-week shopping item with quantity/spec, section, notes, and farm-box substitution logic.
 - **Leftover**: food availability produced by a cooked meal and usable by a later meal/day.
 - **FeedbackEntry**: meal or week-level feedback: repeat/modify/drop, leftover quality, prep friction, planning lesson.
-- **ChatTranscript**: the one persistent, global household conversation with ChatGPT. Messages may carry stable references to the selected week, meal, or instruction step, but the transcript is not partitioned by user, week, or view.
+- **CodexThreadSelection**: one opaque selected native top-level thread ID plus a selection revision. Codex owns the catalogue, messages, turns, items, and child-agent threads. The app may render a sanitized read/stream projection and planner-effect status, but it does not persist a second transcript or shadow thread index. Messages may carry stable references to the selected week, meal, or instruction step.
 - **EventLogEntry**: UI or Codex mutation with household-or-Codex actor, time, target object, change summary, and revert/undo basis.
 
 ## Mutations
 
-The UI and Codex app-server commands have the same authority. Any mutation the app supports should be possible through the command surface, with event-log history rather than special approval gates.
+The UI and Codex app-server commands reach the same planner mutation authority and typed domain-command surface. The embedded thread carries no approval or authority-grant field and excludes destructive planner `archiveWeek`; that command remains on its separate typed household/UI one-turn-grant path. Every accepted mutation creates event history.
 
 Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `setPrepPlan`, `movePrepReference`, `reschedulePrepReference`, `removePrepReference`, `addGroceryItem`, `updateGroceryItem`, `removeGroceryItem`, `setGroceryItemChecked`, `reconcileGroceries`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Direct CRUD can exist internally, but the functional contract should be domain-command first so validation and meal-planning semantics stay close to the operation.
 
@@ -113,15 +114,20 @@ Every UI or Codex mutation creates an event-log entry with actor, time, target o
 
 ## Chat Surface
 
-Chat with Codex is a first-class mutation surface alongside direct UI editing, delivered as an always-available side panel at desktop/iPad widths and a drawer on mobile rather than a separate destination view. Every view uses the same persistent global transcript. Codex executes the same typed domain commands and the underlying view reflects the change.
+Chat with Codex is a first-class mutation surface alongside direct UI editing, delivered as an always-available side panel at desktop/iPad widths and a drawer on mobile rather than a separate destination view. It is a small wrapper over native Codex threads: a history control, exactly one selected top-level thread, one composer, streamed native items, and native worker activity. Codex executes the same typed domain commands and the underlying view reflects the change.
 
 - The chat component carries the current view context: from Tonight it knows the current meal and selected instruction step; from Grocery/Farm Box it defaults to grocery scope; from Week Overview it defaults to the selected week.
-- A comment field on an instruction step offers exactly two actions. **Add note** persists the text as that step's optional note and does not send a chat message. **Send to ChatGPT** appends the text and the step's stable context reference to the global transcript and does not also save it as a note.
+- A comment field on an instruction step offers exactly two actions. **Add note** persists the text as that step's optional note and does not send a chat message. **Send to ChatGPT** sends the text and stable step context to the currently selected native thread and does not also save it as a note.
 - Chat-initiated mutations log to the event log with Codex as actor, same as app-server command mutations, and participate in recent undo.
-- Every foreground composer send explicitly selects ordinary planner work or sourced-recipe research. Planner sends expose a separate context-week archive grant that is off by default and applies only to that accepted turn; retry cannot acquire new authority.
-- Sourced-recipe research uses a live-hosted-search-only context with no planner tools, then passes one bounded untrusted candidate into a planner-only context. The resulting yield and primary-page reference are informational and visible on the meal; they do not claim authorship or extraction fidelity.
-- Structured results (meal cards, grocery diffs, prep changes) can render inline in the chat as interactive widgets, but the canonical display remains the view itself.
-- Runtime path: the loopback-only Node application server starts the updater-managed Codex app-server from a fixed launcher using a dedicated file-authenticated `CODEX_HOME` and fixed deployment cwd. Each ephemeral model turn receives bounded canonical state and durable transcript context, while accepted dynamic-tool effects use the same versioned/idempotent transaction service as the UI. The single logical app transcript does not depend on persistent app-server thread state.
+- The composer has no Plan/Research selector. The agent decides from the request whether to answer conversationally, use a planner skill, search the web, inspect planner state, preview a change, or apply one or more changes.
+- Hosted web search, normal standalone skills, deployment-owned planner skills, and the `planner.read`, `planner.preview`, and `planner.apply` tools are available to each top-level planner thread. Native workers use the exact research/reasoning surface proved for the active Codex build and return results to their parent; on Codex 0.142.5 they do not inherit planner dynamic tools. Search/page/worker content is untrusted reasoning input and may influence parent planner calls, but it cannot bypass typed commands, validation, versions, idempotency, transactions, or authoritative readback.
+- Native conversation archive is available from the history wrapper and is distinct from destructive planner `archiveWeek`. The embedded send contract has no approval or authority-grant field and cannot acquire `archiveWeek`; that planner action remains on its separate typed household/UI path.
+- A web-derived recipe may retain a typed informational primary-page reference and yield on the meal. That reference does not claim authorship, extraction fidelity, current page truth, or semantic single-source derivation; no separate research-candidate quarantine or hidden research/planner conversation is part of the product.
+- The wrapper renders native Codex items plus bounded planner-effect summaries/status. It does not add app-owned interactive meal, grocery, or prep widgets inside conversation history; the canonical planner views remain the only interactive state surface.
+- Thread navigation: the picker reads native top-level history, can select a prior thread or start a new one, and excludes child-agent and operator-probe threads. Planner navigation and new app tabs begin on the same app-wide selected thread; a revisioned selection change converges across clients.
+- Native background work: the selected conversation may spawn Codex child agents. Their parentage, progress, failure, and completion render under the owning thread, and a household member may inspect a worker read-only. Switching top-level threads does not cancel running work.
+- Runtime path: the loopback-only Node application server starts the updater-managed Codex app-server from a fixed launcher using a dedicated file-authenticated `CODEX_HOME`, normal OS `HOME` for standalone skill discovery, and fixed deployment cwd. It mediates native thread/history/worker RPC and routes every accepted parent planner effect through the same versioned/idempotent transaction service as the UI; child-attributed planner callbacks fail closed.
+- Conversation authority: native Codex history is the only conversation store. If a selected thread becomes unavailable, the wrapper shows that state and lets the household choose history or start a new thread; it never reconstructs from cached/app transcript text.
 
 ## Key Views For Design Overview
 
@@ -132,7 +138,7 @@ Chat with Codex is a first-class mutation surface alongside direct UI editing, d
 - **Meal Detail**: editable active-week meal and recipe snapshot: title, recipe details, independently referenceable instruction steps, source links, venue, and leftover path.
 - **Grocery / Farm Box**: editable weekly food shopping list with section grouping and farm-box reconciliation.
 - **Feedback / Closeout**: archive summary, repeat/modify/drop, leftover quality, prep friction, planning lessons, and promotion candidates.
-- **Chat component (cross-view)**: always-available Codex side panel on desktop/iPad and drawer on mobile, with one shared global transcript and context for the current view or selected object; not a standalone destination view.
+- **Chat component (cross-view)**: always-available Codex side panel on desktop/iPad and drawer on mobile, with native history/select/new, one app-wide selected top-level thread, one composer, selected-object context, and nested worker activity; not a standalone destination view.
 
 ## Boundaries
 
@@ -144,7 +150,7 @@ In scope for the functional spine:
 - Typed Codex/app-server domain commands as the primary command surface.
 - Editable week-local recipe snapshots with canonical atomic instruction steps.
 - Ordered prep references with shared step completion, manual ordering, and reference-only removal.
-- One shared household state and global ChatGPT transcript, without accounts or private comments.
+- One shared household planner state and native Codex thread catalogue with exactly one app-wide selected top-level thread, without accounts or private comments.
 - Recent undo backed by event history.
 - Meal movement, status, venue, prep, leftovers, groceries, farm-box reconciliation, feedback, and closeout.
 
@@ -169,12 +175,15 @@ Not central to the spine:
 - Core object: meal instance inside a week.
 - Recipe model: editable recipe snapshots, with promotion into reusable app records when useful.
 - Instruction model: canonical atomic `InstructionStep` records with stable IDs, ingredient amounts, one free-text instruction, shared Boolean completion, optional persisted-start timer, and one optional note.
-- Codex authority: same mutation authority as UI.
+- Codex authority: same planner mutation service and supported non-archive domain-command surface as the UI. Destructive planner `archiveWeek` remains on its separate typed household/UI path and cannot be obtained through a native approval request.
 - Codex surface: typed domain commands.
 - History: event log with recent undo exposed in UI.
 - Prep model: manually ordered `PrepReference` records pointing to canonical instruction steps; prep never copies or reorders recipe instructions, completion is shared everywhere, and removing a reference does not alter the step.
 - Grocery model: weekly food groceries, not full inventory or household shopping.
 - Learning: app-owned reusable promotions with optional Obsidian export/archive.
 - Household model: one shared global state with no accounts, personal attribution, permissions, or private content.
-- Notes and chat: an instruction-step comment field has exactly **Add note** or **Send to ChatGPT**; notes remain on the step, while sent messages enter the one global transcript with object context.
-- Chat surface: always-available desktop/iPad side panel and mobile drawer, backed by the isolated managed Codex app-server runtime; context-aware dynamic calls and global-Codex batches use the same typed domain commands, mutation kernel, and event log.
+- Notes and chat: an instruction-step comment field has exactly **Add note** or **Send to ChatGPT**; notes remain on the step, while sent messages enter the selected native thread with object context.
+- Conversation authority: Codex owns native top-level/child threads and item history; the app owns only the selected top-level thread ID/revision and planner-specific status; planner state/effect authority remains in the planner database.
+- Agent surface: one composer with no Plan/Research selector. Each top-level planner thread has standalone/planner skills, hosted web search, worker orchestration, and `planner.read`, `planner.preview`, and `planner.apply`; workers return research/reasoning and have no planner dynamic tools on the currently proved runtime.
+- Chat surface: always-available desktop/iPad side panel and mobile drawer with native history/select/new and worker drill-down, backed by the isolated managed Codex app-server runtime; context-aware dynamic calls and Global Codex batches use the same typed domain commands, mutation kernel, and event log.
+- Thread selection: exactly one top-level thread is selected app-wide. Navigation/new tabs preserve it; selecting another does not cancel running native work; an unavailable thread is explicit and never reconstructed from app-owned text.
