@@ -1,6 +1,5 @@
 import {
   MAX_COMMAND_TEXT_LENGTH,
-  MAX_GROCERY_ITEM_LENGTH,
   MAX_INGREDIENT_LINE_LENGTH,
   MAX_INGREDIENT_LINES,
   MAX_MEAL_SUBTITLE_LENGTH,
@@ -55,22 +54,6 @@ export function validateStepDraft(input: {
     if (!Number.isFinite(minutes) || minutes < MIN_TIMER_MINUTES || minutes > maximumMinutes) {
       issues.timer = `Timer must be at least ${MIN_TIMER_MINUTES} and no more than ${maximumMinutes.toLocaleString("en-CA")} minutes.`;
     }
-  }
-  return issues;
-}
-
-export function validateGroceryDraft(input: {
-  item: string;
-  detail: string;
-}): ValidationIssues {
-  const issues: ValidationIssues = {};
-  const item = input.item.trim();
-  if (!item) issues.item = "Enter a grocery item.";
-  else if (item.length > MAX_GROCERY_ITEM_LENGTH) {
-    issues.item = limitMessage("Grocery item", MAX_GROCERY_ITEM_LENGTH);
-  }
-  if (input.detail.trim().length > MAX_COMMAND_TEXT_LENGTH) {
-    issues.detail = limitMessage("Grocery detail", MAX_COMMAND_TEXT_LENGTH);
   }
   return issues;
 }

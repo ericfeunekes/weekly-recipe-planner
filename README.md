@@ -1,7 +1,7 @@
 # Weekly Recipe Planner
 
 An iPad-first household meal operations app for executing a structured week.
-The active week keeps meals, prep, groceries, farm-box substitutions,
+The active week keeps meals, prep, groceries with source and recipe links,
 leftovers, feedback, and recent changes on one shared surface.
 
 ## Product Shape
@@ -16,16 +16,17 @@ leftovers, feedback, and recent changes on one shared surface.
 - Checking a step in Prep checks it on the meal day, while removing its prep
   reference leaves the instruction and completion state intact.
 - Timer starts, notes, and prep order survive reopening and remain consistent
-  across clients. The target ChatGPT surface reads native Codex thread history
+  across clients. The Codex surface reads native thread history
   rather than persisting another transcript in planner state.
 - UI and Codex changes share event history and recent undo.
-- Grocery scope is weekly food only, with farm-box reconciliation.
+- Grocery scope is weekly food only, with source filters for Shop, Farm box,
+  and On hand items.
 - Closeout preserves repeat/modify/drop feedback and a planning lesson.
 
 The app has one shared household surface without user accounts or private
 threads. Multiple household-visible native Codex threads may exist, with one
-selected in the app at a time. **Add note** stores text on an instruction step;
-**Send to ChatGPT** posts the text and stable step context to the selected
+selected in the app at a time. **Save comment** stores text on an instruction step;
+**Ask Codex** posts the text and stable step context to the selected
 thread without also saving it as a note.
 
 ## Implementation Status
@@ -56,10 +57,10 @@ This worktree contains the additive native Codex thread backend: a typed HTTP
 wrapper for native history/list/read/new/select/archive, start-versus-steer,
 interrupt, completed reasoning summaries, safe activity labels, workers,
 answerable listed-option questions with no free-form response channel, and separately typed blocked approvals. It
-also contains the unified updater-managed capability gate. The separately owned
-browser cutover still has to replace the Plan/Research selector and app-owned
-transcript with this API before an integrated candidate can be described or
-activated as satisfying the revised thread-wrapper requirements.
+also contains the unified updater-managed capability gate. The browser now
+uses that API as a native Codex thread wrapper: it has one shared selected
+top-level thread, native history, and no app-owned transcript or task-mode
+selector.
 
 The Codex process keeps approvals disabled and has no general write surface;
 planner mutations are available only through the strict host-owned dynamic
@@ -226,7 +227,7 @@ backup or release rollback input.
 
 ## Hosting Boundary
 
-The ChatGPT-backed chat path is local. A Sites or Cloudflare Worker deployment
+The native Codex thread path is local. A Sites or Cloudflare Worker deployment
 cannot spawn the Codex binary or access the local Codex credential store. A
 hosted version therefore needs either a separately secured companion service
 or an API-key-backed OpenAI service; website visitor sign-in alone is not model
@@ -268,7 +269,7 @@ and drives one deterministic native root through worker completion, a bounded
 question answer, and dependent planner calls. It records the exact observed
 worker provider-tool manifest and standalone-skill discovery metadata in one
 redacted mode-`0600` artifact. It does not authenticate, copy credentials, make
-chat ready, or by itself prove the separate browser cutover. Existing output
+Codex ready, or by itself prove the browser thread-wrapper behavior. Existing output
 files are never overwritten.
 
 ## Verify
@@ -282,27 +283,28 @@ npm run test:e2e
 
 `npm test` enforces strict TypeScript, builds the Cloudflare Workers-compatible
 Vinext output, and verifies the rendered site and locked command/view surface.
-Playwright runs separately through `npm run test:e2e`. The authenticated,
-disposable ChatGPT check is opt-in and remains outside deterministic tests:
+Playwright runs separately through `npm run test:e2e`. The authenticated native
+Codex check is opt-in and remains outside deterministic tests:
 
 ```bash
-npm run smoke:live-chat -- \
+npm run smoke:native-codex -- \
   --authorized \
   --scenario all \
   --output outputs/qa/<run-id>/codex-follow-up/release-candidate.json
 ```
 
-The current probe never logs in or copies credentials, but it proves the old
-split-context candidate and therefore cannot authorize a revised release. The
-replacement must use an already authenticated dedicated home; drive the final
-configured runtime through public HTTP; prove at least two native top-level
-threads, history/select/new, shared selection across navigation/new tabs,
-restart/reconnect, a native child worker, hosted search, skills, worker
-result-to-parent flow, dependent parent planner calls, no app transcript authority, failure-after-effect
-recovery, second-client readback, and Global UDS independence; and write
-a new private secret-free artifact bound to the exact candidate. It must not
-inventory or fingerprint mutable normal-Codex state or store raw thread,
-credential, or provider content.
+The historical `smoke:live-chat` command is retained as a compatibility alias;
+both commands execute the same schema-v2 native-thread proof. The probe never
+logs in or copies credentials. It uses an already authenticated dedicated home,
+drives the final configured runtime through public HTTP, and proves native
+thread creation/history/pagination/selection/archive, restart readback, an
+interrupt, typed questions, the approval-policy boundary, activity projection,
+a native child worker, hosted search, one authoritative planner effect, exact
+admission replay, changed-payload rejection, second-client readback, Global UDS
+independence, and incompatible-runtime isolation. Probe threads are archived
+and excluded from the active/default picker. The private mode-`0600` artifact
+contains hashes and bounded counts, never raw thread, credential, planner, or
+provider content.
 
 For a standalone local smoke, the read-only verifier can consume that artifact
 without changing auth or deployment state:
@@ -312,10 +314,11 @@ npm run verify:codex-activation -- \
   --artifact outputs/qa/<run-id>/codex-follow-up/release-candidate.json
 ```
 
-The existing verifier understands the historical candidate artifact only. It
-must be extended before a revised release so the release transaction can recheck
-the native thread/worker protocol, combined capability, skill discovery,
-executable/schema/config/instruction/account, and complete source coordinates immediately before
-publishing activation/current receipts. A standalone invocation never
-constitutes release evidence. This binding must not pin Codex; compatible
-updater-managed versions continue through the dynamic gate after activation.
+The verifier requires schema v2 and rechecks the exact stable native top-level
+and worker tool surfaces, hosted-search mode, planner and skills namespaces,
+standalone-skill identity, executable/schema/config/instruction/account
+coordinates, and candidate source immediately before activation. The release
+transaction also binds the evidence schema through the candidate and installed
+QA manifests. A standalone invocation never constitutes release evidence, and
+the binding does not pin Codex: compatible updater-managed versions continue
+through the dynamic gate after activation.

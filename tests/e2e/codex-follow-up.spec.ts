@@ -1,19 +1,45 @@
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
 const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
-const dinnerNow = Date.parse("2026-07-07T18:00:00-03:00");
 
 async function resetPlanner(request: APIRequestContext) {
   const response = await request.post(`${controlOrigin}/reset`);
   expect(response.ok()).toBe(true);
 }
 
-async function setCodexState(request: APIRequestContext, state: string) {
-  const response = await request.post(`${controlOrigin}/codex-state?state=${state}`);
-  expect(response.ok()).toBe(true);
+async function openPreview(page: Page) {
+  await page.goto("/?codexPreview=1");
+  const setup = page.getByRole("heading", { name: "Set up this planner once" });
+  const planner = page.getByText("Family dinner planner");
+  await expect(setup.or(planner)).toBeVisible();
+  if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
+  await expect(planner).toBeVisible();
 }
 
-test.describe("Codex follow-up cutover", () => {
+async function openNative(page: Page) {
+  await page.goto("/");
+  const setup = page.getByRole("heading", { name: "Set up this planner once" });
+  const planner = page.getByText("Family dinner planner");
+  await expect(setup.or(planner)).toBeVisible();
+  if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
+  await expect(planner).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Codex task" }).getByText("Codex", { exact: true })).toBeVisible();
+}
+
+async function expectComposerActionTargets(rail: Locator) {
+  const stop = rail.getByRole("button", { name: "Stop Codex" });
+  const send = rail.getByRole("button", { name: "Send to Codex" });
+  const [stopBox, sendBox] = await Promise.all([stop.boundingBox(), send.boundingBox()]);
+  expect(stopBox).not.toBeNull();
+  expect(sendBox).not.toBeNull();
+  expect(stopBox?.width).toBeGreaterThanOrEqual(44);
+  expect(stopBox?.height).toBeGreaterThanOrEqual(44);
+  expect(sendBox?.width).toBeGreaterThanOrEqual(44);
+  expect(sendBox?.height).toBeGreaterThanOrEqual(44);
+  expect((stopBox?.x ?? 0) + (stopBox?.width ?? 0)).toBeLessThanOrEqual(sendBox?.x ?? 0);
+}
+
+test.describe("native Codex thread rail", () => {
   test.beforeEach(async ({ request }) => {
     await resetPlanner(request);
   });
@@ -22,180 +48,245 @@ test.describe("Codex follow-up cutover", () => {
     await request.post(`${controlOrigin}/reset`).catch(() => undefined);
   });
 
-  test("intent controls, sourced recipes, and effect-safe recovery use the managed runtime", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Set up this planner once" })).toBeVisible();
-    await page.getByRole("button", { name: "Start Fresh" }).click();
-    await expect(page.getByText("Family dinner planner")).toBeVisible();
+  test("the explicit development preview exposes native task history, conversation, and policy states", async ({ page }) => {
+    await openPreview(page);
 
-    const chat = page.locator('aside[aria-label="ChatGPT household chat"]');
-    await expect(chat.getByText("ChatGPT ready", { exact: true })).toBeVisible();
-    const intentGroup = chat.getByRole("group", { name: "ChatGPT task" });
-    const planIntent = intentGroup.getByRole("radio", { name: "Plan", exact: true });
-    const researchIntent = intentGroup.getByRole("radio", { name: "Research recipe" });
-    const composer = chat.getByRole("textbox", { name: "Message ChatGPT" });
-    await expect(planIntent).toBeChecked();
-    await expect(researchIntent).not.toBeChecked();
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await expect(rail).toBeVisible();
+    await expect(rail.getByText("Preview only", { exact: true })).toBeVisible();
+    await expect(rail.getByText("Preview only — nothing here is shared or sent to Codex.", { exact: true })).toBeVisible();
 
-    const archiveGrant = chat.getByRole("checkbox", { name: /Allow archiving week/ });
-    await expect(archiveGrant).not.toBeChecked();
-    await composer.fill("Keep this exact planner draft while I choose a task.");
-    await researchIntent.check();
-    await expect(researchIntent).toBeChecked();
-    await expect(composer).toHaveValue("Keep this exact planner draft while I choose a task.");
-    await expect(archiveGrant).toHaveCount(0);
-    await expect(chat.getByText("Search the web, then replace one meal only after the source is validated.")).toBeVisible();
-    await planIntent.check();
-    await expect(composer).toHaveValue("Keep this exact planner draft while I choose a task.");
-    const restoredArchiveGrant = chat.getByRole("checkbox", { name: /Allow archiving week/ });
-    await expect(restoredArchiveGrant).not.toBeChecked();
-    await restoredArchiveGrant.check();
-    await chat.getByTitle("Send to ChatGPT").click();
-    await expect(chat.getByText("I can see the shared household plan.", { exact: true })).toBeVisible();
-    await expect(composer).toHaveValue("");
-    await expect(planIntent).toBeChecked();
-    await expect(restoredArchiveGrant).not.toBeChecked();
+    const conversation = rail.getByRole("log", { name: "Codex conversation" });
+    await expect(conversation).toContainText("Can you help with Friday dinner?");
+    await expect(rail.getByText("Checking Friday options", { exact: true })).toBeVisible();
+    await expect(rail.getByText("Approval rejected", { exact: true })).toBeVisible();
+    await expect(rail.getByText("Codex requested to run a command while checking the plan.", { exact: true })).toBeVisible();
+    const workerActivity = conversation.getByRole("article", { name: "Worker activity" });
+    await expect(workerActivity).toContainText("Friday options research");
+    await expect(workerActivity).toContainText("activity");
+    await expect(workerActivity).toContainText("completed");
 
-    await page.locator(".view-nav").getByRole("button", { name: "Prep", exact: true }).click();
-    const protectedPrepStep = page.locator(".instruction-step")
-      .filter({ hasText: "Coat the chicken with harissa" });
-    await protectedPrepStep.getByRole("button", {
-      name: /Remove step .*Coat the chicken with harissa.* from prep/,
-    }).click();
-    await expect(protectedPrepStep).toHaveCount(0);
+    const workers = rail.getByRole("region", { name: "Background workers" });
+    await expect(workers).toContainText("Friday options research");
+    const workerButton = workers.getByRole("button", { name: "View worker 1: Friday options research" });
+    await workerButton.click();
+    const workerDetails = rail.getByRole("region", { name: "Worker details: Friday options research" });
+    await expect(workerDetails).toContainText("Compared the open Friday slot");
+    await expect(rail.getByRole("textbox", { name: "Message Codex" })).toHaveCount(0);
+    const backToTask = workerDetails.getByRole("button", { name: "Back to task" });
+    await expect(backToTask).toBeFocused();
+    await backToTask.click();
+    await expect(workerButton).toBeFocused();
+    await expect(rail.getByRole("log", { name: "Codex conversation" })).toContainText("Can you help with Friday dinner?");
 
-    const clock = await page.request.post(`${controlOrigin}/clock?now=${dinnerNow}`);
-    expect(clock.ok()).toBe(true);
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await page.locator(".view-nav").getByRole("button", { name: "Tonight", exact: true }).click();
-    await expect(page.locator(".tonight-main")).toBeVisible();
+    await rail.getByRole("button", { name: "Yes", exact: true }).click();
+    await expect(rail.getByRole("button", { name: "Preview does not submit answers" })).toBeDisabled();
 
-    await researchIntent.check();
-    await composer.fill("Find and use a sourced lentil recipe for this dinner.");
-    await chat.getByTitle("Send to ChatGPT").click();
-    try {
-      await expect.poll(async () => {
-        const status = await page.request.get(`${controlOrigin}/status`);
-        return (await status.json() as { researchTurnStarted: boolean }).researchTurnStarted;
-      }).toBe(true);
-      await expect(chat.getByText("ChatGPT is researching a recipe…", { exact: true })).toBeVisible();
-    } finally {
-      const release = await page.request.post(`${controlOrigin}/release-research`);
-      expect(release.ok()).toBe(true);
-    }
-    await expect(chat.getByText("I replaced this dinner with a sourced recipe.", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Lemon lentil soup" })).toBeVisible();
-    await expect(page.getByText("Yield: 4 bowls", { exact: true })).toBeVisible();
-    const source = page.getByRole("link", { name: "Deterministic Test Kitchen" });
-    await expect(source).toHaveAttribute("href", "https://example.com/recipes/lemon-lentil-soup");
-    await expect(source.locator("xpath=..").getByText("Informational recipe source")).toBeVisible();
+    const composer = rail.getByRole("textbox", { name: "Message Codex" });
+    await expect(composer).toBeDisabled();
+    await expect(rail.getByRole("button", { name: "Send to Codex" })).toBeDisabled();
+    await expect(rail.getByRole("button", { name: "Stop Codex" })).toBeDisabled();
+    await expectComposerActionTargets(rail);
+    await expect(rail.getByTitle("Preview does not interrupt turns")).toBeVisible();
+    await expect(rail.getByTitle("Preview does not send messages")).toBeVisible();
 
-    await expect(planIntent).toBeChecked();
-    await composer.fill("Save one planner change then interrupt the reply.");
-    await chat.getByTitle("Send to ChatGPT").click();
-    await expect(chat.getByText("Planner changes saved · reply interrupted", { exact: true })).toBeVisible();
-    await expect(chat.getByText(
-      "The accepted planner changes are already durable. Recovery reconstructs the reply without running them again.",
-      { exact: true },
-    )).toBeVisible();
-    const recover = chat.getByRole("button", {
-      name: "Recover the reply (planner changes will not run again)",
+    await rail.getByRole("button", { name: "Task history" }).click();
+    const history = rail.getByRole("region", { name: "Task history" });
+    await expect(history.getByRole("button", { name: "Open task: Friday dinner" })).toBeVisible();
+    await history.getByRole("button", { name: "Load more tasks" }).click();
+    await expect(history.getByRole("button", { name: "Open task: Weekend prep" })).toBeVisible();
+    await expect(history.getByRole("button", { name: /^Open task:/ })).toHaveCount(3);
+    await history.getByRole("textbox", { name: "Search tasks" }).fill("grocery");
+    await history.getByRole("button", { name: "Search", exact: true }).click();
+    await expect(history.getByRole("button", { name: "Open task: Grocery list" })).toBeVisible();
+    await history.getByRole("button", { name: "Archive task: Grocery list" }).click();
+    await expect(history.getByText("No tasks match “grocery”.", { exact: true })).toBeVisible();
+    await history.getByRole("button", { name: "Archived tasks" }).click();
+    await expect(history.getByRole("article", { name: "Archived task: Grocery list" })).toBeVisible();
+    await history.getByRole("textbox", { name: "Search tasks" }).fill("");
+    await history.getByRole("button", { name: "Search", exact: true }).click();
+    await history.getByRole("button", { name: "Open tasks" }).click();
+    await history.getByRole("button", { name: "Open task: Weekend prep" }).click();
+    await expect(rail.getByRole("log", { name: "Codex conversation" })).toContainText("Help me plan prep for Saturday and Sunday.");
+    await expect(rail.getByRole("log", { name: "Codex conversation" })).not.toContainText("Can you help with Friday dinner?");
+
+    await rail.getByRole("button", { name: "Task history" }).click();
+    await history.getByRole("button", { name: "New task" }).click();
+    await rail.getByRole("button", { name: "Task history" }).click();
+    const blankTask = history.getByRole("button", { name: "Open task: New preview task" });
+    await expect(blankTask).toBeVisible();
+    await expect(blankTask).toHaveAttribute("aria-current", "true");
+  });
+
+  test("task history exposes an enabled retry and recovers after a list failure", async ({ page }) => {
+    await openNative(page);
+    let injected = false;
+    await page.route("**/api/codex/threads?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (!injected && url.searchParams.has("limit")) {
+        injected = true;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "CODEX_UNAVAILABLE", message: "Injected task history failure." },
+          }),
+        });
+        return;
+      }
+      await route.continue();
     });
-    await expect(recover).toBeVisible();
 
-    const beforeRecovery = await (await page.request.get("/api/workspace")).json() as {
-      state: { weeks: Array<{ data: { groceries: Array<{ item: string }> } }> };
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await rail.getByRole("button", { name: "Task history" }).click();
+    const history = rail.getByRole("region", { name: "Task history" });
+    await expect(history.getByRole("alert")).toContainText("Injected task history failure.");
+    const retry = history.getByRole("button", { name: "Retry task history" });
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect(history.getByRole("alert")).toHaveCount(0);
+    await expect(history.getByRole("list", { name: "Open tasks" })).toHaveAttribute("aria-busy", "false");
+  });
+
+  test("an active native turn can be stopped with its exact turn identity", async ({ page }) => {
+    await openNative(page);
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    const composer = rail.getByRole("textbox", { name: "Message Codex" });
+    await composer.fill("Show tonight context.");
+    const completedSendPromise = page.waitForResponse((response) =>
+      response.url().endsWith("/api/codex/turns/send") && response.request().method() === "POST"
+    );
+    await rail.getByRole("button", { name: "Send to Codex" }).click();
+    expect((await completedSendPromise).status()).toBe(202);
+    await expect(rail.getByRole("log", { name: "Codex conversation" })).toContainText("Tonight is");
+    await expect(rail.getByRole("button", { name: "Stop Codex" })).toHaveCount(0);
+
+    const prompt = "Installed QA native interrupt proof.";
+    await composer.fill(prompt);
+    const sendResponsePromise = page.waitForResponse((response) =>
+      response.url().endsWith("/api/codex/turns/send") && response.request().method() === "POST"
+    );
+    await rail.getByRole("button", { name: "Send to Codex" }).click();
+    const sendResponse = await sendResponsePromise;
+    expect(sendResponse.status()).toBe(202);
+    const admission = await sendResponse.json() as { threadId: string; turnId: string };
+    await expect(rail.getByRole("log", { name: "Codex conversation" })).toContainText(prompt);
+
+    const stop = rail.getByRole("button", { name: "Stop Codex" });
+    await expect(stop).toBeEnabled();
+    const activeReadResponse = await page.request.get(`/api/codex/thread?threadId=${encodeURIComponent(admission.threadId)}`);
+    expect(activeReadResponse.status()).toBe(200);
+    const activeRead = await activeReadResponse.json() as {
+      selection: { revision: number };
+      thread: { turns: Array<{ id: string; status: string }> };
     };
-    expect(beforeRecovery.state.weeks.flatMap((week) => week.data.groceries)
-      .filter((item) => item.item === "Recovery proof parsley")).toHaveLength(1);
-    await recover.click();
-    await expect(chat.getByText("I recovered the interrupted household request.", { exact: true })).toBeVisible();
-    const afterRecovery = await (await page.request.get("/api/workspace")).json() as typeof beforeRecovery;
-    expect(afterRecovery.state.weeks.flatMap((week) => week.data.groceries)
-      .filter((item) => item.item === "Recovery proof parsley")).toHaveLength(1);
-  });
+    expect(activeRead.thread.turns.filter((turn) => turn.status === "in_progress").map((turn) => turn.id)).toEqual([admission.turnId]);
 
-  test("the mobile chat drawer exposes the same non-sticky intent contract", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Set up this planner once" })).toBeVisible();
-    await page.getByRole("button", { name: "Start Fresh" }).click();
-    await page.getByRole("button", { name: "ChatGPT" }).first().click();
+    let releaseSteer!: () => void;
+    let captureSteer!: () => void;
+    const steerRelease = new Promise<void>((resolve) => { releaseSteer = resolve; });
+    const steerCaptured = new Promise<void>((resolve) => { captureSteer = resolve; });
+    await page.route("**/api/codex/turns/send", async (route) => {
+      captureSteer();
+      await steerRelease;
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "TURN_CONFLICT", message: "Injected steer conflict." } }),
+      });
+    });
+    await composer.fill("Keep checking while the current response is active.");
+    const send = rail.getByRole("button", { name: "Send to Codex" });
+    await send.click();
+    await steerCaptured;
+    try {
+      await expect(send).toBeDisabled();
+      await expect(stop).toBeDisabled();
+      await expect(send.locator(".spin")).toHaveCount(1);
+      await expect(stop.locator(".spin")).toHaveCount(0);
+    } finally {
+      releaseSteer();
+    }
+    await expect(rail.getByRole("alert")).toContainText("Injected steer conflict.");
+    await page.unroute("**/api/codex/turns/send");
 
-    const dialog = page.getByRole("dialog", { name: "ChatGPT household chat" });
-    await expect(dialog).toBeVisible();
-    const group = dialog.getByRole("group", { name: "ChatGPT task" });
-    const plan = group.getByRole("radio", { name: "Plan", exact: true });
-    const research = group.getByRole("radio", { name: "Research recipe" });
-    const composer = dialog.getByRole("textbox", { name: "Message ChatGPT" });
-    await expect(plan).toBeChecked();
-    await expect(dialog.getByRole("checkbox", { name: /Allow archiving week/ })).not.toBeChecked();
-    await composer.fill("Preserve this mobile draft.");
-    await research.check();
-    await expect(research).toBeChecked();
-    await expect(dialog.getByRole("checkbox", { name: /Allow archiving week/ })).toHaveCount(0);
-    await expect(composer).toHaveValue("Preserve this mobile draft.");
-    await plan.check();
-    await expect(dialog.getByRole("checkbox", { name: /Allow archiving week/ })).not.toBeChecked();
-    await expect(composer).toHaveValue("Preserve this mobile draft.");
-  });
-
-  test("a rejected submission preserves its draft and selected intent", async ({ page }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Start Fresh" }).click();
-    const workspace = await (await page.request.get("/api/workspace")).json();
-    await page.route("**/api/chat/submit", async (route) => {
+    let interruptRequests = 0;
+    let firstInterruptBody: string | null = null;
+    let secondInterruptBody: string | null = null;
+    let releaseFirstInterrupt!: () => void;
+    let captureFirstInterrupt!: () => void;
+    const firstInterruptRelease = new Promise<void>((resolve) => { releaseFirstInterrupt = resolve; });
+    const firstInterruptCaptured = new Promise<void>((resolve) => { captureFirstInterrupt = resolve; });
+    await page.route("**/api/codex/turns/interrupt", async (route) => {
+      interruptRequests += 1;
+      if (interruptRequests > 1) {
+        secondInterruptBody = route.request().postData();
+        await route.continue();
+        return;
+      }
+      firstInterruptBody = route.request().postData();
+      captureFirstInterrupt();
+      await firstInterruptRelease;
       await route.fulfill({
         status: 503,
         contentType: "application/json",
-        body: JSON.stringify({
-          decision: {
-            status: "codex_unavailable",
-            message: "Embedded Codex is unavailable.",
-          },
-          workspace,
-        }),
+        body: JSON.stringify({ error: { code: "CODEX_UNAVAILABLE", message: "Injected ambiguous stop failure." } }),
       });
     });
+    await stop.click();
+    await firstInterruptCaptured;
+    try {
+      await expect(stop).toBeDisabled();
+      await expect(stop.locator(".spin")).toHaveCount(1);
+      await expect(send.locator(".spin")).toHaveCount(0);
+      expect(interruptRequests).toBe(1);
+    } finally {
+      releaseFirstInterrupt();
+    }
+    await expect(rail.getByRole("alert")).toContainText("Injected ambiguous stop failure.");
+    await expect(stop).toBeEnabled();
 
-    const chat = page.locator('aside[aria-label="ChatGPT household chat"]');
-    const group = chat.getByRole("group", { name: "ChatGPT task" });
-    const research = group.getByRole("radio", { name: "Research recipe" });
-    const composer = chat.getByRole("textbox", { name: "Message ChatGPT" });
-    await research.check();
-    await composer.fill("Keep this rejected research draft.");
-    await chat.getByTitle("Send to ChatGPT").click();
-    await expect(page.getByText("Embedded Codex is unavailable.", { exact: true })).toBeVisible();
-    await expect(research).toBeChecked();
-    await expect(composer).toHaveValue("Keep this rejected research draft.");
+    const interruptResponsePromise = page.waitForResponse((response) =>
+      response.url().endsWith("/api/codex/turns/interrupt") && response.request().method() === "POST"
+    );
+    await stop.click();
+    const interruptResponse = await interruptResponsePromise;
+    expect(interruptResponse.status()).toBe(200);
+    expect(secondInterruptBody).toBe(firstInterruptBody);
+    expect(interruptResponse.request().postDataJSON()).toEqual({
+      requestId: expect.any(String),
+      threadId: admission.threadId,
+      expectedSelectionRevision: activeRead.selection.revision,
+      turnId: admission.turnId,
+    });
+    await page.unroute("**/api/codex/turns/interrupt");
+    await expect.poll(async () => {
+      const response = await page.request.get(`/api/codex/thread?threadId=${encodeURIComponent(admission.threadId)}`);
+      if (!response.ok()) return null;
+      const read = await response.json() as { thread: { turns: Array<{ id: string; status: string }> } };
+      return read.thread.turns.find((turn) => turn.id === admission.turnId)?.status ?? null;
+    }).toBe("interrupted");
+    await expect(stop).toHaveCount(0);
+    await expect(rail.getByRole("alert")).toHaveCount(0);
+    await expect(composer).toBeFocused();
+    await expect(rail.getByRole("button", { name: "Send to Codex" })).toBeVisible();
   });
 
-  test("readiness states keep the planner usable and gate only ChatGPT", async ({ page, request }) => {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Start Fresh" }).click();
-    const states = [
-      ["checking", "Checking ChatGPT"],
-      ["unauthenticated", "Planner ready · ChatGPT needs sign-in"],
-      ["incompatible", "Planner ready · ChatGPT runtime incompatible"],
-      ["unavailable", "Planner ready · ChatGPT unavailable"],
-      ["compatible", "ChatGPT ready"],
-    ] as const;
+  test("the same native rail opens in the mobile dialog without legacy chat controls", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openPreview(page);
 
-    for (const [state, label] of states) {
-      await setCodexState(request, state);
-      await page.reload();
-      await expect(page.getByText("Family dinner planner")).toBeVisible();
-      const chat = page.locator('aside[aria-label="ChatGPT household chat"]');
-      await expect(chat.getByText(label, { exact: true })).toBeVisible();
-      const composer = chat.getByRole("textbox", { name: "Message ChatGPT" });
-      await composer.fill(`Draft preserved while ${state}.`);
-      const send = chat.getByTitle("Send to ChatGPT");
-      if (state === "compatible") {
-        await expect(send).toBeEnabled();
-      } else {
-        await expect(send).toBeDisabled();
-      }
-      await expect(page.getByRole("button", { name: "Tonight", exact: true })).toBeEnabled();
-    }
+    const trigger = page.getByRole("button", { name: "Open Codex" });
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Codex task" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Task history" })).toBeVisible();
+    await expect(dialog.getByRole("radio")).toHaveCount(0);
+    await expectComposerActionTargets(dialog);
+
+    await dialog.getByRole("button", { name: "Close Codex" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
   });
 });

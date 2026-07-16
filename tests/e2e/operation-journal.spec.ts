@@ -13,7 +13,7 @@ const fixture = process.env.PLANNER_E2E_FIXTURE_EXPECTED ??
 const journalKey = "weekly-recipe-planner:authority-operations:v1";
 
 type JournalOperation = {
-  kind: "bootstrap" | "planner" | "undo" | "chat-submit" | "chat-retry";
+  kind: "bootstrap" | "planner" | "undo";
   label: string;
   requestId: string;
   serializedBody: string;
@@ -32,8 +32,18 @@ type Workspace = {
   state: {
     weeks: Array<{
       data: {
-        groceries: Array<{ checked: boolean; item: string }>;
-        meals: Array<{ title: string }>;
+        groceries: Array<{
+          id: string;
+          mealId: string;
+          ingredientId: string;
+          checked: boolean;
+          source: "shop" | "farm_box" | "on_hand";
+        }>;
+        meals: Array<{
+          id: string;
+          title: string;
+          ingredients: Array<{ id: string; ingredient: string }>;
+        }>;
       };
     }>;
   };
@@ -41,16 +51,6 @@ type Workspace = {
     command: Record<string, unknown> & { type: string };
     eventId: string;
     revertsEventId: string | null;
-  }>;
-  transcriptEntries: Array<{
-    role: string;
-    text: string;
-    turnId: string | null;
-  }>;
-  chatTurns: Array<{
-    requestId: string;
-    retryOfTurnId: string | null;
-    turnId: string;
   }>;
 };
 
@@ -62,6 +62,38 @@ type ResponseLoss = {
 
 function bodyJson(body: string): Record<string, unknown> {
   return JSON.parse(body) as Record<string, unknown>;
+}
+
+function groceryIngredient(
+  workspace: Workspace,
+  itemId: string,
+): { ingredient: string; source: "shop" | "farm_box" | "on_hand"; checked: boolean } | undefined {
+  for (const week of workspace.state.weeks) {
+    const grocery = week.data.groceries.find((item) => item.id === itemId);
+    if (!grocery) continue;
+    const meal = week.data.meals.find((candidate) => candidate.id === grocery.mealId);
+    const ingredient = meal?.ingredients.find((candidate) => candidate.id === grocery.ingredientId);
+    if (ingredient) {
+      return { ingredient: ingredient.ingredient, source: grocery.source, checked: grocery.checked };
+    }
+  }
+  return undefined;
+}
+
+function groceryIdForIngredient(workspace: Workspace, ingredientName: string): string {
+  const normalizedIngredientName = ingredientName.toLocaleLowerCase("en-CA");
+  for (const week of workspace.state.weeks) {
+    for (const grocery of week.data.groceries) {
+      const meal = week.data.meals.find((candidate) => candidate.id === grocery.mealId);
+      if (meal?.ingredients.some((ingredient) =>
+        ingredient.id === grocery.ingredientId &&
+        ingredient.ingredient.toLocaleLowerCase("en-CA") === normalizedIngredientName,
+      )) {
+        return grocery.id;
+      }
+    }
+  }
+  throw new Error(`No projected grocery record exists for ${ingredientName}.`);
 }
 
 async function readJournal(page: Page): Promise<JournalEnvelope | null> {
@@ -178,10 +210,6 @@ function mainRetry(page: Page, label: string) {
   return page.locator(".app-main").getByRole("button", { name: `Retry ${label}` });
 }
 
-function chatPanel(page: Page) {
-  return page.locator('aside[aria-label="ChatGPT household chat"]');
-}
-
 test.describe.configure({ mode: "serial" });
 
 test.describe("reload-safe authority operation journal", () => {
@@ -220,7 +248,7 @@ test.describe("reload-safe authority operation journal", () => {
   test("planner recipe edits restore their submitted draft and settle once", async ({ page }) => {
     test.setTimeout(120_000);
     await initializePlanner(page);
-    await page.locator(".meal-card:not(.empty-meal)").first().click();
+    await page.locator(".meal-card-editor:not(.empty-meal)").first().click();
     const drawer = page.locator(".meal-drawer");
     const title = "Journal recovery traybake";
     const finalTitle = "Journal recovery traybake final";
@@ -289,30 +317,36 @@ test.describe("reload-safe authority operation journal", () => {
     })).toHaveLength(1);
   });
 
-  test("cross-site renderer replacement preserves an ambiguous request for exact replay", async ({ page }) => {
+  test("cross-site renderer replacement preserves a recipe-derived source move for exact replay", async ({ page }) => {
     test.setTimeout(120_000);
     await initializePlanner(page);
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
-    const grocery = "Renderer recovery parsley";
+    const ingredient = "Boneless chicken thighs";
     const loss = await armCommittedResponseLoss(
       page,
       "**/api/commands",
       (body) => {
         const command = body.command as Record<string, unknown> | undefined;
-        const item = command?.item as Record<string, unknown> | undefined;
-        return command?.type === "addGroceryItem" && item?.item === grocery;
+        return command?.type === "moveGroceryItemsToSource" &&
+          command?.source === "farm_box" &&
+          Array.isArray(command.itemIds) && command.itemIds.length === 1;
       },
     );
-    await page.getByLabel("New grocery item").fill(grocery);
-    await page.getByLabel("Grocery detail").fill("1 bunch");
-    await page.getByRole("button", { name: "Add", exact: true }).click();
+    const source = page.getByLabel(`Source for ${ingredient}`);
+    await expect(source).toHaveValue("shop");
+    await source.selectOption("farm_box");
     const operation = await waitForAmbiguity(page, loss, "planner");
+    expect(operation.submittedDraft).toMatchObject({
+      type: "moveGroceryItemsToSource",
+      source: "farm_box",
+      itemIds: [expect.any(String)],
+    });
     await stopResponseLoss(page, loss);
 
     await page.goto("data:text/html,<title>Renderer replacement</title>");
     await expect(page).toHaveTitle("Renderer replacement");
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    const retry = mainRetry(page, "Add grocery item");
+    const retry = mainRetry(page, "Move selected groceries");
     await expect(retry).toBeVisible();
     const replayBody = await captureAcceptedReplay(page, "**/api/commands", async () => {
       await retry.click();
@@ -322,11 +356,19 @@ test.describe("reload-safe authority operation journal", () => {
     expect(await readJournal(page)).toBeNull();
 
     const workspace = await readWorkspace(page);
-    expect(workspace.state.weeks.flatMap((week) => week.data.groceries)
-      .filter((item) => item.item === grocery)).toHaveLength(1);
+    const replayedCommand = bodyJson(operation.serializedBody).command as Record<string, unknown>;
+    const movedItemId = (replayedCommand.itemIds as unknown[])[0];
+    expect(typeof movedItemId).toBe("string");
+    expect(groceryIngredient(workspace, movedItemId as string)).toEqual({
+      ingredient: ingredient.toLocaleLowerCase("en-CA"),
+      source: "farm_box",
+      checked: false,
+    });
     expect(workspace.events.filter((event) => {
-      const item = event.command.item as Record<string, unknown> | undefined;
-      return event.command.type === "addGroceryItem" && item?.item === grocery;
+      const itemIds = event.command.itemIds;
+      return event.command.type === "moveGroceryItemsToSource" &&
+        event.command.source === "farm_box" &&
+        Array.isArray(itemIds) && itemIds.includes(movedItemId);
     })).toHaveLength(1);
   });
 
@@ -336,8 +378,10 @@ test.describe("reload-safe authority operation journal", () => {
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
     const chicken = page.getByRole("checkbox", { name: "Check Boneless chicken thighs" });
     await chicken.click();
-    await expect(chicken).toBeChecked();
+    await expect(chicken).toHaveCount(0);
     const beforeUndo = await readWorkspace(page);
+    const checkedChickenId = groceryIdForIngredient(beforeUndo, "Boneless chicken thighs");
+    expect(groceryIngredient(beforeUndo, checkedChickenId)?.checked).toBe(true);
     const targetEvent = beforeUndo.events.at(-1);
     expect(targetEvent).toBeDefined();
 
@@ -363,259 +407,10 @@ test.describe("reload-safe authority operation journal", () => {
     expect(await readJournal(page)).toBeNull();
 
     const workspace = await readWorkspace(page);
-    expect(workspace.state.weeks.flatMap((week) => week.data.groceries)
-      .find((item) => item.item === "Boneless chicken thighs")?.checked).toBe(false);
+    const chickenId = groceryIdForIngredient(workspace, "Boneless chicken thighs");
+    expect(groceryIngredient(workspace, chickenId)?.checked).toBe(false);
     expect(workspace.events.filter((event) =>
       event.command.type === "undoLatest" && event.revertsEventId === targetEvent!.eventId,
-    )).toHaveLength(1);
-  });
-
-  test("chat submit restores its composer draft and one durable turn", async ({ page }) => {
-    test.setTimeout(120_000);
-    await initializePlanner(page);
-    const message = "Journal chat submit proof.";
-    const loss = await armCommittedResponseLoss(
-      page,
-      "**/api/chat/submit",
-      (body) => body.message === message,
-    );
-    const composer = chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" });
-    await composer.fill(message);
-    await chatPanel(page).getByTitle("Send to ChatGPT").click();
-    const operation = await waitForAmbiguity(page, loss, "chat-submit");
-    expect(operation.submittedDraft).toBe(message);
-
-    await reloadPlanner(page);
-    await expect(chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" }))
-      .toHaveValue(message);
-    const retry = mainRetry(page, "Send ChatGPT message");
-    await expect(retry).toBeVisible();
-    await stopResponseLoss(page, loss);
-    const replayBody = await captureAcceptedReplay(page, "**/api/chat/submit", async () => {
-      await retry.click();
-      await expect(retry).toHaveCount(0);
-    });
-    expect(replayBody).toBe(operation.serializedBody);
-    await expect(chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" }))
-      .toHaveValue("");
-    expect(await readJournal(page)).toBeNull();
-
-    const workspace = await readWorkspace(page);
-    const userEntries = workspace.transcriptEntries.filter((entry) =>
-      entry.role === "user" && entry.text === message,
-    );
-    expect(userEntries).toHaveLength(1);
-    expect(workspace.chatTurns.filter((turn) =>
-      turn.requestId === operation.requestId,
-    )).toHaveLength(1);
-  });
-
-  test("a resolved chat conflict durably retries the edited current intent", async ({ page }) => {
-    test.setTimeout(120_000);
-    await initializePlanner(page);
-    const peer = await page.context().newPage();
-    await peer.goto("/");
-    await expect(peer.getByText("Family dinner planner", { exact: true })).toBeVisible();
-
-    let releaseOriginal!: () => void;
-    let markOriginalStarted!: () => void;
-    const originalRelease = new Promise<void>((resolve) => { releaseOriginal = resolve; });
-    const originalStarted = new Promise<void>((resolve) => { markOriginalStarted = resolve; });
-    const originalMessage = "Conflict-bound original chat draft.";
-    const bodies: string[] = [];
-    await page.route("**/api/chat/submit", async (route) => {
-      const body = route.request().postData() ?? "";
-      bodies.push(body);
-      if ((bodyJson(body).message as string) === originalMessage) {
-        markOriginalStarted();
-        await originalRelease;
-      }
-      await route.continue();
-    });
-
-    const composer = chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" });
-    await composer.fill(originalMessage);
-    await chatPanel(page).getByTitle("Send to ChatGPT").click();
-    await originalStarted;
-
-    await peer.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
-    const chicken = peer.getByRole("checkbox", { name: "Check Boneless chicken thighs" });
-    await chicken.click();
-    await expect(chicken).toBeChecked();
-    releaseOriginal();
-
-    const retry = mainRetry(page, "Send ChatGPT message");
-    await expect(retry).toBeVisible();
-    const resolved = await expectJournalKinds(page, ["chat-submit"]);
-    expect(resolved.operations[0].state).toBe("resolved_conflict");
-    const originalBody = bodyJson(resolved.operations[0].serializedBody);
-
-    const editedMessage = "Conflict-bound edited chat draft.";
-    await composer.fill(editedMessage);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" }))
-      .toHaveValue(editedMessage);
-    const hydratedRetry = mainRetry(page, "Send ChatGPT message");
-    await expect(hydratedRetry).toBeVisible();
-    await hydratedRetry.click();
-    await expect(hydratedRetry).toHaveCount(0);
-    await expect(chatPanel(page).getByText("I can see the shared household plan.", { exact: true }))
-      .toBeVisible();
-
-    expect(bodies).toHaveLength(2);
-    const retryBody = bodyJson(bodies[1]);
-    expect(retryBody.message).toBe(editedMessage);
-    expect(retryBody.requestId).not.toBe(originalBody.requestId);
-    expect(Number(retryBody.basePlannerVersion)).toBeGreaterThan(
-      Number(originalBody.basePlannerVersion),
-    );
-    expect(await readJournal(page)).toBeNull();
-
-    const workspace = await readWorkspace(page);
-    expect(workspace.transcriptEntries.filter((entry) =>
-      entry.role === "user" && entry.text === originalMessage,
-    )).toHaveLength(0);
-    expect(workspace.transcriptEntries.filter((entry) =>
-      entry.role === "user" && entry.text === editedMessage,
-    )).toHaveLength(1);
-    await page.unroute("**/api/chat/submit");
-    await peer.close();
-  });
-
-  test("chat retry hydrates and replays one recovery turn without repeating its effect", async ({ page }) => {
-    test.setTimeout(120_000);
-    await initializePlanner(page);
-    const chat = chatPanel(page);
-    const composer = chat.getByRole("textbox", { name: "Message ChatGPT" });
-    await composer.fill("Save one planner change then interrupt the reply.");
-    await chat.getByTitle("Send to ChatGPT").click();
-    await expect(chat.getByText("Planner changes saved · reply interrupted", { exact: true }))
-      .toBeVisible();
-    const beforeRetry = await readWorkspace(page);
-    const originalEntry = beforeRetry.transcriptEntries.find((entry) =>
-      entry.role === "user" && entry.text === "Save one planner change then interrupt the reply.",
-    );
-    expect(originalEntry?.turnId).toBeTruthy();
-
-    const loss = await armCommittedResponseLoss(page, "**/api/chat/retry");
-    await chat.getByRole("button", {
-      name: "Recover the reply (planner changes will not run again)",
-    }).click();
-    const operation = await waitForAmbiguity(page, loss, "chat-retry");
-    expect(operation.submittedDraft).toEqual(bodyJson(operation.serializedBody));
-    expect(bodyJson(operation.serializedBody)).toMatchObject({
-      turnId: originalEntry!.turnId,
-    });
-
-    await reloadPlanner(page);
-    const retry = mainRetry(page, "Retry ChatGPT request");
-    await expect(retry).toBeVisible();
-    await stopResponseLoss(page, loss);
-    const replayBody = await captureAcceptedReplay(page, "**/api/chat/retry", async () => {
-      await retry.click();
-      await expect(retry).toHaveCount(0);
-    });
-    expect(replayBody).toBe(operation.serializedBody);
-    expect(await readJournal(page)).toBeNull();
-
-    const workspace = await readWorkspace(page);
-    expect(workspace.chatTurns.filter((turn) =>
-      turn.retryOfTurnId === originalEntry!.turnId,
-    )).toHaveLength(1);
-    expect(workspace.transcriptEntries.filter((entry) =>
-      entry.role === "assistant" && entry.text === "I recovered the interrupted household request.",
-    )).toHaveLength(1);
-    expect(workspace.state.weeks.flatMap((week) => week.data.groceries)
-      .filter((item) => item.item === "Recovery proof parsley")).toHaveLength(1);
-  });
-
-  test("simultaneous planner and chat ambiguity retain both exact records", async ({ page }) => {
-    test.setTimeout(120_000);
-    await initializePlanner(page);
-    await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
-
-    let releaseChat!: () => void;
-    let markChatCommitted!: () => void;
-    const chatRelease = new Promise<void>((resolve) => {
-      releaseChat = resolve;
-    });
-    const chatCommitted = new Promise<void>((resolve) => {
-      markChatCommitted = resolve;
-    });
-    const message = "Simultaneous journal chat proof.";
-    const chatLoss = await armCommittedResponseLoss(
-      page,
-      "**/api/chat/submit",
-      (body) => body.message === message,
-      async () => {
-        markChatCommitted();
-        await chatRelease;
-      },
-    );
-    const composer = chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" });
-    await composer.fill(message);
-    await chatPanel(page).getByTitle("Send to ChatGPT").click();
-    await chatCommitted;
-
-    const grocery = "Simultaneous journal basil";
-    const plannerLoss = await armCommittedResponseLoss(
-      page,
-      "**/api/commands",
-      (body) => {
-        const command = body.command as Record<string, unknown> | undefined;
-        const item = command?.item as Record<string, unknown> | undefined;
-        return command?.type === "addGroceryItem" && item?.item === grocery;
-      },
-    );
-    await page.getByLabel("New grocery item").fill(grocery);
-    await page.getByLabel("Grocery detail").fill("1 bunch");
-    await page.getByRole("button", { name: "Add", exact: true }).click();
-    await expect.poll(() => plannerLoss.bodies.length).toBe(2);
-    releaseChat();
-    await expect.poll(() => chatLoss.bodies.length).toBe(2);
-
-    const journal = await expectJournalKinds(page, ["planner", "chat-submit"]);
-    expect(journal.operations.every((operation) => operation.state === "ambiguous")).toBe(true);
-    const plannerOperation = journal.operations.find((operation) => operation.kind === "planner")!;
-    const chatOperation = journal.operations.find((operation) => operation.kind === "chat-submit")!;
-    expect(plannerLoss.bodies).toEqual([
-      plannerOperation.serializedBody,
-      plannerOperation.serializedBody,
-    ]);
-    expect(chatLoss.bodies).toEqual([
-      chatOperation.serializedBody,
-      chatOperation.serializedBody,
-    ]);
-
-    await stopResponseLoss(page, plannerLoss);
-    await stopResponseLoss(page, chatLoss);
-    await reloadPlanner(page);
-    await expect(chatPanel(page).getByRole("textbox", { name: "Message ChatGPT" }))
-      .toHaveValue(message);
-
-    const plannerReplay = await captureAcceptedReplay(page, "**/api/commands", async () => {
-      const retry = mainRetry(page, "Add grocery item");
-      await expect(retry).toBeVisible();
-      await retry.click();
-      await expect(retry).toHaveCount(0);
-    });
-    expect(plannerReplay).toBe(plannerOperation.serializedBody);
-    await expectJournalKinds(page, ["chat-submit"]);
-
-    const chatReplay = await captureAcceptedReplay(page, "**/api/chat/submit", async () => {
-      const retry = mainRetry(page, "Send ChatGPT message");
-      await expect(retry).toBeVisible();
-      await retry.click();
-      await expect(retry).toHaveCount(0);
-    });
-    expect(chatReplay).toBe(chatOperation.serializedBody);
-    expect(await readJournal(page)).toBeNull();
-
-    const workspace = await readWorkspace(page);
-    expect(workspace.state.weeks.flatMap((week) => week.data.groceries)
-      .filter((item) => item.item === grocery)).toHaveLength(1);
-    expect(workspace.transcriptEntries.filter((entry) =>
-      entry.role === "user" && entry.text === message,
     )).toHaveLength(1);
   });
 
@@ -623,19 +418,20 @@ test.describe("reload-safe authority operation journal", () => {
     test.setTimeout(120_000);
     await initializePlanner(page);
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
-    const grocery = "Copied journal mint";
+    const ingredient = "Boneless chicken thighs";
     const loss = await armCommittedResponseLoss(
       page,
       "**/api/commands",
       (body) => {
         const command = body.command as Record<string, unknown> | undefined;
-        const item = command?.item as Record<string, unknown> | undefined;
-        return command?.type === "addGroceryItem" && item?.item === grocery;
+        return command?.type === "moveGroceryItemsToSource" &&
+          command?.source === "farm_box" &&
+          Array.isArray(command.itemIds) && command.itemIds.length === 1;
       },
     );
-    await page.getByLabel("New grocery item").fill(grocery);
-    await page.getByLabel("Grocery detail").fill("1 bunch");
-    await page.getByRole("button", { name: "Add", exact: true }).click();
+    const source = page.getByLabel(`Source for ${ingredient}`);
+    await expect(source).toHaveValue("shop");
+    await source.selectOption("farm_box");
     const operation = await waitForAmbiguity(page, loss, "planner");
 
     const popupPromise = page.context().waitForEvent("page");
@@ -652,7 +448,7 @@ test.describe("reload-safe authority operation journal", () => {
       auxiliary,
       "**/api/commands",
       async () => {
-        const retry = mainRetry(auxiliary, "Add grocery item");
+        const retry = mainRetry(auxiliary, "Move selected groceries");
         await expect(retry).toBeVisible();
         await retry.click();
         await expect(retry).toHaveCount(0);
@@ -664,7 +460,7 @@ test.describe("reload-safe authority operation journal", () => {
     await stopResponseLoss(page, loss);
     await reloadPlanner(page);
     const primaryReplay = await captureAcceptedReplay(page, "**/api/commands", async () => {
-      const retry = mainRetry(page, "Add grocery item");
+      const retry = mainRetry(page, "Move selected groceries");
       await expect(retry).toBeVisible();
       await retry.click();
       await expect(retry).toHaveCount(0);
@@ -673,11 +469,19 @@ test.describe("reload-safe authority operation journal", () => {
     expect(await readJournal(page)).toBeNull();
 
     const workspace = await readWorkspace(page);
-    expect(workspace.state.weeks.flatMap((week) => week.data.groceries)
-      .filter((item) => item.item === grocery)).toHaveLength(1);
+    const replayedCommand = bodyJson(operation.serializedBody).command as Record<string, unknown>;
+    const movedItemId = (replayedCommand.itemIds as unknown[])[0];
+    expect(typeof movedItemId).toBe("string");
+    expect(groceryIngredient(workspace, movedItemId as string)).toEqual({
+      ingredient: ingredient.toLocaleLowerCase("en-CA"),
+      source: "farm_box",
+      checked: false,
+    });
     expect(workspace.events.filter((event) => {
-      const item = event.command.item as Record<string, unknown> | undefined;
-      return event.command.type === "addGroceryItem" && item?.item === grocery;
+      const itemIds = event.command.itemIds;
+      return event.command.type === "moveGroceryItemsToSource" &&
+        event.command.source === "farm_box" &&
+        Array.isArray(itemIds) && itemIds.includes(movedItemId);
     })).toHaveLength(1);
     await auxiliary.close();
   });
@@ -717,23 +521,26 @@ test.describe("reload-safe authority operation journal", () => {
     await page.evaluate((key) => {
       const operations = Array.from({ length: 16 }, (_, index) => {
         const body = {
-          requestId: `capacity-chat-${index}`,
+          requestId: `capacity-planner-${index}`,
           basePlannerVersion: 0,
-          message: `Capacity message ${index}`,
-          context: { view: "week" },
-          intent: { kind: "planner", archiveContextWeek: false },
+          command: {
+            type: "setGroceryItemChecked",
+            weekId: "2026-07-06",
+            itemId: `grocery-capacity-${index}`,
+            checked: true,
+          },
         };
         return {
           schemaVersion: 1,
-          kind: "chat-submit",
-          path: "/api/chat/submit",
+          kind: "planner",
+          path: "/api/commands",
           requestId: body.requestId,
           serializedBody: JSON.stringify(body),
           state: "resolved_conflict",
           createdAt: index + 1,
-          label: `Capacity chat ${index}`,
-          submittedDraft: body.message,
-          editableDraft: body.message,
+          label: `Capacity planner ${index}`,
+          submittedDraft: body,
+          editableDraft: body,
           resolution: { code: "context_stale", message: "Review the latest shared plan." },
         };
       });
@@ -747,15 +554,14 @@ test.describe("reload-safe authority operation journal", () => {
       if (new URL(request.url()).pathname === "/api/bootstrap") bootstrapRequests += 1;
     });
     await page.getByRole("button", { name: "Start Fresh" }).click();
-    await expect(page.getByText(
-      "Resolve pending shared changes before starting another change.",
-      { exact: true },
-    )).toBeVisible();
+    await expect(page.getByRole("status")).toContainText(
+      /Resolve .* before starting another shared change\./,
+    );
     await expect.poll(() => bootstrapRequests).toBe(0);
     const journal = await readJournal(page);
     expect(journal?.operations).toHaveLength(16);
     expect(journal?.operations.map((operation) => operation.requestId)).toEqual(
-      Array.from({ length: 16 }, (_, index) => `capacity-chat-${index}`),
+      Array.from({ length: 16 }, (_, index) => `capacity-planner-${index}`),
     );
   });
 
@@ -795,6 +601,9 @@ test.describe("reload-safe authority operation journal", () => {
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
     const chicken = page.getByRole("checkbox", { name: "Check Boneless chicken thighs" });
     await chicken.click();
-    await expect(chicken).toBeChecked();
+    await expect(chicken).toHaveCount(0);
+    const workspace = await readWorkspace(page);
+    const chickenId = groceryIdForIngredient(workspace, "Boneless chicken thighs");
+    expect(groceryIngredient(workspace, chickenId)?.checked).toBe(true);
   });
 });

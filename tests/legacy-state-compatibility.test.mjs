@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { householdDomain } from "../lib/household-domain.ts";
+import { isPlannerReadProjection } from "../lib/global-codex-contract.ts";
+import { normalizeLegacyHouseholdState } from "../lib/household-persistence-upgrade.ts";
 import { BROWSER_PROVENANCE } from "../lib/planner-operation-contract.ts";
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
 import { openPlannerStore } from "../server/store/sqlite-store.ts";
@@ -33,8 +35,13 @@ function legacyState(weekLesson) {
     prepNote: "",
     leftoverNote: "Makes 2 extra portions",
     notes: "",
-    ingredients: [],
-    instructions: [],
+    ingredients: index === 0 ? ["1 cup lentils"] : [],
+    instructions: index === 0 ? [{
+      id: "legacy-step-1",
+      inputs: [{ amount: "1 cup", ingredient: "lentils" }],
+      instruction: "Simmer the lentils.",
+      complete: false,
+    }] : [],
   }));
   return {
     householdTimeZone: "America/Halifax",
@@ -46,8 +53,20 @@ function legacyState(weekLesson) {
         status: "active",
         data: {
           meals,
-          prep: [],
-          groceries: [],
+          prep: [{
+            id: "legacy-prep-1",
+            stepId: "legacy-step-1",
+            prepDate: "2026-07-05",
+            position: 0,
+          }],
+          groceries: [{
+            id: "legacy-grocery-1",
+            section: "Produce",
+            item: "Legacy carrots",
+            detail: "1 bunch",
+            checked: false,
+            farmBox: true,
+          }],
           leftovers: meals.map((meal, index) => ({
             id: `leftover-${index + 1}`,
             sourceMealId: meal.id,
@@ -91,9 +110,16 @@ test("legacy leftover sources normalize atomically and idempotently before start
         actor: "Household",
         provenance: BROWSER_PROVENANCE,
         command: {
-          type: "captureWeekLesson",
+          type: "reconcileGroceries",
           weekId: WEEK_ID,
-          weekLesson: "After legacy event",
+          items: [{
+            id: "legacy-grocery-1",
+            section: "Produce",
+            item: "Legacy carrots",
+            detail: "1 bunch",
+            checked: false,
+            farmBox: true,
+          }],
         },
         baseVersion: 0,
         resultVersion: 1,
@@ -129,12 +155,64 @@ test("legacy leftover sources normalize atomically and idempotently before start
   assert.equal(firstRead.plannerVersion, 1);
   assert.equal(firstRead.syncRevision, 3);
   assert.equal(firstRead.events.length, 1);
+  assert.equal(firstRead.events[0].command.type, "reconcileGroceries");
+  assert.equal(isPlannerReadProjection({
+    initialized: true,
+    schemaVersion: firstRead.schemaVersion,
+    plannerVersion: firstRead.plannerVersion,
+    syncRevision: firstRead.syncRevision,
+    state: firstRead.state,
+    events: firstRead.events.map((event) => {
+      const sanitized = { ...event };
+      delete sanitized.chatTurnId;
+      return sanitized;
+    }),
+  }), true);
+  const historicalBatch = structuredClone(firstRead.events[0]);
+  delete historicalBatch.chatTurnId;
+  historicalBatch.command = {
+    type: "plannerBatch",
+    operations: [{ command: structuredClone(firstRead.events[0].command) }],
+  };
+  assert.equal(isPlannerReadProjection({
+    initialized: true,
+    schemaVersion: firstRead.schemaVersion,
+    plannerVersion: firstRead.plannerVersion,
+    syncRevision: firstRead.syncRevision,
+    state: firstRead.state,
+    events: [historicalBatch],
+  }), true);
   assert.equal(firstRead.state.weeks[0].data.leftovers.length, LEGACY_SOURCE_STATUSES.length);
+  const migratedMeal = firstRead.state.weeks[0].data.meals[0];
+  assert.deepEqual(
+    migratedMeal.ingredients.map(({ amount, ingredient }) => ({ amount, ingredient })),
+    [{ amount: "1 cup", ingredient: "lentils" }],
+  );
+  assert.equal(migratedMeal.instructions[0].inputs[0].ingredientId, migratedMeal.ingredients[0].id);
+  assert.deepEqual(firstRead.state.weeks[0].data.prepSessions, [{
+    id: "legacy-prep-session-2026-07-05",
+    label: "Prep 2026-07-05",
+    prepDate: "2026-07-05",
+    steps: [{ id: "legacy-prep-1", stepId: "legacy-step-1" }],
+  }]);
+  assert.equal(firstRead.state.weeks[0].data.groceries.length, 1, "unmatched legacy carrots leave the active list");
+  assert.deepEqual(firstRead.state.weeks[0].data.groceries[0], {
+    id: firstRead.state.weeks[0].data.groceries[0].id,
+    mealId: migratedMeal.id,
+    ingredientId: migratedMeal.ingredients[0].id,
+    section: "Pantry",
+    checked: false,
+    source: "shop",
+  }, "lentils gains its derived grocery execution row");
+  assert.equal("farmBoxReconciled" in firstRead.state.weeks[0].data, false);
   assertSourcesCooked(firstRead.state);
   upgraded.readTransaction((transaction) => {
     const latest = upgraded.readLatestPlannerEvent(transaction);
     assert.ok(latest);
     assertSourcesCooked(latest.beforeState);
+    assert.equal(latest.beforeState.weeks[0].data.groceries[0].source, "shop");
+    assert.equal(latest.event.command.type, "reconcileGroceries");
+    assert.equal(latest.event.command.items[0].item, "Legacy carrots", "historical command JSON remains immutable");
     assert.equal(
       upgraded.findReceipt(transaction, "planner_command", "request-legacy")?.payloadHash,
       "legacy-hash",
@@ -168,4 +246,28 @@ test("legacy leftover sources normalize atomically and idempotently before start
   assert.equal(next.workspace.plannerVersion, 2);
   assertSourcesCooked(next.workspace.state);
   reopened.close();
+});
+
+test("canonical-looking legacy ingredient records are merged before their step links are reused", () => {
+  const state = legacyState("Merge ingredient records");
+  const meal = state.weeks[0].data.meals[0];
+  meal.ingredients = [
+    { id: "ingredient-peppers-legacy", amount: "2 red", ingredient: "peppers" },
+    { id: "ingredient-red-peppers", amount: "2", ingredient: "red peppers" },
+  ];
+  meal.instructions = [{
+    id: "legacy-pepper-step",
+    inputs: [{ amount: "2", ingredient: "red peppers", ingredientId: "ingredient-red-peppers" }],
+    instruction: "Roast the peppers.",
+    complete: false,
+  }];
+  state.weeks[0].data.prep = [];
+
+  const normalized = normalizeLegacyHouseholdState(state);
+  assert.equal(normalized.changed, true);
+  const normalizedMeal = normalized.state.weeks[0].data.meals[0];
+  assert.deepEqual(normalizedMeal.ingredients, [
+    { id: "ingredient-peppers-legacy", amount: "2", ingredient: "red peppers" },
+  ]);
+  assert.equal(normalizedMeal.instructions[0].inputs[0].ingredientId, "ingredient-peppers-legacy");
 });

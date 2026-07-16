@@ -52,10 +52,10 @@ function status(evidence = coordinates) {
 
 function completeArtifact(value = coordinates) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     completedAt: "2026-07-11T00:00:00.000Z",
-    disposition: "compatible_authenticated_release_candidate",
-    scenario: "all",
+    disposition: "native_codex_authenticated_release_candidate",
+    scenario: "native_threads",
     authenticationMutationPerformedByProbe: false,
     activationCoordinates: value,
     activationCoordinatesRecheckedEqual: true,
@@ -63,51 +63,98 @@ function completeArtifact(value = coordinates) {
     capabilityEvidence: {
       evaluatedAt: "2026-07-11T00:00:00.000Z",
       rawSchemaBundleSha256: "7".repeat(64),
-      researchWebSearchMode: "live",
-      researchTools: ["update_plan", "web_search"],
-      plannerTools: ["update_plan", "planner"],
+      threadSource: "weekly_recipe_planner",
+      hostedWebSearchMode: "live",
+      topLevelTools: [
+        "update_plan", "request_user_input", "spawn_agent", "send_message",
+        "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+        "skills", "planner", "web_search",
+      ],
+      workerTools: [
+        "update_plan", "request_user_input", "spawn_agent", "send_message",
+        "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+        "skills", "web_search",
+      ],
+      skillsNamespaceMembers: ["list", "read"],
       plannerNamespaceMembers: ["read", "preview", "apply"],
+      standaloneSkillCount: 1,
+      standaloneSkillIdentitySha256: "1".repeat(64),
       forbiddenHits: [],
       unexpectedRpcMethods: [],
+      plannerReadObserved: true,
+      workerWaitCallObserved: true,
+      workerWaitResultObserved: true,
+      workerResultObserved: true,
+      userInputRoundTripObserved: true,
       dependentResultObserved: true,
       outboundPolicyRejected: true,
+      approvalPolicy: "never",
       permissionProfile: ":read-only",
       effectiveSandbox: "read-only-network-disabled",
       emptyAmbientSurfaces: true,
     },
     scenarios: {
-      dependentPlanner: {
-        turnIdSha256: "1".repeat(64),
-        acceptedEffectCount: 2,
-        outcome: "completed_with_effects",
+      nativeHistory: {
+        threadSource: "weekly_recipe_planner",
+        createdTopLevelThreadCount: 2,
+        primaryThreadIdSha256: "1".repeat(64),
+        archivedThreadIdSha256: "2".repeat(64),
+        paginationObserved: true,
+        selectionObserved: true,
+        restartReadback: true,
+        archivedAbsentFromActive: true,
+        archivedPresentInHistory: true,
       },
-      sourcedRecipe: {
-        turnIdSha256: "2".repeat(64),
-        acceptedEffectCount: 1,
-        outcome: "completed_with_effects",
-        sourceKind: "web",
-        sourceUrlSha256: "3".repeat(64),
-        observedWebSearch: {
+      nativeTurn: {
+        threadIdSha256: "1".repeat(64),
+        turnIdSha256: "3".repeat(64),
+        clientUserMessageIdSha256: "4".repeat(64),
+        exactAdmissionReplay: true,
+        changedPayloadRejected: true,
+        secondClientReadback: true,
+        plannerEffect: {
+          operation: "move_grocery_items_to_source",
+          plannerVersionDelta: 1,
+          itemIdentitySha256: "5".repeat(64),
+          source: "farm_box",
+          ingredientNameSha256: "6".repeat(64),
+          authoritativeReadback: true,
+        },
+        hostedWebSearch: {
           operation: "web_search",
           status: "completed",
-          durableTurnIdSha256: "2".repeat(64),
-          researchThreadIdSha256: "a".repeat(64),
-          researchTurnIdSha256: "b".repeat(64),
-          operationIdSha256: "c".repeat(64),
+          threadIdSha256: "1".repeat(64),
+          turnIdSha256: "3".repeat(64),
+          activityIdSha256: "6".repeat(64),
+        },
+        activity: {
+          categories: ["tool", "web"],
+          humanLabelsObserved: true,
+          assistantMessageObserved: true,
+        },
+        worker: {
+          parentThreadIdSha256: "1".repeat(64),
+          workerThreadIdSha256: "7".repeat(64),
+          workerActivityObserved: true,
+          childReadback: true,
+          parentResultObserved: true,
         },
       },
-      failureAfterEffect: {
-        turnIdSha256: "4".repeat(64),
-        acceptedEffectCount: 1,
-        outcome: "failed_after_effect",
+      interactions: {
+        question: {
+          interactionIdSha256: "8".repeat(64),
+          threadIdSha256: "1".repeat(64),
+          turnIdSha256: "9".repeat(64),
+          listedOptionRoundTrip: true,
+          resolved: true,
+        },
       },
-      recoveryOnly: {
-        turnIdSha256: "5".repeat(64),
-        acceptedEffectCount: 0,
-        outcome: "recovery_completed",
-        plannerVersionUnchanged: true,
+      interrupt: {
+        threadIdSha256: "2".repeat(64),
+        turnIdSha256: "a".repeat(64),
+        readbackStatus: "interrupted",
       },
-      secondClientReadback: true,
+      legacyConversationAbsent: true,
       globalUds: {
         supportedClient: true,
         applyAccepted: true,
@@ -160,15 +207,15 @@ function completeArtifact(value = coordinates) {
         pathSha256: "d".repeat(64),
         class: "state_sqlite",
         counts: {
-          threads: 0,
+          threads: 2,
           thread_dynamic_tools: 0,
           agent_jobs: 0,
           agent_job_items: 0,
           logs: 0,
         },
       }],
-      ephemeralCounts: {
-        threads: 0,
+      nativeStateCounts: {
+        threads: 2,
         thread_dynamic_tools: 0,
         agent_jobs: 0,
         agent_job_items: 0,
@@ -176,6 +223,19 @@ function completeArtifact(value = coordinates) {
       logRows: 0,
     },
   };
+}
+
+function verifierConfig() {
+  return {
+    codexFollowUp: {
+      ok: true,
+      deployment: { codexHome: "/tmp/native-codex-release-fixture" },
+    },
+  };
+}
+
+async function currentCapability() {
+  return completeArtifact().capabilityEvidence;
 }
 
 async function artifact(t, value = coordinates, mutate = (candidate) => candidate) {
@@ -208,7 +268,7 @@ test("activation verifier performs one fresh evaluation and closes the runtime",
   const result = await verifyCodexActivation(["--artifact", path], {}, {
     readConfig: (environment) => {
       temporaryDataRoot = environment.PLANNER_DATA_DIR;
-      return { codexFollowUp: { ok: false } };
+      return verifierConfig();
     },
     createRuntime: () => ({
       async evaluate() {
@@ -219,6 +279,7 @@ test("activation verifier performs one fresh evaluation and closes the runtime",
         closes += 1;
       },
     }),
+    readCapabilityProjection: currentCapability,
     collectSourceManifest: async () => sourceManifest,
   });
   assert.deepEqual(result, { matched: true });
@@ -232,13 +293,14 @@ test("activation verifier performs one fresh evaluation and closes the runtime",
 test("activation verifier rejects drift and non-private evidence", async (t) => {
   const path = await artifact(t);
   const dependencies = {
-    readConfig: () => ({ codexFollowUp: { ok: false } }),
+    readConfig: verifierConfig,
     createRuntime: () => ({
       async evaluate() {
         return status({ ...coordinates, sha256: "f".repeat(64) });
       },
       async close() {},
     }),
+    readCapabilityProjection: currentCapability,
     collectSourceManifest: async () => sourceManifest,
   };
   await assert.rejects(
@@ -259,8 +321,9 @@ test("activation verifier rejects partial RC evidence and post-smoke source drif
   });
   await assert.rejects(
     verifyCodexActivation(["--artifact", partial], {}, {
-      readConfig: () => ({ codexFollowUp: { ok: false } }),
+      readConfig: verifierConfig,
       createRuntime: () => ({ evaluate: async () => status(), close: async () => undefined }),
+      readCapabilityProjection: currentCapability,
       collectSourceManifest: async () => sourceManifest,
     }),
     /invalid exact contract/,
@@ -269,8 +332,9 @@ test("activation verifier rejects partial RC evidence and post-smoke source drif
   const full = await artifact(t);
   await assert.rejects(
     verifyCodexActivation(["--artifact", full], {}, {
-      readConfig: () => ({ codexFollowUp: { ok: false } }),
+      readConfig: verifierConfig,
       createRuntime: () => ({ evaluate: async () => status(), close: async () => undefined }),
+      readCapabilityProjection: currentCapability,
       collectSourceManifest: async () => ({ ...sourceManifest, sha256: "7".repeat(64) }),
     }),
     /source changed/,
@@ -316,8 +380,9 @@ test("release-mode verifier binds the canonical stage/install/auth artifact chai
   const dependencies = {
     releaseBinding,
     operatorSha256,
-    readConfig: () => ({ codexFollowUp: { ok: false } }),
+    readConfig: verifierConfig,
     createRuntime: () => ({ evaluate: async () => status(), close: async () => undefined }),
+    readCapabilityProjection: async () => projection.capabilityEvidence,
     collectSourceManifest: async () => sourceManifest,
   };
   assert.deepEqual(
@@ -342,24 +407,41 @@ test("release-mode verifier binds the canonical stage/install/auth artifact chai
   await assert.rejects(
     verifyCodexActivation(["--artifact", path], {}, {
       ...dependencies,
+      releaseBinding: { ...releaseBinding, evidenceSchemaVersion: 1 },
+    }),
+    /binding was not injected or changed/,
+  );
+  await assert.rejects(
+    verifyCodexActivation(["--artifact", path], {}, {
+      ...dependencies,
+      readCapabilityProjection: async () => ({
+        ...projection.capabilityEvidence,
+        standaloneSkillIdentitySha256: "f".repeat(64),
+      }),
+    }),
+    /native thread, worker, skill, web, or planner capability changed/,
+  );
+  await assert.rejects(
+    verifyCodexActivation(["--artifact", path], {}, {
+      ...dependencies,
       operatorSha256: "f".repeat(64),
     }),
     /operator identity was not injected or changed/,
   );
 });
 
-test("activation eligibility rejects omitted and nonnumeric scenario or retention counts", () => {
+test("activation eligibility rejects old or malformed native scenario and retention evidence", () => {
   const mutations = [
-    (candidate) => { delete candidate.scenarios.dependentPlanner; },
-    (candidate) => { candidate.scenarios.dependentPlanner.acceptedEffectCount = "2"; },
-    (candidate) => { candidate.scenarios.sourcedRecipe.acceptedEffectCount = undefined; },
-    (candidate) => { delete candidate.scenarios.sourcedRecipe.observedWebSearch; },
+    (candidate) => { candidate.schemaVersion = 1; },
+    (candidate) => { delete candidate.scenarios.nativeHistory; },
+    (candidate) => { candidate.scenarios.nativeHistory.createdTopLevelThreadCount = "2"; },
+    (candidate) => { delete candidate.scenarios.nativeTurn.hostedWebSearch; },
     (candidate) => {
-      candidate.scenarios.sourcedRecipe.observedWebSearch.durableTurnIdSha256 = "f".repeat(64);
+      candidate.scenarios.nativeTurn.hostedWebSearch.turnIdSha256 = "f".repeat(64);
     },
-    (candidate) => { candidate.dedicatedRuntimeRetention.ephemeralCounts = {}; },
-    (candidate) => { delete candidate.dedicatedRuntimeRetention.ephemeralCounts.agent_jobs; },
-    (candidate) => { candidate.dedicatedRuntimeRetention.ephemeralCounts.threads = "0"; },
+    (candidate) => { candidate.dedicatedRuntimeRetention.nativeStateCounts = {}; },
+    (candidate) => { delete candidate.dedicatedRuntimeRetention.nativeStateCounts.agent_jobs; },
+    (candidate) => { candidate.dedicatedRuntimeRetention.nativeStateCounts.threads = 0; },
     (candidate) => { candidate.releaseBinding = { activationId: "not-an-id" }; },
   ];
   for (const mutate of mutations) {

@@ -10,7 +10,7 @@ import {
   type IsoDate,
   type Leftover,
   type Meal,
-  type PrepReference,
+  type PrepSession,
   type WeekId,
 } from "./household-contract.ts";
 import {
@@ -31,6 +31,7 @@ import {
   mondayForIsoDate,
   type HouseholdCommandContext,
 } from "./household-domain.ts";
+import { normalizeLegacyHouseholdState } from "./household-persistence-upgrade.ts";
 import {
   LEGACY_V2_WEEK_START_DATE,
   type LegacyV2Payload,
@@ -168,19 +169,28 @@ function decodeLegacyInput(
   };
 }
 
+type LegacyInstructionStep = Omit<InstructionStep, "inputs"> & {
+  inputs: IngredientAmountLine[];
+};
+
+type LegacyMeal = Omit<Meal, "ingredients" | "instructions"> & {
+  ingredients: string[];
+  instructions: LegacyInstructionStep[];
+};
+
 function decodeLegacyStep(
   decoder: LegacyDecoder,
   value: unknown,
   path: string,
-): InstructionStep {
+): LegacyInstructionStep {
   const record = decoder.record(value, path);
   decoder.exact(
     record,
     path,
     ["id", "inputs", "instruction", "complete"],
-    ["timerDurationSeconds", "timerStartedAt", "note"],
+    ["timerDurationSeconds", "timerStartedAt", "timerPaused", "note"],
   );
-  const step: InstructionStep = {
+  const step: LegacyInstructionStep = {
     id: decoder.id(record.id, `${path}.id`),
     inputs: decoder
       .array(record.inputs, `${path}.inputs`, MAX_STEP_INPUTS)
@@ -201,6 +211,9 @@ function decodeLegacyStep(
   if (record.timerStartedAt !== undefined) {
     step.timerStartedAt = decoder.integer(record.timerStartedAt, `${path}.timerStartedAt`, 0);
   }
+  if (record.timerPaused !== undefined) {
+    step.timerPaused = decoder.boolean(record.timerPaused, `${path}.timerPaused`);
+  }
   if (record.note !== undefined) {
     step.note = decoder.string(record.note, `${path}.note`, MAX_COMMAND_TEXT_LENGTH);
   }
@@ -212,7 +225,7 @@ function decodeLegacyMeal(
   value: unknown,
   path: string,
   weekId: WeekId,
-): Meal {
+): LegacyMeal {
   const record = decoder.record(value, path);
   decoder.exact(record, path, [
     "id",
@@ -262,6 +275,46 @@ function decodeLegacyMeal(
   };
 }
 
+function legacyIngredientLineParts(line: string): { amount: string; ingredient: string } {
+  const trimmed = line.trim();
+  const match = /^((?:\d+\s+)?(?:\d+(?:[./]\d+)?|[¼½¾⅓⅔]))(?:\s+(cups?|tbsp|tsp|ml|l|g|kg|lb|lbs|oz|cans?|cloves?|bunch(?:es)?|pinches?|packages?|pkgs?|sprigs?|heads?|slices?))?\s+(.+)$/i.exec(trimmed);
+  if (!match) return { amount: "", ingredient: trimmed };
+  return { amount: [match[1], match[2]].filter(Boolean).join(" "), ingredient: match[3].trim() };
+}
+
+function legacyIngredientKey(ingredient: string): string {
+  return ingredient.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-CA");
+}
+
+function canonicalizeLegacyMeal(legacy: LegacyMeal): Meal {
+  let nextIngredientIndex = 0;
+  const ingredients: Meal["ingredients"] = [];
+  const addIngredient = (amount: string, ingredient: string) => {
+    const existing = ingredients.find((candidate) => legacyIngredientKey(candidate.ingredient) === legacyIngredientKey(ingredient));
+    if (existing) return existing;
+    const id = `${legacy.id}:ingredient:${nextIngredientIndex}`;
+    nextIngredientIndex += 1;
+    const next = { id, amount, ingredient };
+    ingredients.push(next);
+    return next;
+  };
+  legacy.ingredients.forEach((line) => {
+    const parsed = legacyIngredientLineParts(line);
+    if (parsed.ingredient) addIngredient(parsed.amount, parsed.ingredient);
+  });
+  return {
+    ...legacy,
+    ingredients,
+    instructions: legacy.instructions.map((step) => ({
+      ...step,
+      inputs: step.inputs.map((input) => ({
+        ...input,
+        ingredientId: addIngredient(input.amount, input.ingredient).id,
+      })),
+    })),
+  };
+}
+
 const LEGACY_PREP_DATES = new Map<string, IsoDate>([
   ["Sun, Jul 5", "2026-07-05" as IsoDate],
   ["Mon, Jul 6", "2026-07-06" as IsoDate],
@@ -273,11 +326,20 @@ const LEGACY_PREP_DATES = new Map<string, IsoDate>([
   ["Sun, Jul 12", "2026-07-12" as IsoDate],
 ]);
 
+type LegacyPrepReference = {
+  id: string;
+  stepId: string;
+  prepDate: IsoDate;
+  position: number;
+  legacyPosition: number;
+  inputIndex: number;
+};
+
 function decodeLegacyPrep(
   decoder: LegacyDecoder,
   value: unknown,
   path: string,
-): PrepReference & { legacyPosition: number; inputIndex: number } {
+): LegacyPrepReference {
   const record = decoder.record(value, path);
   decoder.exact(record, path, ["id", "stepId", "due", "position"]);
   const due = decoder.string(record.due, `${path}.due`, 300, { nonempty: true });
@@ -295,9 +357,8 @@ function decodeLegacyPrep(
 }
 
 function normalizeLegacyPrep(
-  prep: Array<PrepReference & { legacyPosition: number; inputIndex: number }>,
-): PrepReference[] {
-  const positions = new Map<IsoDate, number>();
+  prep: LegacyPrepReference[],
+): Array<Pick<LegacyPrepReference, "id" | "stepId" | "prepDate" | "position">> {
   return [...prep]
     .sort(
       (left, right) =>
@@ -305,9 +366,7 @@ function normalizeLegacyPrep(
         left.legacyPosition - right.legacyPosition ||
         left.inputIndex - right.inputIndex,
     )
-    .map((reference) => {
-      const position = positions.get(reference.prepDate) ?? 0;
-      positions.set(reference.prepDate, position + 1);
+    .map((reference, position) => {
       return {
         id: reference.id,
         stepId: reference.stepId,
@@ -317,26 +376,35 @@ function normalizeLegacyPrep(
     });
 }
 
+type LegacyGroceryRecord = {
+  id: string;
+  section: GroceryItem["section"];
+  item: string;
+  detail: string;
+  checked: boolean;
+  source: "shop" | "farm_box";
+};
+
 function decodeLegacyGrocery(
   decoder: LegacyDecoder,
   value: unknown,
   path: string,
-): GroceryItem {
+): LegacyGroceryRecord {
   const record = decoder.record(value, path);
   decoder.exact(record, path, ["id", "section", "item", "detail", "checked", "farmBox"]);
-  const sections: GroceryItem["section"][] = ["Produce", "Meat & seafood", "Dairy", "Pantry"];
-  if (!sections.includes(record.section as GroceryItem["section"])) {
+  const sections: LegacyGroceryRecord["section"][] = ["Produce", "Meat & seafood", "Dairy", "Pantry"];
+  if (!sections.includes(record.section as LegacyGroceryRecord["section"])) {
     decoder.error(`${path}.section`, "Must be a browser-v2 grocery section.");
   }
   return {
     id: decoder.id(record.id, `${path}.id`),
-    section: sections.includes(record.section as GroceryItem["section"])
-      ? (record.section as GroceryItem["section"])
+    section: sections.includes(record.section as LegacyGroceryRecord["section"])
+      ? (record.section as LegacyGroceryRecord["section"])
       : "Pantry",
     item: decoder.string(record.item, `${path}.item`, 1_000, { nonempty: true }),
     detail: decoder.string(record.detail, `${path}.detail`, MAX_COMMAND_TEXT_LENGTH),
     checked: decoder.boolean(record.checked, `${path}.checked`),
-    farmBox: decoder.boolean(record.farmBox, `${path}.farmBox`),
+    source: decoder.boolean(record.farmBox, `${path}.farmBox`) ? "farm_box" : "shop",
   };
 }
 
@@ -479,7 +547,7 @@ export function transformLegacyV2(
   const weekId = parseWeekId(LEGACY_V2_WEEK_START_DATE);
   const meals = decoder
     .array(data.meals, "payload.data.meals", MAX_MEALS_PER_WEEK)
-    .map((meal, index) => decodeLegacyMeal(decoder, meal, `payload.data.meals[${index}]`, weekId));
+    .map((meal, index) => canonicalizeLegacyMeal(decodeLegacyMeal(decoder, meal, `payload.data.meals[${index}]`, weekId)));
   const prep = normalizeLegacyPrep(
     decoder
       .array(data.prep, "payload.data.prep", MAX_PREP_ENTRIES)
@@ -487,6 +555,20 @@ export function transformLegacyV2(
         decodeLegacyPrep(decoder, reference, `payload.data.prep[${index}]`),
       ),
   );
+  const prepSessions: PrepSession[] = [];
+  for (const reference of prep) {
+    let session = prepSessions.find((candidate) => candidate.prepDate === reference.prepDate);
+    if (!session) {
+      session = {
+        id: `legacy-prep-session-${reference.prepDate}`,
+        label: `Prep ${reference.prepDate}`,
+        prepDate: reference.prepDate,
+        steps: [],
+      };
+      prepSessions.push(session);
+    }
+    session.steps.push({ id: reference.id, stepId: reference.stepId });
+  }
   const groceries = decoder
     .array(data.groceries, "payload.data.groceries", MAX_GROCERY_ITEMS)
     .map((item, index) => decodeLegacyGrocery(decoder, item, `payload.data.groceries[${index}]`));
@@ -511,10 +593,7 @@ export function transformLegacyV2(
   }
   const archived = decoder.boolean(data.weekArchived, "payload.data.weekArchived");
   decoder.boolean(data.draftReady, "payload.data.draftReady");
-  const farmBoxReconciled = decoder.boolean(
-    data.farmBoxReconciled,
-    "payload.data.farmBoxReconciled",
-  );
+  decoder.boolean(data.farmBoxReconciled, "payload.data.farmBoxReconciled");
   const weekLesson = decoder.string(
     data.weekLesson,
     "payload.data.weekLesson",
@@ -530,7 +609,7 @@ export function transformLegacyV2(
   );
   decoder.finish();
 
-  const state: HouseholdPlannerState = {
+  const legacyState: HouseholdPlannerState = {
     householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
     activeWeekId: archived ? null : weekId,
     weeks: [
@@ -540,16 +619,18 @@ export function transformLegacyV2(
         status: archived ? "archived" : "active",
         data: {
           meals,
-          prep,
-          groceries,
+          prepSessions,
+          // The normalizer below maps only exact, unambiguous legacy matches
+          // and projects every current canonical ingredient into groceries.
+          groceries: groceries as unknown as GroceryItem[],
           leftovers,
-          farmBoxReconciled,
           feedback,
           weekLesson,
         },
       },
     ],
   };
+  const state = normalizeLegacyHouseholdState(legacyState).state;
   const validation = householdDomain.validateState(state);
   if (!validation.ok) {
     throw new LegacyV2ImportError(
@@ -660,32 +741,6 @@ export function createCanonicalSeed(
             ],
           },
         ],
-        groceries: [
-          {
-            section: "Meat & seafood",
-            item: "Boneless chicken thighs",
-            detail: "900 g",
-            farmBox: false,
-          },
-          {
-            section: "Meat & seafood",
-            item: "Salmon fillet",
-            detail: "680 g",
-            farmBox: false,
-          },
-          {
-            section: "Produce",
-            item: "Red peppers",
-            detail: "2",
-            farmBox: true,
-          },
-          {
-            section: "Pantry",
-            item: "White miso",
-            detail: "1 small tub",
-            farmBox: false,
-          },
-        ],
         weekLesson: "Keep one dinner flexible and prep only the steps that save real time.",
       },
     },
@@ -695,9 +750,33 @@ export function createCanonicalSeed(
   if (!created.ok) throw new CanonicalSeedError("Could not materialize canonical seed IDs.");
   const firstStepId = created.createdIds["step.0.0"];
   const riceStepId = created.createdIds["step.1.0"];
-  if (!firstStepId || !riceStepId) {
-    throw new CanonicalSeedError("Canonical seed step IDs were not materialized.");
+  const peppersGroceryId = state.weeks
+    .find((week) => week.id === weekId)
+    ?.data.groceries.find((grocery) => {
+      const meal = state.weeks
+        .find((candidate) => candidate.id === weekId)
+        ?.data.meals.find((candidate) => candidate.id === grocery.mealId);
+      return meal?.ingredients.find((ingredient) => ingredient.id === grocery.ingredientId)
+        ?.ingredient.toLocaleLowerCase("en-CA") === "red peppers";
+    })?.id;
+  if (
+    !firstStepId || !riceStepId || !peppersGroceryId
+  ) {
+    throw new CanonicalSeedError("Canonical seed IDs were not materialized.");
   }
+  state = requireExecutionState(
+    "Could not classify canonical seed farm-box produce",
+    householdDomain.execute(
+      state,
+      {
+        type: "moveGroceryItemsToSource",
+        weekId,
+        itemIds: [peppersGroceryId],
+        source: "farm_box",
+      },
+      context,
+    ),
+  );
   state = requireExecutionState(
     "Could not create the canonical seed prep plan",
     householdDomain.execute(

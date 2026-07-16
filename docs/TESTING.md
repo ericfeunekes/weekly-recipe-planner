@@ -14,7 +14,7 @@ Every implementation merge must keep these deterministic cells green:
 | Domain contracts | Pure canonical state transitions and invariants | `tests/domain-*.test.mjs` |
 | Store transactions | Real temporary SQLite file, OCC, receipts, rollback, restart | `tests/store-*.test.mjs`, `tests/planner-service-*.test.mjs` |
 | HTTP contracts | Real loopback application routes with fake Codex transport | `tests/http-*.test.mjs`, `tests/runtime-*.test.mjs` |
-| Codex wrapper and effect bridge | Native thread/item lifecycle stays Codex-owned; the host persists only selection/effect admission, fences tool replay, and never auto-replays an ambiguous user send | Replacement native-thread/effect integration and architecture tests; the current `tests/embedded-tool-lifecycle.test.mjs`, `tests/codex-dynamic-session.test.mjs`, `tests/codex-research-session.test.mjs`, and `tests/integration/dynamic-chat-cutover.test.mjs` prove only the superseded path |
+| Codex wrapper and effect bridge | Native thread/item lifecycle stays Codex-owned; the host persists only selection/effect admission, fences tool replay, and never auto-replays an ambiguous user send | `tests/codex-native-thread-service.test.mjs`, `tests/codex-native-planner-effect.test.mjs`, `tests/integration/native-codex-browser-composition.test.mjs`, and `tests/architecture/legacy-conversation-cutover.test.mjs` |
 | Client contracts | Readback ordering, offline/conflict behavior, draft retention | `tests/client-*.test.mjs` |
 | Architecture closure | No browser/shared-localStorage authority or alternate mutation path | `tests/architecture/**` |
 | Accessibility and fixture capability | Direct Playwright axe integration plus closed D4/D7 runtime seeds | `tests/support/playwright-qa.ts`, `tests/support/e2e-runtime.mjs`, `tests/e2e-runtime-fixtures.test.mjs` |
@@ -52,9 +52,10 @@ After deterministic proof is current-state:
 - Exercise representative iPhone, iPad, and desktop viewports with console and
   network capture.
 - Repeat the two-client dinner workflow against a disposable real database.
-- Run the live ChatGPT-login smoke separately from deterministic tests and
-  record authentication/transport failures as environment evidence rather than
-  weakening the generated-protocol fixture gate.
+- Run the authenticated native Codex smoke separately from deterministic tests
+  and record authentication/transport failures as environment evidence rather
+  than weakening the generated-protocol fixture gate. The probe consumes an
+  already authenticated dedicated home and never invokes login.
 - The deterministic LaunchAgent tests prove plist binding and lifecycle command
   behavior with a fake `launchctl`; they do not prove host launchd supervision.
   For a deployment claim, install the real service, verify health/workspace,
@@ -65,11 +66,13 @@ After deterministic proof is current-state:
 Exploratory evidence is written to the gitignored directory
 `outputs/qa/<run-id>/`. Every run contains `summary.md` with the commit SHA,
 runtime commands, database fixture, viewports, outcomes, failures, and links to
-its captured screenshots, console log, and network log. Live ChatGPT smoke
-results use a separate subsection and never store credentials or raw auth
-material. The implementation must add the owned entrypoint
-`scripts/smoke-live-chat.mjs`, exposed as `npm run smoke:live-chat`; it must
-always target a disposable data directory and remain outside `npm test`.
+its captured screenshots, console log, and network log. Authenticated native
+Codex smoke results use a separate subsection and never store credentials, raw
+auth material, or native thread/provider content. The historical entrypoint
+name `scripts/smoke-live-chat.mjs` remains for compatibility, while
+`npm run smoke:native-codex` is the canonical command and
+`npm run smoke:live-chat` is an alias. The smoke always targets disposable
+planner data and remains outside `npm test`.
 Closeout names the exact run directory used for the final claim.
 
 ## Codex Planner Runtime Requirements Gate
@@ -78,10 +81,11 @@ The embedded Codex runtime is a separate release contract governed by
 `docs/codex-agent-runtime-follow-up-phase.md`. The 2026-07-15 revision requires
 a thin wrapper over native Codex history with one app-wide selected top-level
 thread, native workers, hosted web search, skills, and planner tools available
-together. The current split ephemeral/app-transcript implementation
-and its historical green tests do not satisfy these cells. They become release
-gates for any candidate that claims the revised capability; they do not rewrite
-the completed family-readiness signoff.
+together. Production HTTP/runtime composition no longer exposes the historical
+`/api/chat/*` or `/api/transcript` ingress. Historical SQLite chat tables remain
+only so existing data can be imported and exported; current proof is native.
+Native browser/runtime proof below still gates any revised-capability claim and
+does not rewrite the completed family-readiness signoff.
 
 ### Follow-Up Merge Gate
 
@@ -262,12 +266,12 @@ npm run planner:release -- activate \
    effect and publishes no readiness artifact; it never substitutes the
    updater's new target under old evidence.
 
-The checked-in live smoke remains historical until it is revised to the
-persistent combined-capability contract. A new candidate's operator invokes the
-revised smoke from the canonical installed app:
+The checked-in smoke now emits the exact schema-v2 native-thread evidence
+contract. A new candidate's operator invokes it from the canonical installed
+app:
 
 ```bash
-npm run smoke:live-chat -- \
+npm run smoke:native-codex -- \
   --authorized \
   --scenario all \
   --output "$HOME/meal-planner/releases/<activation-id>/release-candidate.json"
@@ -284,12 +288,13 @@ npm run smoke:live-chat -- \
   probes and the planner capability smoke have their own bounded processes.
   Effective readback must exclude the normal `~/.codex` surface while allowing
   `$HOME/.agents/skills`; the gate must not fingerprint mutable skill contents;
-- exercise at least two real persistent top-level threads across selection,
-  multiple turns, a process restart, and one native child worker, with hosted
-  search, skills, worker result-to-parent flow, and dependent parent planner
-  calls co-present; prove
-  failure-after-effect recovery and runtime-content retention against a
-  disposable planner store;
+- exercise at least two real persistent top-level threads across list/history,
+  pagination, selection, archive, multiple turns, process restart, typed
+  question handling, interrupt, native activity projection, and one native
+  child worker, with hosted search, skills, worker result-to-parent flow, and an
+  authoritative parent planner effect co-present; prove exact admission replay,
+  changed-payload rejection, second-client readback, and native-state retention
+  against a disposable planner store;
 - prove authenticated smoke uses an ephemeral probe where possible; if a
   persistent probe is required, journal only its opaque ID, archive it through
   the native RPC, and verify it absent from the default picker before activation.
@@ -304,6 +309,14 @@ npm run smoke:live-chat -- \
   commit must atomically re-select the prior app/data/config pair. Then rerun the
   shared two-client race and restart cells without a source edit or runtime
   selector.
+
+Installed QA binds `releaseCandidateEvidenceSchemaVersion: 2`, reads the native
+`/api/codex/threads` boundary before and after runtime restart, and requires the
+connection epoch to change while the response remains exact-contract valid. Its
+focused server boundary suite is `tests/http-application.test.mjs`,
+`tests/codex-native-thread-service.test.mjs`, and
+`tests/architecture/legacy-conversation-cutover.test.mjs`; historical chat
+tables remain data-compatibility evidence only.
 
 Private installed browser QA has two explicit evidence cells. First, one
 installed-only Playwright check reads the exact initialized selected-data clone
@@ -341,9 +354,11 @@ npm run verify:codex-activation -- \
 
 The transaction invokes this verifier after installed/visual QA and immediately
 before `activation.json`; this is not a separate continuation lifecycle. The
-read-only verifier rechecks the same accepted readiness coordinates, requires
-exact canonical executable path/version/hash/schema/provenance/account equality,
-and requires the immutable stage candidate manifest to match the live receipt.
+read-only verifier requires schema v2, rechecks the stable native top-level and
+worker tool surfaces, hosted-search mode, planner and skills namespaces,
+standalone-skill identity, and exact executable/path/version/hash/schema/config/
+instruction/account coordinates, then requires the immutable stage candidate
+manifest to match the live receipt.
 It does not log in, log out, cancel authentication, copy credentials, pin Codex,
 deploy, or activate.
 Mismatch or any source edit reruns the live gate or stops. This binds the one-time

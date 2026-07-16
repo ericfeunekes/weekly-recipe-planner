@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
+import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import { householdDomain } from "../lib/household-domain.ts";
 import {
   DIAGNOSTIC_EXPORT_FORMAT_VERSION,
@@ -51,13 +52,16 @@ function seedState(lesson = "Initial lesson") {
               prepNote: "Cook rice Sunday",
               leftoverNote: "Two lunches",
               notes: "",
-              ingredients: ["1 cup rice"],
+              ingredients: [
+                { id: "ingredient-rice", amount: "1 cup", ingredient: "rice" },
+                { id: "ingredient-water", amount: "2 cups", ingredient: "water" },
+              ],
               instructions: [
                 {
                   id: "step-rice",
                   inputs: [
-                    { amount: "1 cup", ingredient: "rice" },
-                    { amount: "2 cups", ingredient: "water" },
+                    { amount: "1 cup", ingredient: "rice", ingredientId: "ingredient-rice" },
+                    { amount: "2 cups", ingredient: "water", ingredientId: "ingredient-water" },
                   ],
                   instruction: "Cook the rice.",
                   complete: false,
@@ -66,17 +70,31 @@ function seedState(lesson = "Initial lesson") {
               ],
             },
           ],
-          prep: [
+          prepSessions: [{
+            id: "prep-session-rice",
+            label: "Sunday prep",
+            prepDate: "2026-07-05",
+            steps: [{ id: "prep-rice", stepId: "step-rice" }],
+          }],
+          groceries: [
             {
-              id: "prep-rice",
-              stepId: "step-rice",
-              prepDate: "2026-07-05",
-              position: 0,
+              id: "grocery-rice",
+              mealId: "meal-1",
+              ingredientId: "ingredient-rice",
+              section: "Pantry",
+              source: "shop",
+              checked: false,
+            },
+            {
+              id: "grocery-water",
+              mealId: "meal-1",
+              ingredientId: "ingredient-water",
+              section: "Pantry",
+              source: "shop",
+              checked: false,
             },
           ],
-          groceries: [],
           leftovers: [],
-          farmBoxReconciled: false,
           feedback: {},
           weekLesson: lesson,
         },
@@ -712,6 +730,96 @@ test("an accepted batch replays from its immutable receipt after a real-file reo
   reopenedStore.close();
 });
 
+test("a bulk grocery source move rolls back, persists, and replays after a real-file reopen", (t) => {
+  const filename = temporaryDatabase(t);
+  let seedIds = 0;
+  let durableIds = 0;
+  let fail = false;
+  const realDomainDependencies = (store) => dependencies(store, {
+    domain: householdDomain,
+    seedFactory: () => createCanonicalSeed({
+      now: 1_800_000_000_000,
+      createId: (prefix) => `seed-${prefix}-${++seedIds}`,
+    }),
+    idFactory: { createId: (prefix) => `durable-${prefix}-${++durableIds}` },
+    failureInjector: {
+      hit(point) {
+        if (fail && point === "after_event_insert") throw new Error("bulk move failure");
+      },
+    },
+  });
+
+  const firstStore = openPlannerStore({ filename });
+  const firstService = createPlannerApplicationService(realDomainDependencies(firstStore));
+  const bootstrapped = firstService.bootstrap({ requestId: "bulk-move-bootstrap", mode: "seed" });
+  const week = bootstrapped.workspace.state.weeks.find((candidate) => candidate.id === bootstrapped.workspace.state.activeWeekId);
+  assert.ok(week);
+  const selectedIds = week.data.groceries
+    .filter((item) => item.source === "shop")
+    .slice(0, 2)
+    .map((item) => item.id);
+  assert.equal(selectedIds.length, 2);
+  const request = {
+    requestId: "bulk-move-reopen",
+    basePlannerVersion: 0,
+    command: {
+      type: "moveGroceryItemsToSource",
+      weekId: week.id,
+      itemIds: selectedIds,
+      source: "on_hand",
+    },
+  };
+
+  fail = true;
+  assert.throws(() => firstService.applyCommand(request), /bulk move failure/);
+  const rolledBack = firstService.readWorkspace();
+  const rolledBackWeek = rolledBack.state.weeks.find((candidate) => candidate.id === week.id);
+  assert.ok(rolledBackWeek);
+  assert.equal(rolledBack.plannerVersion, 0);
+  assert.equal(rolledBack.events.length, 0);
+  assert.equal(
+    rolledBackWeek.data.groceries
+      .filter((item) => selectedIds.includes(item.id))
+      .every((item) => item.source === "shop"),
+    true,
+  );
+  assert.equal(
+    firstStore.database.prepare(
+      "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'planner_command' AND request_id = 'bulk-move-reopen'",
+    ).get().count,
+    0,
+  );
+
+  fail = false;
+  const applied = firstService.applyCommand(request);
+  assert.equal(applied.decision.status, "accepted");
+  assert.equal(applied.workspace.events.length, 1);
+  assert.deepEqual(applied.workspace.events[0].command, request.command);
+  firstStore.close();
+
+  const reopenedStore = openPlannerStore({ filename });
+  const reopenedService = createPlannerApplicationService(realDomainDependencies(reopenedStore));
+  const persisted = reopenedService.readWorkspace();
+  const persistedWeek = persisted.state.weeks.find((candidate) => candidate.id === week.id);
+  assert.ok(persistedWeek);
+  assert.equal(
+    persistedWeek.data.groceries
+      .filter((item) => selectedIds.includes(item.id))
+      .every((item) => item.source === "on_hand"),
+    true,
+  );
+  const replay = reopenedService.applyCommand(request);
+  assert.deepEqual(replay.decision, applied.decision);
+  assert.equal(replay.workspace.events.length, 1);
+  assert.equal(
+    reopenedStore.database.prepare(
+      "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'planner_command' AND request_id = 'bulk-move-reopen'",
+    ).get().count,
+    1,
+  );
+  reopenedStore.close();
+});
+
 test("every batch write failpoint rolls back the whole ordered unit", () => {
   for (const point of [
     "after_workspace_update",
@@ -850,9 +958,10 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
       },
       {
         command: {
-          type: "addGroceryItem",
+          type: "createPrepSession",
           weekId: "2026-07-06",
-          item: { section: "Produce", item: "Scallions", detail: "1 bunch", farmBox: false },
+          label: "Preview session",
+          prepDate: "2026-07-05",
         },
       },
       {
@@ -861,19 +970,6 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
           weekId: "2026-07-06",
           mealId: "meal-1",
           status: "cooked",
-        },
-      },
-      {
-        command: {
-          type: "reconcileGroceries",
-          weekId: "2026-07-06",
-          items: [{
-            section: "Produce",
-            item: "Scallions",
-            detail: "1 bunch",
-            farmBox: false,
-            checked: false,
-          }],
         },
       },
       {
@@ -894,12 +990,6 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
               ingredients: [],
               instructions: [{ inputs: [], instruction: "Simmer." }],
             }],
-            groceries: [{
-              section: "Produce",
-              item: "Onions",
-              detail: "2",
-              farmBox: false,
-            }],
           },
         },
       },
@@ -910,8 +1000,8 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
   assert.equal(preview.decision.status, "previewed");
   assert.equal(preview.decision.outcomes[0].target, "[generated after apply]");
   assert.equal(preview.decision.outcomes[1].target, "[generated after apply]");
-  assert.equal(preview.decision.outcomes.length, 5);
-  assert.doesNotMatch(JSON.stringify(preview), /preview-(?:step|grocery|leftover|meal)-/);
+  assert.equal(preview.decision.outcomes.length, 4);
+  assert.doesNotMatch(JSON.stringify(preview), /preview-(?:step|prep|leftover|meal)-/);
   assert.equal(durableIds, 0);
   assert.deepEqual(service.readWorkspace(), before);
   assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts").get().count, 1);
@@ -1014,9 +1104,10 @@ test("canonical pre-batch guard blocks cleanup laundering with the earliest repl
   const operations = [
     {
       command: {
-        type: "removePrepReference",
+        type: "removePrepSessionStep",
         weekId: "2026-07-06",
-        referenceId: "prep-rice",
+        sessionId: "prep-session-rice",
+        entryId: "prep-rice",
       },
     },
     { command: replacementCommand() },
@@ -1025,7 +1116,7 @@ test("canonical pre-batch guard blocks cleanup laundering with the earliest repl
   const preview = service.previewOperations({ basePlannerVersion: 0, operations });
   assert.equal(preview.decision.status, "domain_rejected");
   assert.equal(preview.decision.operationIndex, 1);
-  assert.match(preview.decision.message, /prep references/i);
+  assert.match(preview.decision.message, /prep.*references/i);
   assert.deepEqual(service.readWorkspace(), before);
 
   const applied = service.applyOperations({
@@ -1049,7 +1140,7 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
     const state = structuredClone(seedState());
     const week = state.weeks[0];
     const step = week.data.meals[0].instructions[0];
-    week.data.prep = [];
+    week.data.prepSessions = [];
     step.complete = false;
     delete step.note;
     delete step.timerStartedAt;
@@ -1076,7 +1167,7 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
         { command: {
           type: "createWeekPlan",
           weekStartDate: "2026-07-13",
-          plan: { meals: [createdMeal], groceries: [] },
+          plan: { meals: [createdMeal] },
         } },
         { command: replacementCommand({ weekId: "2026-07-13", mealId: "future-meal" }) },
         { command: replacementCommand({ weekId: "2026-07-20", mealId: "later-meal" }) },
@@ -1163,22 +1254,22 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
       message: /running instruction timers/i,
     },
     {
-      name: "prep-reference cleanup",
+      name: "prep-session reference cleanup",
       state: (() => {
         const state = cleanState();
-        state.weeks[0].data.prep = [{
-          id: "prep-rice",
-          stepId: "step-rice",
+        state.weeks[0].data.prepSessions = [{
+          id: "prep-session-rice",
+          label: "Sunday prep",
           prepDate: "2026-07-05",
-          position: 0,
+          steps: [{ id: "prep-rice", stepId: "step-rice" }],
         }];
         return state;
       })(),
       operations: [
-        { command: { type: "removePrepReference", weekId: "2026-07-06", referenceId: "prep-rice" } },
+        { command: { type: "removePrepSessionStep", weekId: "2026-07-06", sessionId: "prep-session-rice", entryId: "prep-rice" } },
         { command: replacementCommand() },
       ],
-      message: /prep references/i,
+      message: /prep.*references/i,
     },
   ];
 
@@ -1245,9 +1336,10 @@ test("a separately committed cleanup and refreshed replacement use the same shar
     requestId: "source-cleanup",
     basePlannerVersion: 0,
     operations: [{ command: {
-      type: "removePrepReference",
+      type: "removePrepSessionStep",
       weekId: "2026-07-06",
-      referenceId: "prep-rice",
+      sessionId: "prep-session-rice",
+      entryId: "prep-rice",
     } }],
   }, globalContext);
   assert.equal(cleaned.decision.status, "accepted");

@@ -1,4 +1,7 @@
-import type { HouseholdCommand } from "./household-command-contract";
+import type {
+  HistoricalGroceryReconciliationCommand,
+  HouseholdCommand,
+} from "./household-command-contract";
 import type { HouseholdPlannerState } from "./household-contract";
 import type {
   OperationKind,
@@ -9,8 +12,6 @@ import type {
 import type {
   ChatTurn,
   PlannerChatContext,
-  RetryChatTurnRequest,
-  SubmitChatTurnRequest,
   TranscriptEntry,
 } from "./planner-chat-contract";
 
@@ -56,6 +57,7 @@ export type OperationReceipt = {
 
 export type PlannerEventCommand =
   | HouseholdCommand
+  | HistoricalGroceryReconciliationCommand
   | PlannerBatchEventCommand
   | { type: "undoLatest"; targetEventId: string };
 
@@ -299,8 +301,6 @@ export type HealthResponse = {
 
 export type ApiFailure = { error: ApiError; workspace?: WorkspaceResponse };
 
-export type { RetryChatTurnRequest, SubmitChatTurnRequest };
-
 export const WORKSPACE_EVENT_TAIL_LIMIT = 50;
 export const HISTORY_PAGE_LIMIT_DEFAULT = 50;
 export const HISTORY_PAGE_LIMIT_MAX = 100;
@@ -332,8 +332,5 @@ export const PLANNER_API_ROUTES = {
   commands: { method: "POST", path: "/api/commands" },
   undo: { method: "POST", path: "/api/undo" },
   export: { method: "GET", path: "/api/export" },
-  chatSubmit: { method: "POST", path: "/api/chat/submit" },
-  chatRetry: { method: "POST", path: "/api/chat/retry" },
   history: { method: "GET", path: "/api/history" },
-  transcript: { method: "GET", path: "/api/transcript" },
 } as const;

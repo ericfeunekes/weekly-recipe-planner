@@ -1,6 +1,7 @@
 import {
   HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST,
   HOUSEHOLD_COMMAND_REGISTRY,
+  isHistoricalGroceryReconciliationCommand,
   isHouseholdCommand,
   type HouseholdCommand,
 } from "./household-command-contract.ts";
@@ -24,6 +25,7 @@ import type {
 import {
   MAX_PLANNER_OPERATIONS,
   MIN_PLANNER_OPERATIONS,
+  isHistoricalPlannerEventOperationList,
   isPlannerOperationList,
   type PlannerEventProvenance,
   type PlannerOperation,
@@ -298,9 +300,9 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
       type: "function",
       name: "preview",
       description:
-        "Validate one ordered operation batch without effects. Example grocery add: " +
-        "{command:{type:'addGroceryItem',weekId:'...',item:{section:'Pantry'," +
-        "item:'Rice',detail:'1 bag',farmBox:false}}}. Required fields by type: " +
+        "Validate one ordered operation batch without effects. Groceries are derived from canonical recipe ingredients; " +
+        "to classify existing ingredient rows, use moveGroceryItemsToSource, for example " +
+        "{command:{type:'moveGroceryItemsToSource',weekId:'...',itemIds:['...'],source:'farm_box'}}. Required fields by type: " +
         plannerCommandFieldGuide,
       inputSchema: {
         type: "object",
@@ -316,9 +318,8 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
       type: "function",
       name: "apply",
       description:
-        "Atomically apply one ordered operation batch and return one readback. Example grocery update: " +
-        "{command:{type:'updateGroceryItem',weekId:'...',itemId:'...',changes:{" +
-        "section:'Pantry',item:'Rice',detail:'2 bags',farmBox:false}}}. Required fields by type: " +
+        "Atomically apply one ordered operation batch and return one readback. Grocery item names, amounts, and recipe links " +
+        "come from meal ingredients; use moveGroceryItemsToSource or setGroceryItemChecked for their execution state. Required fields by type: " +
         plannerCommandFieldGuide + ". Readback fields by kind: " + readQueryFieldGuide + ".",
       inputSchema: {
         type: "object",
@@ -634,10 +635,11 @@ function isPlannerEventProvenance(value: unknown): value is PlannerEventProvenan
 
 function isPlannerEventCommand(value: unknown): value is PlannerEventCommand {
   if (isHouseholdCommand(value)) return true;
+  if (isHistoricalGroceryReconciliationCommand(value)) return true;
   if (!isRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "plannerBatch") {
     return hasExactKeys(value, ["type", "operations"]) &&
-      isPlannerOperationList(value.operations);
+      isHistoricalPlannerEventOperationList(value.operations);
   }
   return value.type === "undoLatest" &&
     hasExactKeys(value, ["type", "targetEventId"]) &&
@@ -690,6 +692,7 @@ function isWeekPlan(value: unknown): value is WeekPlan {
 function isMeal(value: unknown): value is Meal {
   if (!isRecord(value) || !isIsoDate(value.date)) return false;
   const weekId = mondayForIsoDate(value.date);
+  const meal = value as Meal;
   const state = {
     householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
     activeWeekId: null,
@@ -698,11 +701,17 @@ function isMeal(value: unknown): value is Meal {
       weekStartDate: weekId,
       status: "planned",
       data: {
-        meals: [value as Meal],
-        prep: [],
-        groceries: [],
+        meals: [meal],
+        prepSessions: [],
+        groceries: meal.ingredients.map((ingredient) => ({
+          id: `grocery-read-${meal.id}-${ingredient.id}`,
+          mealId: meal.id,
+          ingredientId: ingredient.id,
+          section: "Pantry" as const,
+          source: "shop" as const,
+          checked: false,
+        })),
         leftovers: [],
-        farmBoxReconciled: false,
         feedback: {},
         weekLesson: "",
       },

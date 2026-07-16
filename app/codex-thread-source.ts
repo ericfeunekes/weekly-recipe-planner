@@ -85,6 +85,20 @@ type MutationAttempt<TResult> = {
 
 const SUBSCRIPTION_RECOVERY_DELAY_MS = 500;
 const MAX_CONSISTENT_LOAD_ATTEMPTS = 3;
+const INTERRUPT_TERMINAL_STATUSES = new Set(["completed", "interrupted", "failed"]);
+
+function isResolvedInterruptAttempt(
+  attempt: MutationAttempt<unknown>,
+  snapshot: CodexThreadSnapshot,
+): boolean {
+  if (attempt.state !== "ambiguous" || snapshot.status !== "ready" || snapshot.thread === null) {
+    return false;
+  }
+  const request = attempt.body as CodexInterruptTurnRequest;
+  if (request.threadId !== snapshot.thread.id) return false;
+  const turn = snapshot.thread.turns.find((candidate) => candidate.id === request.turnId);
+  return turn !== undefined && INTERRUPT_TERMINAL_STATUSES.has(turn.status);
+}
 
 const loadingSnapshot = (mode: CodexThreadSnapshot["mode"]): CodexThreadSnapshot => ({
   mode,
@@ -441,6 +455,7 @@ class NativeCodexThreadSource implements CodexThreadSource {
 
   async interrupt(turnId: string): Promise<CodexThreadSnapshot> {
     const current = this.requireReadyThread("interrupt a turn");
+    this.reconcileInterruptAttempt(current);
     const semanticKey = JSON.stringify([current.thread.id, turnId]);
     await this.runMutation(
       "interrupt",
@@ -648,6 +663,7 @@ class NativeCodexThreadSource implements CodexThreadSource {
         attempt.inFlight = null;
         if (isAmbiguousMutationFailure(error)) {
           attempt.state = "ambiguous";
+          if (family === "interrupt") this.reconcileInterruptAttempt(this.snapshot);
         } else if (this.attempts.get(family) === attempt) {
           this.attempts.delete(family);
         }
@@ -672,6 +688,7 @@ class NativeCodexThreadSource implements CodexThreadSource {
 
   private commit(snapshot: CodexThreadSnapshot): CodexThreadSnapshot {
     this.snapshot = snapshot;
+    this.reconcileInterruptAttempt(snapshot);
     if (snapshot.connectionEpoch !== this.pollEpoch) {
       this.pollEpoch = snapshot.connectionEpoch;
       this.pollRevision = snapshot.activityRevision;
@@ -680,6 +697,13 @@ class NativeCodexThreadSource implements CodexThreadSource {
     }
     for (const listener of this.listeners) listener();
     return snapshot;
+  }
+
+  private reconcileInterruptAttempt(snapshot: CodexThreadSnapshot): void {
+    const attempt = this.attempts.get("interrupt");
+    if (attempt !== undefined && isResolvedInterruptAttempt(attempt, snapshot)) {
+      this.attempts.delete("interrupt");
+    }
   }
 }
 

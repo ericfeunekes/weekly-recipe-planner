@@ -9,6 +9,9 @@ import {
   isActivationId,
   isSha256,
 } from "./planner-release-contract.mjs";
+import {
+  NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
+} from "./planner-release-evidence-contract.mjs";
 
 const MAX_EVIDENCE_FILES = 10_000;
 const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -351,6 +354,7 @@ function assertReleaseBinding(value, activationId) {
     value.activationId !== activationId ||
     !isSha256(value.stageSha256) || !isSha256(value.installedSha256) ||
     !isSha256(value.releaseCandidateSha256) ||
+    value.releaseCandidateEvidenceSchemaVersion !== NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION ||
     value.nodeFloor?.version !== "v22.15.0" ||
     value.nodeFloor?.exactFloorVerified !== true ||
     value.nodeFloor?.recheckedAfterSuite !== true ||

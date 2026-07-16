@@ -28,7 +28,7 @@ type RuntimeOwnershipLease = Awaited<
 
 type ConfiguredPlannerRuntimeOverrides = Pick<
   PlannerRuntimeOptions,
-  "failureInjector" | "webProbe" | "shutdownGracePeriodMs" | "researchEvidenceObserver"
+  "failureInjector" | "webProbe" | "shutdownGracePeriodMs"
 > & {
   /** Host-only QA/release seam. Serialized or environment-derived leases are invalid. */
   runtimeOwnershipLease?: RuntimeOwnershipLease;
@@ -107,9 +107,6 @@ export async function startConfiguredPlannerRuntime(
       ...(overrides.shutdownGracePeriodMs === undefined
         ? {}
         : { shutdownGracePeriodMs: overrides.shutdownGracePeriodMs }),
-      ...(overrides.researchEvidenceObserver === undefined
-        ? {}
-        : { researchEvidenceObserver: overrides.researchEvidenceObserver }),
     };
     const runtime = await startPlannerRuntime({
       config,
@@ -176,9 +173,6 @@ function publicUrl(runtime: PlannerRuntime) {
 async function main() {
   const runtime = await startConfiguredPlannerRuntime();
   console.log(`Weekly Recipe Planner authority listening at ${publicUrl(runtime)}.`);
-  if (runtime.interruptedTurns > 0) {
-    console.log(`Interrupted ${runtime.interruptedTurns} incomplete chat turn(s) from an earlier run.`);
-  }
 
   let shuttingDown = false;
   const signalHandlers = new Map<NodeJS.Signals, () => void>();

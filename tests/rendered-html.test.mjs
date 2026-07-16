@@ -42,8 +42,10 @@ test("server-renders the shared planner loading surface", async () => {
 });
 
 test("keeps the locked product requirements represented in source", async () => {
-  const [planner, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
+  const [planner, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/codex-thread-rail.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/codex-thread-source.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/planner-api.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../lib/household-domain.ts", import.meta.url), "utf8"),
@@ -59,12 +61,14 @@ test("keeps the locked product requirements represented in source", async () => 
     "setInstructionStepComplete",
     "updateInstructionStepNote",
     "startInstructionTimer",
+    "pauseInstructionTimer",
     "resetInstructionTimer",
-    "setPrepPlan",
-    "movePrepReference",
-    "reschedulePrepReference",
-    "removePrepReference",
-    "reconcileGroceries",
+    "setInstructionTimerRemaining",
+    "createPrepSession",
+    "updatePrepSession",
+    "addPrepSessionStep",
+    "movePrepSessionStep",
+    "removePrepSessionStep",
     "captureFeedback",
     "archiveWeek",
   ]) {
@@ -78,24 +82,37 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.doesNotMatch(planner, /localStorage\.setItem|executeDomainCommand|CODEX_BRIDGE_URL/);
   assert.match(api, /PLANNER_API_ROUTES\.workspace\.path/);
   assert.match(api, /PLANNER_API_ROUTES\.commands\.path/);
-  assert.match(api, /PLANNER_API_ROUTES\.chatSubmit\.path/);
+  assert.doesNotMatch(api, /PLANNER_API_ROUTES\.chat(?:Submit|Retry)\.path/);
   assert.match(api, /If-None-Match/);
   assert.match(contract, /type InstructionStep/);
-  assert.match(contract, /type PrepReference/);
+  assert.match(contract, /type RecipeIngredient/);
+  assert.match(contract, /type IngredientUse/);
+  assert.match(contract, /type PrepSession/);
   assert.match(planner, /findStep/);
-  assert.match(planner, /transcriptEntries/);
-  assert.match(planner, /Add note/);
-  assert.match(planner, /Send to ChatGPT/);
-  assert.match(planner, /ChatGPT task/);
-  assert.match(planner, /Research recipe/);
-  assert.match(planner, /archiveContextWeek: false/);
-  assert.match(planner, /Allow archiving week \{week\.id\} for this message/);
-  assert.match(planner, /onIntentChange\(DEFAULT_CHAT_INTENT\)/);
+  assert.match(planner, /CodexThreadRail/);
+  assert.doesNotMatch(planner, /<ChatPanel/);
+  assert.match(planner, /Add comment/);
+  assert.match(planner, /Ask Codex/);
+  assert.match(planner, /function InstructionStepContent/);
+  assert.match(planner, /function RecipeSummaryLink/);
+  assert.match(planner, /function MealEditorTrigger/);
+  assert.match(planner, /Add recipe steps to/);
+  assert.match(planner, /scrollSessionTabs/);
+  assert.match(planner, /aria-label="Prep sessions"/);
+  assert.match(planner, /role="tabpanel"/);
+  assert.match(planner, /onDragEnter/);
+  assert.match(planner, /receiveRecipeStep/);
+  assert.match(styles, /instruction-step-line/);
+  assert.match(styles, /prep-session-tab/);
+  assert.match(styles, /prep-session-drop-hint/);
+  assert.match(rail, /Task history/);
+  assert.doesNotMatch(rail, /Blocked capability/);
+  assert.match(rail, /Message Codex/);
+  assert.doesNotMatch(rail, /Research recipe|ChatGPT task|microphone/i);
+  assert.match(sourceAdapter, /isDevelopmentCodexPreview/);
+  assert.match(sourceAdapter, /runtime_unavailable/);
   assert.match(planner, /Informational recipe source/);
   assert.match(planner, /target="_blank" rel="noopener noreferrer"/);
-  assert.match(planner, /planner changes will not run again/);
-  assert.match(planner, /ChatGPT needs sign-in/);
-  assert.match(planner, /ChatGPT runtime incompatible/);
   assert.match(planner, /timerStartedAt/);
   assert.match(planner, /function Timer/);
   assert.match(planner, /className="week-select"/);

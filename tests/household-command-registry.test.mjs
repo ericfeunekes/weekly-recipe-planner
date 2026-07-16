@@ -14,12 +14,6 @@ import {
 
 const weekId = "2026-07-06";
 const id = "id-1";
-const grocery = {
-  section: "Produce",
-  item: "Carrots",
-  detail: "1 bunch",
-  farmBox: true,
-};
 const step = {
   inputs: [{ amount: "1 cup", ingredient: "rice" }],
   instruction: "Rinse the rice.",
@@ -51,23 +45,29 @@ const fixtures = {
   setInstructionStepComplete: { type: "setInstructionStepComplete", weekId, stepId: id, complete: true },
   updateInstructionStepNote: { type: "updateInstructionStepNote", weekId, stepId: id, note: "Watch closely." },
   startInstructionTimer: { type: "startInstructionTimer", weekId, stepId: id },
+  pauseInstructionTimer: { type: "pauseInstructionTimer", weekId, stepId: id },
   resetInstructionTimer: { type: "resetInstructionTimer", weekId, stepId: id },
+  setInstructionTimerRemaining: { type: "setInstructionTimerRemaining", weekId, stepId: id, remainingSeconds: 300 },
+  createPrepSession: { type: "createPrepSession", weekId, label: "Sunday batch", prepDate: "2026-07-05" },
+  updatePrepSession: { type: "updatePrepSession", weekId, sessionId: id, label: "Finish later", prepDate: null },
+  movePrepSession: { type: "movePrepSession", weekId, sessionId: id, targetPosition: 0 },
+  removePrepSession: { type: "removePrepSession", weekId, sessionId: id },
+  addPrepSessionStep: { type: "addPrepSessionStep", weekId, sessionId: id, stepId: "step-1", targetPosition: 0 },
+  movePrepSessionStep: { type: "movePrepSessionStep", weekId, sessionId: id, entryId: "entry-1", targetPosition: 0 },
+  removePrepSessionStep: { type: "removePrepSessionStep", weekId, sessionId: id, entryId: "entry-1" },
   setPrepPlan: { type: "setPrepPlan", weekId, entries: [{ stepId: id, prepDate: "2026-07-05" }] },
   movePrepReference: { type: "movePrepReference", weekId, referenceId: id, targetPosition: 0 },
   reschedulePrepReference: { type: "reschedulePrepReference", weekId, referenceId: id, prepDate: "2026-07-05" },
   removePrepReference: { type: "removePrepReference", weekId, referenceId: id },
-  addGroceryItem: { type: "addGroceryItem", weekId, item: grocery },
-  updateGroceryItem: { type: "updateGroceryItem", weekId, itemId: id, changes: grocery },
-  removeGroceryItem: { type: "removeGroceryItem", weekId, itemId: id },
+  moveGroceryItemsToSource: { type: "moveGroceryItemsToSource", weekId, itemIds: [id, "id-2"], source: "shop" },
   setGroceryItemChecked: { type: "setGroceryItemChecked", weekId, itemId: id, checked: true },
-  reconcileGroceries: { type: "reconcileGroceries", weekId, items: [{ ...grocery, checked: false }] },
   captureFeedback: { type: "captureFeedback", weekId, mealId: id, value: "repeat" },
   captureWeekLesson: { type: "captureWeekLesson", weekId, weekLesson: "Prep earlier." },
   captureLeftoverQuality: { type: "captureLeftoverQuality", weekId, leftoverId: id, quality: "good" },
   assignLeftover: { type: "assignLeftover", weekId, leftoverId: id, targetDate: "2026-07-08", slot: "dinner" },
   consumeLeftover: { type: "consumeLeftover", weekId, leftoverId: id },
   archiveWeek: { type: "archiveWeek", weekId },
-  createWeekPlan: { type: "createWeekPlan", weekStartDate: "2026-07-13", plan: { meals: [], groceries: [] } },
+  createWeekPlan: { type: "createWeekPlan", weekStartDate: "2026-07-13", plan: { meals: [] } },
   activateWeek: { type: "activateWeek", weekId },
   handoffWeek: { type: "handoffWeek", currentWeekId: weekId, nextWeekId: "2026-07-13" },
 };
@@ -117,7 +117,6 @@ test("source provenance can enter only through sourced replacement, never create
         ingredients: [],
         instructions: [step],
       }],
-      groceries: [],
     },
   };
   const injectedCreate = structuredClone(canonicalCreate);
@@ -165,7 +164,6 @@ test("provider-strict schema is derived without changing canonical optionality",
     weekStartDate: "2026-07-13",
     plan: {
       meals: [],
-      groceries: [{ ...grocery, checked: null }],
       weekLesson: null,
     },
   };
@@ -174,8 +172,24 @@ test("provider-strict schema is derived without changing canonical optionality",
   assert.deepEqual(normalized, {
     type: "createWeekPlan",
     weekStartDate: "2026-07-13",
-    plan: { meals: [], groceries: [grocery] },
+    plan: { meals: [] },
   });
   assert.equal(isHouseholdCommand(normalized), true);
-  assert.equal(isHouseholdCommand({ ...fixtures.addGroceryItem, item: { ...grocery, checked: null } }), false);
+  for (const command of [
+    { type: "addGroceryItem", weekId, item: { section: "Produce", item: "Carrots", detail: "1 bunch", source: "shop", mealIds: [] } },
+    { type: "updateGroceryItem", weekId, itemId: id, changes: { section: "Produce", item: "Carrots", detail: "1 bunch", source: "shop", mealIds: [] } },
+    { type: "removeGroceryItem", weekId, itemId: id },
+  ]) assert.equal(isHouseholdCommand(command), false);
+});
+
+test("bulk grocery source moves require a bounded, unique selection and supported destination", () => {
+  const baseline = fixtures.moveGroceryItemsToSource;
+  for (const command of [
+    { ...baseline, itemIds: [] },
+    { ...baseline, itemIds: [id, id] },
+    { ...baseline, itemIds: Array.from({ length: 257 }, (_, index) => `id-${index}`) },
+    { ...baseline, source: "delivery" },
+  ]) {
+    assert.equal(isHouseholdCommand(command), false);
+  }
 });

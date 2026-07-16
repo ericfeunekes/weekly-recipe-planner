@@ -43,10 +43,6 @@ export type ChatTurnTerminalOutcome =
 export type TranscriptRole = "user" | "assistant" | "system";
 export type PlannerView = "week" | "tonight" | "prep" | "groceries" | "closeout";
 
-export type ChatTurnIntent =
-  | { kind: "planner"; archiveContextWeek: boolean }
-  | { kind: "sourced_recipe" };
-
 type PlannerContextReference =
   | { weekId?: never; mealId?: never; stepId?: never; leftoverId?: never }
   | { weekId: WeekId; mealId?: never; stepId?: never; leftoverId?: never }
@@ -75,6 +71,7 @@ export type ChatResearchLifecycle =
     }
   | { mode: "recovery"; researchKind: "none"; researchCandidate: null };
 
+/** Legacy SQLite rows may be read/exported but are no longer runtime turns. */
 export type NewChatResearchLifecycle =
   | { mode: "normal"; researchKind: "none"; researchCandidate: null }
   | { mode: "normal"; researchKind: "sourced_recipe"; researchCandidate: null }
@@ -122,34 +119,6 @@ export type ChatTurnBase = {
 
 export type ChatTurn = ChatTurnBase & ChatResearchLifecycle;
 
-export type SubmitChatTurnRequest = {
-  requestId: string;
-  basePlannerVersion: number;
-  message: string;
-  context: PlannerChatContext;
-  intent: ChatTurnIntent;
-};
-
-export type RetryChatTurnRequest = {
-  requestId: string;
-  basePlannerVersion: number;
-  turnId: string;
-};
-
-export type ChatTurnDecision =
-  | { status: "accepted"; turn: ChatTurn }
-  | { status: "turn_busy"; runningTurn: ChatTurn }
-  | {
-      status: "context_stale";
-      expectedVersion: number;
-      actualVersion: number;
-    }
-  | { status: "request_id_reuse" }
-  | { status: "not_found"; message: string }
-  | { status: "domain_rejected"; message: string }
-  | { status: "codex_unavailable"; message: string };
-
-export const MODEL_TRANSCRIPT_TAIL_LIMIT = 12;
 export const WORKSPACE_TRANSCRIPT_TAIL_LIMIT = 50;
 export const WORKSPACE_CHAT_TURN_TAIL_LIMIT = 20;
 
@@ -183,18 +152,4 @@ export function isPlannerChatContext(value: unknown): value is PlannerChatContex
     return candidate.mealId === undefined && candidate.stepId === undefined;
   }
   return candidate.stepId === undefined || candidate.mealId !== undefined;
-}
-
-export function isChatTurnIntent(value: unknown): value is ChatTurnIntent {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  const keys = Object.keys(candidate).sort();
-  if (candidate.kind === "sourced_recipe") {
-    return keys.length === 1 && keys[0] === "kind";
-  }
-  return candidate.kind === "planner" &&
-    keys.length === 2 &&
-    keys[0] === "archiveContextWeek" &&
-    keys[1] === "kind" &&
-    typeof candidate.archiveContextWeek === "boolean";
 }

@@ -18,16 +18,10 @@ import type {
 } from "../../lib/planner-api-contract.ts";
 import { createPlannerApplicationService } from "../application/planner-service.ts";
 import type {
-  ChatApplicationService,
   Clock,
   FailureInjector,
   IdFactory,
 } from "../application/ports.ts";
-import {
-  createEmbeddedChatApplicationService,
-  createManagedEmbeddedChatApplicationService,
-  type ResearchWebSearchEvidenceObservation,
-} from "../chat/index.ts";
 import { createNativeCodexSession } from "../codex/native-session.ts";
 import { createNativePlannerEffectHost } from "../codex/planner-effect-host.ts";
 import {
@@ -83,7 +77,6 @@ export type PlannerRuntimeOptions = {
   legacyTransformer?: (payload: LegacyV2Payload) => LegacyV2TransformResult;
   webProbe?: (origin: URL) => Promise<boolean>;
   shutdownGracePeriodMs?: number;
-  researchEvidenceObserver?: (observation: ResearchWebSearchEvidenceObservation) => void;
   /**
    * Host-only proof that the caller already owns the exclusive planner runtime
    * lease and may adopt native admissions left by a crashed predecessor.
@@ -95,9 +88,7 @@ export type PlannerRuntime = {
   server: Server;
   store: SqlitePlannerStore;
   planner: ReturnType<typeof createPlannerApplicationService>;
-  chat: ChatApplicationService;
   codexThreads: NativeCodexThreadService | null;
-  interruptedTurns: number;
   evaluate(): Promise<CodexFollowUpStatus>;
   readCodexStatus(): CodexFollowUpStatus;
   close(): Promise<void>;
@@ -250,34 +241,6 @@ export async function startPlannerRuntime(
         };
       }
     }
-    const chatDependencies = {
-      transactionRunner: store,
-      persistence: store,
-      plannerMutationKernel: planner,
-      plannerRead: store,
-      clock,
-      idFactory,
-      failureInjector,
-      ...(options.researchEvidenceObserver === undefined
-        ? {}
-        : { researchEvidenceObserver: options.researchEvidenceObserver }),
-      isCodexReady: () => {
-        try {
-          const status = options.codexRuntime.readStatus();
-          return status.state === "compatible" &&
-            status.authenticated === true && status.protocolCompatible === true;
-        } catch {
-          return false;
-        }
-      },
-    };
-    const chat = options.codexFixedCwd === null
-      ? createEmbeddedChatApplicationService(chatDependencies)
-      : createManagedEmbeddedChatApplicationService({
-          ...chatDependencies,
-          executionProvider: options.codexRuntime,
-          fixedCwd: options.codexFixedCwd,
-        });
     let nativeSession: ReturnType<typeof createNativeCodexSession> | null = null;
     let codexThreads: NativeCodexThreadService | null = null;
     if (options.codexFixedCwd !== null) {
@@ -303,11 +266,9 @@ export async function startPlannerRuntime(
           options.recoverCodexAdmissionsAfterOwnership === true,
       });
     }
-    const interruptedTurns = chat.interruptRunningTurns();
     const apiHandler = createApplicationRouter(
       {
         planner,
-        chat,
         ...(codexThreads === null ? {} : { codex: codexThreads }),
         readHealth: createHealthReader({
           config: options.config,
@@ -379,9 +340,7 @@ export async function startPlannerRuntime(
       server,
       store,
       planner,
-      chat,
       codexThreads,
-      interruptedTurns,
       evaluate: () => options.codexRuntime.evaluate(),
       readCodexStatus: () => options.codexRuntime.readStatus(),
       close,

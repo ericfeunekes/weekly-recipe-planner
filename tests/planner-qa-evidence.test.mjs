@@ -96,6 +96,7 @@ test("QA evidence is content-addressed and tamper-evident", async (t) => {
     stageSha256: "1".repeat(64),
     installedSha256: "2".repeat(64),
     releaseCandidateSha256: "3".repeat(64),
+    releaseCandidateEvidenceSchemaVersion: 2,
     nodeFloor: {
       executable: "/fixture/node",
       version: "v22.15.0",
@@ -171,6 +172,7 @@ test("QA evidence requires every D4 and D7 viewport tuple", async (t) => {
         stageSha256: "1".repeat(64),
         installedSha256: "2".repeat(64),
         releaseCandidateSha256: "3".repeat(64),
+        releaseCandidateEvidenceSchemaVersion: 2,
         nodeFloor: {
           executable: "/fixture/node",
           version: "v22.15.0",
@@ -207,6 +209,7 @@ test("QA evidence rejects a signature-only PNG that cannot decode", async (t) =>
         stageSha256: "1".repeat(64),
         installedSha256: "2".repeat(64),
         releaseCandidateSha256: "3".repeat(64),
+        releaseCandidateEvidenceSchemaVersion: 2,
         nodeFloor: {
           executable: "/fixture/node",
           version: "v22.15.0",

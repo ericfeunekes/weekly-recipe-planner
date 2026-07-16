@@ -4,6 +4,9 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const stateFile = process.env.FAKE_NATIVE_STATE_FILE ?? null;
+const e2ePlanner = process.env.FAKE_NATIVE_E2E_PLANNER === "1";
+const conflictStartedMarkerPath = process.env.PLANNER_E2E_CONFLICT_STARTED_MARKER;
+const conflictReleaseMarkerPath = process.env.PLANNER_E2E_CONFLICT_RELEASE_MARKER;
 const restoredState = (() => {
   if (stateFile === null || !existsSync(stateFile)) return null;
   try {
@@ -38,6 +41,27 @@ function environmentInteger(name, fallback = 0) {
 function environmentErrorCode(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
   return Number.isSafeInteger(value) ? value : fallback;
+}
+
+function addIsoDays(value, days) {
+  const date = new Date(`${value}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+async function waitForPath(path, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!path || !existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for deterministic marker ${path}.`);
+    }
+    await delay(25);
+  }
+}
+
+function writeMarker(path) {
+  if (!path) throw new Error("Deterministic E2E marker path is missing.");
+  writeFileSync(path, `${process.pid}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
 }
 
 function persistState() {
@@ -389,6 +413,300 @@ function askPlannerTool(threadId, turnId) {
   });
 }
 
+function activeStatus() {
+  return { type: "active", activeFlags: [] };
+}
+
+function plannerCallForE2e(threadId, turnId, tool, argumentsValue) {
+  const sequence = ++nextServerRequest;
+  const id = `e2e-planner-request-${sequence}`;
+  const callId = `e2e-planner-call-${sequence}`;
+  return new Promise((resolve, reject) => {
+    pendingServerRequests.set(id, {
+      kind: "e2e_planner",
+      threadId,
+      turnId,
+      callId,
+      resolve,
+      reject,
+    });
+    send({
+      id,
+      method: "item/tool/call",
+      params: {
+        arguments: argumentsValue,
+        callId,
+        namespace: "planner",
+        threadId,
+        tool,
+        turnId,
+      },
+    });
+  });
+}
+
+function readPlannerToolResponse(message, pending) {
+  if (message.error) {
+    const detail = typeof message.error === "object" &&
+      typeof message.error.message === "string"
+      ? `: ${message.error.message}`
+      : "";
+    throw new Error(`Planner host rejected the deterministic E2E callback${detail}`);
+  }
+  const response = message.result;
+  if (!response || typeof response !== "object" || typeof response.success !== "boolean" ||
+      !Array.isArray(response.contentItems) || response.contentItems.length !== 1 ||
+      response.contentItems[0]?.type !== "inputText" ||
+      typeof response.contentItems[0]?.text !== "string") {
+    throw new Error("Planner host returned a malformed deterministic E2E callback.");
+  }
+  const envelope = JSON.parse(response.contentItems[0].text);
+  if (!envelope || typeof envelope !== "object" || envelope.callId !== pending.callId ||
+      envelope.ok !== response.success) {
+    throw new Error("Planner host changed deterministic E2E callback identity.");
+  }
+  return envelope;
+}
+
+async function readE2eActiveWeek(thread, turn) {
+  const workspace = await plannerCallForE2e(thread.id, turn.id, "read", {
+    query: { kind: "workspace" },
+  });
+  if (!workspace.ok || workspace.data?.kind !== "workspace" ||
+      typeof workspace.data.activeWeekId !== "string") {
+    throw new Error("Deterministic E2E fixture could not resolve the active household week.");
+  }
+  const weekId = workspace.data.activeWeekId;
+  const read = await plannerCallForE2e(thread.id, turn.id, "read", {
+    query: { kind: "week", weekId },
+  });
+  if (!read.ok || read.data?.kind !== "week" || !read.data.week ||
+      typeof read.data.week !== "object") {
+    throw new Error("Deterministic E2E fixture could not read the active household week.");
+  }
+  return { weekId, plannerVersion: workspace.plannerVersion, week: read.data.week };
+}
+
+function e2ePrompt(turn) {
+  const lastUserItem = [...turn.items].reverse().find((item) => item.type === "userMessage");
+  const text = lastUserItem?.content?.[0]?.text;
+  if (typeof text !== "string") {
+    throw new Error("Deterministic E2E planner turn is missing its user message.");
+  }
+  return text;
+}
+
+function e2eSelectedMeal(week) {
+  const meals = Array.isArray(week?.data?.meals) ? week.data.meals : [];
+  return meals.find((meal) => /harissa chicken traybake/i.test(meal?.title ?? "")) ?? meals[0] ?? null;
+}
+
+function e2eSelectedStep(week, meal) {
+  const allMeals = Array.isArray(week?.data?.meals) ? week.data.meals : [];
+  const allSteps = allMeals.flatMap((candidate) =>
+    Array.isArray(candidate?.instructions) ? candidate.instructions : []
+  );
+  const mealSteps = meal === null || !Array.isArray(meal.instructions)
+    ? allSteps
+    : meal.instructions;
+  return allSteps.find((step) => /rinse the rice/i.test(step?.instruction ?? "")) ??
+    mealSteps.find((step) => step?.complete !== true) ?? mealSteps[0] ?? null;
+}
+
+function completeE2eTurn(thread, turn, reply) {
+  if (turn.status !== "inProgress") return;
+  const item = {
+    id: `${turn.id}-message`,
+    type: "agentMessage",
+    phase: "final_answer",
+    text: reply,
+  };
+  turn.items.push(item);
+  turn.status = "completed";
+  thread.status = { type: "idle" };
+  thread.preview = reply;
+  thread.updatedAt = Math.floor(Date.now() / 1_000);
+  persistState();
+  send({
+    method: "item/completed",
+    params: { completedAtMs: Date.now(), item, threadId: thread.id, turnId: turn.id },
+  });
+  send({ method: "turn/completed", params: { threadId: thread.id, turn } });
+}
+
+function failE2eTurn(thread, turn, error) {
+  if (turn.status !== "inProgress") return;
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${message}\n`);
+  turn.status = "failed";
+  turn.error = { message };
+  thread.status = { type: "idle" };
+  thread.updatedAt = Math.floor(Date.now() / 1_000);
+  persistState();
+  send({
+    method: "error",
+    params: { threadId: thread.id, turnId: turn.id, error: { message }, willRetry: false },
+  });
+}
+
+async function applyE2ePlannerCommand(thread, turn, plannerVersion, command, readback) {
+  return plannerCallForE2e(thread.id, turn.id, "apply", {
+    basePlannerVersion: plannerVersion,
+    operations: [{ command }],
+    readback,
+  });
+}
+
+async function executeE2ePlannerTurn(thread, turn) {
+  const request = e2ePrompt(turn);
+  if (request === "Installed QA native question proof.") {
+    askForInput(thread.id, turn.id);
+    return;
+  }
+  if (request === "Installed QA native interrupt proof.") {
+    return;
+  }
+  if (request === "Installed QA native activity and worker proof.") {
+    const child = createThread({}, {
+      parentThreadId: thread.id,
+      source: {
+        subAgent: {
+          thread_spawn: { depth: 1, parent_thread_id: thread.id },
+        },
+      },
+    });
+    const childTurn = {
+      id: `native-turn-${++nextTurn}`,
+      status: "completed",
+      items: [{
+        id: `installed-worker-message-${nextTurn}`,
+        type: "agentMessage",
+        phase: "final_answer",
+        text: "The installed worker returned its bounded result.",
+      }],
+    };
+    child.turns.push(childTurn);
+    child.status = { type: "idle" };
+    child.preview = "The installed worker returned its bounded result.";
+    child.updatedAt = Math.floor(Date.now() / 1_000);
+    turn.items.push(
+      {
+        id: `installed-planner-activity-${nextTurn}`,
+        type: "dynamicToolCall",
+        namespace: "planner",
+        tool: "read",
+        status: "completed",
+        arguments: { query: { kind: "workspace" } },
+        result: { ok: true },
+      },
+      {
+        id: `installed-web-activity-${nextTurn}`,
+        type: "webSearch",
+        query: "installed release proof",
+        action: { type: "openPage", url: "https://example.invalid/installed-proof" },
+      },
+      {
+        id: `installed-worker-activity-${nextTurn}`,
+        type: "collabAgentToolCall",
+        tool: "wait",
+        status: "completed",
+        senderThreadId: thread.id,
+        receiverThreadIds: [child.id],
+        agentsStates: {
+          [child.id]: { status: "completed", message: "Worker result returned." },
+        },
+      },
+    );
+    persistState();
+    send({ method: "thread/started", params: { thread: threadView(child) } });
+    completeE2eTurn(thread, turn, "Installed native activity and worker proof completed.");
+    return;
+  }
+  if (/create (?:the )?first (?:shared )?week/i.test(request)) {
+    const workspace = await plannerCallForE2e(thread.id, turn.id, "read", {
+      query: { kind: "workspace" },
+    });
+    if (!workspace.ok || workspace.data?.kind !== "workspace" || workspace.data.activeWeekId !== null) {
+      throw new Error("Deterministic E2E fixture expected an empty household workspace.");
+    }
+    const applied = await applyE2ePlannerCommand(thread, turn, workspace.plannerVersion, {
+      type: "createWeekPlan",
+      weekStartDate: "2026-07-06",
+      plan: { meals: [], weekLesson: "" },
+    }, { kind: "workspace" });
+    if (!applied.ok) throw new Error(`Deterministic E2E planner apply failed: ${applied.error.code}.`);
+    completeE2eTurn(thread, turn, "I created the first shared week.");
+    return;
+  }
+
+  const { weekId, plannerVersion, week } = await readE2eActiveWeek(thread, turn);
+  const meal = e2eSelectedMeal(week);
+  const completeStep = /complete|check off|done/i.test(request);
+  const createNextWeek = /create next week/i.test(request);
+  const conflictRequest = /propose conflicting meal change/i.test(request) && meal !== null;
+  const heldConflictRequest = request === "Propose conflicting meal change after a pause.";
+
+  if (completeStep || createNextWeek || conflictRequest) {
+    if (heldConflictRequest) {
+      writeMarker(conflictStartedMarkerPath);
+      await waitForPath(conflictReleaseMarkerPath);
+    }
+    const step = e2eSelectedStep(week, meal);
+    const command = completeStep
+      ? step === null
+        ? null
+        : { type: "setInstructionStepComplete", weekId, stepId: step.id, complete: true }
+      : createNextWeek
+        ? {
+            type: "createWeekPlan",
+            weekStartDate: addIsoDays(weekId, 7),
+            plan: { meals: [], weekLesson: "" },
+          }
+        : { type: "updateMealStatus", weekId, mealId: meal.id, status: "cooking" };
+    if (command === null) {
+      throw new Error("Deterministic E2E fixture could not find a shared recipe step to complete.");
+    }
+    const applied = await applyE2ePlannerCommand(
+      thread,
+      turn,
+      plannerVersion,
+      command,
+      command.type === "createWeekPlan" ? { kind: "workspace" } : { kind: "week", weekId },
+    );
+    if (conflictRequest && !applied.ok && applied.error.code === "VERSION_CONFLICT") {
+      completeE2eTurn(
+        thread,
+        turn,
+        "The shared plan changed first. Review it, then ask Codex again. Codex replied, but its planner change was not applied because the plan changed.",
+      );
+      return;
+    }
+    if (!applied.ok) throw new Error(`Deterministic E2E planner apply failed: ${applied.error.code}.`);
+    completeE2eTurn(
+      thread,
+      turn,
+      completeStep
+        ? "I marked that shared recipe step complete."
+        : createNextWeek
+          ? "I created a planned week for the next Monday."
+          : "I proposed the requested meal change.",
+    );
+    return;
+  }
+
+  const leftovers = Array.isArray(week?.data?.leftovers) ? week.data.leftovers : [];
+  const assignedLeftover = leftovers.find((leftover) => leftover?.state === "assigned");
+  completeE2eTurn(
+    thread,
+    turn,
+    /tonight context/i.test(request) && typeof assignedLeftover?.label === "string"
+      ? `Tonight is ${assignedLeftover.label} leftovers.`
+      : /tonight context/i.test(request) && typeof meal?.title === "string"
+        ? `Tonight is ${meal.title}.`
+        : "I can see the shared household plan.",
+  );
+}
+
 async function handleRequest(message) {
   if (Object.hasOwn(message, "jsonrpc")) {
     protocolViolation = true;
@@ -398,6 +716,21 @@ async function handleRequest(message) {
     const pending = pendingServerRequests.get(message.id);
     if (!pending) return;
     pendingServerRequests.delete(message.id);
+    let completedInstalledQuestion = null;
+    if (pending.kind === "user_input" && e2ePlanner) {
+      const thread = threads.get(pending.threadId);
+      const turn = thread?.turns.find((candidate) => candidate.id === pending.turnId);
+      if (thread && turn && e2ePrompt(turn) === "Installed QA native question proof.") {
+        completedInstalledQuestion = { thread, turn };
+      }
+    }
+    if (pending.kind === "e2e_planner") {
+      try {
+        pending.resolve(readPlannerToolResponse(message, pending));
+      } catch (error) {
+        pending.reject(error);
+      }
+    }
     const response = {
       kind: pending.kind,
       threadId: pending.threadId,
@@ -414,6 +747,13 @@ async function handleRequest(message) {
       method: "serverRequest/resolved",
       params: { threadId: pending.threadId, requestId: message.id },
     });
+    if (completedInstalledQuestion !== null) {
+      completeE2eTurn(
+        completedInstalledQuestion.thread,
+        completedInstalledQuestion.turn,
+        "Installed native question answered.",
+      );
+    }
     return;
   }
 
@@ -768,7 +1108,7 @@ async function handleRequest(message) {
       thread.turns.push(turn);
     }
     thread.materialized = true;
-    thread.status = { type: "active" };
+    thread.status = e2ePlanner ? activeStatus() : { type: "active" };
     thread.updatedAt = Math.floor(Date.now() / 1_000);
     persistState();
     if (responseDelayMs > 0) {
@@ -776,6 +1116,12 @@ async function handleRequest(message) {
       send({ id: message.id, result: { turn: startedTurn } });
     }
     const prompt = message.params?.input?.[0]?.text;
+    if (e2ePlanner) {
+      setImmediate(() => {
+        void executeE2ePlannerTurn(thread, turn).catch((error) => failE2eTurn(thread, turn, error));
+      });
+      return;
+    }
     if (typeof prompt === "string" && prompt.includes("ask me")) {
       askForInput(thread.id, turn.id);
     }
@@ -853,6 +1199,23 @@ async function handleRequest(message) {
     }
     await delay(environmentInteger("FAKE_NATIVE_DELAY_TURN_STEER_MS"));
     const prompt = message.params?.input?.[0]?.text;
+    if (e2ePlanner) {
+      send({
+        id: message.id,
+        result: {
+          turnId: process.env.FAKE_NATIVE_STEER_RESULT_MISMATCH === "1"
+            ? "native-turn-mismatched-result"
+            : message.params?.expectedTurnId,
+        },
+      });
+      send({ method: "turn/steered", params: message.params });
+      if (turn) {
+        setImmediate(() => {
+          void executeE2ePlannerTurn(thread, turn).catch((error) => failE2eTurn(thread, turn, error));
+        });
+      }
+      return;
+    }
     if (typeof prompt === "string" && prompt.includes("ask me")) {
       askForInput(thread.id, turn.id);
     }

@@ -24,8 +24,22 @@ import {
   acquireRuntimeOwnershipLease,
 } from "./runtime-ownership.mjs";
 import { createQaEvidenceManifest } from "./planner-qa-evidence.mjs";
+import {
+  NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
+} from "./planner-release-evidence-contract.mjs";
+import {
+  CODEX_THREAD_API_ROUTES,
+  isCodexApiFailure,
+  isCodexInteractionListResponse,
+  isCodexInteractionMutationResponse,
+  isCodexThreadListResponse,
+  isCodexThreadMutationResponse,
+  isCodexThreadReadResponse,
+  isCodexTurnMutationResponse,
+} from "../../lib/codex-thread-contract.ts";
 
 const QA_TIMEOUT_MS = 120_000;
+const INSTALLED_NATIVE_TIMEOUT_MS = 15_000;
 const SHA256 = /^[a-f0-9]{64}$/u;
 
 function same(left, right) {
@@ -343,6 +357,73 @@ async function requestJson(origin, path, options = {}) {
   return { response, body };
 }
 
+function codexQuery(path, values) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== null) query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return suffix.length === 0 ? path : `${path}?${suffix}`;
+}
+
+function assertInstalledNativeResponse(result, expectedStatus, validator, label) {
+  if (result.response.status !== expectedStatus || !validator(result.body)) {
+    throw new PlannerReleaseError(
+      `${label} returned an invalid native response (HTTP ${result.response.status}).`,
+    );
+  }
+  return result.body;
+}
+
+async function installedNativeGet(origin, path, validator, label) {
+  return assertInstalledNativeResponse(
+    await requestJson(origin, path),
+    200,
+    validator,
+    label,
+  );
+}
+
+async function installedNativePost(origin, route, body, expectedStatus, validator, label) {
+  const serialized = typeof body === "string" ? body : JSON.stringify(body);
+  return assertInstalledNativeResponse(
+    await requestJson(origin, route.path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: serialized,
+    }),
+    expectedStatus,
+    validator,
+    label,
+  );
+}
+
+async function readInstalledNativeThread(origin, threadId) {
+  return installedNativeGet(
+    origin,
+    codexQuery(CODEX_THREAD_API_ROUTES.threadRead.path, { threadId }),
+    isCodexThreadReadResponse,
+    "Installed native thread read",
+  );
+}
+
+async function waitForInstalledNativeThread(origin, threadId, predicate, label) {
+  const deadline = Date.now() + INSTALLED_NATIVE_TIMEOUT_MS;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await readInstalledNativeThread(origin, threadId);
+    if (predicate(last)) return last;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
+  throw new PlannerReleaseError(
+    `${label} did not converge (${last?.thread?.status?.state ?? "unknown"}).`,
+  );
+}
+
+function installedTurn(readback, turnId) {
+  return readback.thread.turns.find((turn) => turn.id === turnId) ?? null;
+}
+
 async function bootstrapIfNeeded(origin) {
   let workspace = (await requestJson(origin, "/api/workspace")).body;
   if (workspace?.initialized) return workspace;
@@ -358,7 +439,7 @@ async function bootstrapIfNeeded(origin) {
   return workspace;
 }
 
-async function proveInstalledBoundaries(options) {
+export async function proveInstalledBoundaries(options) {
   let controller = await options.e2eRuntime.createInProcessInstalledE2eController({
     appRoot: options.appRoot,
     dataDirectory: options.dataDirectory,
@@ -377,6 +458,256 @@ async function proveInstalledBoundaries(options) {
       return body?.application?.status === "ready" &&
         body?.store?.status === "ready" && body?.globalCodex?.status === "ready";
     });
+    const nativeBeforeRestart = await installedNativeGet(
+      controller.apiOrigin,
+      codexQuery(CODEX_THREAD_API_ROUTES.threadsList.path, { limit: 1 }),
+      isCodexThreadListResponse,
+      "Installed native history",
+    );
+    const primary = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.threadNew,
+      {
+        requestId: randomUUID(),
+        expectedSelectionRevision: nativeBeforeRestart.selection.revision,
+      },
+      201,
+      isCodexThreadMutationResponse,
+      "Installed native thread creation",
+    );
+    if (primary.thread === null || primary.selection.threadId !== primary.thread.id) {
+      throw new PlannerReleaseError("Installed native thread creation did not select its root.");
+    }
+    const primaryThreadId = primary.thread.id;
+
+    const questionAdmission = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.turnSend,
+      {
+        requestId: randomUUID(),
+        threadId: primaryThreadId,
+        expectedSelectionRevision: primary.selection.revision,
+        clientUserMessageId: `installed-question-${randomUUID()}`,
+        message: "Installed QA native question proof.",
+      },
+      202,
+      isCodexTurnMutationResponse,
+      "Installed native question admission",
+    );
+    const pendingQuestion = await waitForInstalledNativeThread(
+      controller.apiOrigin,
+      primaryThreadId,
+      (readback) => readback.interactions.some((interaction) =>
+        interaction.kind === "user_input" && interaction.turnId === questionAdmission.turnId
+      ),
+      "Installed native question",
+    );
+    const listedInteractions = await installedNativeGet(
+      controller.apiOrigin,
+      codexQuery(CODEX_THREAD_API_ROUTES.interactionsList.path, {
+        threadId: primaryThreadId,
+      }),
+      isCodexInteractionListResponse,
+      "Installed native interaction list",
+    );
+    const question = listedInteractions.interactions.find((interaction) =>
+      interaction.kind === "user_input" && interaction.turnId === questionAdmission.turnId
+    );
+    const questionEntry = question?.questions[0];
+    const selectedOption = questionEntry?.options[0]?.label;
+    if (!question || !questionEntry || typeof selectedOption !== "string") {
+      throw new PlannerReleaseError("Installed native question omitted its typed option surface.");
+    }
+    await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.interactionRespond,
+      {
+        requestId: randomUUID(),
+        threadId: primaryThreadId,
+        expectedSelectionRevision: pendingQuestion.selection.revision,
+        interactionId: question.id,
+        response: {
+          kind: "answers",
+          answers: [{ questionId: questionEntry.id, answers: [selectedOption] }],
+        },
+      },
+      200,
+      isCodexInteractionMutationResponse,
+      "Installed native question response",
+    );
+    await waitForInstalledNativeThread(
+      controller.apiOrigin,
+      primaryThreadId,
+      (readback) => installedTurn(readback, questionAdmission.turnId)?.status === "completed" &&
+        !readback.interactions.some((interaction) => interaction.id === question.id),
+      "Installed native question resolution",
+    );
+
+    const activityRequest = {
+      requestId: randomUUID(),
+      threadId: primaryThreadId,
+      expectedSelectionRevision: primary.selection.revision,
+      clientUserMessageId: `installed-activity-${randomUUID()}`,
+      message: "Installed QA native activity and worker proof.",
+    };
+    const serializedActivityRequest = JSON.stringify(activityRequest);
+    const activityAdmission = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.turnSend,
+      serializedActivityRequest,
+      202,
+      isCodexTurnMutationResponse,
+      "Installed native activity admission",
+    );
+    const activityReplay = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.turnSend,
+      serializedActivityRequest,
+      202,
+      isCodexTurnMutationResponse,
+      "Installed native activity exact replay",
+    );
+    if (
+      activityReplay.threadId !== activityAdmission.threadId ||
+      activityReplay.turnId !== activityAdmission.turnId
+    ) {
+      throw new PlannerReleaseError("Installed native admission replay changed provider identity.");
+    }
+    const changedReuse = await requestJson(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.turnSend.path,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: controller.apiOrigin },
+        body: JSON.stringify({ ...activityRequest, message: "Changed installed native reuse." }),
+      },
+    );
+    if (
+      changedReuse.response.status !== 409 ||
+      !isCodexApiFailure(changedReuse.body) ||
+      changedReuse.body.error.code !== "REQUEST_ID_REUSE"
+    ) {
+      throw new PlannerReleaseError("Installed native changed-payload replay did not fail closed.");
+    }
+    const activityReadback = await waitForInstalledNativeThread(
+      controller.apiOrigin,
+      primaryThreadId,
+      (readback) => installedTurn(readback, activityAdmission.turnId)?.status === "completed" &&
+        readback.thread.workers.length === 1,
+      "Installed native activity and worker readback",
+    );
+    const activityTurn = installedTurn(activityReadback, activityAdmission.turnId);
+    const plannerActivity = activityTurn?.items.find((item) =>
+      item.kind === "activity" && item.category === "tool" &&
+      item.label === "Reading the planner" && item.status === "completed"
+    );
+    const webActivity = activityTurn?.items.find((item) =>
+      item.kind === "activity" && item.category === "web" &&
+      item.label === "Opening a source" && item.status === "completed"
+    );
+    const workerActivity = activityTurn?.items.find((item) =>
+      item.kind === "worker" && item.operation === "wait" && item.status === "completed" &&
+      item.workerStates.length === 1 && item.workerStates[0]?.status === "completed"
+    );
+    const workerSummary = activityReadback.thread.workers[0];
+    if (!plannerActivity || !webActivity || !workerActivity || !workerSummary ||
+        !workerActivity.workerThreadIds.includes(workerSummary.threadId)) {
+      throw new PlannerReleaseError(
+        "Installed native readback omitted typed activity or worker projections.",
+      );
+    }
+    const workerReadback = await readInstalledNativeThread(
+      controller.apiOrigin,
+      workerSummary.threadId,
+    );
+    if (
+      workerReadback.thread.threadKind !== "worker" ||
+      workerReadback.thread.parentThreadId !== primaryThreadId
+    ) {
+      throw new PlannerReleaseError("Installed native worker readback changed its ancestry.");
+    }
+    const listedPrimary = await installedNativeGet(
+      controller.apiOrigin,
+      codexQuery(CODEX_THREAD_API_ROUTES.threadsList.path, { limit: 50 }),
+      isCodexThreadListResponse,
+      "Installed materialized native history",
+    );
+    if (!listedPrimary.threads.some((thread) => thread.id === primaryThreadId)) {
+      throw new PlannerReleaseError("Installed native history omitted its materialized root.");
+    }
+
+    const secondary = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.threadNew,
+      {
+        requestId: randomUUID(),
+        expectedSelectionRevision: activityReadback.selection.revision,
+      },
+      201,
+      isCodexThreadMutationResponse,
+      "Installed secondary native thread creation",
+    );
+    if (secondary.thread === null) {
+      throw new PlannerReleaseError("Installed secondary native thread omitted its root.");
+    }
+    const secondaryThreadId = secondary.thread.id;
+    const interruptAdmission = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.turnSend,
+      {
+        requestId: randomUUID(),
+        threadId: secondaryThreadId,
+        expectedSelectionRevision: secondary.selection.revision,
+        clientUserMessageId: `installed-interrupt-${randomUUID()}`,
+        message: "Installed QA native interrupt proof.",
+      },
+      202,
+      isCodexTurnMutationResponse,
+      "Installed native interrupt admission",
+    );
+    await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.turnInterrupt,
+      {
+        requestId: randomUUID(),
+        threadId: secondaryThreadId,
+        expectedSelectionRevision: secondary.selection.revision,
+        turnId: interruptAdmission.turnId,
+      },
+      200,
+      isCodexTurnMutationResponse,
+      "Installed native interrupt",
+    );
+    await waitForInstalledNativeThread(
+      controller.apiOrigin,
+      secondaryThreadId,
+      (readback) => installedTurn(readback, interruptAdmission.turnId)?.status === "interrupted",
+      "Installed native interrupted readback",
+    );
+    const archivedSecondary = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.threadArchive,
+      {
+        requestId: randomUUID(),
+        threadId: secondaryThreadId,
+        expectedSelectionRevision: secondary.selection.revision,
+      },
+      200,
+      isCodexThreadMutationResponse,
+      "Installed native archive",
+    );
+    const selectedPrimary = await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.threadSelect,
+      {
+        requestId: randomUUID(),
+        threadId: primaryThreadId,
+        expectedSelectionRevision: archivedSecondary.selection.revision,
+      },
+      200,
+      isCodexThreadMutationResponse,
+      "Installed native selection",
+    );
     let workspace = await bootstrapIfNeeded(controller.apiOrigin);
     const weekId = workspace.state.activeWeekId;
     if (typeof weekId !== "string") {
@@ -451,12 +782,38 @@ async function proveInstalledBoundaries(options) {
     }
     workspace = (await requestJson(controller.apiOrigin, "/api/workspace")).body;
     const versionBeforeRestart = workspace.plannerVersion;
+    const epochBeforeRestart = activityReadback.connectionEpoch;
     await controller.restart();
     const restarted = (await requestJson(controller.apiOrigin, "/api/workspace")).body;
+    const restartedNative = await installedNativeGet(
+      controller.apiOrigin,
+      codexQuery(CODEX_THREAD_API_ROUTES.threadsList.path, { limit: 50 }),
+      isCodexThreadListResponse,
+      "Restarted installed native history",
+    );
+    const restartedArchived = await installedNativeGet(
+      controller.apiOrigin,
+      codexQuery(CODEX_THREAD_API_ROUTES.threadsList.path, { archived: true, limit: 50 }),
+      isCodexThreadListResponse,
+      "Restarted installed native archive history",
+    );
+    const restartedPrimary = await readInstalledNativeThread(
+      controller.apiOrigin,
+      primaryThreadId,
+    );
     const restartedUds = await runGlobal("health", null);
     const restartStatus = (await requestJson(controller.controlOrigin, "/status")).body;
     if (
       restarted.plannerVersion !== versionBeforeRestart ||
+      restartedNative.selection.threadId !== primaryThreadId ||
+      !restartedNative.threads.some((thread) => thread.id === primaryThreadId) ||
+      restartedNative.threads.some((thread) => thread.id === secondaryThreadId) ||
+      !restartedArchived.threads.some((thread) => thread.id === secondaryThreadId) ||
+      restartedNative.connectionEpoch === epochBeforeRestart ||
+      installedTurn(restartedPrimary, activityAdmission.turnId)?.status !== "completed" ||
+      !restartedPrimary.thread.workers.some((worker) =>
+        worker.threadId === workerSummary.threadId && worker.status === "completed"
+      ) ||
       restartedUds.status !== "ready" ||
       restartStatus?.lastRestartProof?.mode !== "graceful" ||
       restartStatus.lastRestartProof.authorityGenerationAdvanced !== true ||
@@ -466,6 +823,18 @@ async function proveInstalledBoundaries(options) {
     ) {
       throw new PlannerReleaseError("Installed QA restart lost HTTP or Global UDS state.");
     }
+    await installedNativePost(
+      controller.apiOrigin,
+      CODEX_THREAD_API_ROUTES.threadArchive,
+      {
+        requestId: randomUUID(),
+        threadId: primaryThreadId,
+        expectedSelectionRevision: selectedPrimary.selection.revision,
+      },
+      200,
+      isCodexThreadMutationResponse,
+      "Restarted installed primary native archive",
+    );
     return Object.freeze({
       clonedDataLoaded: true,
       httpReady: true,
@@ -474,6 +843,17 @@ async function proveInstalledBoundaries(options) {
       exactReplay: true,
       changedPayloadRejected: true,
       restartReadback: true,
+      nativeThreadHttpReady: true,
+      nativeThreadCreateListSelect: true,
+      nativeThreadSendExactReplay: true,
+      nativeThreadChangedReplayRejected: true,
+      nativeThreadReadback: true,
+      nativeThreadActivityObserved: true,
+      nativeThreadWorkerReadback: true,
+      nativeThreadQuestionAnswered: true,
+      nativeThreadInterruptReadback: true,
+      nativeThreadArchiveHistory: true,
+      nativeThreadRestartReadback: true,
       gracefulRestart: true,
     });
   } finally {
@@ -484,7 +864,8 @@ async function proveInstalledBoundaries(options) {
 async function runBoundarySuites(options) {
   const testFiles = [
     "tests/http-application.test.mjs",
-    "tests/integration/dynamic-chat-cutover.test.mjs",
+    "tests/codex-native-thread-service.test.mjs",
+    "tests/architecture/legacy-conversation-cutover.test.mjs",
   ];
   await runLoggedCommand(options.nodeExecutable, [
     "--disable-warning=ExperimentalWarning",
@@ -498,7 +879,8 @@ async function runBoundarySuites(options) {
   });
   return Object.freeze({
     http: true,
-    dynamicChatCutover: true,
+    nativeThreadService: true,
+    legacyConversationCutover: true,
     fileCount: testFiles.length,
   });
 }
@@ -610,7 +992,7 @@ async function runInstalledPlaywright(options) {
       selectedCloneBrowserReadback: true,
       freshDeterministicJourneys: Object.freeze({
         familyDinnerSpec: true,
-        codexFollowUpSpec: true,
+        nativeCodexPreviewPresentationSpec: true,
       }),
       visual,
     });
@@ -755,6 +1137,13 @@ export async function runInstalledPlannerQa(options, dependencies = {}) {
     !SHA256.test(options.expectedInstalledIdentity.sha256 ?? "")
   ) {
     throw new TypeError("Installed QA requires the exact installed app identity.");
+  }
+  if (
+    options.releaseEvidenceBinding !== undefined &&
+    options.releaseEvidenceBinding.releaseCandidateEvidenceSchemaVersion !==
+      NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION
+  ) {
+    throw new TypeError("Installed QA requires native Codex release evidence schema version 2.");
   }
 
   const inspectIdentity = dependencies.inspectInstalledIdentity ?? inspectReleaseTreeIdentity;
@@ -904,6 +1293,8 @@ export async function runInstalledPlannerQa(options, dependencies = {}) {
     runtime,
     boundarySuites,
     browser,
+    nativeCodexReleaseEvidenceSchemaVersion:
+      options.releaseEvidenceBinding?.releaseCandidateEvidenceSchemaVersion ?? null,
     releaseEvidence,
   });
 }

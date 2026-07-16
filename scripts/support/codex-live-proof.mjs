@@ -16,6 +16,11 @@ import {
   activationCoordinatesEqual,
 } from "./codex-release-candidate-contract.mjs";
 import {
+  NATIVE_CODEX_THREAD_SOURCE,
+  NATIVE_CODEX_TOP_LEVEL_TOOLS,
+  NATIVE_CODEX_WORKER_TOOLS,
+} from "./planner-release-evidence-contract.mjs";
+import {
   isReleaseSourceRelativePathIncluded,
 } from "./planner-release-source.mjs";
 
@@ -326,7 +331,7 @@ async function inspectRetentionDatabase(entry) {
   );
 }
 
-export async function collectDedicatedRuntimeRetention(codexHome) {
+async function collectRuntimeRetention(codexHome, allowNativeState) {
   const inventoryOptions = {
     shouldHashFileContents: (_relativePath, category) => category !== "auth",
   };
@@ -359,12 +364,15 @@ export async function collectDedicatedRuntimeRetention(codexHome) {
       throw new Error(`Dedicated Codex retention inventory omitted ${table}.`);
     }
   }
-  const ephemeralCounts = Object.fromEntries(EMPTY_EPHEMERAL_TABLES.map((table) => [
+  const nativeStateCounts = Object.fromEntries(EMPTY_EPHEMERAL_TABLES.map((table) => [
     table,
     databases.reduce((sum, database) => sum + (database.counts[table] ?? 0), 0),
   ]));
-  if (Object.values(ephemeralCounts).some((count) => count !== 0)) {
+  if (!allowNativeState && Object.values(nativeStateCounts).some((count) => count !== 0)) {
     throw new Error("Ephemeral embedded Codex work persisted forbidden thread/tool/job rows.");
+  }
+  if (allowNativeState && nativeStateCounts.threads < 1) {
+    throw new Error("The native release smoke did not retain its archived thread proof.");
   }
   const initialCredentialEntries = entries.filter((entry) => entry.category === "auth");
   const credentialEntries = finalEntries.filter((entry) => entry.category === "auth");
@@ -408,9 +416,17 @@ export async function collectDedicatedRuntimeRetention(codexHome) {
       contentHashed: false,
     }),
     databaseTables: databases,
-    ephemeralCounts,
+    ...(allowNativeState ? { nativeStateCounts } : { ephemeralCounts: nativeStateCounts }),
     logRows: databases.reduce((sum, database) => sum + (database.counts.logs ?? 0), 0),
   });
+}
+
+export async function collectDedicatedRuntimeRetention(codexHome) {
+  return collectRuntimeRetention(codexHome, false);
+}
+
+export async function collectNativeReleaseRuntimeRetention(codexHome) {
+  return collectRuntimeRetention(codexHome, true);
 }
 
 export async function collectCandidateSourceManifest(root = packageRoot) {
@@ -474,13 +490,21 @@ export async function readObservedCapabilityProjection(codexHome, coordinates) {
     JSON.stringify(capability?.plannerNamespaceMembers) !== JSON.stringify(["read", "preview", "apply"]) ||
     JSON.stringify(capability?.forbiddenHits) !== "[]" ||
     JSON.stringify(capability?.unexpectedRpcMethods) !== "[]" ||
+    JSON.stringify(capability?.workerTools) !== JSON.stringify(NATIVE_CODEX_WORKER_TOOLS) ||
+    capability?.plannerReadObserved !== true || capability?.workerWaitCallObserved !== true ||
+    capability?.workerWaitResultObserved !== true || capability?.workerResultObserved !== true ||
+    capability?.userInputRoundTripObserved !== true ||
     capability?.dependentResultObserved !== true || capability?.outboundPolicyRejected !== true ||
+    capability?.approvalPolicy !== "never" ||
     capability?.permissionProfile !== ":read-only" ||
     capability?.effectiveSandbox !== "read-only-network-disabled" ||
     readback?.authenticated !== true ||
     JSON.stringify(readback?.mcpServerNames) !== "[]" ||
     JSON.stringify(readback?.appNames) !== "[]" ||
     JSON.stringify(readback?.pluginNames) !== "[]" ||
+    !Array.isArray(readback?.skillNames) ||
+    readback.skillNames.some((name) => typeof name !== "string" || name.length === 0) ||
+    new Set(readback.skillNames).size !== readback.skillNames.length ||
     !/^[a-f0-9]{64}$/u.test(evidence.rawSchemaBundleSha256)
   ) {
     throw new Error("The release-candidate capability evidence is not bound and closed.");
@@ -488,14 +512,24 @@ export async function readObservedCapabilityProjection(codexHome, coordinates) {
   return Object.freeze({
     evaluatedAt: evidence.evaluatedAt,
     rawSchemaBundleSha256: evidence.rawSchemaBundleSha256,
-    researchWebSearchMode: capability.researchWebSearchMode,
-    researchTools: capability.researchTools,
-    plannerTools: capability.plannerTools,
+    threadSource: NATIVE_CODEX_THREAD_SOURCE,
+    hostedWebSearchMode: capability.researchWebSearchMode,
+    topLevelTools: NATIVE_CODEX_TOP_LEVEL_TOOLS,
+    workerTools: capability.workerTools,
+    skillsNamespaceMembers: ["list", "read"],
     plannerNamespaceMembers: capability.plannerNamespaceMembers,
+    standaloneSkillCount: readback.skillNames.length,
+    standaloneSkillIdentitySha256: sha256(canonicalJson([...readback.skillNames].sort())),
     forbiddenHits: capability.forbiddenHits,
     unexpectedRpcMethods: capability.unexpectedRpcMethods,
+    plannerReadObserved: true,
+    workerWaitCallObserved: true,
+    workerWaitResultObserved: true,
+    workerResultObserved: true,
+    userInputRoundTripObserved: true,
     dependentResultObserved: true,
     outboundPolicyRejected: true,
+    approvalPolicy: "never",
     permissionProfile: capability.permissionProfile,
     effectiveSandbox: capability.effectiveSandbox,
     emptyAmbientSurfaces: true,

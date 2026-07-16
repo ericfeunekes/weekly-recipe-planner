@@ -65,6 +65,7 @@ import {
   releaseCandidateProjectionFromArtifact,
 } from "./codex-release-candidate-contract.mjs";
 import {
+  NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
   assertProductionAuthReadinessProjection,
 } from "./planner-release-evidence-contract.mjs";
 import { acquireRuntimeOwnershipLease } from "./runtime-ownership.mjs";
@@ -1466,7 +1467,10 @@ async function runProductionReleaseCandidate(context, dependencies) {
     context.installed,
     context.authLifecycle,
   );
-  const artifact = await smoke.runLiveChatSmoke([
+  if (typeof smoke.runNativeCodexReleaseSmoke !== "function") {
+    throw new PlannerReleaseError("The installed candidate omitted the native Codex release smoke.");
+  }
+  const artifact = await smoke.runNativeCodexReleaseSmoke([
     "--authorized",
     "--scenario",
     "all",
@@ -1512,6 +1516,7 @@ async function runProductionInstalledQa(context, dependencies) {
       stageSha256: context.stage.sha256,
       installedSha256: context.installed.sha256,
       releaseCandidateSha256: context.releaseCandidate.sha256,
+      releaseCandidateEvidenceSchemaVersion: NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
       nodeFloor: context.stage.projection.preflight.node,
     }),
     environment: dependencies.environment ?? process.env,
@@ -2120,6 +2125,7 @@ export async function createProductionActivationPort(baseContext, dependencies =
           stageSha256: context.stage.sha256,
           installedSha256: effectContext.installed.sha256,
           releaseCandidateSha256: effectContext.releaseCandidate.sha256,
+          releaseCandidateEvidenceSchemaVersion: NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
           nodeFloor: context.stage.projection.preflight.node,
         },
         expectedSha256: releaseEvidence.sha256,

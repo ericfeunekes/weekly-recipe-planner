@@ -84,10 +84,9 @@ function plannerState() {
       status: "active",
       data: {
         meals: [],
-        prep: [],
+        prepSessions: [],
         groceries: [],
         leftovers: [],
-        farmBoxReconciled: false,
         feedback: {},
         weekLesson: "release-composition",
       },

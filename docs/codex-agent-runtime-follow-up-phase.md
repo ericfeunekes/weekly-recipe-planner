@@ -10,7 +10,7 @@
 
 The household uses a small Codex-style thread wrapper inside the planner. The dedicated runtime may contain many persistent top-level Codex threads. Exactly one top-level thread is selected and shown at a time; navigating among planner views or opening another app tab does not create another conversation. The household can open native thread history, select a prior thread, or start a new one.
 
-The selected thread has one ChatGPT composer with no task-mode selector. The agent decides naturally whether a request needs planner context, a skill, hosted web search, planner reads, a preview, one or more planner effects, background workers, or only a conversational answer.
+The selected thread has one Codex composer with no task-mode selector. The agent decides naturally whether a request needs planner context, a skill, hosted web search, planner reads, a preview, one or more planner effects, background workers, or only a conversational answer.
 
 Codex owns the native thread graph, items, history, turns, and child-agent activity. The application owns only the shared selected-thread reference, a sanitized live/read view of Codex state, and planner-specific readiness/effect status. It does not maintain a second authoritative transcript. The planner database remains the only authority for weeks, meals, groceries, accepted effects, versions, idempotency receipts, planner history, undo, and recovery.
 
@@ -103,13 +103,13 @@ The selected deployment remains:
 ```
 
 - The server resolves these roots from deployment-owned configuration. Browser input, caller cwd, `PATH` search, and planner messages cannot select them.
-- Launch the server-owned updater path `$HOME/.local/bin/codex`; record and revalidate the resolved executable identity and active generated protocol. A compatible updater change is adopted without an application version pin. An incompatible change disables ChatGPT only.
+- Launch the server-owned updater path `$HOME/.local/bin/codex`; record and revalidate the resolved executable identity and active generated protocol. A compatible updater change is adopted without an application version pin. An incompatible change disables Codex-thread readiness only.
 - Keep the real OS `HOME` so standalone skills under `$HOME/.agents/skills` remain discoverable. Because `CODEX_HOME` points at the dedicated authenticated home, normal `~/.codex` config, auth, sessions, logs, plugins, MCP, apps, and connectors do not enter the embedded runtime.
 - Install any app-owned planner skills through the deployment-owned skill surface and bind their exact names/content hashes to the release. User-owned standalone skills are discovered dynamically rather than pinned to an application release; readiness inventories their effective names/sources and proves that adding or changing a skill cannot widen tools, RPC methods, permissions, or planner commands.
 - `CODEX_HOME/AGENTS.md`, the planner skills, and the fixed app cwd are release-owned instruction sources. Loading those declared sources does not create a general-purpose filesystem capability.
 - The spawned app-server process receives a minimal environment and no planner database path or application secrets. The browser never receives raw app-server RPC or credentials.
 - The outbound host RPC allowlist excludes shell/exec, file change, approval grants, configuration mutation, plugin/marketplace, app, MCP, and permission methods. Inbound app-server requests accept only registered planner dynamic-tool callbacks and bounded `request_user_input`; the host projects only two or three unique listed options, ignores Codex's free-form `Other` channel, accepts exactly one listed label, and rejects secret-input requests. Command/file/permission/MCP approvals receive a protocol-valid decline or rejection plus a sanitized blocked notice, and every other request method fails closed.
-- Invalid home, config, auth, skill, capability, or protocol state degrades only ChatGPT readiness. The planner UI and direct planner operations remain available.
+- Invalid home, config, auth, skill, capability, or protocol state degrades only Codex-thread readiness. The planner UI and direct planner operations remain available.
 
 ### 2. Native Thread Catalogue And Selection
 

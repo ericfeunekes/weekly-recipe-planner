@@ -73,10 +73,9 @@ function seedState(lesson = "Initial lesson") {
           ingredients: [],
           instructions: [],
         }],
-        prep: [],
+        prepSessions: [],
         groceries: [],
         leftovers: [],
-        farmBoxReconciled: false,
         feedback: {},
         weekLesson: lesson,
       },
@@ -343,7 +342,12 @@ test("real UDS and SQLite preserve apply, replay, conflict, provenance, and plan
   assert.equal(sourcedMeal.title, "Sourced lentil soup");
   assert.equal(sourcedMeal.subtitle, "Keep this subtitle");
   assert.deepEqual(sourcedMeal.sourceRecipe, sourcedBatch().operations[0].command.recipe.source);
-  assert.deepEqual(sourcedMeal.ingredients, ["1 cup lentils"]);
+  assert.equal(sourcedMeal.ingredients.length, 1);
+  assert.deepEqual(
+    sourcedMeal.ingredients.map(({ amount, ingredient }) => ({ amount, ingredient })),
+    [{ amount: "1 cup", ingredient: "lentils" }],
+  );
+  assert.match(sourcedMeal.ingredients[0].id, /^ingredient-\d+$/u);
   assert.deepEqual(sourcedBody.planner.events.at(-1).provenance, {
     actorClass: "codex",
     actorSource: "global",

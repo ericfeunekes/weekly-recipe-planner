@@ -17,14 +17,7 @@ import {
   type PageRequest,
   type WorkspaceResponse,
 } from "../../lib/planner-api-contract.ts";
-import {
-  isChatTurnIntent,
-  isPlannerChatContext,
-} from "../../lib/planner-chat-contract.ts";
-import type {
-  ChatApplicationService,
-  PlannerApplicationService,
-} from "../application/ports.ts";
+import type { PlannerApplicationService } from "../application/ports.ts";
 import {
   createCodexRouter,
   type CodexThreadServicePort,
@@ -32,11 +25,9 @@ import {
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_ID_LENGTH = 200;
-const MAX_CHAT_MESSAGE_LENGTH = 4_000;
 
 export type ApplicationRouterDependencies = {
   planner: PlannerApplicationService;
-  chat: ChatApplicationService;
   codex?: CodexThreadServicePort;
   readHealth(): Promise<HealthResponse> | HealthResponse;
 };
@@ -224,14 +215,6 @@ function undoDecisionStatus(status: string) {
   return status === "accepted" ? 200 : 409;
 }
 
-function chatDecisionStatus(status: string) {
-  if (status === "accepted") return 202;
-  if (status === "turn_busy" || status === "context_stale" || status === "request_id_reuse") return 409;
-  if (status === "not_found") return 404;
-  if (status === "codex_unavailable") return 503;
-  return 409;
-}
-
 function mapThrownError(error: unknown): ApiRouteError {
   if (error instanceof ApiRouteError) return error;
   if (
@@ -334,10 +317,6 @@ export function createApplicationRouter(
         sendJson(response, 200, dependencies.planner.readEventPage(parsePageRequest(url)));
         return;
       }
-      if (url.pathname === PLANNER_API_ROUTES.transcript.path) {
-        sendJson(response, 200, dependencies.planner.readTranscriptPage(parsePageRequest(url)));
-        return;
-      }
       if (url.pathname === PLANNER_API_ROUTES.export.path) {
         response.setHeader("Content-Disposition", `attachment; filename="${DIAGNOSTIC_EXPORT_FILENAME}"`);
         response.setHeader("X-Meal-Planner-Export-Kind", DIAGNOSTIC_EXPORT_KIND);
@@ -386,47 +365,6 @@ export function createApplicationRouter(
         sendJson(response, undoDecisionStatus(result.decision.status), result);
         return;
       }
-      if (url.pathname === PLANNER_API_ROUTES.chatSubmit.path) {
-        if (
-          !hasExactKeys(body, ["requestId", "basePlannerVersion", "message", "context", "intent"]) ||
-          !isId(body.requestId) ||
-          !isNonnegativeInteger(body.basePlannerVersion) ||
-          typeof body.message !== "string" ||
-          body.message.trim().length === 0 ||
-          body.message.length > MAX_CHAT_MESSAGE_LENGTH ||
-          !isPlannerChatContext(body.context) ||
-          !isChatTurnIntent(body.intent)
-        ) {
-          throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed chat submission.");
-        }
-        const result = await dependencies.chat.submit({
-          requestId: body.requestId,
-          basePlannerVersion: body.basePlannerVersion,
-          message: body.message.trim(),
-          context: body.context,
-          intent: body.intent,
-        });
-        sendJson(response, chatDecisionStatus(result.decision.status), result);
-        return;
-      }
-      if (url.pathname === PLANNER_API_ROUTES.chatRetry.path) {
-        if (
-          !hasExactKeys(body, ["requestId", "basePlannerVersion", "turnId"]) ||
-          !isId(body.requestId) ||
-          !isNonnegativeInteger(body.basePlannerVersion) ||
-          !isId(body.turnId)
-        ) {
-          throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed chat retry.");
-        }
-        const result = await dependencies.chat.retry({
-          requestId: body.requestId,
-          basePlannerVersion: body.basePlannerVersion,
-          turnId: body.turnId,
-        });
-        sendJson(response, chatDecisionStatus(result.decision.status), result);
-        return;
-      }
-
       sendJson(response, 404, { error: { code: "NOT_FOUND", message: "Not found." } });
     } catch (error) {
       sendFailure(response, mapThrownError(error));

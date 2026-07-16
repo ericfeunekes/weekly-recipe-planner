@@ -46,13 +46,15 @@ import {
   type PlannerToolResult,
 } from "../../lib/planner-tool-contract.ts";
 import type { HouseholdPlannerState } from "../../lib/household-contract.ts";
-import { normalizeLegacyLeftoverSourceStatuses } from "../../lib/household-persistence-upgrade.ts";
+import {
+  normalizeLegacyHouseholdPayload,
+  normalizeLegacyHouseholdState,
+} from "../../lib/household-persistence-upgrade.ts";
 import {
   isDigestBoundResearchCandidateReference,
   type ResearchCandidateReference,
 } from "../../lib/sourced-recipe-contract.ts";
 import type {
-  ChatPersistencePort,
   EmbeddedTurnIdentity,
   EmbeddedTurnTerminalUpdate,
   NewRunningChatTurn,
@@ -61,8 +63,6 @@ import type {
   PlannerToolCallCompletion,
   PlannerToolCallReservation,
   PlannerToolCallReservationDecision,
-  PlannerReadPort,
-  TransactionRunner,
 } from "../application/ports.ts";
 
 const CURRENT_SCHEMA_VERSION = 8;
@@ -280,7 +280,7 @@ function parseJson<T>(text: string, label: string): T {
   }
 }
 
-function normalizeStoredLegacyLeftoverSources(database: DatabaseSync): void {
+function normalizeStoredLegacyHouseholdState(database: DatabaseSync): void {
   try {
     database.exec("BEGIN IMMEDIATE");
   } catch (error) {
@@ -296,7 +296,7 @@ function normalizeStoredLegacyLeftoverSources(database: DatabaseSync): void {
       .prepare("SELECT state_json FROM workspace WHERE id = 'household'")
       .get() as { state_json: string } | undefined;
     if (workspace) {
-      const normalized = normalizeLegacyLeftoverSourceStatuses(
+      const normalized = normalizeLegacyHouseholdState(
         parseJson<HouseholdPlannerState>(workspace.state_json, "workspace state"),
       );
       if (normalized.changed) {
@@ -317,7 +317,7 @@ function normalizeStoredLegacyLeftoverSources(database: DatabaseSync): void {
       "UPDATE planner_events SET before_state_json = ? WHERE sequence = ?",
     );
     for (const event of events) {
-      const normalized = normalizeLegacyLeftoverSourceStatuses(
+      const normalized = normalizeLegacyHouseholdState(
         parseJson<HouseholdPlannerState>(
           event.before_state_json,
           "planner event undo state",
@@ -325,6 +325,42 @@ function normalizeStoredLegacyLeftoverSources(database: DatabaseSync): void {
       );
       if (normalized.changed) {
         updateEvent.run(JSON.stringify(normalized.state), event.sequence);
+      }
+    }
+
+    const chatTurns = database
+      .prepare(
+        "SELECT turn_id, proposed_command_json FROM chat_turns WHERE proposed_command_json IS NOT NULL",
+      )
+      .all() as Array<{ turn_id: string; proposed_command_json: string }>;
+    const updateChatTurn = database.prepare(
+      "UPDATE chat_turns SET proposed_command_json = ? WHERE turn_id = ?",
+    );
+    for (const turn of chatTurns) {
+      const normalized = normalizeLegacyHouseholdPayload(
+        parseJson<unknown>(turn.proposed_command_json, "proposed planner command"),
+      );
+      if (normalized.changed) updateChatTurn.run(JSON.stringify(normalized.value), turn.turn_id);
+    }
+
+    const toolCalls = database
+      .prepare(
+        "SELECT turn_id, tool_call_id, result_envelope_json FROM planner_tool_calls WHERE result_envelope_json IS NOT NULL",
+      )
+      .all() as Array<{ turn_id: string; tool_call_id: string; result_envelope_json: string }>;
+    const updateToolResult = database.prepare(
+      "UPDATE planner_tool_calls SET result_envelope_json = ? WHERE turn_id = ? AND tool_call_id = ?",
+    );
+    for (const toolCall of toolCalls) {
+      const normalized = normalizeLegacyHouseholdPayload(
+        parseJson<unknown>(toolCall.result_envelope_json, "planner tool result"),
+      );
+      if (normalized.changed) {
+        updateToolResult.run(
+          JSON.stringify(normalized.value),
+          toolCall.turn_id,
+          toolCall.tool_call_id,
+        );
       }
     }
     database.exec("COMMIT");
@@ -1086,12 +1122,7 @@ function validateStoredChatTurns(database: DatabaseSync): void {
   for (const row of rows) mapChatTurn(row);
 }
 
-export class SqlitePlannerStore
-  implements
-    TransactionRunner<SqliteTransaction>,
-    ChatPersistencePort<SqliteTransaction>,
-    PlannerReadPort<SqliteTransaction>
-{
+export class SqlitePlannerStore {
   readonly filename: string;
   readonly database: DatabaseSync;
   readonly migrationBackupPath: string | null;
@@ -1892,7 +1923,7 @@ export function openPlannerStore(options: OpenPlannerStoreOptions = {}): SqliteP
         : null;
     configureDatabase(database, busyTimeoutMs, isMemory);
     applyMigrations(database, currentVersion);
-    normalizeStoredLegacyLeftoverSources(database);
+    normalizeStoredLegacyHouseholdState(database);
     quickCheck(database);
     validateStoredPlannerToolCalls(database);
     validateStoredChatTurns(database);

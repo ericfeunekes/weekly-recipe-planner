@@ -4,8 +4,6 @@ import type {
   BootstrapWorkspaceRequest,
   BootstrapWorkspaceResponse,
   ExportEnvelope,
-  InitializedWorkspace,
-  OperationReceipt,
   PageRequest,
   PlannerEventPage,
   UndoLatestRequest,
@@ -15,10 +13,7 @@ import type {
 import type {
   ChatTurn,
   ChatTurnBase,
-  ChatTurnDecision,
   NewChatResearchLifecycle,
-  RetryChatTurnRequest,
-  SubmitChatTurnRequest,
   TranscriptEntry,
 } from "../../lib/planner-chat-contract.ts";
 import type {
@@ -32,11 +27,6 @@ import type {
   PlannerToolName,
   PlannerToolResult,
 } from "../../lib/planner-tool-contract.ts";
-import type { ResearchCandidateReference } from "../../lib/sourced-recipe-contract.ts";
-
-export interface TransactionRunner<Transaction> {
-  transaction<Result>(work: (transaction: Transaction) => Result): Result;
-}
 
 export interface PlannerMutationKernel<Transaction> {
   previewPlannerOperations(
@@ -67,29 +57,11 @@ export interface PlannerApplicationService {
   exportWorkspace(): ExportEnvelope;
 }
 
-export interface ChatApplicationService {
-  submit(request: SubmitChatTurnRequest): Promise<ChatServiceResponse>;
-  retry(request: RetryChatTurnRequest): Promise<ChatServiceResponse>;
-  interruptRunningTurns(now?: number): number;
-}
-
-export type ChatServiceResponse = {
-  decision: ChatTurnDecision;
-  workspace: InitializedWorkspace;
-};
-
 export const APPLICATION_FAILPOINTS = [
   "after_workspace_update",
   "after_event_insert",
   "after_receipt_insert",
   "after_planner_mutation",
-  "after_chat_terminal_write",
-  "after_tool_reservation",
-  "before_tool_effect_commit",
-  "after_tool_effect_commit",
-  "after_tool_response",
-  "after_embedded_terminal_reply",
-  "after_research_candidate_attachment",
   "before_commit",
 ] as const;
 
@@ -199,76 +171,6 @@ export type EmbeddedTurnTerminalUpdate = {
   terminalOutcome: ChatTurn["terminalOutcome"];
   completedAt: number;
 };
-
-export interface ChatPersistencePort<Transaction> {
-  findReceipt(
-    transaction: Transaction,
-    operationKind: "chat_submit" | "chat_retry",
-    requestId: string,
-  ): OperationReceipt | null;
-  insertReceipt(transaction: Transaction, receipt: OperationReceipt): void;
-  readRunningTurn(transaction: Transaction): ChatTurn | null;
-  readTurn(transaction: Transaction, turnId: string): ChatTurn | null;
-  readTranscriptEntry(
-    transaction: Transaction,
-    entryId: string,
-  ): TranscriptEntry | null;
-  readTranscriptTail(transaction: Transaction, limit: number): TranscriptEntry[];
-  insertTranscriptEntry(
-    transaction: Transaction,
-    entry: NewTranscriptEntry,
-  ): TranscriptEntry;
-  insertRunningTurn(
-    transaction: Transaction,
-    turn: NewRunningChatTurn,
-  ): ChatTurn;
-  interruptRunningTurns(transaction: Transaction, completedAt: number): number;
-  bindEmbeddedTurn(
-    transaction: Transaction,
-    turnId: string,
-    completionTokenHash: string,
-    appServerThreadId: string,
-    appServerTurnId: string,
-  ): boolean;
-  attachResearchCandidate(
-    transaction: Transaction,
-    turnId: string,
-    completionTokenHash: string,
-    reference: ResearchCandidateReference,
-  ): boolean;
-  reservePlannerToolCall(
-    transaction: Transaction,
-    reservation: PlannerToolCallReservation,
-  ): PlannerToolCallReservationDecision;
-  completePlannerToolCall(
-    transaction: Transaction,
-    completion: PlannerToolCallCompletion,
-  ): boolean;
-  incrementEmbeddedTurnEffect(
-    transaction: Transaction,
-    identity: EmbeddedTurnIdentity,
-  ): number | null;
-  terminalizeEmbeddedTurn(
-    transaction: Transaction,
-    identity: EmbeddedTurnIdentity,
-    update: EmbeddedTurnTerminalUpdate,
-  ): boolean;
-  terminalizeUnboundEmbeddedTurn(
-    transaction: Transaction,
-    turnId: string,
-    completionTokenHash: string,
-    update: EmbeddedTurnTerminalUpdate,
-  ): boolean;
-  readPlannerToolCalls(
-    transaction: Transaction,
-    turnId: string,
-  ): PlannerToolCall[];
-  incrementSyncRevision(transaction: Transaction, updatedAt: number): number;
-}
-
-export interface PlannerReadPort<Transaction = unknown> {
-  readInitializedWorkspace(transaction?: Transaction): InitializedWorkspace;
-}
 
 export interface IdFactory {
   createId(prefix: string): string;

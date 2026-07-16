@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { request as requestHttp } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { request as playwrightRequest } from "@playwright/test";
@@ -21,9 +19,6 @@ import {
 import { startPlannerRuntime } from "../../server/runtime/planner-runtime.ts";
 
 const browserOrigin = "http://localhost:3001";
-const fakeAppServerPath = fileURLToPath(
-  new URL("../support/fixtures/codex-runtime/fake-e2e-app-server.mjs", import.meta.url),
-);
 
 function seedState() {
   return {
@@ -49,10 +44,9 @@ function seedState() {
           ingredients: [],
           instructions: [],
         }],
-        prep: [],
+        prepSessions: [],
         groceries: [],
         leftovers: [],
-        farmBoxReconciled: false,
         feedback: {},
         weekLesson: "Initial lesson",
       },
@@ -86,59 +80,23 @@ function runtimeBaseUrl(runtime) {
   return `http://127.0.0.1:${address.port}`;
 }
 
-function compatibleRuntime(environment) {
-  const children = new Set();
+function unavailableRuntime() {
   const status = Object.freeze({
-    state: "compatible",
-    authenticated: true,
-    protocolCompatible: true,
+    state: "unavailable",
+    authenticated: null,
+    protocolCompatible: null,
     cacheHit: false,
     evidence: null,
-    detail: "Multi-ingress generated-protocol fixture is compatible.",
+    detail: "Codex is deliberately unavailable in this planner-ingress race.",
   });
   return {
     evaluate: async () => status,
     readStatus: () => status,
-    async spawnAppServer({ signal } = {}) {
-      const child = spawn(process.execPath, [fakeAppServerPath], {
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH, ...environment },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      children.add(child);
-      const onAbort = () => child.kill("SIGTERM");
-      signal?.addEventListener("abort", onAbort, { once: true });
-      child.once("close", () => {
-        signal?.removeEventListener("abort", onAbort);
-        children.delete(child);
-      });
-      return child;
+    async spawnAppServer() {
+      throw new Error("The planner-ingress race must not spawn Codex.");
     },
-    async close() {
-      await Promise.all([...children].map((child) => new Promise((resolveClose) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolveClose();
-          return;
-        }
-        child.once("close", resolveClose);
-        child.kill("SIGTERM");
-      })));
-    },
+    async close() {},
   };
-}
-
-async function waitForPath(path, timeoutMs = 5_000) {
-  const { access } = await import("node:fs/promises");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      await access(path);
-      return;
-    } catch {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
-    }
-  }
-  throw new Error(`Timed out waiting for embedded ingress marker ${path}.`);
 }
 
 function requestSocket(socketPath, body) {
@@ -167,21 +125,16 @@ function requestSocket(socketPath, body) {
   });
 }
 
-test("two browser contexts, embedded Codex, and Global UDS contend through real ingress boundaries", async (t) => {
+test("two browser contexts and Global UDS contend through real ingress boundaries", async (t) => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "planner-multi-ingress-race-")));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const globalParent = join(directory, "global-home", "meal-planner");
   await mkdir(globalParent, { recursive: true, mode: 0o700 });
-  const embeddedStarted = join(directory, "embedded-started");
-  const embeddedRelease = join(directory, "embedded-release");
   let id = 0;
   let now = 1_800_000_000_000;
   const runtime = await startPlannerRuntime({
     config: config(directory),
-    codexRuntime: compatibleRuntime({
-      PLANNER_E2E_CONFLICT_STARTED_MARKER: embeddedStarted,
-      PLANNER_E2E_CONFLICT_RELEASE_MARKER: embeddedRelease,
-    }),
+    codexRuntime: unavailableRuntime(),
     codexFixedCwd: process.cwd(),
     clock: { now: () => now++ },
     idFactory: { createId: (prefix) => `${prefix}-${++id}` },
@@ -213,19 +166,6 @@ test("two browser contexts, embedded Codex, and Global UDS contend through real 
   });
   t.after(async () => Promise.all([browserA.dispose(), browserB.dispose()]));
 
-  const embeddedRequest = fetch(`${baseUrl}/api/chat/submit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Origin: browserOrigin },
-    body: JSON.stringify({
-      requestId: "embedded-multi-ingress",
-      basePlannerVersion,
-      message: "Propose conflicting meal change after a pause.",
-      context: { view: "week", weekId: "2026-07-06", mealId: "meal-1" },
-      intent: { kind: "planner", archiveContextWeek: false },
-    }),
-  }).then(async (response) => ({ status: response.status, body: await response.json() }));
-  await waitForPath(embeddedStarted);
-
   const globalSocketPath = join(globalParent, "run", "global-codex.sock");
   const [browserAResult, browserBResult, globalResult] = await Promise.all([
     browserA.post("/api/commands", { data: {
@@ -245,8 +185,6 @@ test("two browser contexts, embedded Codex, and Global UDS contend through real 
       operations: [{ command: lessonCommand("Global Codex") }],
     }),
   ]);
-  await writeFile(embeddedRelease, "release\n", { flag: "wx" });
-  const embedded = await embeddedRequest;
   const browserBodies = await Promise.all([browserAResult.json(), browserBResult.json()]);
 
   const directDecisions = [
@@ -256,12 +194,6 @@ test("two browser contexts, embedded Codex, and Global UDS contend through real 
   ];
   assert.equal(directDecisions.filter((decision) => decision.status === "accepted").length, 1);
   assert.equal(directDecisions.filter((decision) => decision.status === "version_conflict").length, 2);
-  assert.equal(embedded.status, 202);
-  assert.equal(embedded.body.decision.status, "accepted");
-  assert.equal(embedded.body.decision.turn.status, "completed");
-  assert.equal(embedded.body.decision.turn.acceptedEffectCount, 0);
-  assert.match(embedded.body.decision.turn.replyEntryId, /^transcript-/);
-  assert.match(embedded.body.workspace.transcriptEntries.at(-1).text, /shared plan changed first/i);
 
   const workspaceResponse = await browserA.get("/api/workspace");
   assert.equal(workspaceResponse.status(), 200);

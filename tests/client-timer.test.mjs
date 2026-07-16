@@ -17,4 +17,8 @@ test("timer display is derived from server time and exposes elapsed state", () =
     remainingSeconds: 0,
     status: "elapsed",
   });
+  assert.deepEqual(deriveTimerDisplay(45, undefined, start, true), {
+    remainingSeconds: 45,
+    status: "paused",
+  });
 });

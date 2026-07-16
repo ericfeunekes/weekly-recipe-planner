@@ -1,5 +1,7 @@
 import {
+  isHistoricalGroceryReconciliationCommand,
   isHouseholdCommand,
+  type HistoricalGroceryReconciliationCommand,
   type HouseholdCommand,
 } from "./household-command-contract.ts";
 import type { InitializedWorkspace } from "./planner-api-contract.ts";
@@ -9,6 +11,9 @@ export const MAX_PLANNER_OPERATIONS = 16;
 export const GENERATED_AFTER_APPLY = "[generated after apply]" as const;
 
 export type PlannerOperation = { command: HouseholdCommand };
+export type HistoricalPlannerEventOperation = {
+  command: HouseholdCommand | HistoricalGroceryReconciliationCommand;
+};
 
 export type PlannerActor = "Household" | "Codex";
 
@@ -136,7 +141,7 @@ export type PreviewPlannerOperationsResponse = {
 
 export type PlannerBatchEventCommand = {
   type: "plannerBatch";
-  operations: PlannerOperation[];
+  operations: HistoricalPlannerEventOperation[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -158,6 +163,22 @@ export function isPlannerOperationList(value: unknown): value is PlannerOperatio
     value.length >= MIN_PLANNER_OPERATIONS &&
     value.length <= MAX_PLANNER_OPERATIONS &&
     value.every(isPlannerOperation);
+}
+
+function isHistoricalPlannerEventOperation(
+  value: unknown,
+): value is HistoricalPlannerEventOperation {
+  return isRecord(value) && hasExactKeys(value, ["command"]) &&
+    (isHouseholdCommand(value.command) || isHistoricalGroceryReconciliationCommand(value.command));
+}
+
+export function isHistoricalPlannerEventOperationList(
+  value: unknown,
+): value is HistoricalPlannerEventOperation[] {
+  return Array.isArray(value) &&
+    value.length >= MIN_PLANNER_OPERATIONS &&
+    value.length <= MAX_PLANNER_OPERATIONS &&
+    value.every(isHistoricalPlannerEventOperation);
 }
 
 export function isApplyPlannerOperationsRequest(

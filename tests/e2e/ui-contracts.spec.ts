@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 
 import {
   assertViewportContained,
@@ -183,18 +183,7 @@ async function expectAffectedTextContrast(page: Page): Promise<void> {
       return (lighter + 0.05) / (darker + 0.05);
     };
     const root = window.getComputedStyle(document.documentElement);
-    const probe = document.createElement("div");
-    probe.className = "chat-message user";
-    probe.style.position = "fixed";
-    probe.style.left = "-10000px";
-    const context = document.createElement("span");
-    context.className = "chat-message-context";
-    context.textContent = "Contrast probe";
-    probe.append(context);
-    document.body.append(probe);
-    const probeStyle = window.getComputedStyle(probe);
-    const contextStyle = window.getComputedStyle(context);
-    const result = {
+    return {
       mutedOnCanvas: contrast(
         root.getPropertyValue("--muted"),
         root.getPropertyValue("--canvas"),
@@ -203,16 +192,10 @@ async function expectAffectedTextContrast(page: Page): Promise<void> {
         root.getPropertyValue("--muted"),
         root.getPropertyValue("--slate-soft"),
       ),
-      userContext: contrast(contextStyle.color, probeStyle.backgroundColor),
-      userContextOpacity: Number(contextStyle.opacity),
     };
-    probe.remove();
-    return result;
   });
   expect(ratios.mutedOnCanvas).toBeGreaterThanOrEqual(4.5);
   expect(ratios.mutedOnSlate).toBeGreaterThanOrEqual(4.5);
-  expect(ratios.userContext).toBeGreaterThanOrEqual(4.5);
-  expect(ratios.userContextOpacity).toBe(1);
 }
 
 async function expectDialogFocusCycle(
@@ -242,6 +225,11 @@ test("all primary views and chat remain contained and accessible", async ({ page
 
   for (const viewport of QA_VIEWPORTS) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const mobile = viewport.width <= 840;
+    await expect(mobile
+      ? page.getByRole("button", { name: "Open Codex" })
+      : page.getByRole("complementary", { name: "Codex task" }))
+      .toBeVisible();
     for (const view of VIEWS) {
       await openView(page, view.label);
       await expect(page.getByRole("heading", { level: 1, name: view.heading, exact: true })).toBeVisible();
@@ -256,7 +244,7 @@ test("all primary views and chat remain contained and accessible", async ({ page
         );
       }
       if (fixture === "D4" && view.id === "prep") {
-        await expectActionGroupContained(page, ".prep-schedule-actions");
+        await expectActionGroupContained(page, "[data-testid=prep-session-step]");
       }
       if (fixture === "D4" && view.id === "groceries") {
         await expectActionGroupContained(page, ".grocery-row");
@@ -265,18 +253,37 @@ test("all primary views and chat remain contained and accessible", async ({ page
       await assertAccessible(page, `${fixtureId}-${view.id}`, viewport.id);
     }
 
-    const mobile = viewport.width <= 700;
     if (mobile) {
-      await page.getByRole("button", { name: "Open ChatGPT" }).click();
+      await page.getByRole("button", { name: "Open Codex" }).click();
     }
     const chat = mobile
-      ? page.getByRole("dialog", { name: "ChatGPT household chat" })
-      : page.locator('aside[aria-label="ChatGPT household chat"]');
+      ? page.getByRole("dialog", { name: "Codex task" })
+      : page.getByRole("complementary", { name: "Codex task" });
     await expect(chat).toBeVisible();
-    const composer = chat.getByRole("textbox", { name: "Message ChatGPT" });
+    const composer = chat.getByRole("textbox", { name: "Message Codex" });
     await expect(composer).toBeVisible();
     await expectInsideViewport(page, composer);
-    await expect(chat.locator(".chat-messages")).toHaveCSS("overflow-y", "auto");
+    if (!mobile) {
+      const geometry = await chat.evaluate((chatElement) => {
+        const primary = document.querySelector<HTMLElement>(".primary-workspace");
+        const chatBox = chatElement?.getBoundingClientRect();
+        return {
+          chatBottom: chatBox?.bottom ?? null,
+          chatPosition: chatElement ? window.getComputedStyle(chatElement).position : null,
+          chatRight: chatBox?.right ?? null,
+          documentScrollHeight: document.documentElement.scrollHeight,
+          primaryOverflowY: primary ? window.getComputedStyle(primary).overflowY : null,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+        };
+      });
+      expect(geometry.primaryOverflowY).toBe("auto");
+      expect(geometry.chatBottom).not.toBeNull();
+      expect(geometry.chatPosition).toBe("fixed");
+      expect(Math.abs(geometry.chatBottom! - geometry.viewportHeight)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry.chatRight! - geometry.viewportWidth)).toBeLessThanOrEqual(1);
+      expect(geometry.documentScrollHeight).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+    }
     await assertAccessible(page, `${fixtureId}-chat`, viewport.id);
     if (mobile) {
       await page.keyboard.press("Escape");
@@ -285,13 +292,13 @@ test("all primary views and chat remain contained and accessible", async ({ page
   }
 });
 
-test("meal, history, and ChatGPT share one short-viewport modal owner", async ({ page }) => {
+test("meal, history, and Codex share one short-viewport modal owner", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies meal and history content.");
   await page.setViewportSize({ width: 375, height: 400 });
   await resetPlanner(page);
   const background = page.locator(".app-shell > div").first();
 
-  const mealTrigger = page.locator(".meal-card:not(.empty-meal)").first();
+  const mealTrigger = page.locator(".meal-card-editor").first();
   await mealTrigger.click();
   const mealDialog = page.getByRole("dialog").filter({ has: page.getByLabel("Title") });
   await expect(mealDialog).toBeVisible();
@@ -319,13 +326,13 @@ test("meal, history, and ChatGPT share one short-viewport modal owner", async ({
   await expect(historyDialog).toHaveCount(0);
   await expect(historyTrigger).toBeFocused();
 
-  const chatTrigger = page.getByRole("button", { name: "Open ChatGPT" });
+  const chatTrigger = page.getByRole("button", { name: "Open Codex" });
   await chatTrigger.click();
-  const chatDialog = page.getByRole("dialog", { name: "ChatGPT household chat" });
+  const chatDialog = page.getByRole("dialog", { name: "Codex task" });
   await expect(chatDialog).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(background).toHaveJSProperty("inert", true);
-  const composer = chatDialog.getByRole("textbox", { name: "Message ChatGPT" });
+  const composer = chatDialog.getByRole("textbox", { name: "Message Codex" });
   await expect(composer).toBeFocused();
   await expectDialogFocusCycle(page, chatDialog);
   await expectInsideViewport(page, composer);
@@ -346,7 +353,7 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   await expect(page.getByRole("heading", { name: "Week archived" })).toBeVisible();
 
   await openView(page, "Week");
-  await page.locator(".meal-card:not(.empty-meal)").first().click();
+  await page.locator(".meal-card-editor").first().click();
   const mealDialog = page.getByRole("dialog").filter({ has: page.getByLabel("Title") });
   await expect(mealDialog).toBeVisible();
   const recipeDrafts = mealDialog.locator("input:not([type=checkbox]), textarea");
@@ -355,15 +362,15 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
     controls.every((control) => (control as HTMLInputElement | HTMLTextAreaElement).disabled),
   )).toBe(true);
   await expect(mealDialog.getByLabel(/Dinner date for /)).toBeDisabled();
-  await expect(mealDialog.getByText("Add note or ask ChatGPT")).toHaveCount(0);
+  await expect(mealDialog.getByText("Add note or ask Codex")).toHaveCount(0);
   await expect(mealDialog.getByRole("button", { name: "Add instruction" })).toHaveCount(0);
   await assertAccessible(page, `${fixtureId}-archived-meal`, "desktop-1280x900");
   await page.keyboard.press("Escape");
 
   await openView(page, "Prep");
   await expect(page.getByRole("button", { name: "Add to prep" })).toHaveCount(0);
-  await expect(page.getByText("Add note or ask ChatGPT")).toHaveCount(0);
-  const prepMutations = page.locator(".prep-schedule-actions button:not(.step-meal-link), .prep-schedule-actions select");
+  await expect(page.getByText("Add note or ask Codex")).toHaveCount(0);
+  const prepMutations = page.getByTestId("prep-session-step").locator("input, button");
   expect(await prepMutations.count()).toBeGreaterThan(0);
   expect(await prepMutations.evaluateAll((controls) =>
     controls.every((control) => (control as HTMLButtonElement | HTMLSelectElement).disabled),
@@ -380,64 +387,185 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   await assertAccessible(page, `${fixtureId}-archived-groceries`, "desktop-1280x900");
 });
 
-test("maximum unbroken grocery and prep labels keep their actions contained", async ({ page }) => {
+test("recipe-derived groceries and read-only prep recipe summaries keep their actions contained", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies populated prep and grocery surfaces.");
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 701, height: 840 });
   await resetPlanner(page);
 
-  const longGrocery = "G".repeat(1_000);
   await openView(page, "Groceries");
-  await page.getByLabel("New grocery item").fill(longGrocery);
-  await page.getByLabel("Grocery detail").fill("D".repeat(1_000));
-  await page.getByRole("button", { name: "Add", exact: true }).click();
-  const groceryRow = page.locator(".grocery-row").filter({ hasText: longGrocery });
+  const groceryRow = page.locator(".grocery-row").first();
   await expect(groceryRow).toBeVisible();
   await expectNoHorizontalContentEscape(page, groceryRow);
-  const groceryAction = groceryRow.locator(":scope > .icon-button");
-  await groceryAction.scrollIntoViewIfNeeded();
   await expectInsideViewport(page, groceryRow.locator(":scope > .grocery-check"));
-  await expectInsideViewport(page, groceryAction);
+  await expectInsideViewport(page, groceryRow.locator(".grocery-source-select"));
   await assertAccessible(page, `${fixtureId}-long-grocery`, "boundary-701x840");
 
-  const longMealTitle = "M".repeat(300);
   await openView(page, "Prep");
-  await page.locator(".prep-schedule-actions .step-meal-link").first().click();
-  const mealDialog = page.locator(".meal-drawer");
-  await mealDialog.getByRole("textbox", { name: "Title", exact: true }).fill(longMealTitle);
-  await mealDialog.getByRole("button", { name: "Save recipe details" }).click();
-  await mealDialog.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
-  const prepActions = page.locator(".prep-schedule-actions").filter({ hasText: longMealTitle }).first();
-  await expect(prepActions).toBeVisible();
-  await expectNoHorizontalContentEscape(page, prepActions);
+  const firstPrepStep = page.getByTestId("prep-session-step").first();
+  await firstPrepStep.getByRole("button", { name: /More options for step / }).click();
+  await firstPrepStep.getByRole("menuitem").first().click();
+  const recipeSummary = page.getByRole("dialog", { name: "Harissa chicken traybake" });
+  await expect(recipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
+  await expect(recipeSummary.getByRole("textbox", { name: "Title", exact: true })).toHaveCount(0);
+  await expect(recipeSummary.getByRole("button", { name: "Save recipe details" })).toHaveCount(0);
+  await expectNoHorizontalContentEscape(page, recipeSummary);
+  await recipeSummary.getByTitle("Close").click();
+  const prepRow = page.getByTestId("prep-session-step").filter({ hasText: "Coat the chicken with harissa" }).first();
+  await expect(prepRow).toBeVisible();
+  await expectNoHorizontalContentEscape(page, prepRow);
+  await prepRow.getByRole("button", { name: /More options for step / }).click();
+  const prepMenu = prepRow.getByRole("menu");
+  await expect(prepMenu.getByRole("menuitem").first()).toContainText("Harissa chicken traybake");
+  await expectNoHorizontalContentEscape(page, prepMenu);
   await assertAccessible(page, `${fixtureId}-long-prep`, "boundary-701x840");
 });
 
-test("an initialized zero-week workspace can create its first week through ChatGPT", async ({ page }) => {
+test("grocery source filters and dinner links remain compact and actionable on phone", async ({ page }) => {
+  test.skip(fixture !== "D4", "D4 supplies populated grocery and dinner data.");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await resetPlanner(page);
+  await openView(page, "Groceries");
+
+  await expect(page.getByRole("button", { name: "Reconcile current list", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("New grocery item", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Recipe for grocery", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Farm box", exact: true }).click();
+  const groceryRow = page.locator(".grocery-row").filter({ hasText: /red peppers/i });
+  await expect(groceryRow).toBeVisible();
+  await expect(groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true })).toBeVisible();
+  await expectNoHorizontalContentEscape(page, groceryRow);
+  await expectInsideViewport(page, groceryRow.locator(".grocery-check"));
+  await expectInsideViewport(page, groceryRow.locator(".grocery-source-select"));
+  expect(await groceryRow.locator(".grocery-check").boundingBox()).toMatchObject({ width: 44, height: 44 });
+
+  await groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true }).click();
+  const recipeSummary = page.getByRole("dialog", { name: "Harissa chicken traybake" });
+  await expect(recipeSummary).toBeVisible();
+  await expect(recipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
+  await expect(recipeSummary.getByRole("textbox")).toHaveCount(0);
+  await expect(recipeSummary.getByRole("button", { name: "Save recipe details", exact: true })).toHaveCount(0);
+  await expectNoHorizontalContentEscape(page, recipeSummary);
+  await recipeSummary.getByTitle("Close").click();
+  await expect(groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true })).toBeFocused();
+
+  await groceryRow.getByLabel(/Source for red peppers/i).selectOption("on_hand");
+  await expect(page.getByTestId("grocery-bulk-actions")).toHaveCount(0);
+  await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 1 ingredient to On hand.");
+  await page.getByLabel("Grocery filter").getByRole("button", { name: "On hand", exact: true }).click();
+  await expect(page.locator(".grocery-row").filter({ hasText: /red peppers/i })).toBeVisible();
+  await assertAccessible(page, `${fixtureId}-grocery-source-provenance`, "mobile-390x844");
+});
+
+test("selected groceries move atomically by dropdown and drag target without expanding rows", async ({ page }) => {
+  test.skip(fixture !== "D4", "D4 supplies populated grocery data.");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await resetPlanner(page);
+  await openView(page, "Groceries");
+  await expect(page.getByLabel("New grocery item", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Recipe for grocery", { exact: true })).toHaveCount(0);
+
+  const chicken = page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i });
+  const salmon = page.locator(".grocery-row", {
+    has: page.locator(".grocery-select-target strong", { hasText: /^salmon$/i }),
+  });
+  const whiteMiso = page.locator(".grocery-row").filter({ hasText: /white miso/i });
+  const selectedItemIds = await Promise.all([chicken, whiteMiso].map(async (row) => {
+    const id = await row.getAttribute("data-grocery-id");
+    expect(id).toBeTruthy();
+    return id!;
+  }));
+  const bulkActions = page.getByTestId("grocery-bulk-actions");
+  await chicken.getByLabel("Check Boneless chicken thighs").click();
+  await expect(chicken).toHaveCount(0);
+  await expect(bulkActions).toHaveCount(0);
+  await resetPlanner(page);
+  await openView(page, "Groceries");
+  await chicken.locator(".grocery-select-target").click();
+  await expect(bulkActions.getByText("1 selected", { exact: true })).toBeVisible();
+  await expect(chicken.locator("input[type=checkbox]")).toHaveCount(1);
+  await whiteMiso.locator(".grocery-select-target").click();
+  await expect(bulkActions.getByText("1 selected", { exact: true })).toBeVisible();
+  await chicken.locator(".grocery-select-target").click();
+  await whiteMiso.locator(".grocery-select-target").click({ modifiers: ["Shift"] });
+  expect(await page.locator(".grocery-row.selected").count()).toBeGreaterThan(2);
+  await chicken.locator(".grocery-select-target").click();
+  await whiteMiso.locator(".grocery-select-target").click({ modifiers: ["Control"] });
+  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
+  await salmon.locator(".grocery-select-target").click({ modifiers: ["Meta"] });
+  await expect(bulkActions.getByText("3 selected", { exact: true })).toBeVisible();
+  await salmon.locator(".grocery-select-target").click({ modifiers: ["Meta"] });
+  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
+  await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
+  const dropdownCommandBodies: Array<{ command?: { itemIds?: string[]; source?: string; type?: string } }> = [];
+  const captureDropdownCommand = (request: Request) => {
+    if (new URL(request.url()).pathname === "/api/commands" && request.method() === "POST") {
+      dropdownCommandBodies.push(request.postDataJSON() as { command?: { itemIds?: string[]; source?: string; type?: string } });
+    }
+  };
+  page.on("request", captureDropdownCommand);
+  await bulkActions.getByRole("button", { name: "Move", exact: true }).click();
+  await expect.poll(() => dropdownCommandBodies.length).toBe(1);
+  page.off("request", captureDropdownCommand);
+  expect(dropdownCommandBodies).toHaveLength(1);
+  expect(dropdownCommandBodies[0].command).toMatchObject({
+    type: "moveGroceryItemsToSource",
+    source: "on_hand",
+  });
+  expect([...dropdownCommandBodies[0].command!.itemIds!].sort()).toEqual([...selectedItemIds].sort());
+  await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 2 ingredients to On hand.");
+
+  await page.getByLabel("Grocery filter").getByRole("button", { name: "On hand", exact: true }).click();
+  await expect(chicken).toBeVisible();
+  await expect(whiteMiso).toBeVisible();
+  await expectNoHorizontalContentEscape(page, chicken);
+  const compactLine = await chicken.locator(".grocery-primary-line").evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    whiteSpace: window.getComputedStyle(element).whiteSpace,
+  }));
+  expect(compactLine.height).toBeLessThanOrEqual(24);
+  expect(compactLine.whiteSpace).toBe("nowrap");
+
+  await chicken.locator(".grocery-select-target").click();
+  await whiteMiso.locator(".grocery-select-target").click({ modifiers: ["Control"] });
+  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
+  const dragHandle = chicken.getByRole("button", { name: "Drag 2 selected groceries to a source tab", exact: true });
+  const farmBoxTarget = bulkActions.getByTestId("grocery-source-target-farm_box");
+  await dragHandle.dragTo(farmBoxTarget);
+  await page.getByLabel("Grocery filter").getByRole("button", { name: "Farm box", exact: true }).click();
+  await expect(page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i })).toBeVisible();
+  await expect(page.locator(".grocery-row").filter({ hasText: /white miso/i })).toBeVisible();
+  await assertAccessible(page, `${fixtureId}-grocery-bulk-source-moves`, "mobile-390x844");
+});
+
+test("an initialized zero-week workspace can create its first week through Codex", async ({ page }) => {
   test.skip(fixture !== "D7", "D7 is the initialized zero-week fixture.");
   await page.setViewportSize({ width: 390, height: 844 });
   await resetPlanner(page);
   await expect(page.getByRole("heading", { name: "No weeks yet" })).toBeVisible();
-  await page.getByRole("button", { name: "Open ChatGPT" }).click();
-  const dialog = page.getByRole("dialog", { name: "ChatGPT household chat" });
+  await page.getByRole("button", { name: "Open Codex" }).click();
+  const dialog = page.getByRole("dialog", { name: "Codex task" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("week · household workspace")).toBeVisible();
-  await expect(dialog.getByRole("radio", { name: "Plan" })).toBeChecked();
-  await expect(dialog.getByRole("radio", { name: "Research recipe" })).toBeDisabled();
+  await expect(dialog.getByText("Codex", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("radio")).toHaveCount(0);
   await assertAccessible(page, `${fixtureId}-zero-week-chat`, "mobile-390x844");
 
   const requestPromise = page.waitForRequest((request) =>
-    new URL(request.url()).pathname === "/api/chat/submit" && request.method() === "POST");
-  await dialog.getByRole("textbox", { name: "Message ChatGPT" }).fill("Create the first shared week");
-  await dialog.getByTitle("Send to ChatGPT").click();
-  const request = await requestPromise;
-  const body = request.postDataJSON() as {
-    context: unknown;
-    intent: unknown;
-  };
-  expect(body.context).toEqual({ view: "week" });
-  expect(body.intent).toEqual({ kind: "planner", archiveContextWeek: false });
-  await expect(dialog.getByText("I created the first shared week.", { exact: true })).toBeVisible();
+    new URL(request.url()).pathname === "/api/codex/turns/send" && request.method() === "POST");
+  await dialog.getByRole("textbox", { name: "Message Codex" }).fill("Create the first shared week");
+  await dialog.getByRole("button", { name: "Send to Codex" }).click();
+  const body = requestPromise.then((request) => request.postDataJSON() as {
+    requestId: string;
+    threadId: string;
+    message: string;
+  });
+  await expect(dialog.getByRole("log", { name: "Codex conversation" })).toContainText("I created the first shared week.");
+  await expect(body).resolves.toMatchObject({
+    requestId: expect.any(String),
+    threadId: expect.any(String),
+    message: "Create the first shared week",
+  });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("heading", { name: "No weeks yet" })).toHaveCount(0);
   await expect(page.locator(".week-select option")).toHaveCount(1);

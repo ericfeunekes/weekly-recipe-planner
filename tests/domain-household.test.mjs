@@ -30,7 +30,7 @@ function activeWeek(state) {
   return state.weeks.find((week) => week.id === state.activeWeekId);
 }
 
-test("setPrepPlan rejects duplicate step IDs before materializing prep references", () => {
+test("legacy setPrepPlan rejects duplicate step IDs before materializing session references", () => {
   let createIdCalls = 0;
   const seedContext = createContext();
   const state = createCanonicalSeed(seedContext);
@@ -58,14 +58,9 @@ test("setPrepPlan rejects duplicate step IDs before materializing prep reference
     context,
   );
 
-  assert.deepEqual(result, {
-    ok: false,
-    state,
-    message: "Prep plan contains a duplicate instruction step.",
-    fieldErrors: {
-      "entries[1].stepId": "Each instruction step may appear in prep once.",
-    },
-  });
+  assert.equal(result.ok, false);
+  assert.equal(result.state, state);
+  assert.match(result.message, /legacy prep plan/i);
   assert.equal(createIdCalls, 0);
 });
 
@@ -212,6 +207,65 @@ test("household domain executes every week-local command through one pure bounda
   result = accepted(
     householdDomain.execute(
       state,
+      { type: "setInstructionTimerRemaining", weekId, stepId: addedStepId, remainingSeconds: 420 },
+      context,
+    ),
+  );
+  state = result.state;
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 420);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, undefined);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "startInstructionTimer", weekId, stepId: addedStepId },
+      context,
+    ),
+  );
+  state = result.state;
+  const laterContext = { ...context, now: NOW + 60_000 };
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "pauseInstructionTimer", weekId, stepId: addedStepId },
+      laterContext,
+    ),
+  );
+  state = result.state;
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 360);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, undefined);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerPaused, true);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "startInstructionTimer", weekId, stepId: addedStepId },
+      laterContext,
+    ),
+  );
+  state = result.state;
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, laterContext.now);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerPaused, undefined);
+  const editedContext = { ...context, now: NOW + 90_000 };
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "setInstructionTimerRemaining", weekId, stepId: addedStepId, remainingSeconds: 120 },
+      editedContext,
+    ),
+  );
+  state = result.state;
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 120);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, editedContext.now);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "resetInstructionTimer", weekId, stepId: addedStepId },
+      laterContext,
+    ),
+  );
+  state = result.state;
+  result = accepted(
+    householdDomain.execute(
+      state,
       { type: "updateInstructionStepNote", weekId, stepId: addedStepId, note: "" },
       context,
     ),
@@ -231,107 +285,144 @@ test("household domain executes every week-local command through one pure bounda
     householdDomain.execute(
       state,
       {
-        type: "setPrepPlan",
+        type: "createPrepSession",
         weekId,
-        entries: [
-          { stepId: firstStep.id, prepDate: sundayBefore },
-          { stepId: secondStep.id, prepDate: sundayBefore },
-        ],
+        label: "Sunday batch",
+        prepDate: sundayBefore,
       },
       context,
     ),
   );
   state = result.state;
-  week = activeWeek(state);
-  assert.deepEqual(week.data.prep.map((reference) => reference.position), [0, 1]);
-  const firstReference = week.data.prep[0];
-  const secondReference = week.data.prep[1];
+  const sundaySessionId = result.createdIds.prepSessionId;
+  assert.ok(sundaySessionId);
   result = accepted(
     householdDomain.execute(
       state,
       {
-        type: "movePrepReference",
+        type: "createPrepSession",
         weekId,
-        referenceId: secondReference.id,
-        targetPosition: 0,
-      },
-      context,
-    ),
-  );
-  state = result.state;
-  result = accepted(
-    householdDomain.execute(
-      state,
-      {
-        type: "reschedulePrepReference",
-        weekId,
-        referenceId: firstReference.id,
+        label: "Finish on Monday",
         prepDate: weekId,
       },
       context,
     ),
   );
   state = result.state;
+  const mondaySessionId = result.createdIds.prepSessionId;
+  assert.ok(mondaySessionId);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "addPrepSessionStep",
+        weekId,
+        sessionId: sundaySessionId,
+        stepId: firstStep.id,
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const firstEntryId = result.createdIds.prepSessionStepId;
+  assert.ok(firstEntryId);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "addPrepSessionStep",
+        weekId,
+        sessionId: mondaySessionId,
+        stepId: secondStep.id,
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const secondEntryId = result.createdIds.prepSessionStepId;
+  assert.ok(secondEntryId);
+  week = activeWeek(state);
   assert.deepEqual(
-    activeWeek(state).data.prep.map(({ prepDate, position }) => ({ prepDate, position })),
+    week.data.prepSessions
+      .filter((session) => session.id === sundaySessionId || session.id === mondaySessionId)
+      .map(({ label, prepDate, steps }) => ({ label, prepDate, steps: steps.map((entry) => entry.stepId) })),
     [
-      { prepDate: sundayBefore, position: 0 },
-      { prepDate: weekId, position: 0 },
+      { label: "Sunday batch", prepDate: sundayBefore, steps: [firstStep.id] },
+      { label: "Finish on Monday", prepDate: weekId, steps: [secondStep.id] },
     ],
   );
   result = accepted(
     householdDomain.execute(
       state,
-      { type: "removePrepReference", weekId, referenceId: firstReference.id },
+      {
+        type: "addPrepSessionStep",
+        weekId,
+        sessionId: sundaySessionId,
+        stepId: secondStep.id,
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  assert.deepEqual(
+    activeWeek(state).data.prepSessions.find((session) => session.id === sundaySessionId).steps.map((entry) => entry.stepId),
+    [
+      secondStep.id,
+      firstStep.id,
+    ],
+    "a session can project the same canonical step used by another session",
+  );
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "movePrepSessionStep",
+        weekId,
+        sessionId: sundaySessionId,
+        entryId: firstEntryId,
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  assert.deepEqual(
+    activeWeek(state).data.prepSessions.find((session) => session.id === sundaySessionId).steps.map((entry) => entry.stepId),
+    [
+      firstStep.id,
+      secondStep.id,
+    ],
+    "session references can be reordered without changing recipe order",
+  );
+  result = accepted(
+    householdDomain.execute(
+      state,
+      { type: "removePrepSessionStep", weekId, sessionId: mondaySessionId, entryId: secondEntryId },
       context,
     ),
   );
   state = result.state;
   assert.ok(activeWeek(state).data.meals[0].instructions.some((step) => step.id === firstStep.id));
+  assert.deepEqual(
+    activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps,
+    [],
+    "removing a session reference never removes the canonical instruction",
+  );
 
-  result = accepted(
-    householdDomain.execute(
-      state,
-      {
-        type: "addGroceryItem",
-        weekId,
-        item: {
-          section: "Dairy",
-          item: "Greek yogurt",
-          detail: "750 g",
-          farmBox: false,
-        },
-      },
-      context,
-    ),
-  );
-  state = result.state;
-  const addedGroceryId = result.createdIds.groceryItemId;
-  result = accepted(
-    householdDomain.execute(
-      state,
-      {
-        type: "updateGroceryItem",
-        weekId,
-        itemId: addedGroceryId,
-        changes: {
-          section: "Dairy",
-          item: "Plain Greek yogurt",
-          detail: "1 x 750 g tub",
-          farmBox: false,
-        },
-      },
-      context,
-    ),
-  );
-  state = result.state;
+  const ingredientCount = activeWeek(state).data.meals.reduce((count, meal) => count + meal.ingredients.length, 0);
+  assert.equal(activeWeek(state).data.groceries.length, ingredientCount, "every canonical ingredient has one grocery execution row");
+  const grocery = activeWeek(state).data.groceries.find((item) => item.mealId === chicken.id);
+  assert.ok(grocery);
   result = accepted(
     householdDomain.execute(
       state,
       {
         type: "setGroceryItemChecked",
         weekId,
-        itemId: addedGroceryId,
+        itemId: grocery.id,
         checked: true,
       },
       context,
@@ -341,43 +432,21 @@ test("household domain executes every week-local command through one pure bounda
   result = accepted(
     householdDomain.execute(
       state,
-      { type: "removeGroceryItem", weekId, itemId: addedGroceryId },
-      context,
-    ),
-  );
-  state = result.state;
-  const retainedGrocery = activeWeek(state).data.groceries[0];
-  result = accepted(
-    householdDomain.execute(
-      state,
       {
-        type: "reconcileGroceries",
+        type: "moveGroceryItemsToSource",
         weekId,
-        items: [
-          {
-            id: retainedGrocery.id,
-            section: retainedGrocery.section,
-            item: retainedGrocery.item,
-            detail: retainedGrocery.detail,
-            farmBox: retainedGrocery.farmBox,
-            checked: true,
-          },
-          {
-            section: "Produce",
-            item: "Farm-box greens",
-            detail: "1 bunch",
-            farmBox: true,
-            checked: true,
-          },
-        ],
+        itemIds: [grocery.id],
+        source: "on_hand",
       },
       context,
     ),
   );
   state = result.state;
-  assert.equal(activeWeek(state).data.groceries.length, 2);
-  assert.ok(result.createdIds["groceryItem.1"]);
-  assert.equal(activeWeek(state).data.farmBoxReconciled, true);
+  const retainedGrocery = activeWeek(state).data.groceries.find((item) => item.id === grocery.id);
+  assert.ok(retainedGrocery);
+  assert.equal(retainedGrocery.mealId, chicken.id);
+  assert.equal(retainedGrocery.checked, true);
+  assert.equal(retainedGrocery.source, "on_hand");
 
   result = accepted(
     householdDomain.execute(
@@ -444,11 +513,86 @@ test("household domain executes every week-local command through one pure bounda
   assert.deepEqual(householdDomain.validateState(state), { ok: true });
 });
 
+test("grocery projection rejects missing and duplicate canonical ingredient identities", () => {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const week = activeWeek(state);
+  const grocery = week.data.groceries[0];
+  assert.ok(grocery);
+
+  const missingIngredient = structuredClone(state);
+  missingIngredient.weeks[0].data.groceries[0].ingredientId = "ingredient-missing";
+  assert.equal(householdDomain.validateState(missingIngredient).ok, false);
+
+  const duplicateIngredient = structuredClone(state);
+  duplicateIngredient.weeks[0].data.groceries.push({ ...grocery, id: "grocery-duplicate" });
+  assert.equal(householdDomain.validateState(duplicateIngredient).ok, false);
+
+  const unsupportedSource = structuredClone(state);
+  unsupportedSource.weeks[0].data.groceries[0].source = "delivery";
+  assert.equal(householdDomain.validateState(unsupportedSource).ok, false);
+});
+
+test("bulk grocery source moves are atomic and preserve grocery identities", () => {
+  const context = createContext();
+  const original = createCanonicalSeed(context);
+  const week = activeWeek(original);
+  const selected = week.data.groceries.filter((item) => item.source === "shop").slice(0, 2);
+  assert.equal(selected.length, 2);
+  const expected = new Map(selected.map((item) => [item.id, {
+    checked: item.checked,
+    section: item.section,
+    mealId: item.mealId,
+    ingredientId: item.ingredientId,
+  }]));
+
+  const moved = accepted(
+    householdDomain.execute(
+      original,
+      {
+        type: "moveGroceryItemsToSource",
+        weekId: week.id,
+        itemIds: selected.map((item) => item.id),
+        source: "farm_box",
+      },
+      context,
+    ),
+  );
+  for (const itemId of expected.keys()) {
+    const item = activeWeek(moved.state).data.groceries.find((candidate) => candidate.id === itemId);
+    assert.ok(item);
+    assert.equal(item.source, "farm_box");
+    assert.deepEqual(
+      { checked: item.checked, section: item.section, mealId: item.mealId, ingredientId: item.ingredientId },
+      expected.get(itemId),
+    );
+  }
+
+  for (const command of [
+    {
+      type: "moveGroceryItemsToSource",
+      weekId: week.id,
+      itemIds: [selected[0].id, "grocery-missing"],
+      source: "on_hand",
+    },
+    {
+      type: "moveGroceryItemsToSource",
+      weekId: week.id,
+      itemIds: selected.map((item) => item.id),
+      source: "shop",
+    },
+  ]) {
+    const rejected = householdDomain.execute(original, command, context);
+    assert.equal(rejected.ok, false);
+    assert.deepEqual(rejected.state, original, "a rejected bulk move must leave every selected item untouched");
+  }
+});
+
 test("step deletion is reference-safe and archived weeks reject week-local mutation", () => {
   const context = createContext();
   let state = createCanonicalSeed(context);
   const week = activeWeek(state);
-  const referencedStepId = week.data.prep[0].stepId;
+  const referencedStepId = week.data.prepSessions[0].steps[0].stepId;
   const blocked = householdDomain.execute(
     state,
     { type: "removeInstructionStep", weekId: week.id, stepId: referencedStepId },
@@ -481,6 +625,11 @@ test("occupied leftover assignment replaces the destination recipe through consu
   const destination = week.data.meals.find((meal) => meal.title === "Miso salmon rice bowls");
   assert.ok(source);
   assert.ok(destination);
+  assert.equal(
+    week.data.groceries.some((grocery) => grocery.mealId === destination.id),
+    true,
+    "the displaced dinner starts with grocery provenance",
+  );
   const displacedStepIds = new Set(destination.instructions.map((step) => step.id));
 
   let result = accepted(
@@ -521,8 +670,13 @@ test("occupied leftover assignment replaces the destination recipe through consu
   assert.deepEqual(replaced.ingredients, []);
   assert.deepEqual(replaced.instructions, []);
   assert.equal(
-    week.data.prep.some((reference) => displacedStepIds.has(reference.stepId)),
+    week.data.prepSessions.some((session) => session.steps.some((entry) => displacedStepIds.has(entry.stepId))),
     false,
+  );
+  assert.equal(
+    week.data.groceries.some((grocery) => grocery.mealId === destination.id),
+    false,
+    "replacing a dinner with leftovers removes stale grocery provenance",
   );
   assert.deepEqual(householdDomain.validateState(state), { ok: true });
 
@@ -816,7 +970,7 @@ function replacementReadyState() {
   const state = createCanonicalSeed(context);
   const week = activeWeek(state);
   const meal = week.data.meals[0];
-  week.data.prep = [];
+  week.data.prepSessions = [];
   for (const step of meal.instructions) {
     step.complete = false;
     delete step.note;
@@ -861,11 +1015,17 @@ test("sourced replacement changes only recipe fields with ordered duplicate inpu
   }, preserved);
   assert.equal(replaced.title, "Primary-page lentil soup");
   assert.equal(replaced.yieldText, "4 bowls");
-  assert.deepEqual(replaced.ingredients, ["1 cup lentils", "1 cup lentils"]);
+  assert.deepEqual(
+    replaced.ingredients.map(({ amount, ingredient }) => ({ amount, ingredient })),
+    [{ amount: "1 cup", ingredient: "lentils" }],
+  );
   assert.deepEqual(replaced.sourceRecipe, sourcedRecipe().source);
   assert.equal(replaced.instructions.length, 1);
   assert.equal(replaced.instructions[0].complete, false);
   assert.equal(replaced.instructions[0].id, result.createdIds["instructionStep.0"]);
+  assert.equal(replaced.instructions[0].inputs.length, 2);
+  assert.equal(replaced.instructions[0].inputs[0].ingredientId, replaced.ingredients[0].id);
+  assert.equal(replaced.instructions[0].inputs[1].ingredientId, replaced.ingredients[0].id);
 });
 
 test("sourced replacement omission clears an existing yield while persisting source metadata", () => {
@@ -911,17 +1071,64 @@ test("generic meal snapshots clear or update yield without laundering source pro
   }
 });
 
+test("meal snapshot folds legacy ingredient aliases without losing a canonical step link", () => {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const week = activeWeek(state);
+  const meal = week.data.meals[0];
+  const roastStep = meal.instructions.find((step) => step.instruction.includes("Roast the chicken"));
+  assert.ok(roastStep);
+  const peppersInput = roastStep.inputs.find((input) => input.ingredient === "red peppers");
+  assert.ok(peppersInput);
+  meal.ingredients.push({ id: "legacy-peppers", amount: "2 red", ingredient: "peppers" });
+  peppersInput.ingredientId = "legacy-peppers";
+  week.data.groceries.push({
+    id: "legacy-grocery-peppers",
+    mealId: meal.id,
+    ingredientId: "legacy-peppers",
+    section: "Produce",
+    source: "shop",
+    checked: false,
+  });
+
+  const result = accepted(householdDomain.execute(state, {
+    type: "updateMealSnapshot",
+    weekId: week.id,
+    mealId: meal.id,
+    changes: {
+      title: meal.title,
+      subtitle: meal.subtitle,
+      venue: meal.venue,
+      prepNote: meal.prepNote,
+      leftoverNote: meal.leftoverNote,
+      notes: meal.notes,
+      ingredients: meal.ingredients
+        .map(({ amount, ingredient }) => [amount, ingredient].filter(Boolean).join(" "))
+        .filter((line, index, lines) => lines.indexOf(line) === index),
+      yieldText: meal.yieldText ?? null,
+    },
+  }, context));
+  const normalizedMeal = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
+  const redPeppers = normalizedMeal.ingredients.filter((ingredient) => ingredient.ingredient === "red peppers");
+  assert.deepEqual(redPeppers.map(({ amount }) => amount), ["2"]);
+  const normalizedRoastStep = normalizedMeal.instructions.find((step) => step.id === roastStep.id);
+  assert.equal(
+    normalizedRoastStep.inputs.find((input) => input.ingredient === "red peppers").ingredientId,
+    redPeppers[0].id,
+  );
+});
+
 test("each protected canonical state class and immutable target lifecycle rejects replacement", () => {
   const mutateCases = [
     ["completed", ({ meal }) => { meal.instructions[0].complete = true; }],
     ["note", ({ meal }) => { meal.instructions[0].note = "keep"; }],
     ["timer", ({ meal }) => { meal.instructions[0].timerStartedAt = NOW; }],
     ["prep", ({ week, meal }) => {
-      week.data.prep.push({
+      week.data.prepSessions.push({
         id: "prep-protected",
-        stepId: meal.instructions[0].id,
+        label: "Protected prep",
         prepDate: addIsoDateDays(week.id, -1),
-        position: 0,
+        steps: [{ id: "prep-protected-step", stepId: meal.instructions[0].id }],
       });
     }],
     ["meal status", ({ meal }) => { meal.status = "cooking"; }],

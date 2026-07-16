@@ -183,7 +183,7 @@ All schema-valid decisions, including version conflicts and domain rejections, r
 Replace state-dependent toggles with explicit intent commands:
 
 - `toggleInstructionStep` -> `setInstructionStepComplete(stepId, complete)`
-- `updateGroceryItem` -> `setGroceryItemChecked(itemId, checked)`
+- grocery checkoff -> `setGroceryItemChecked(itemId, checked)`
 
 Numeric prep moves remain guarded by the whole planner version; any intervening change requires authoritative refresh and a deliberate retry. Text drafts remain in the UI on rejection/conflict rather than being cleared.
 

@@ -12,7 +12,6 @@ import {
   createGlobalCodexRouter,
 } from "../../server/global-ingress/index.ts";
 import { startPlannerRuntime } from "../../server/runtime/planner-runtime.ts";
-import { openPlannerStore } from "../../server/store/sqlite-store.ts";
 import { assertInheritedRuntimeOwnershipLease } from "../../scripts/support/runtime-ownership.mjs";
 
 const E2E_PREP_NOW = Date.parse("2026-07-05T12:00:00-03:00");
@@ -55,16 +54,11 @@ const controlPort = Number(process.env.PLANNER_E2E_CONTROL_PORT ?? 8878);
 const webOrigin = new URL(
   process.env.PLANNER_E2E_WEB_ORIGIN ?? "http://127.0.0.1:3101",
 );
-const hangMarkerPath = resolve(dataDirectory, ".wait-through-restart");
 const conflictStartedMarkerPath = resolve(dataDirectory, ".held-conflict-started");
 const conflictReleaseMarkerPath = resolve(dataDirectory, ".held-conflict-release");
-const overlapStartedMarkerPath = resolve(dataDirectory, ".held-overlap-started");
-const overlapReleaseMarkerPath = resolve(dataDirectory, ".held-overlap-release");
-const researchStartedMarkerPath = resolve(dataDirectory, ".held-research-started");
-const researchReleaseMarkerPath = resolve(dataDirectory, ".held-research-release");
 const modulePath = fileURLToPath(import.meta.url);
-const fakeAppServerPath = fileURLToPath(
-  new URL("./fixtures/codex-runtime/fake-e2e-app-server.mjs", import.meta.url),
+const fakeNativeAppServerPath = fileURLToPath(
+  new URL("./fixtures/codex-runtime/fake-native-app-server.mjs", import.meta.url),
 );
 
 async function pathExists(path) {
@@ -99,7 +93,7 @@ function deterministicCodexStatus(state) {
         : null,
     cacheHit: false,
     evidence: ready ? Object.freeze({
-      canonicalPath: fakeAppServerPath,
+      canonicalPath: fakeNativeAppServerPath,
       version: "e2e-fixture",
       sha256: "0".repeat(64),
       schemaFingerprint: "1".repeat(64),
@@ -115,13 +109,8 @@ function deterministicCodexStatus(state) {
 
 export function createDeterministicCodexRuntime(initialState = "compatible", options = {}) {
   const markers = {
-    hang: options.hangMarkerPath ?? hangMarkerPath,
     conflictStarted: options.conflictStartedMarkerPath ?? conflictStartedMarkerPath,
     conflictRelease: options.conflictReleaseMarkerPath ?? conflictReleaseMarkerPath,
-    overlapStarted: options.overlapStartedMarkerPath ?? overlapStartedMarkerPath,
-    overlapRelease: options.overlapReleaseMarkerPath ?? overlapReleaseMarkerPath,
-    researchStarted: options.researchStartedMarkerPath ?? researchStartedMarkerPath,
-    researchRelease: options.researchReleaseMarkerPath ?? researchReleaseMarkerPath,
   };
   const children = new Set();
   let closed = false;
@@ -139,17 +128,19 @@ export function createDeterministicCodexRuntime(initialState = "compatible", opt
     async spawnAppServer({ signal } = {}) {
       if (closed) throw new Error("Deterministic Codex runtime is closed.");
       if (signal?.aborted) throw signal.reason ?? new Error("Deterministic Codex spawn aborted.");
-      const child = spawn(process.execPath, [fakeAppServerPath], {
+      const child = spawn(process.execPath, [fakeNativeAppServerPath], {
         cwd: options.fixedCwd ?? process.cwd(),
         env: {
           PATH: process.env.PATH,
-          PLANNER_E2E_HANG_MARKER: markers.hang,
           PLANNER_E2E_CONFLICT_STARTED_MARKER: markers.conflictStarted,
           PLANNER_E2E_CONFLICT_RELEASE_MARKER: markers.conflictRelease,
-          PLANNER_E2E_OVERLAP_STARTED_MARKER: markers.overlapStarted,
-          PLANNER_E2E_OVERLAP_RELEASE_MARKER: markers.overlapRelease,
-          PLANNER_E2E_RESEARCH_STARTED_MARKER: markers.researchStarted,
-          PLANNER_E2E_RESEARCH_RELEASE_MARKER: markers.researchRelease,
+          ...(options.nativeE2e === true ? {
+            FAKE_NATIVE_E2E_PLANNER: "1",
+            FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+            ...(typeof options.nativeStateFile === "string" ? {
+              FAKE_NATIVE_STATE_FILE: options.nativeStateFile,
+            } : {}),
+          } : {}),
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -214,13 +205,8 @@ function loopbackOrigin(port) {
 
 function installedMarkerPaths(root) {
   return Object.freeze({
-    hangMarkerPath: join(root, ".wait-through-restart"),
     conflictStartedMarkerPath: join(root, ".held-conflict-started"),
     conflictReleaseMarkerPath: join(root, ".held-conflict-release"),
-    overlapStartedMarkerPath: join(root, ".held-overlap-started"),
-    overlapReleaseMarkerPath: join(root, ".held-overlap-release"),
-    researchStartedMarkerPath: join(root, ".held-research-started"),
-    researchReleaseMarkerPath: join(root, ".held-research-release"),
   });
 }
 
@@ -273,6 +259,8 @@ export async function createInProcessInstalledE2eController(options, dependencie
     ((state) => createDeterministicCodexRuntime(state, {
       ...markers,
       fixedCwd: appRoot,
+      nativeE2e: true,
+      nativeStateFile: join(dataDirectory, "fake-native-codex-state.json"),
     }));
   const createGlobalIngress = dependencies.createGlobalCodexIngress ??
     ((planner) => createGlobalCodexIngressForTests(
@@ -295,18 +283,8 @@ export async function createInProcessInstalledE2eController(options, dependencie
   let codexState = options.initialCodexState ?? "compatible";
   let seedId = 0;
   let authorityGeneration = 0;
-  let crashRestartInProgress = false;
-  let crashTerminalRollbackCount = 0;
   let lastRestartProof = null;
   let leaseValidationCount = 0;
-  const failureInjector = Object.freeze({
-    hit(point) {
-      if (crashRestartInProgress && point === "after_chat_terminal_write") {
-        crashTerminalRollbackCount += 1;
-        throw new Error("Installed QA crash restart rolled back graceful terminalization.");
-      }
-    },
-  });
   if (!Number.isFinite(currentTime)) throw new TypeError("initialNow must be finite.");
   if (!DETERMINISTIC_CODEX_STATES.includes(codexState)) {
     throw new TypeError("initialCodexState is unsupported.");
@@ -349,7 +327,6 @@ export async function createInProcessInstalledE2eController(options, dependencie
         },
       }),
       globalCodexIngressFactory: createGlobalIngress,
-      failureInjector,
       shutdownGracePeriodMs: 250,
     });
     activeCodexRuntime = codexRuntime;
@@ -381,24 +358,11 @@ export async function createInProcessInstalledE2eController(options, dependencie
     return active;
   };
 
-  const replaceAuthority = async ({ reset = false, crash = false } = {}) => {
+  const replaceAuthority = async ({ reset = false } = {}) => {
     transitionInFlight ??= (async () => {
       const generationBefore = authorityGeneration;
       const leaseValidationBefore = leaseValidationCount;
-      const runningTurn = crash
-        ? runtime?.store.readAllChatTurns().find((turn) => turn.status === "running") ?? null
-        : null;
-      if (crash && runningTurn === null) {
-        throw new Error("Installed QA crash restart requires one durable running turn.");
-      }
-      crashTerminalRollbackCount = 0;
-      crashRestartInProgress = crash;
-      let closedRuntime;
-      try {
-        closedRuntime = await stopAuthority();
-      } finally {
-        crashRestartInProgress = false;
-      }
+      const closedRuntime = await stopAuthority();
       if (closedRuntime !== null && closedRuntime !== undefined) {
         if (closedRuntime.server.listening) {
           throw new Error("Installed QA authority listener remained open during restart.");
@@ -422,25 +386,6 @@ export async function createInProcessInstalledE2eController(options, dependencie
       if (!listenerClosed) {
         throw new Error("Installed QA authority listener accepted traffic between generations.");
       }
-      let durableRunningBeforeStartup = false;
-      if (crash && runningTurn !== null) {
-        if (crashTerminalRollbackCount !== 1) {
-          throw new Error("Installed QA crash terminal rollback did not fire exactly once.");
-        }
-        const auditStore = openPlannerStore({
-          filename: join(dataDirectory, "planner.sqlite"),
-        });
-        try {
-          durableRunningBeforeStartup = auditStore.readAllChatTurns().some(
-            (turn) => turn.turnId === runningTurn.turnId && turn.status === "running",
-          );
-        } finally {
-          auditStore.close();
-        }
-        if (!durableRunningBeforeStartup) {
-          throw new Error("Installed QA crash restart lost the durable running turn before startup.");
-        }
-      }
       if (reset) {
         currentTime = E2E_PREP_NOW;
         codexState = "compatible";
@@ -451,26 +396,15 @@ export async function createInProcessInstalledE2eController(options, dependencie
           rm(path, { force: true })));
       }
       await startAuthority();
-      const startupInterrupted = crash && runningTurn !== null
-        ? runtime.store.readAllChatTurns().some(
-            (turn) => turn.turnId === runningTurn.turnId && turn.status === "interrupted",
-          )
-        : false;
-      if (crash && !startupInterrupted) {
-        throw new Error("Installed QA startup did not interrupt the durable running turn.");
-      }
       if (leaseValidationCount !== leaseValidationBefore + 1) {
         throw new Error("Installed QA restart did not revalidate the inherited lease exactly once.");
       }
       lastRestartProof = Object.freeze({
-        mode: crash ? "crash" : reset ? "reset" : "graceful",
+        mode: reset ? "reset" : "graceful",
         authorityGenerationAdvanced: authorityGeneration > generationBefore,
         sameProcessLeaseRetained: true,
         listenerClosed,
         storeClosed: true,
-        terminalRollbackCount: crashTerminalRollbackCount,
-        durableRunningBeforeStartup,
-        startupInterrupted,
       });
     })().finally(() => {
       transitionInFlight = null;
@@ -492,13 +426,8 @@ export async function createInProcessInstalledE2eController(options, dependencie
           authorityPid: runtime === null ? null : process.pid,
           authorityGeneration,
           lastRestartProof,
-          hangMarkerExists: await pathExists(markers.hangMarkerPath),
           conflictTurnStarted: await pathExists(markers.conflictStartedMarkerPath),
           conflictTurnReleased: await pathExists(markers.conflictReleaseMarkerPath),
-          overlapTurnStarted: await pathExists(markers.overlapStartedMarkerPath),
-          overlapTurnReleased: await pathExists(markers.overlapReleaseMarkerPath),
-          researchTurnStarted: await pathExists(markers.researchStartedMarkerPath),
-          researchTurnReleased: await pathExists(markers.researchReleaseMarkerPath),
           currentTime,
           codexState,
         });
@@ -533,21 +462,12 @@ export async function createInProcessInstalledE2eController(options, dependencie
         await releaseMarker(markers.conflictReleaseMarkerPath, { released: true });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/release-overlap") {
-        await releaseMarker(markers.overlapReleaseMarkerPath, { released: true });
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/release-research") {
-        await releaseMarker(markers.researchReleaseMarkerPath, { released: true });
-        return;
-      }
       if (
         request.method === "POST" &&
         (url.pathname === "/restart" || url.pathname === "/reset")
       ) {
         await replaceAuthority({
           reset: url.pathname === "/reset",
-          crash: url.pathname === "/restart",
         });
         sendJson(
           response,
@@ -639,6 +559,10 @@ async function runAuthorityChild() {
   let seedId = 0;
   const codexRuntime = createDeterministicCodexRuntime(
     process.env.PLANNER_E2E_CODEX_STATE ?? "compatible",
+    {
+      nativeE2e: true,
+      nativeStateFile: join(dataDirectory, "fake-native-codex-state.json"),
+    },
   );
   process.on("message", (message) => {
     if (message?.type === "set-clock" && Number.isFinite(message.now)) {
@@ -660,7 +584,7 @@ async function runAuthorityChild() {
     config: runtimeConfig(),
     codexRuntime,
     codexFixedCwd: process.cwd(),
-    // The harness owns one authority child at a time and deliberately exercises restart recovery.
+    // The harness owns one authority child at a time and verifies native state survives restart.
     recoverCodexAdmissionsAfterOwnership: true,
     clock: { now: () => currentTime },
     seedFactory: () => createE2eFixtureSeed(configuredFixture, {
@@ -767,7 +691,7 @@ async function runControlProcess() {
     });
   };
 
-  const stopAuthorityChild = async ({ crash = false } = {}) => {
+  const stopAuthorityChild = async () => {
     const child = authorityChild;
     authorityReady = false;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -778,7 +702,7 @@ async function runControlProcess() {
         clearTimeout(forceTimer);
         resolveExit();
       });
-      child.kill(crash ? "SIGKILL" : "SIGTERM");
+      child.kill("SIGTERM");
     });
   };
 
@@ -874,13 +798,8 @@ async function runControlProcess() {
         response.end(JSON.stringify({
           ready: authorityReady,
           authorityPid: authorityReady ? authorityChild?.pid ?? null : null,
-          hangMarkerExists: await pathExists(hangMarkerPath),
           conflictTurnStarted: await pathExists(conflictStartedMarkerPath),
           conflictTurnReleased: await pathExists(conflictReleaseMarkerPath),
-          overlapTurnStarted: await pathExists(overlapStartedMarkerPath),
-          overlapTurnReleased: await pathExists(overlapReleaseMarkerPath),
-          researchTurnStarted: await pathExists(researchStartedMarkerPath),
-          researchTurnReleased: await pathExists(researchReleaseMarkerPath),
           currentTime,
           codexState,
         }));
@@ -916,18 +835,6 @@ async function runControlProcess() {
         response.end(JSON.stringify({ released: true }));
         return;
       }
-      if (request.method === "POST" && url.pathname === "/release-overlap") {
-        await writeFile(overlapReleaseMarkerPath, `${Date.now()}\n`, { encoding: "utf8" });
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ released: true }));
-        return;
-      }
-      if (request.method === "POST" && url.pathname === "/release-research") {
-        await writeFile(researchReleaseMarkerPath, `${Date.now()}\n`, { encoding: "utf8" });
-        response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ released: true }));
-        return;
-      }
       if (
         request.method !== "POST" ||
         (url.pathname !== "/restart" && url.pathname !== "/reset")
@@ -938,7 +845,7 @@ async function runControlProcess() {
       try {
         const reset = url.pathname === "/reset";
         restartInFlight ??= (async () => {
-          await stopAuthorityChild({ crash: !reset });
+          await stopAuthorityChild();
           if (reset) {
             currentTime = E2E_PREP_NOW;
             codexState = "compatible";

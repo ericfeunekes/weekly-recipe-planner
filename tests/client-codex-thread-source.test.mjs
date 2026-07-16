@@ -27,6 +27,19 @@ function thread(id, options = {}) {
   };
 }
 
+function turn(id, status) {
+  return {
+    id,
+    status,
+    itemsView: "full",
+    startedAtMs: 1,
+    completedAtMs: status === "in_progress" ? null : 2,
+    durationMs: status === "in_progress" ? null : 1,
+    errorMessage: null,
+    items: [],
+  };
+}
+
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), {
     status,
@@ -238,6 +251,93 @@ test("a server-declared ambiguous send replays the byte-identical admission and 
   const second = JSON.parse(bodies[1]);
   assert.equal(first.requestId, second.requestId);
   assert.equal(first.clientUserMessageId, second.clientUserMessageId);
+});
+
+test("terminal readback retires only the matching ambiguous interrupt before a later turn", async () => {
+  const bodies = [];
+  let selectedId = "root-1";
+  let projection = "running";
+  let interruptAttempts = 0;
+  await withFetch(async (path, init = {}) => {
+    if (path === "/api/codex/threads") {
+      return json(listResponse({
+        threads: [summary(selectedId, { state: "active", waitingFor: null })],
+        threadId: selectedId,
+        revision: selectedId === "root-1" ? 4 : 5,
+        activityRevision: 4,
+      }));
+    }
+    if (String(path).startsWith("/api/codex/thread?")) {
+      const turns = selectedId !== "root-1"
+        ? [turn("turn-2", "in_progress")]
+        : projection === "running"
+          ? [turn("turn-1", "in_progress")]
+          : projection === "unknown"
+            ? [turn("turn-1", "unknown"), turn("turn-2", "in_progress")]
+            : projection === "absent"
+              ? [turn("turn-2", "in_progress")]
+              : [turn("turn-1", "interrupted"), turn("turn-2", "in_progress")];
+      return json(readResponse(selectedId, {
+        revision: selectedId === "root-1" ? 4 : 5,
+        activityRevision: 4,
+        status: { state: "active", waitingFor: null },
+        turns,
+      }));
+    }
+    if (path === "/api/codex/turns/interrupt") {
+      interruptAttempts += 1;
+      bodies.push(init.body);
+      if (interruptAttempts === 1) throw new TypeError("interrupt response lost after apply");
+      return json({
+        threadId: "root-1",
+        turnId: "turn-2",
+        connectionEpoch: "epoch-1",
+        activityRevision: 5,
+      });
+    }
+    throw new Error(`Unexpected request ${path}`);
+  }, async () => {
+    const source = createCodexThreadSource({ search: "", development: false });
+    await source.load();
+    await assert.rejects(
+      source.interrupt("turn-1"),
+      (error) => error instanceof CodexThreadClientError && error.code === "NETWORK_ERROR",
+    );
+
+    projection = "unknown";
+    await source.load();
+    await assert.rejects(
+      source.interrupt("turn-2"),
+      (error) => error instanceof CodexThreadClientError && error.code === "TURN_CONFLICT",
+    );
+
+    projection = "absent";
+    await source.load();
+    await assert.rejects(
+      source.interrupt("turn-2"),
+      (error) => error instanceof CodexThreadClientError && error.code === "TURN_CONFLICT",
+    );
+
+    selectedId = "root-2";
+    await source.load();
+    await assert.rejects(
+      source.interrupt("turn-2"),
+      (error) => error instanceof CodexThreadClientError && error.code === "TURN_CONFLICT",
+    );
+
+    selectedId = "root-1";
+    projection = "terminal";
+    await source.load();
+    const interrupted = await source.interrupt("turn-2");
+    assert.equal(interrupted.status, "ready");
+  });
+
+  assert.equal(interruptAttempts, 2);
+  const first = JSON.parse(bodies[0]);
+  const second = JSON.parse(bodies[1]);
+  assert.equal(first.turnId, "turn-1");
+  assert.equal(second.turnId, "turn-2");
+  assert.notEqual(first.requestId, second.requestId);
 });
 
 test("an accepted mutation with mismatched response identity retains its exact replay identity", async () => {

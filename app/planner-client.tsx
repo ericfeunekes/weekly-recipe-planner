@@ -8,26 +8,27 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Circle,
   ClipboardCheck,
   Clock3,
   CookingPot,
-  History,
+  EllipsisVertical,
+  GripVertical,
   Home,
+  List,
   ListChecks,
   LoaderCircle,
   MapPin,
-  MessageCircle,
   MessageSquareText,
   PackageCheck,
   PencilLine,
+  Pause,
   Play,
   Plus,
   RotateCcw,
-  Send,
   ShoppingBasket,
-  Sprout,
   StickyNote,
   Trash2,
   Utensils,
@@ -41,15 +42,15 @@ import {
   useEffect,
   useRef,
   useState,
-  type Dispatch,
-  type FormEvent,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
-  type SetStateAction,
 } from "react";
+import { createPortal } from "react-dom";
 
 import {
   MAX_COMMAND_TEXT_LENGTH,
-  MAX_GROCERY_ITEM_LENGTH,
   MAX_ID_LENGTH,
   MAX_INGREDIENT_LINE_LENGTH,
   MAX_INGREDIENT_LINES,
@@ -64,12 +65,14 @@ import {
 } from "@/lib/household-command-contract";
 import {
   FEEDBACK_VALUES,
+  GROCERY_SOURCES,
   LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   type GroceryItem,
   type InstructionStep,
   type IsoDate,
   type Meal,
+  type PrepSessionStep,
   type WeekId,
   type WeekPlan,
 } from "@/lib/household-contract";
@@ -78,20 +81,11 @@ import {
   LEGACY_V2_STORAGE_KEY,
   type ApplyPlannerCommandRequest,
   type BootstrapWorkspaceRequest,
-  type HealthResponse,
   type InitializedWorkspace,
   type PlannerEvent,
   type UndoLatestRequest,
   type WorkspaceResponse,
 } from "@/lib/planner-api-contract";
-import type {
-  ChatTurnIntent,
-  ChatTurn,
-  PlannerChatContext,
-  PlannerView,
-  RetryChatTurnRequest,
-  SubmitChatTurnRequest,
-} from "@/lib/planner-chat-contract";
 import {
   LEGACY_V1_STORAGE_KEY,
   PlannerApiError,
@@ -99,12 +93,9 @@ import {
   bootstrapWorkspace,
   createRequestId,
   isAbortError,
-  readHealth,
   readLegacyImport,
   readWorkspace,
-  retryChatTurn,
   shouldAcceptWorkspace,
-  submitChatTurn,
   undoLatest,
   type LegacyImportCandidate,
 } from "./planner-api";
@@ -120,7 +111,6 @@ import {
 } from "./authority-operation-journal";
 import {
   hasValidationIssues,
-  validateGroceryDraft,
   validateMealDraft,
   validateStepDraft,
 } from "./planner-validation";
@@ -131,8 +121,10 @@ import {
   settleCompositeDraft,
   type CompositeDraft,
 } from "./versioned-draft";
-import { plannerChatContextForView } from "./planner-chat-context";
 import { isoDateForTimeZone } from "./calendar-time";
+import { CodexThreadRail } from "./codex-thread-rail";
+import { OfflineAuthorityNotice } from "./offline-authority-notice";
+import type { PlannerView } from "./planner-view";
 
 type ConnectionState = "loading" | "online" | "offline";
 type Notice = { tone: "info" | "warning" | "error"; message: string } | null;
@@ -155,18 +147,11 @@ type PendingAuthorityRetry = {
       options?: MutateOptions;
     }
   | { kind: "bootstrap"; request: BootstrapWorkspaceRequest }
-  | {
-      kind: "chat-submit";
-      request: SubmitChatTurnRequest;
-      onAccepted?: () => void;
-    }
-  | { kind: "chat-retry"; request: RetryChatTurnRequest }
   | { kind: "undo"; request: UndoLatestRequest }
 );
-type PendingRetryChannel = "planner" | "chat";
+type PendingRetryChannel = "planner";
 type PendingRetryVolatile = {
   options?: MutateOptions;
-  onAccepted?: () => void;
 };
 
 type MealSnapshotRecoveryCommand = Extract<HouseholdCommand, { type: "updateMealSnapshot" }>;
@@ -213,12 +198,21 @@ function isMealSnapshotRecoveryCommand(value: unknown): value is MealSnapshotRec
       (typeof changes.yieldText === "string" && changes.yieldText.length <= 80));
 }
 
+type SupportedPlannerOperation = PendingAuthorityOperation & {
+  kind: "planner" | "bootstrap" | "undo";
+};
+
+function isSupportedPlannerOperation(operation: PendingAuthorityOperation): operation is SupportedPlannerOperation {
+  return operation.kind === "planner" || operation.kind === "bootstrap" || operation.kind === "undo";
+}
+
 function pendingRetryChannel(retry: PendingAuthorityRetry): PendingRetryChannel {
-  return retry.kind === "chat-submit" || retry.kind === "chat-retry" ? "chat" : "planner";
+  void retry;
+  return "planner";
 }
 
 function pendingRetryFromOperation(
-  operation: PendingAuthorityOperation,
+  operation: SupportedPlannerOperation,
 ): PendingAuthorityRetry {
   const request: unknown = JSON.parse(operation.serializedBody);
   const resolved = operation.state === "resolved_conflict";
@@ -249,22 +243,6 @@ function pendingRetryFromOperation(
   if (operation.kind === "bootstrap") {
     return { ...shared, kind: operation.kind, request: request as BootstrapWorkspaceRequest };
   }
-  if (operation.kind === "chat-submit") {
-    const original = request as SubmitChatTurnRequest;
-    return {
-      ...shared,
-      kind: operation.kind,
-      request: {
-        ...original,
-        message: resolved && typeof operation.editableDraft === "string"
-          ? operation.editableDraft
-          : original.message,
-      },
-    };
-  }
-  if (operation.kind === "chat-retry") {
-    return { ...shared, kind: operation.kind, request: request as RetryChatTurnRequest };
-  }
   return { ...shared, kind: operation.kind, request: request as UndoLatestRequest };
 }
 type AuthorityRecoveryProps = {
@@ -283,15 +261,8 @@ type Mutate = (
 ) => Promise<boolean>;
 type SendContextMessage = (
   message: string,
-  context: PlannerChatContext,
   onAccepted?: () => void,
-  intent?: ChatTurnIntent,
 ) => Promise<boolean>;
-
-const DEFAULT_CHAT_INTENT: ChatTurnIntent = Object.freeze({
-  kind: "planner",
-  archiveContextWeek: false,
-});
 
 const PLANNER_ACTION_LABELS = {
   moveMeal: "Move dinner",
@@ -305,16 +276,22 @@ const PLANNER_ACTION_LABELS = {
   setInstructionStepComplete: "Change recipe step completion",
   updateInstructionStepNote: "Save recipe step note",
   startInstructionTimer: "Start recipe timer",
+  pauseInstructionTimer: "Pause recipe timer",
   resetInstructionTimer: "Reset recipe timer",
+  setInstructionTimerRemaining: "Set recipe timer",
+  createPrepSession: "Create prep session",
+  updatePrepSession: "Update prep session",
+  movePrepSession: "Reorder prep session",
+  removePrepSession: "Remove prep session",
+  addPrepSessionStep: "Add prep-session step",
+  movePrepSessionStep: "Reorder prep-session step",
+  removePrepSessionStep: "Remove prep-session step",
   setPrepPlan: "Save prep plan",
   movePrepReference: "Reorder prep step",
   reschedulePrepReference: "Reschedule prep step",
   removePrepReference: "Remove prep step",
-  addGroceryItem: "Add grocery item",
-  updateGroceryItem: "Update grocery item",
-  removeGroceryItem: "Remove grocery item",
+  moveGroceryItemsToSource: "Move selected groceries",
   setGroceryItemChecked: "Change grocery item completion",
-  reconcileGroceries: "Reconcile groceries",
   captureFeedback: "Save dinner feedback",
   captureWeekLesson: "Save week lesson",
   captureLeftoverQuality: "Save leftover quality",
@@ -337,12 +314,16 @@ function plannerActionLabel(
   if (week && "stepId" in command) {
     const resolved = findStep(week, command.stepId);
     if (resolved) target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
-  } else if (week && "referenceId" in command) {
-    const reference = week.data.prep.find((candidate) => candidate.id === command.referenceId);
-    const resolved = reference ? findStep(week, reference.stepId) : null;
+  } else if (week && "entryId" in command) {
+    const entry = week.data.prepSessions.flatMap((session) => session.steps).find((candidate) => candidate.id === command.entryId);
+    const resolved = entry ? findStep(week, entry.stepId) : null;
     if (resolved) target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
   } else if (week && "itemId" in command) {
-    target = week.data.groceries.find((candidate) => candidate.id === command.itemId)?.item;
+    const grocery = week.data.groceries.find((candidate) => candidate.id === command.itemId);
+    target = grocery
+      ? week.data.meals.find((meal) => meal.id === grocery.mealId)
+        ?.ingredients.find((ingredient) => ingredient.id === grocery.ingredientId)?.ingredient
+      : undefined;
   } else if (week && "leftoverId" in command) {
     target = week.data.leftovers.find((candidate) => candidate.id === command.leftoverId)?.label;
   } else if (week && "mealId" in command) {
@@ -534,6 +515,47 @@ function AuthorityNotice(props: {
   );
 }
 
+type SegmentedOption<T extends string> = {
+  value: T;
+  label: string;
+  ariaLabel?: string;
+};
+
+function SegmentedControl<T extends string>({
+  ariaLabel,
+  className = "",
+  disabled = false,
+  onChange,
+  options,
+  value,
+}: {
+  ariaLabel: string;
+  className?: string;
+  disabled?: boolean | ((option: T) => boolean);
+  onChange: (value: T) => void;
+  options: readonly SegmentedOption<T>[];
+  value: T | undefined;
+}) {
+  return (
+    <div className={`segmented-control ${className}`.trim()} role="group" aria-label={ariaLabel}>
+      {options.map((option) => {
+        const optionDisabled = typeof disabled === "function" ? disabled(option.value) : disabled;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-label={option.ariaLabel}
+            aria-pressed={value === option.value}
+            className={value === option.value ? "active" : ""}
+            disabled={optionDisabled}
+            onClick={() => onChange(option.value)}
+          >{option.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+
 function findStep(
   week: WeekPlan,
   stepId: string,
@@ -560,11 +582,15 @@ function progressForWeek(week: WeekPlan): { complete: number; total: number } {
 function useMobile(): boolean {
   const [mobile, setMobile] = useState(false);
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 700px)");
-    const update = () => setMobile(media.matches);
+    const media = window.matchMedia("(max-width: 840px)");
+    const update = () => setMobile(window.innerWidth <= 840);
     update();
     media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
+    window.addEventListener("resize", update);
+    return () => {
+      media.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+    };
   }, []);
   return mobile;
 }
@@ -664,16 +690,17 @@ export default function PlannerApp() {
   const [initialError, setInitialError] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [clockNow, setClockNow] = useState(() => Date.now());
-  const [health, setHealth] = useState<HealthResponse | null>(null);
   const [view, setView] = useState<PlannerView>("week");
   const [selectedWeekId, setSelectedWeekId] = useState<WeekId | null>(null);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
+  const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [timersOpen, setTimersOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessage, setChatMessage] = useState("");
-  const [chatIntent, setChatIntent] = useState<ChatTurnIntent>(DEFAULT_CHAT_INTENT);
+  const [codexCollapsed, setCodexCollapsed] = useState(false);
+  const [codexDraft, setCodexDraft] = useState("");
+  const [codexFocusKey, setCodexFocusKey] = useState(0);
   const [plannerPending, setPlannerPending] = useState(false);
-  const [chatPending, setChatPending] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingRetries, setPendingRetries] = useState<PendingAuthorityRetry[]>([]);
   const [journalError, setJournalError] = useState<string | null>(null);
@@ -689,40 +716,20 @@ export default function PlannerApp() {
   const workspaceRef = useRef<WorkspaceResponse | null>(null);
   const refreshInFlight = useRef<Promise<boolean> | null>(null);
   const plannerMutationInFlight = useRef(false);
-  const chatRequestInFlight = useRef(false);
   const pendingRetryRef = useRef<PendingAuthorityRetry[]>([]);
   const pendingRetryVolatileRef = useRef(new Map<string, PendingRetryVolatile>());
-  const chatMessageRef = useRef(chatMessage);
   const appContentRef = useRef<HTMLDivElement>(null);
   const chatTriggerRef = useRef<HTMLButtonElement>(null);
   const historyTriggerRef = useRef<HTMLButtonElement>(null);
   const mealTriggerRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-
-  const setChatMessageWithRecovery = useCallback<Dispatch<SetStateAction<string>>>((action) => {
-    const next = typeof action === "function" ? action(chatMessageRef.current) : action;
-    chatMessageRef.current = next;
-    setChatMessage(next);
-    const pending = pendingRetryRef.current.find((retry) =>
-      pendingRetryChannel(retry) === "chat" && retry.operation.state !== "prepared"
-    );
-    if (pending?.kind !== "chat-submit") return;
-    try {
-      updateAuthorityOperationDraft(pending.operation, next);
-    } catch (error) {
-      setNotice({ tone: "error", message: errorMessage(error) });
-    }
-  }, []);
+  const primaryWorkspaceRef = useRef<HTMLElement>(null);
 
   const syncPendingRetries = useCallback(() => {
     try {
       const operations = readAuthorityOperations()
-        .filter((operation) => !(
-          operation.state === "prepared" &&
-          (operation.kind === "chat-submit" || operation.kind === "chat-retry"
-            ? chatRequestInFlight.current
-            : plannerMutationInFlight.current)
-        ))
+        .filter(isSupportedPlannerOperation)
+        .filter((operation) => !(operation.state === "prepared" && plannerMutationInFlight.current))
         .sort((left, right) => left.createdAt - right.createdAt);
       const liveKeys = new Set(operations.map(operationKey));
       for (const key of pendingRetryVolatileRef.current.keys()) {
@@ -734,23 +741,11 @@ export default function PlannerApp() {
         if (retry.kind === "planner" && volatile?.options) {
           return { ...retry, options: volatile.options };
         }
-        if (retry.kind === "chat-submit" && volatile?.onAccepted) {
-          return { ...retry, onAccepted: volatile.onAccepted };
-        }
         return retry;
       });
       pendingRetryRef.current = retries;
       setPendingRetries(retries);
       setJournalError(null);
-      const pendingChat = retries.find((retry) => retry.kind === "chat-submit");
-      if (pendingChat?.kind === "chat-submit") {
-        const recoveryMessage = typeof pendingChat.operation.editableDraft === "string"
-          ? pendingChat.operation.editableDraft
-          : pendingChat.request.message;
-        const next = chatMessageRef.current || recoveryMessage;
-        chatMessageRef.current = next;
-        setChatMessage(next);
-      }
       const pendingMeal = retries.find((retry) =>
         retry.kind === "planner" && retry.request.command.type === "updateMealSnapshot"
       );
@@ -773,7 +768,6 @@ export default function PlannerApp() {
         kind?: unknown;
         request?: { requestId?: unknown };
         options?: MutateOptions;
-        onAccepted?: () => void;
       };
       if (
         typeof candidate.kind === "string" &&
@@ -783,7 +777,6 @@ export default function PlannerApp() {
           `${candidate.kind}:${candidate.request.requestId}`,
           {
             ...(candidate.options ? { options: candidate.options } : {}),
-            ...(candidate.onAccepted ? { onAccepted: candidate.onAccepted } : {}),
           },
         );
       }
@@ -793,18 +786,6 @@ export default function PlannerApp() {
 
   const clearPendingRetry = useCallback((channel: PendingRetryChannel) => {
     void channel;
-    syncPendingRetries();
-  }, [syncPendingRetries]);
-
-  const discardResolvedPendingRetry = useCallback((channel: PendingRetryChannel) => {
-    for (const retry of pendingRetryRef.current) {
-      if (
-        pendingRetryChannel(retry) === channel &&
-        retry.operation.state === "resolved_conflict"
-      ) {
-        discardAuthorityOperation(retry.operation);
-      }
-    }
     syncPendingRetries();
   }, [syncPendingRetries]);
 
@@ -838,8 +819,7 @@ export default function PlannerApp() {
   }, [journalError]);
 
   const plannerRetry = pendingRetries.find((retry) => pendingRetryChannel(retry) === "planner") ?? null;
-  const chatRetry = pendingRetries.find((retry) => pendingRetryChannel(retry) === "chat") ?? null;
-  const pendingRetry = plannerRetry ?? chatRetry;
+  const pendingRetry = plannerRetry;
   const selectedMealAvailable = Boolean(
     selectedMealId &&
     workspace?.initialized &&
@@ -848,7 +828,17 @@ export default function PlannerApp() {
       workspace.state.weeks.at(-1)
     )?.data.meals.some((meal) => meal.id === selectedMealId),
   );
-  const activeOverlay = selectedMealAvailable
+  const recipeSummaryMealAvailable = Boolean(
+    recipeSummaryMealId &&
+    workspace?.initialized &&
+    (
+      workspace.state.weeks.find((item) => item.id === selectedWeekId) ??
+      workspace.state.weeks.at(-1)
+    )?.data.meals.some((meal) => meal.id === recipeSummaryMealId),
+  );
+  const activeOverlay = recipeSummaryMealAvailable
+    ? "recipe-summary"
+    : selectedMealAvailable
     ? "meal"
     : historyOpen && workspace?.initialized
       ? "history"
@@ -867,6 +857,8 @@ export default function PlannerApp() {
 
   const navigate = useCallback((nextView: PlannerView) => {
     setView(nextView);
+    setTimersOpen(false);
+    primaryWorkspaceRef.current?.scrollTo({ top: 0, behavior: "auto" });
     window.scrollTo({ top: 0, behavior: "auto" });
     window.requestAnimationFrame(() => headingRef.current?.focus());
   }, []);
@@ -981,20 +973,6 @@ export default function PlannerApp() {
   }, [refresh]);
 
   useEffect(() => {
-    const update = async () => {
-      if (document.visibilityState !== "visible") return;
-      try {
-        setHealth(await readHealth());
-      } catch {
-        setHealth(null);
-      }
-    };
-    void update();
-    const interval = window.setInterval(() => void update(), 15_000);
-    return () => window.clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
     const element = appContentRef.current as (HTMLDivElement & { inert: boolean }) | null;
     if (!element) return;
     element.inert = activeOverlay !== null;
@@ -1006,8 +984,19 @@ export default function PlannerApp() {
   const openMeal = useCallback((mealId: string, trigger: HTMLElement) => {
     mealTriggerRef.current = trigger;
     setHistoryOpen(false);
+    setTimersOpen(false);
     setChatOpen(false);
+    setRecipeSummaryMealId(null);
     setSelectedMealId(mealId);
+  }, []);
+
+  const openRecipeSummary = useCallback((mealId: string, trigger: HTMLElement) => {
+    mealTriggerRef.current = trigger;
+    setHistoryOpen(false);
+    setTimersOpen(false);
+    setChatOpen(false);
+    setSelectedMealId(null);
+    setRecipeSummaryMealId(mealId);
   }, []);
 
   const executeBootstrap = useCallback(async (request: BootstrapWorkspaceRequest) => {
@@ -1177,165 +1166,19 @@ export default function PlannerApp() {
     }, options);
   }, [blockForPendingRetry, connection, executePlannerMutation, workspace]);
 
-  const executeChatSubmit = useCallback(async (
-    request: SubmitChatTurnRequest,
-    onAccepted?: () => void,
-  ): Promise<boolean> => {
-    if (chatRequestInFlight.current) return false;
-    chatRequestInFlight.current = true;
-    setChatPending(true);
-    setNotice(null);
-    try {
-      const response = await submitChatTurn(request, {
-        label: "Send ChatGPT message",
-        submittedDraft: request.message,
-      });
-      acceptWorkspace(response.workspace);
-      clearPendingRetry("chat");
-      if (response.decision.status === "accepted") {
-        const mutationOutcome = response.decision.turn.mutationOutcome;
-        if (mutationOutcome === "version_conflict") {
-          setNotice({
-            tone: "warning",
-            message: "ChatGPT replied, but its planner change was not applied because the plan changed. Review the latest plan and ask again.",
-          });
-        } else if (mutationOutcome === "domain_rejected") {
-          setNotice({
-            tone: "warning",
-            message: "ChatGPT replied, but the planner rejected its proposed change. Review the latest plan and ask again.",
-          });
-        }
-        onAccepted?.();
-        await refresh(true);
-        return true;
-      }
-      const decision = response.decision;
-      if (decision.status === "codex_unavailable") {
-        discardResolvedPendingRetry("chat");
-      } else {
-        clearPendingRetry("chat");
-      }
-      const messageText =
-        decision.status === "turn_busy"
-          ? "ChatGPT is finishing another household request. Your message was kept."
-          : decision.status === "context_stale"
-            ? "The planner changed before ChatGPT could start. Review the latest plan and send again."
-            : decision.status === "request_id_reuse"
-              ? "This chat request was already used."
-              : decision.status === "not_found" || decision.status === "domain_rejected" || decision.status === "codex_unavailable"
-                ? decision.message
-                : "ChatGPT could not accept the request.";
-      setNotice({ tone: decision.status === "codex_unavailable" ? "warning" : "error", message: messageText });
-      return false;
-    } catch (error) {
-      if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
-      if (isAmbiguousPostError(error)) {
-        setPendingRetry({
-          kind: "chat-submit",
-          label: "Send ChatGPT message",
-          tone: "error",
-          message: "The ChatGPT response was interrupted. Reconnect, then resolve that exact request.",
-          request,
-          onAccepted,
-        });
-        if (error.code === "NETWORK_ERROR") setConnection("offline");
-        setNotice({
-          tone: "error",
-          message: "The ChatGPT response was interrupted. Reconnect, then resolve that exact request.",
-        });
-      } else {
-        discardResolvedPendingRetry("chat");
-        setNotice({ tone: "error", message: errorMessage(error) });
-      }
-      return false;
-    } finally {
-      chatRequestInFlight.current = false;
-      setChatPending(false);
-    }
-  }, [acceptWorkspace, clearPendingRetry, discardResolvedPendingRetry, refresh, setPendingRetry]);
-
   const sendContextMessage: SendContextMessage = useCallback(async (
     message,
-    context,
     onAccepted,
-    intent = DEFAULT_CHAT_INTENT,
   ) => {
-    const current = workspaceRef.current;
-    if (
-      !current?.initialized ||
-      chatRequestInFlight.current ||
-      connection !== "online" ||
-      blockForPendingRetry("chat")
-    ) return false;
-    if (current.chatTurns.some((turn) => turn.status === "running")) {
-      setNotice({ tone: "warning", message: "ChatGPT is already working on a household request. Your draft was kept." });
-      return false;
-    }
-    if (health && health.codex.status !== "ready") {
-      setNotice({ tone: "warning", message: "The shared planner is online, but ChatGPT is not available." });
-      return false;
-    }
-    return executeChatSubmit({
-      requestId: createRequestId(),
-      basePlannerVersion: current.plannerVersion,
-      message,
-      context,
-      intent,
-    }, onAccepted);
-  }, [blockForPendingRetry, connection, executeChatSubmit, health]);
-
-  const executeChatRetry = useCallback(async (request: RetryChatTurnRequest) => {
-    if (chatRequestInFlight.current) return;
-    chatRequestInFlight.current = true;
-    setChatPending(true);
-    setNotice(null);
-    try {
-      const response = await retryChatTurn(request, {
-        label: "Retry ChatGPT request",
-        submittedDraft: request,
-      });
-      acceptWorkspace(response.workspace);
-      clearPendingRetry("chat");
-      if (response.decision.status !== "accepted") {
-        setNotice({ tone: "warning", message: "That chat turn could not be retried yet." });
-      }
-      await refresh(true);
-    } catch (error) {
-      if (error instanceof PlannerApiError && error.workspace) acceptWorkspace(error.workspace);
-      if (isAmbiguousPostError(error)) {
-        setPendingRetry({
-          kind: "chat-retry",
-          label: "Retry ChatGPT request",
-          tone: "error",
-          message: "The ChatGPT retry response was interrupted. Reconnect, then resolve that exact request.",
-          request,
-        });
-        if (error.code === "NETWORK_ERROR") setConnection("offline");
-        setNotice({ tone: "error", message: "The ChatGPT retry response was interrupted. Reconnect, then resolve that exact request." });
-      } else {
-        clearPendingRetry("chat");
-        setNotice({ tone: "error", message: errorMessage(error) });
-      }
-    } finally {
-      chatRequestInFlight.current = false;
-      setChatPending(false);
-    }
-  }, [acceptWorkspace, clearPendingRetry, refresh, setPendingRetry]);
-
-  const retryTurn = useCallback(async (turn: ChatTurn) => {
-    const current = workspaceRef.current;
-    if (
-      !current?.initialized ||
-      chatRequestInFlight.current ||
-      connection !== "online" ||
-      blockForPendingRetry("chat")
-    ) return;
-    await executeChatRetry({
-      requestId: createRequestId(),
-      basePlannerVersion: current.plannerVersion,
-      turnId: turn.turnId,
-    });
-  }, [blockForPendingRetry, connection, executeChatRetry]);
+    const next = message.trim();
+    if (!next) return false;
+    setCodexDraft((current) => current.trim() ? `${current.trim()}\n\n${next}` : next);
+    setCodexCollapsed(false);
+    if (mobile) setChatOpen(true);
+    setCodexFocusKey((current) => current + 1);
+    onAccepted?.();
+    return true;
+  }, [mobile]);
 
   const executeUndo = useCallback(async (request: UndoLatestRequest) => {
     if (plannerMutationInFlight.current) return;
@@ -1444,54 +1287,6 @@ export default function PlannerApp() {
       await executeBootstrap(request);
       return;
     }
-    if (pending.kind === "chat-submit") {
-      const request = resolved
-        ? {
-            ...pending.request,
-            requestId: createRequestId(),
-            basePlannerVersion: current?.initialized
-              ? current.plannerVersion
-              : pending.request.basePlannerVersion,
-          }
-        : pending.request;
-      if (resolved) {
-        replaceResolvedAuthorityOperation(pending.operation, {
-          kind: "chat-submit",
-          path: pending.operation.path,
-          body: request,
-          label: pending.label,
-          submittedDraft: request.message,
-        });
-      }
-      await executeChatSubmit(request, pending.onAccepted ?? (() => {
-        setChatMessageWithRecovery((current) =>
-          current.trim() === request.message ? "" : current
-        );
-      }));
-      return;
-    }
-    if (pending.kind === "chat-retry") {
-      const request = resolved
-        ? {
-            ...pending.request,
-            requestId: createRequestId(),
-            basePlannerVersion: current?.initialized
-              ? current.plannerVersion
-              : pending.request.basePlannerVersion,
-          }
-        : pending.request;
-      if (resolved) {
-        replaceResolvedAuthorityOperation(pending.operation, {
-          kind: "chat-retry",
-          path: pending.operation.path,
-          body: request,
-          label: pending.label,
-          submittedDraft: request,
-        });
-      }
-      await executeChatRetry(request);
-      return;
-    }
     const request = resolved
       ? {
           ...pending.request,
@@ -1511,7 +1306,7 @@ export default function PlannerApp() {
       });
     }
     await executeUndo(request);
-  }, [connection, executeBootstrap, executeChatRetry, executeChatSubmit, executePlannerMutation, executeUndo, setChatMessageWithRecovery]);
+  }, [connection, executeBootstrap, executePlannerMutation, executeUndo]);
 
   const discardPendingOperation = useCallback((channel?: PendingRetryChannel) => {
     const pending = channel
@@ -1555,7 +1350,13 @@ export default function PlannerApp() {
     null;
   const now = clockNow + serverOffset;
   const today = isoDateForTimeZone(now, initialized.state.householdTimeZone);
+  const activeTimers = week?.data.meals.flatMap((meal) =>
+    meal.instructions
+      .filter((step) => step.timerDurationSeconds !== undefined && step.timerStartedAt !== undefined)
+      .map((step) => ({ meal, step })),
+  ) ?? [];
   const selectedMeal = week?.data.meals.find((meal) => meal.id === selectedMealId) ?? null;
+  const recipeSummaryMeal = week?.data.meals.find((meal) => meal.id === recipeSummaryMealId) ?? null;
   const recoveryDraftCommand = plannerRetry?.kind === "planner" &&
       (isMealSnapshotRecoveryCommand(plannerRetry.operation.editableDraft) ||
         isHouseholdCommand(plannerRetry.operation.editableDraft))
@@ -1579,21 +1380,9 @@ export default function PlannerApp() {
     notice: plannerRetry ? { tone: plannerRetry.tone, message: plannerRetry.message } : notice,
     pendingRetryLabel: plannerRetry?.label,
     onRetryPending: () => void retryPendingOperation("planner"),
-    retryDisabled: connection !== "online" || plannerPending || chatPending,
+    retryDisabled: connection !== "online" || plannerPending,
     onDiscardPending: plannerRetry?.operation.state === "resolved_conflict"
       ? () => discardPendingOperation("planner")
-      : undefined,
-    onDismissNotice: () => setNotice(null),
-    offline: connection === "offline",
-    onReconnect: () => void refresh(true),
-  };
-  const chatAuthorityRecovery: AuthorityRecoveryProps = {
-    notice: chatRetry ? { tone: chatRetry.tone, message: chatRetry.message } : notice,
-    pendingRetryLabel: chatRetry?.label,
-    onRetryPending: () => void retryPendingOperation("chat"),
-    retryDisabled: connection !== "online" || plannerPending || chatPending,
-    onDiscardPending: chatRetry?.operation.state === "resolved_conflict"
-      ? () => discardPendingOperation("chat")
       : undefined,
     onDismissNotice: () => setNotice(null),
     offline: connection === "offline",
@@ -1611,7 +1400,7 @@ export default function PlannerApp() {
               <p className="brand-name">Family dinner planner</p>
               <p className={`sync-note ${connection === "offline" ? "failed" : ""}`}>
                 <span className="sync-dot" />
-                {connection === "offline" ? "Offline · read-only" : plannerPending ? "Saving shared change…" : chatPending ? "ChatGPT working · planner available" : "Shared plan current"}
+                {connection === "offline" ? "Offline · read-only" : plannerPending ? "Saving shared change…" : "Shared plan current"}
               </p>
             </div>
           </div>
@@ -1635,27 +1424,69 @@ export default function PlannerApp() {
             <button ref={historyTriggerRef} className="icon-button" type="button" title="Change history" onClick={() => {
               setSelectedMealId(null);
               setChatOpen(false);
+              setTimersOpen(false);
               setHistoryOpen(true);
             }}>
-              <History size={19} />
+              <List size={19} />
             </button>
-            <button
+            <div className="header-timer-control">
+              <button
+                className="icon-button"
+                type="button"
+                title={activeTimers.length ? `${activeTimers.length} active timer${activeTimers.length === 1 ? "" : "s"}` : "Active timers"}
+                aria-label={activeTimers.length ? `Active timers: ${activeTimers.length}` : "Active timers"}
+                aria-expanded={timersOpen}
+                aria-haspopup="dialog"
+                onClick={() => {
+                  setSelectedMealId(null);
+                  setChatOpen(false);
+                  setHistoryOpen(false);
+                  setTimersOpen((open) => !open);
+                }}
+              >
+                <Clock3 size={19} />
+                {activeTimers.length ? <span className="header-timer-count" aria-hidden="true">{activeTimers.length}</span> : null}
+              </button>
+              {timersOpen ? (
+                <div className="header-timer-menu" role="dialog" aria-label="Active timers">
+                  <div className="header-timer-menu-heading">
+                    <strong>Active timers</strong>
+                    <button className="icon-button" type="button" title="Close active timers" aria-label="Close active timers" onClick={() => setTimersOpen(false)}><X size={15} /></button>
+                  </div>
+                  {activeTimers.length ? (
+                    <div className="header-timer-list">
+                      {activeTimers.map(({ meal, step }) => (
+                        <HeaderTimerItem
+                          key={step.id}
+                          meal={meal}
+                          step={step}
+                          disabled={isReadOnly || step.complete}
+                          onOpenMeal={(mealId, trigger) => {
+                            setTimersOpen(false);
+                            openMeal(mealId, trigger);
+                          }}
+                          onAction={(type) => void mutate({ type, weekId: week!.id, stepId: step.id })}
+                        />
+                      ))}
+                    </div>
+                  ) : <p className="header-timer-empty">No timers are running.</p>}
+                </div>
+              ) : null}
+            </div>
+            {mobile ? <button
               ref={chatTriggerRef}
-              className="primary-button"
+              className="icon-button mobile-codex-trigger"
               type="button"
               onClick={() => {
-                if (mobile) {
-                  setSelectedMealId(null);
-                  setHistoryOpen(false);
-                  setChatOpen(true);
-                }
-                else document.querySelector<HTMLTextAreaElement>('.chat-rail textarea[aria-label="Message ChatGPT"]')?.focus();
+                setSelectedMealId(null);
+                setHistoryOpen(false);
+                setTimersOpen(false);
+                setChatOpen((open) => !open);
               }}
-              aria-expanded={mobile ? chatOpen : undefined}
-              aria-label={mobile ? "Open ChatGPT" : "Focus ChatGPT chat"}
-            >
-              <MessageCircle size={17} /><span>ChatGPT</span>
-            </button>
+              aria-expanded={chatOpen}
+              aria-label={chatOpen ? "Close Codex" : "Open Codex"}
+              title={chatOpen ? "Close Codex" : "Open Codex"}
+            ><ChevronLeft size={19} /></button> : null}
           </div>
         </header>
 
@@ -1676,7 +1507,7 @@ export default function PlannerApp() {
           })}
         </nav>
 
-        <main className="app-main">
+        <main className={`app-main ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
           {authorityNotice ? (
             <AuthorityNotice
               notice={authorityNotice}
@@ -1684,7 +1515,7 @@ export default function PlannerApp() {
               onRetryPending={() => void retryPendingOperation(
                 pendingRetry ? pendingRetryChannel(pendingRetry) : undefined,
               )}
-              retryDisabled={connection !== "online" || plannerPending || chatPending}
+              retryDisabled={connection !== "online" || plannerPending}
               onDiscardPending={pendingRetry?.operation.state === "resolved_conflict"
                 ? () => discardPendingOperation(pendingRetryChannel(pendingRetry))
                 : undefined}
@@ -1695,10 +1526,10 @@ export default function PlannerApp() {
             />
           ) : null}
           {connection === "offline" ? (
-            <div className="authority-banner warning" role="status">
-              <span>You are seeing the last shared plan. Editing is paused until the server reconnects.</span>
-              <button className="secondary-button" type="button" onClick={() => void refresh(true)}>Reconnect</button>
-            </div>
+            <OfflineAuthorityNotice
+              message="You are seeing the last shared plan. Editing is paused until the server reconnects."
+              onReconnect={() => void refresh(true)}
+            />
           ) : null}
           <div className="content-heading">
             <div>
@@ -1726,15 +1557,21 @@ export default function PlannerApp() {
           </div>
 
           <div className="workspace">
-            <section className="primary-workspace">
+            <section ref={primaryWorkspaceRef} className="primary-workspace">
               {!week ? (
                 <section className="lifecycle-surface empty-workspace">
                   <CalendarDays size={30} />
                   <h2>No weeks yet</h2>
-                  <p>Ask ChatGPT to build the first week plan.</p>
+                  <p>Open Codex to build the first week plan.</p>
                 </section>
               ) : view === "week" ? (
-                  <WeekView week={week} today={today} onOpenMeal={openMeal} onNavigate={navigate} />
+                  <WeekView
+                    week={week}
+                    today={today}
+                    onOpenMeal={openMeal}
+                    onOpenRecipeSummary={openRecipeSummary}
+                    onNavigate={navigate}
+                  />
                 ) : view === "tonight" ? (
                   <TonightView
                     week={week}
@@ -1751,28 +1588,30 @@ export default function PlannerApp() {
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
-                    onOpenMeal={openMeal}
+                    onOpenRecipeSummary={openRecipeSummary}
                   />
                 ) : view === "groceries" ? (
-                  <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
+                  <GroceryView
+                    key={week.id}
+                    week={week}
+                    disabled={isReadOnly}
+                    mutate={mutate}
+                    onOpenRecipeSummary={openRecipeSummary}
+                  />
                 ) : (
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
               )}
             </section>
             {!mobile ? (
-              <ChatPanel
-                workspace={initialized}
-                week={week}
-                view={view}
-                today={today}
-                disabled={connection !== "online" || chatPending || Boolean(chatRetry) || (health !== null && health.codex.status !== "ready")}
-                health={health}
-                message={chatMessage}
-                onMessageChange={setChatMessageWithRecovery}
-                intent={chatIntent}
-                onIntentChange={setChatIntent}
-                onSend={sendContextMessage}
-                onRetry={retryTurn}
+              <CodexThreadRail
+                draft={codexDraft}
+                onDraftChange={setCodexDraft}
+                focusKey={codexFocusKey}
+                collapsed={codexCollapsed}
+                onCollapsedChange={setCodexCollapsed}
+                offline={connection !== "online"}
+                onReconnect={() => void refresh(true)}
+                onClose={() => setCodexCollapsed(true)}
               />
             ) : null}
           </div>
@@ -1810,6 +1649,16 @@ export default function PlannerApp() {
             }}
           />
         ) : null}
+      {activeOverlay === "recipe-summary" && recipeSummaryMeal && week ? (
+          <RecipeSummaryDrawer
+            meal={recipeSummaryMeal}
+            restoreFocusRef={mealTriggerRef}
+            onClose={() => {
+              setRecipeSummaryMealId(null);
+              mealTriggerRef.current = null;
+            }}
+          />
+        ) : null}
       {activeOverlay === "history" ? (
           <HistoryDrawer
             workspace={initialized}
@@ -1823,20 +1672,14 @@ export default function PlannerApp() {
 
       {activeOverlay === "chat" ? (
         <ModalChat onClose={() => setChatOpen(false)} restoreFocusRef={chatTriggerRef}>
-          <ChatPanel
-            workspace={initialized}
-            week={week}
-            view={view}
-            today={today}
-            disabled={connection !== "online" || chatPending || Boolean(chatRetry) || (health !== null && health.codex.status !== "ready")}
-            health={health}
-            message={chatMessage}
-            onMessageChange={setChatMessageWithRecovery}
-            intent={chatIntent}
-            onIntentChange={setChatIntent}
-            onSend={sendContextMessage}
-            onRetry={retryTurn}
-            {...chatAuthorityRecovery}
+          <CodexThreadRail
+            draft={codexDraft}
+            onDraftChange={setCodexDraft}
+            focusKey={codexFocusKey}
+            collapsed={false}
+            onCollapsedChange={() => setChatOpen(false)}
+            offline={connection !== "online"}
+            onReconnect={() => void refresh(true)}
             modal
             onClose={() => setChatOpen(false)}
           />
@@ -1848,7 +1691,35 @@ export default function PlannerApp() {
   );
 }
 
-function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; today: IsoDate; onOpenMeal: (id: string, trigger: HTMLElement) => void; onNavigate: (view: PlannerView) => void }) {
+function MealEditorTrigger({
+  mealId,
+  onOpenMeal,
+  className,
+  children,
+}: {
+  mealId: string;
+  onOpenMeal: (id: string, trigger: HTMLElement) => void;
+  className: string;
+  children: ReactNode;
+}) {
+  return <button className={className} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</button>;
+}
+
+function IngredientList({ meal, emptyClassName }: { meal: Meal; emptyClassName?: string }) {
+  return meal.ingredients.length ? (
+    <ul className="ingredient-list">
+      {meal.ingredients.map((item) => <li key={item.id}><Check size={13} /> {[item.amount, item.ingredient].filter(Boolean).join(" ")}</li>)}
+    </ul>
+  ) : <p className={emptyClassName}>No ingredients listed.</p>;
+}
+
+function WeekView({ week, today, onOpenMeal, onOpenRecipeSummary, onNavigate }: {
+  week: WeekPlan;
+  today: IsoDate;
+  onOpenMeal: (id: string, trigger: HTMLElement) => void;
+  onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
+  onNavigate: (view: PlannerView) => void;
+}) {
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   return (
     <div className="week-view">
@@ -1875,15 +1746,24 @@ function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; tod
                   <span className="meal-meta">Assigned family dinner</span>
                 </div>
               ) : meal ? (
-                <button className="meal-card" type="button" onClick={(event) => onOpenMeal(meal.id, event.currentTarget)}>
+                <article className="meal-card" aria-label={`${meal.title} dinner on ${dayName(date)}`}>
                   <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
                   <strong className="meal-title">{meal.title}</strong>
                   <span className="meal-subtitle">{meal.subtitle}</span>
                   <span className="meal-meta"><MapPin size={12} /> {meal.venue}</span>
                   {meal.prepNote ? <span className="meal-meta"><CheckCircle2 size={12} /> {meal.prepNote}</span> : null}
                   {meal.leftoverNote ? <span className="meal-leftover"><PackageCheck size={12} /> {meal.leftoverNote}</span> : null}
-                  <span className="open-detail">Open recipe <ChevronRight size={14} /></span>
-                </button>
+                  <div className="meal-card-actions">
+                    <RecipeSummaryLink
+                      className="meal-card-preview"
+                      meal={meal}
+                      onOpenRecipeSummary={onOpenRecipeSummary}
+                    >Open recipe <ChevronRight size={14} /></RecipeSummaryLink>
+                    <MealEditorTrigger className="meal-card-editor" mealId={meal.id} onOpenMeal={onOpenMeal}>
+                      <PencilLine size={14} /> Edit meal
+                    </MealEditorTrigger>
+                  </div>
+                </article>
               ) : (
                 <div className="meal-card empty-meal" aria-label={`${dayName(date)} dinner is empty`}>
                   <Circle size={19} />
@@ -1896,7 +1776,7 @@ function WeekView({ week, today, onOpenMeal, onNavigate }: { week: WeekPlan; tod
         })}
       </div>
       <div className="mobile-pressure-strip">
-        <button type="button" onClick={() => onNavigate("prep")}><ListChecks size={15} /> Prep <strong>{week.data.prep.filter((ref) => findStep(week, ref.stepId)?.step.complete).length}/{week.data.prep.length}</strong></button>
+        <button type="button" onClick={() => onNavigate("prep")}><ListChecks size={15} /> Prep <strong>{week.data.prepSessions.flatMap((session) => session.steps).filter((entry) => findStep(week, entry.stepId)?.step.complete).length}/{week.data.prepSessions.flatMap((session) => session.steps).length}</strong></button>
         <button type="button" onClick={() => onNavigate("groceries")}><ShoppingBasket size={15} /> Groceries <strong>{week.data.groceries.filter((item) => item.checked).length}/{week.data.groceries.length}</strong></button>
       </div>
     </div>
@@ -1967,19 +1847,12 @@ function TonightView(props: {
             <h2>{meal.title}</h2>
             <p className="meal-subtitle">{meal.subtitle}</p>
             {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
-            {meal.sourceRecipe ? (
-              <p className="recipe-source">
-                <span>Informational recipe source</span>
-                <a href={meal.sourceRecipe.url} target="_blank" rel="noopener noreferrer">
-                  {meal.sourceRecipe.identity}
-                </a>
-              </p>
-            ) : null}
+            <RecipeSource meal={meal} />
           </div>
           <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
         </div>
         <div className="tonight-actions">
-          <button className="secondary-button" type="button" onClick={(event) => onOpenMeal(meal.id, event.currentTarget)}><PencilLine size={16} /> Recipe</button>
+          <MealEditorTrigger className="secondary-button" mealId={meal.id} onOpenMeal={onOpenMeal}><PencilLine size={16} /> Edit meal</MealEditorTrigger>
           {meal.status !== "cooking" && meal.status !== "cooked" ? (
             <button className="primary-button" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooking" })}><Play size={16} /> Start cooking</button>
           ) : null}
@@ -1999,14 +1872,13 @@ function TonightView(props: {
               disabled={disabled}
               mutate={mutate}
               sendContextMessage={sendContextMessage}
-              contextView="tonight"
             />
           ))}
         </div>
       </div>
       <aside className="tonight-side">
         <div className="plain-panel"><div className="section-title"><ShoppingBasket size={16} /><h3>Ingredients</h3></div>
-          {meal.ingredients.length ? <ul className="ingredient-list">{meal.ingredients.map((item) => <li key={item}><Check size={13} /> {item}</li>)}</ul> : <p>No ingredients listed.</p>}
+          <IngredientList meal={meal} />
         </div>
         <div className="plain-panel"><div className="section-title"><StickyNote size={16} /><h3>Recipe note</h3></div><p>{meal.notes || "No recipe note."}</p></div>
         <div className="plain-panel leftover-plan"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><strong>{meal.leftoverNote || "No leftover plan."}</strong></div>
@@ -2015,7 +1887,7 @@ function TonightView(props: {
   );
 }
 
-function Timer({ step }: { step: InstructionStep }) {
+function useTimerDisplay(step: InstructionStep) {
   const serverOffset = useContext(ServerOffsetContext);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -2023,19 +1895,362 @@ function Timer({ step }: { step: InstructionStep }) {
     const interval = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(interval);
   }, [step.timerStartedAt]);
-  if (!step.timerDurationSeconds) return null;
-  const display = deriveTimerDisplay(
-    step.timerDurationSeconds,
+  return deriveTimerDisplay(
+    step.timerDurationSeconds ?? 0,
     step.timerStartedAt,
     now + serverOffset,
+    step.timerPaused === true,
   );
-  const minutes = Math.floor(display.remainingSeconds / 60).toString().padStart(2, "0");
-  const seconds = (display.remainingSeconds % 60).toString().padStart(2, "0");
+}
+
+type TimerDisplay = ReturnType<typeof deriveTimerDisplay>;
+
+function timerParts(remainingSeconds: number) {
+  return {
+    minutes: Math.floor(remainingSeconds / 60).toString(),
+    seconds: (remainingSeconds % 60).toString().padStart(2, "0"),
+  };
+}
+
+function Timer({ display }: { display: TimerDisplay }) {
+  const { minutes, seconds } = timerParts(display.remainingSeconds);
   return (
     <>
-      <strong>{minutes}:{seconds}</strong>
-      <span>{display.status}</span>
+      <strong>{minutes.padStart(2, "0")}:{seconds}</strong>
+      <span className="timer-status">{display.status}</span>
     </>
+  );
+}
+
+type TimerControlAction = "startInstructionTimer" | "pauseInstructionTimer" | "resetInstructionTimer";
+
+function TimerAction(props: {
+  step: InstructionStep;
+  display: TimerDisplay;
+  controlTarget: string;
+  disabled: boolean;
+  onAction: (type: TimerControlAction) => void;
+}) {
+  const { step, display, controlTarget, disabled, onAction } = props;
+  const action: TimerControlAction = display.status === "elapsed"
+    ? "resetInstructionTimer"
+    : display.status === "running"
+      ? "pauseInstructionTimer"
+      : "startInstructionTimer";
+  const label = action === "pauseInstructionTimer" ? "Pause" : action === "resetInstructionTimer" ? "Reset" : step.timerPaused ? "Resume" : "Start";
+  const Icon = action === "pauseInstructionTimer" ? Pause : action === "resetInstructionTimer" ? RotateCcw : Play;
+  return (
+    <button
+      className="icon-button"
+      type="button"
+      title={`${label} timer`}
+      aria-label={`${label} timer for ${controlTarget}`}
+      disabled={disabled}
+      onClick={() => onAction(action)}
+    ><Icon size={14} /></button>
+  );
+}
+
+function HeaderTimerItem(props: {
+  meal: Meal;
+  step: InstructionStep;
+  disabled: boolean;
+  onOpenMeal: (id: string, trigger: HTMLElement) => void;
+  onAction: (type: TimerControlAction) => void;
+}) {
+  const { meal, step, disabled, onOpenMeal, onAction } = props;
+  const display = useTimerDisplay(step);
+  const { minutes, seconds } = timerParts(display.remainingSeconds);
+  return (
+    <div className="header-timer-item">
+      <div className="header-timer-copy">
+        <MealEditorTrigger className="header-timer-recipe" mealId={meal.id} onOpenMeal={onOpenMeal}>{meal.title}<ChevronRight size={14} /></MealEditorTrigger>
+        <p>{step.instruction}</p>
+      </div>
+      <div className="header-timer-controls">
+        <strong>{minutes.padStart(2, "0")}:{seconds}</strong>
+        <TimerAction
+          step={step}
+          display={display}
+          controlTarget={`${meal.title}: ${step.instruction}`}
+          disabled={disabled}
+          onAction={onAction}
+        />
+      </div>
+    </div>
+  );
+}
+
+function EditablePrepTimer(props: {
+  step: InstructionStep;
+  display: TimerDisplay;
+  disabled: boolean;
+  controlTarget: string;
+  onSetRemaining: (remainingSeconds: number) => void;
+}) {
+  const { step, display, disabled, controlTarget, onSetRemaining } = props;
+  const currentParts = timerParts(display.remainingSeconds);
+  const timerKey = `${step.timerDurationSeconds ?? 0}:${step.timerStartedAt ?? "stopped"}:${step.timerPaused ? "paused" : "ready"}`;
+  const [draft, setDraft] = useState<{
+    minutes: string;
+    seconds: string;
+    timerKey: string;
+  } | null>(null);
+  const activeDraft = draft?.timerKey === timerKey ? draft : null;
+
+  const beginEditing = () => {
+    setDraft((current) => current?.timerKey === timerKey
+      ? current
+      : { ...currentParts, timerKey });
+  };
+  const discardDraft = () => setDraft(null);
+  const commitDraft = () => {
+    if (!activeDraft) {
+      discardDraft();
+      return;
+    }
+    const minutes = Number(activeDraft.minutes);
+    const seconds = Number(activeDraft.seconds);
+    const remainingSeconds = minutes * 60 + seconds;
+    if (
+      !Number.isSafeInteger(minutes) ||
+      !Number.isSafeInteger(seconds) ||
+      minutes < 0 ||
+      seconds < 0 ||
+      seconds > 59 ||
+      remainingSeconds < 1 ||
+      remainingSeconds > 86_400
+    ) {
+      discardDraft();
+      return;
+    }
+    if (remainingSeconds !== display.remainingSeconds) onSetRemaining(remainingSeconds);
+    discardDraft();
+  };
+  const value = activeDraft ?? currentParts;
+  const onSegmentKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      discardDraft();
+      event.currentTarget.blur();
+    }
+  };
+  return (
+    <span
+      className="editable-timer-display"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) commitDraft();
+      }}
+    >
+      <input
+        aria-label={`Timer minutes for ${controlTarget}`}
+        className="timer-segment timer-minutes"
+        disabled={disabled}
+        inputMode="numeric"
+        maxLength={4}
+        onChange={(event) => setDraft((current) => ({
+          ...(current?.timerKey === timerKey ? current : { ...currentParts, timerKey }),
+          minutes: event.target.value.replace(/[^0-9]/g, ""),
+        }))}
+        onFocus={(event) => {
+          beginEditing();
+          event.currentTarget.select();
+        }}
+        onKeyDown={onSegmentKeyDown}
+        pattern="[0-9]*"
+        value={value.minutes}
+      />
+      <span aria-hidden="true">:</span>
+      <input
+        aria-label={`Timer seconds for ${controlTarget}`}
+        className="timer-segment timer-seconds"
+        disabled={disabled}
+        inputMode="numeric"
+        maxLength={2}
+        onChange={(event) => setDraft((current) => ({
+          ...(current?.timerKey === timerKey ? current : { ...currentParts, timerKey }),
+          seconds: event.target.value.replace(/[^0-9]/g, ""),
+        }))}
+        onFocus={(event) => {
+          beginEditing();
+          event.currentTarget.select();
+        }}
+        onKeyDown={onSegmentKeyDown}
+        pattern="[0-9]*"
+        value={value.seconds}
+      />
+      <span className="timer-status">{display.status}</span>
+    </span>
+  );
+}
+
+function InstructionStepContent({ step }: { step: InstructionStep }) {
+  return (
+    <div className="instruction-line-content">
+      <p className="step-instruction">{step.instruction}</p>
+      {step.inputs.length ? <div className="step-inputs">{step.inputs.map((input, index) => <span key={`${input.amount}-${input.ingredient}-${index}`}><strong>{input.amount}</strong> {input.ingredient}</span>)}</div> : null}
+    </div>
+  );
+}
+
+function InstructionStepCommentComposer({
+  step,
+  controlTarget,
+  disabled,
+  onClose,
+  onUpdateStepNote,
+  sendContextMessage,
+  className = "instruction-inline-comment",
+  actionsClassName = "step-comment-actions",
+  showLimit = true,
+}: {
+  step: InstructionStep;
+  controlTarget: string;
+  disabled: boolean;
+  onClose: () => void;
+  onUpdateStepNote: (note: string, options: MutateOptions) => void;
+  sendContextMessage: SendContextMessage;
+  className?: string;
+  actionsClassName?: string;
+  showLimit?: boolean;
+}) {
+  const [comment, setComment] = useState(step.note ?? "");
+  const noteDraft = useVersionedDraft();
+  const close = () => onClose();
+  return <div className={className}>
+    <textarea
+      aria-label={`Note or Codex request for ${controlTarget}`}
+      maxLength={MAX_COMMAND_TEXT_LENGTH}
+      value={comment}
+      disabled={disabled}
+      onChange={(event) => {
+        noteDraft.begin();
+        setComment(event.target.value);
+      }}
+      placeholder="What changed, or what should Codex help with?"
+    />
+    {showLimit ? <small className="field-limit">{comment.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small> : null}
+    <div className={actionsClassName}>
+      <button className="secondary-button" type="button" onClick={close}>Cancel</button>
+      {step.note ? <button
+        className="secondary-button"
+        type="button"
+        disabled={disabled}
+        onClick={() => onUpdateStepNote("", noteDraft.mutationOptions(() => {
+          setComment("");
+          close();
+        }))}
+      >Clear comment</button> : null}
+      <button
+        className="secondary-button"
+        type="button"
+        disabled={disabled || !comment.trim()}
+        aria-label={`Save comment for ${controlTarget}`}
+        onClick={() => onUpdateStepNote(comment.trim(), noteDraft.mutationOptions(close))}
+      ><StickyNote size={14} /> Save comment</button>
+      <button
+        className="primary-button"
+        type="button"
+        disabled={disabled || !comment.trim()}
+        aria-label={`Ask Codex about ${controlTarget}`}
+        onClick={() => {
+          const submittedComment = comment.trim();
+          void sendContextMessage(submittedComment).then((accepted) => {
+            if (!accepted) return;
+            setComment((current) => {
+              if (current.trim() !== submittedComment) return current;
+              noteDraft.versionRef.current = null;
+              close();
+              return "";
+            });
+          });
+        }}
+      ><Bot size={14} /> Ask Codex</button>
+    </div>
+  </div>;
+}
+
+function InstructionStepLine(props: {
+  className?: string;
+  dataTestId?: string;
+  mainClassName?: string;
+  step: InstructionStep;
+  meal: Meal;
+  stepNumber: number;
+  disabled: boolean;
+  onComplete: (complete: boolean) => void;
+  onTimerAction: (type: TimerControlAction) => void;
+  leading?: ReactNode;
+  trailing?: ReactNode;
+  editableTimer?: boolean;
+  onSetRemaining?: (remainingSeconds: number) => void;
+  onDragOver?: (event: ReactDragEvent<HTMLElement>) => void;
+  onDrop?: (event: ReactDragEvent<HTMLElement>) => void;
+  children?: ReactNode;
+}) {
+  const {
+    className = "",
+    dataTestId,
+    mainClassName = "",
+    step,
+    meal,
+    stepNumber,
+    disabled,
+    onComplete,
+    onTimerAction,
+    leading,
+    trailing,
+    editableTimer = false,
+    onSetRemaining,
+    onDragOver,
+    onDrop,
+    children,
+  } = props;
+  const controlTarget = stepControlTarget(meal, step, stepNumber);
+  const display = useTimerDisplay(step);
+  return (
+    <article
+      className={`instruction-step instruction-step-line ${leading ? "has-leading" : ""} ${className} ${step.complete ? "complete" : ""}`}
+      aria-label={controlTarget}
+      data-testid={dataTestId}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
+      <div className={`instruction-line-main ${mainClassName}`.trim()}>
+        {leading ? <div className="instruction-line-leading">{leading}</div> : null}
+        <label className="instruction-line-checkbox">
+          <input
+            type="checkbox"
+            checked={step.complete}
+            disabled={disabled}
+            aria-label={`${step.complete ? "Reopen" : "Complete"} ${controlTarget}`}
+            onChange={(event) => onComplete(event.target.checked)}
+          />
+        </label>
+        <InstructionStepContent step={step} />
+        {trailing ? <div className="instruction-line-trailing">{trailing}</div> : null}
+      </div>
+      {step.timerDurationSeconds ? (
+        <div className={`step-timer instruction-line-timer ${step.timerStartedAt !== undefined ? "running" : ""}`}>
+          <Clock3 size={14} />
+          {editableTimer && onSetRemaining ? (
+            <EditablePrepTimer step={step} display={display} disabled={disabled || step.complete} controlTarget={controlTarget} onSetRemaining={onSetRemaining} />
+          ) : <Timer display={display} />}
+          <TimerAction
+            step={step}
+            display={display}
+            controlTarget={controlTarget}
+            disabled={disabled || step.complete}
+            onAction={onTimerAction}
+          />
+        </div>
+      ) : null}
+      {children}
+    </article>
   );
 }
 
@@ -2047,14 +2262,13 @@ function StepCard(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
-  contextView: PlannerView;
   actions?: ReactNode;
   editable?: boolean;
 }) {
-  const { step, meal, stepNumber, week, disabled, mutate, sendContextMessage, contextView, actions, editable = false } = props;
+  const { step, meal, stepNumber, week, disabled, mutate, sendContextMessage, actions, editable = false } = props;
   const archived = week.status === "archived";
   const controlTarget = stepControlTarget(meal, step, stepNumber);
-  const [comment, setComment] = useState("");
+  const [commentOpen, setCommentOpen] = useState(false);
   const [editAttempted, setEditAttempted] = useState(false);
   const canonicalInstructionDraft = {
     inputs: step.inputs.map((input) => `${input.amount} | ${input.ingredient}`).join("\n"),
@@ -2062,13 +2276,11 @@ function StepCard(props: {
     timerMinutes: step.timerDurationSeconds ? String(step.timerDurationSeconds / 60) : "",
   };
   const instructionDraft = useVersionedDraft<typeof canonicalInstructionDraft>();
-  const noteDraft = useVersionedDraft();
   const {
     inputs: draftInputs,
     instruction: draftInstruction,
     timerMinutes: draftTimerMinutes,
   } = instructionDraft.compose(canonicalInstructionDraft);
-  const chatContext: PlannerChatContext = { view: contextView, weekId: week.id, mealId: meal.id, stepId: step.id };
   const parsedInputs = draftInputs.split("\n").filter((line) => line.trim()).map((line) => {
     const [amount, ...ingredient] = line.split("|");
     return { amount: amount.trim(), ingredient: ingredient.join("|").trim() };
@@ -2097,50 +2309,27 @@ function StepCard(props: {
     );
   };
   return (
-    <article className={`instruction-step ${step.complete ? "complete" : ""}`} aria-label={controlTarget}>
-      <div className="instruction-step-heading">
-        <label className="step-checkbox">
-          <input
-            type="checkbox"
-            checked={step.complete}
-            disabled={disabled}
-            aria-label={`${step.complete ? "Reopen" : "Complete"} ${controlTarget}`}
-            onChange={(event) => void mutate({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete: event.target.checked })}
-          />
-          {step.complete ? "Done" : "To do"}
-        </label>
+    <InstructionStepLine
+      className="recipe-instruction-step"
+      step={step}
+      meal={meal}
+      stepNumber={stepNumber}
+      disabled={disabled}
+      onComplete={(complete) => void mutate({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete })}
+      onTimerAction={(type) => void mutate({ type, weekId: week.id, stepId: step.id })}
+      trailing={<div className="instruction-line-actions">
         {actions}
-      </div>
-      {step.inputs.length ? <div className="step-inputs">{step.inputs.map((input, index) => <span key={`${input.amount}-${input.ingredient}-${index}`}><strong>{input.amount}</strong> {input.ingredient}</span>)}</div> : null}
-      <p className="step-instruction">{step.instruction}</p>
-      {step.timerDurationSeconds ? (
-        <div className={`step-timer ${step.timerStartedAt !== undefined ? "running" : ""}`}>
-          <Clock3 size={14} /><Timer step={step} />
-          <button
-            className="icon-button"
-            type="button"
-            title={step.timerStartedAt !== undefined ? "Reset timer" : "Start timer"}
-            aria-label={`${step.timerStartedAt !== undefined ? "Reset" : "Start"} timer for ${controlTarget}`}
-            disabled={disabled || step.complete}
-            onClick={() => void mutate({ type: step.timerStartedAt !== undefined ? "resetInstructionTimer" : "startInstructionTimer", weekId: week.id, stepId: step.id })}
-          >
-            {step.timerStartedAt !== undefined ? <RotateCcw size={14} /> : <Play size={14} />}
-          </button>
-        </div>
-      ) : null}
-      {step.note ? (
-        <div className="step-note">
-          <StickyNote size={14} /><p>{step.note}</p>
-          <button
-            className="icon-button"
-            type="button"
-            title="Clear step note"
-            aria-label={`Clear note for ${controlTarget}`}
-            disabled={disabled}
-            onClick={() => void mutate({ type: "updateInstructionStepNote", weekId: week.id, stepId: step.id, note: "" })}
-          ><X size={14} /></button>
-        </div>
-      ) : null}
+        {!archived ? <button
+          className={`icon-button instruction-comment-trigger ${step.note ? "has-note" : ""}`}
+          type="button"
+          title={step.note ? "Edit step comment" : "Add step comment"}
+          aria-label={`${step.note ? "Edit" : "Add"} comment for ${controlTarget}`}
+          aria-expanded={commentOpen}
+          disabled={disabled}
+          onClick={() => setCommentOpen((current) => !current)}
+        ><MessageSquareText size={15} /></button> : null}
+      </div>}
+    >
       {editable && !archived ? (
         <details className="step-comment">
           <summary aria-label={`Edit ${controlTarget}`}><PencilLine size={14} /> Edit instruction</summary>
@@ -2158,42 +2347,210 @@ function StepCard(props: {
           </div>
         </details>
       ) : null}
-      {!archived ? <details className="step-comment">
-        <summary aria-label={`Add note or ask ChatGPT about ${controlTarget}`}><MessageSquareText size={14} /> Add note or ask ChatGPT</summary>
-        <div className="step-comment-body">
-          <textarea aria-label={`Note or ChatGPT request for ${controlTarget}`} maxLength={MAX_COMMAND_TEXT_LENGTH} value={comment} onChange={(event) => { noteDraft.begin(); setComment(event.target.value); }} placeholder="What changed, or what should ChatGPT help with?" />
-          <small className="field-limit">{comment.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small>
-          <div className="step-comment-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={disabled || !comment.trim()}
-              aria-label={`Add note for ${controlTarget}`}
-              onClick={() => void mutate(
-                { type: "updateInstructionStepNote", weekId: week.id, stepId: step.id, note: comment.trim() },
-                noteDraft.mutationOptions(() => setComment("")),
-              )}
-            ><StickyNote size={14} /> Add note</button>
-            <button
-              className="primary-button"
-              type="button"
-              disabled={disabled || !comment.trim()}
-              aria-label={`Send ${controlTarget} to ChatGPT`}
-              onClick={() => {
-                const submittedComment = comment.trim();
-                void sendContextMessage(submittedComment, chatContext, () => {
-                  setComment((current) => {
-                    if (current.trim() !== submittedComment) return current;
-                    noteDraft.versionRef.current = null;
-                    return "";
-                  });
-                });
-              }}
-            ><Bot size={14} /> Send to ChatGPT</button>
-          </div>
-        </div>
-      </details> : null}
-    </article>
+      {!archived && commentOpen ? <InstructionStepCommentComposer
+        step={step}
+        controlTarget={controlTarget}
+        disabled={disabled}
+        onClose={() => setCommentOpen(false)}
+        onUpdateStepNote={(note, options) => { void mutate({ type: "updateInstructionStepNote", weekId: week.id, stepId: step.id, note }, options); }}
+        sendContextMessage={sendContextMessage}
+      /> : null}
+    </InstructionStepLine>
+  );
+}
+
+function PrepSessionStepRow(props: {
+  entry: PrepSessionStep;
+  sessionId: string;
+  step: InstructionStep;
+  meal: Meal;
+  stepNumber: number;
+  queuePosition: number;
+  week: WeekPlan;
+  disabled: boolean;
+  mutate: Mutate;
+  sendContextMessage: SendContextMessage;
+  onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
+  draggedEntryId: string | null;
+  onDragStarted: (entryId: string) => void;
+  onDragEnded: () => void;
+  onMove: (entryId: string, targetPosition: number) => void;
+  onAddStep: (stepId: string, targetPosition: number) => void;
+}) {
+  const {
+    entry,
+    sessionId,
+    step,
+    meal,
+    stepNumber,
+    queuePosition,
+    week,
+    disabled,
+    mutate,
+    sendContextMessage,
+    onOpenRecipeSummary,
+    draggedEntryId,
+    onDragStarted,
+    onDragEnded,
+    onMove,
+    onAddStep,
+  } = props;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [actionPending, setActionPending] = useState(false);
+  const controlTarget = stepControlTarget(meal, step, stepNumber);
+  const rowDisabled = disabled || actionPending;
+  const runMutation = (command: HouseholdCommand, options?: MutateOptions) => {
+    if (rowDisabled) return;
+    setActionPending(true);
+    void mutate(command, options).finally(() => setActionPending(false));
+  };
+  const openComment = () => {
+    if (rowDisabled) return;
+    setCommentOpen(true);
+    setMenuOpen(false);
+  };
+  const isDragging = draggedEntryId === entry.id;
+  return (
+    <InstructionStepLine
+      className={`prep-queue-step ${isDragging ? "dragging" : ""}`}
+      dataTestId="prep-session-step"
+      mainClassName="prep-queue-main"
+      step={step}
+      meal={meal}
+      stepNumber={stepNumber}
+      disabled={rowDisabled}
+      onComplete={(complete) => runMutation({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete })}
+      onTimerAction={(type) => runMutation({ type, weekId: week.id, stepId: step.id })}
+      editableTimer
+      onSetRemaining={(remainingSeconds) => runMutation({ type: "setInstructionTimerRemaining", weekId: week.id, stepId: step.id, remainingSeconds })}
+      onDragOver={(event) => {
+        if (rowDisabled || (!draggedEntryId && !event.dataTransfer.types.includes("application/x-prep-recipe-step"))) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const sourceStepId = event.dataTransfer.getData("application/x-prep-recipe-step");
+        const sourceEntryId = event.dataTransfer.getData("application/x-prep-session-entry") || draggedEntryId;
+        if (!rowDisabled && sourceStepId) onAddStep(sourceStepId, queuePosition);
+        else if (!rowDisabled && sourceEntryId && sourceEntryId !== entry.id) onMove(sourceEntryId, queuePosition);
+        onDragEnded();
+      }}
+      leading={<button
+        className="prep-drag-handle"
+        type="button"
+        draggable={!rowDisabled}
+        disabled={rowDisabled}
+        aria-label={`Reorder ${controlTarget}`}
+        title="Drag to reorder"
+        onDragStart={(event) => {
+          if (rowDisabled) return;
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("application/x-prep-session-entry", entry.id);
+          onDragStarted(entry.id);
+        }}
+        onDragEnd={onDragEnded}
+        onKeyDown={(event) => {
+          if (rowDisabled) return;
+          if (event.key === "ArrowUp" && queuePosition > 0) {
+            event.preventDefault();
+            onMove(entry.id, queuePosition - 1);
+          }
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            onMove(entry.id, queuePosition + 1);
+          }
+        }}
+      ><GripVertical size={17} /></button>}
+      trailing={<div className="prep-overflow">
+        <button
+          className="icon-button prep-overflow-trigger"
+          type="button"
+          aria-label={`More options for ${controlTarget}`}
+          aria-expanded={menuOpen}
+          disabled={rowDisabled}
+          onClick={() => setMenuOpen((current) => !current)}
+        ><EllipsisVertical size={17} /></button>
+        {menuOpen ? <div className="prep-overflow-menu" role="menu" aria-label={`Options for ${controlTarget}`}>
+          <RecipeSummaryLink
+            className="grocery-meal-link prep-menu-recipe"
+            meal={meal}
+            role="menuitem"
+            onBeforeOpen={() => setMenuOpen(false)}
+            onOpenRecipeSummary={onOpenRecipeSummary}
+          />
+          <button type="button" role="menuitem" disabled={rowDisabled} onClick={openComment}><MessageSquareText size={14} /> {step.note ? "Edit comment" : "Add comment"}</button>
+          <button
+            className="danger"
+            type="button"
+            role="menuitem"
+            disabled={rowDisabled}
+            onClick={() => {
+              setMenuOpen(false);
+              runMutation({ type: "removePrepSessionStep", weekId: week.id, sessionId, entryId: entry.id });
+            }}
+          ><Trash2 size={14} /> Remove from prep</button>
+        </div> : null}
+      </div>}
+    >
+      {commentOpen ? <InstructionStepCommentComposer
+        step={step}
+        controlTarget={controlTarget}
+        disabled={rowDisabled}
+        onClose={() => setCommentOpen(false)}
+        onUpdateStepNote={(note, options) => runMutation({ type: "updateInstructionStepNote", weekId: week.id, stepId: step.id, note }, options)}
+        sendContextMessage={sendContextMessage}
+        className="instruction-inline-comment prep-inline-comment"
+        showLimit={false}
+      /> : null}
+    </InstructionStepLine>
+  );
+}
+
+function PrepRecipeSource({
+  week,
+  disabled,
+  selectedMealId,
+  onSelectMeal,
+  targetSessionLabel,
+  onRecipeStepDragStart,
+  onRecipeStepDragEnd,
+}: {
+  week: WeekPlan;
+  disabled: boolean;
+  selectedMealId: string;
+  onSelectMeal: (mealId: string) => void;
+  targetSessionLabel: string | null;
+  onRecipeStepDragStart: () => void;
+  onRecipeStepDragEnd: () => void;
+}) {
+  const selectedMeal = week.data.meals.find((meal) => meal.id === selectedMealId) ?? week.data.meals[0];
+  return (
+    <div className="prep-recipe-source" aria-label="Recipe instructions">
+      <p className="eyebrow">Recipe instructions</p>
+      <p className="prep-source-help">Choose a recipe, then drag its steps onto a prep date or into {targetSessionLabel ?? "the selected prep session"}.</p>
+      <div className="prep-recipe-picker" role="list" aria-label="Recipes">
+        {week.data.meals.map((meal) => <button key={meal.id} type="button" className={meal.id === selectedMeal?.id ? "active" : ""} aria-pressed={meal.id === selectedMeal?.id} onClick={() => onSelectMeal(meal.id)}>{meal.title}</button>)}
+      </div>
+      {selectedMeal ? <div className="prep-recipe-steps">
+        <strong>{selectedMeal.title}</strong>
+        {selectedMeal.instructions.map((step, index) => <button
+          key={step.id}
+          className={`prep-source-step ${step.complete ? "complete" : ""}`}
+          type="button"
+          draggable={!disabled}
+          aria-label={`Drag ${stepControlTarget(selectedMeal, step, index + 1)} into a prep session`}
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "copy";
+            event.dataTransfer.setData("application/x-prep-recipe-step", step.id);
+            onRecipeStepDragStart();
+          }}
+          onDragEnd={onRecipeStepDragEnd}
+        ><GripVertical size={14} /><span>{step.instruction}</span>{step.complete ? <Check size={14} /> : null}</button>)}
+      </div> : null}
+    </div>
   );
 }
 
@@ -2202,111 +2559,408 @@ function PrepView(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
-  onOpenMeal: (id: string, trigger: HTMLElement) => void;
+  onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
 }) {
-  const { week, disabled, mutate, sendContextMessage, onOpenMeal } = props;
-  const [stepId, setStepId] = useState("");
-  const [prepDate, setPrepDate] = useState<IsoDate>(addIsoDateDays(week.id, -1));
+  const { week, disabled, mutate, sendContextMessage, onOpenRecipeSummary } = props;
+  const [selectedMealId, setSelectedMealId] = useState(week.data.meals[0]?.id ?? "");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(week.data.prepSessions[0]?.id ?? null);
+  const [sessionLabel, setSessionLabel] = useState("");
+  const [sessionDate, setSessionDate] = useState("");
+  const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
+  const [dropTargetSessionId, setDropTargetSessionId] = useState<string | null>(null);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const sourceRestoreRef = useRef<HTMLButtonElement>(null);
+  const sessionTabListRef = useRef<HTMLDivElement>(null);
   const prepDraft = useVersionedDraft();
-  const dates = Array.from({ length: 8 }, (_, index) => addIsoDateDays(week.id, index - 1));
-  const existing = new Set(week.data.prep.map((reference) => reference.stepId));
-  const available = week.data.meals.flatMap((meal) => meal.instructions.filter((step) => !existing.has(step.id)).map((step) => ({ meal, step })));
-  const sorted = [...week.data.prep].sort((left, right) => left.prepDate.localeCompare(right.prepDate) || left.position - right.position);
+  const selectedSession = week.data.prepSessions.find((session) => session.id === selectedSessionId) ?? week.data.prepSessions[0] ?? null;
+  const selectedSessionDateLabel = selectedSession
+    ? selectedSession.prepDate
+      ? formatCalendarDate(selectedSession.prepDate, { weekday: "short", month: "short", day: "numeric" })
+      : "Undated"
+    : null;
+  const sessionEntries = week.data.prepSessions.flatMap((session) => session.steps);
+  const completedEntries = sessionEntries.filter((entry) => findStep(week, entry.stepId)?.step.complete).length;
+  const createSession = () => {
+    const label = sessionLabel.trim();
+    if (!label) return;
+    void mutate(
+      { type: "createPrepSession", weekId: week.id, label, prepDate: sessionDate ? sessionDate as IsoDate : null },
+      prepDraft.mutationOptions(() => { setSessionLabel(""); setSessionDate(""); }),
+    );
+  };
+  const addStep = (sessionId: string, stepId: string, targetPosition: number) => {
+    void mutate({ type: "addPrepSessionStep", weekId: week.id, sessionId, stepId, targetPosition });
+  };
+  const moveEntry = (sessionId: string, entryId: string, targetPosition: number) => {
+    void mutate({ type: "movePrepSessionStep", weekId: week.id, sessionId, entryId, targetPosition });
+  };
+  const removeSelectedSession = () => {
+    if (!selectedSession) return;
+    const sessionIndex = week.data.prepSessions.findIndex((session) => session.id === selectedSession.id);
+    setSelectedSessionId(week.data.prepSessions[sessionIndex + 1]?.id ?? week.data.prepSessions[sessionIndex - 1]?.id ?? null);
+    void mutate({ type: "removePrepSession", weekId: week.id, sessionId: selectedSession.id });
+  };
+  const scrollSessionTabs = (distance: number) => {
+    sessionTabListRef.current?.scrollBy({ left: distance, behavior: "smooth" });
+  };
+  const isRecipeStepDrag = (event: ReactDragEvent<HTMLElement>) =>
+    !disabled && event.dataTransfer.types.includes("application/x-prep-recipe-step");
+  const receiveRecipeStep = (event: ReactDragEvent<HTMLElement>, sessionId: string, targetPosition: number) => {
+    if (!isRecipeStepDrag(event)) return;
+    const stepId = event.dataTransfer.getData("application/x-prep-recipe-step");
+    if (!stepId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    addStep(sessionId, stepId, targetPosition);
+    setSelectedSessionId(sessionId);
+    setDropTargetSessionId(null);
+    setDraggedEntryId(null);
+  };
+  const receiveRecipeStepOnDate = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isRecipeStepDrag(event)) return;
+    const targetTab = Array.from(sessionTabListRef.current?.querySelectorAll<HTMLButtonElement>(".prep-session-tab") ?? [])
+      .find((tab) => {
+        const bounds = tab.getBoundingClientRect();
+        return event.clientX >= bounds.left && event.clientX <= bounds.right;
+      });
+    const sessionId = targetTab?.dataset.prepSessionId;
+    const session = sessionId ? week.data.prepSessions.find((candidate) => candidate.id === sessionId) : null;
+    if (!session) return;
+    receiveRecipeStep(event, session.id, session.steps.length);
+  };
   return (
     <div className="list-surface">
       <div className="surface-summary">
-        <div><p className="eyebrow">Independent recipe steps</p><h2>Prep in the order you choose</h2></div>
-        <span className="summary-chip"><CheckCircle2 size={14} /> {sorted.filter((reference) => findStep(week, reference.stepId)?.step.complete).length}/{sorted.length} done</span>
+        <div><p className="eyebrow">Active-week batch work</p><h2>Prep sessions</h2></div>
+        <div className="surface-summary-actions">
+          <span className="summary-chip"><CheckCircle2 size={14} /> {completedEntries}/{sessionEntries.length} done</span>
+        </div>
       </div>
       {week.status !== "archived" ? (
-        <div className="prep-add-row">
-          <select value={stepId} onChange={(event) => { prepDraft.begin(); setStepId(event.target.value); }} aria-label="Instruction to add to prep">
-            <option value="">Choose a recipe step</option>
-            {available.map(({ meal, step }) => <option key={step.id} value={step.id}>{meal.title}: {step.instruction}</option>)}
-          </select>
-          <select value={prepDate} onChange={(event) => { prepDraft.begin(); setPrepDate(event.target.value as IsoDate); }} aria-label="Prep date">
-            {dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "short", month: "short", day: "numeric" })}</option>)}
-          </select>
-          <button
-            className="secondary-button"
-            type="button"
-            disabled={disabled || !stepId}
-            onClick={() => void mutate(
-              {
-                type: "setPrepPlan",
-                weekId: week.id,
-                entries: [...sorted.map((reference) => ({ stepId: reference.stepId, prepDate: reference.prepDate })), { stepId, prepDate }],
-              },
-              prepDraft.mutationOptions(() => setStepId("")),
-            )}
-          ><Plus size={15} /> Add to prep</button>
+        <div className="prep-session-create">
+          <input aria-label="Prep session name" maxLength={MAX_COMMAND_TEXT_LENGTH} placeholder="Session name, e.g. Sunday batch" value={sessionLabel} onChange={(event) => { prepDraft.begin(); setSessionLabel(event.target.value); }} />
+          <input aria-label="Prep session date" type="date" value={sessionDate} onChange={(event) => { prepDraft.begin(); setSessionDate(event.target.value); }} />
+          <button className="secondary-button" type="button" disabled={disabled || !sessionLabel.trim()} onClick={createSession}><Plus size={15} /> New session</button>
         </div>
       ) : null}
-      <div className="prep-step-list">
-        {dates.map((date) => {
-          const references = sorted.filter((reference) => reference.prepDate === date);
-          if (!references.length) return null;
-          return (
-            <section className="prep-day-group" key={date}>
-              <div className="section-title"><CalendarDays size={16} /><h3>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</h3><span>{references.length} steps</span></div>
-              {references.map((reference, index) => {
-                const resolved = findStep(week, reference.stepId);
+      <div className="prep-session-workspace">
+        <div className="prep-session-list">
+          {week.data.prepSessions.length ? <>
+            <div className="prep-session-tabs">
+              <div className="prep-session-tab-navigation">
+                <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Scroll prep sessions earlier" title="Earlier prep sessions" onClick={() => scrollSessionTabs(-240)}><ChevronLeft size={15} /></button>
+                <div
+                  ref={sessionTabListRef}
+                  className="prep-session-tablist"
+                  role="tablist"
+                  aria-label="Prep sessions"
+                  onDragOver={(event) => {
+                    if (!isRecipeStepDrag(event)) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                  }}
+                  onDrop={receiveRecipeStepOnDate}
+                >
+                  {week.data.prepSessions.map((session) => {
+                    const selected = session.id === selectedSession?.id;
+                    const dateLabel = session.prepDate ? formatCalendarDate(session.prepDate, { weekday: "short", month: "short", day: "numeric" }) : "Undated";
+                    return <button
+                      key={session.id}
+                      id={`prep-session-tab-${session.id}`}
+                      className={`prep-session-tab${selected ? " active" : ""}${dropTargetSessionId === session.id ? " drop-target" : ""}`}
+                      type="button"
+                      role="tab"
+                      data-prep-session-id={session.id}
+                      aria-label={`${session.label} · ${dateLabel} · ${session.steps.length} ${session.steps.length === 1 ? "step" : "steps"}`}
+                      aria-selected={selected}
+                      aria-controls={`prep-session-panel-${session.id}`}
+                      onClick={() => setSelectedSessionId(session.id)}
+                      onDragEnter={(event) => {
+                        if (isRecipeStepDrag(event)) setDropTargetSessionId(session.id);
+                      }}
+                      onDragOver={(event) => {
+                        if (!isRecipeStepDrag(event)) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "copy";
+                        setDropTargetSessionId(session.id);
+                      }}
+                      onDrop={(event) => receiveRecipeStep(event, session.id, session.steps.length)}
+                    ><span>{dateLabel}</span></button>;
+                  })}
+                </div>
+                <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Scroll prep sessions later" title="Later prep sessions" onClick={() => scrollSessionTabs(240)}><ChevronRight size={15} /></button>
+              </div>
+              <div className="prep-session-actions">
+                <button ref={sourceRestoreRef} className="secondary-button prep-session-add-steps" type="button" disabled={disabled || !week.data.meals.length || !selectedSession} title={selectedSessionDateLabel ? `Add recipe steps to ${selectedSessionDateLabel}` : "Choose a prep session first"} aria-label={selectedSessionDateLabel ? `Add recipe steps to ${selectedSessionDateLabel}` : "Choose a prep session first"} onClick={() => setSourceOpen(true)}><ListChecks size={15} /> Add steps</button>
+                {!disabled && selectedSession ? <button className="icon-button danger prep-session-tab-delete" type="button" title={`Delete ${selectedSession.label}`} aria-label={`Delete ${selectedSession.label}`} onClick={removeSelectedSession}><Trash2 size={15} /></button> : null}
+              </div>
+            </div>
+            {selectedSession ? <section
+              id={`prep-session-panel-${selectedSession.id}`}
+              className={`prep-session${dropTargetSessionId === selectedSession.id ? " drop-target" : ""}`}
+              role="tabpanel"
+              aria-labelledby={`prep-session-tab-${selectedSession.id}`}
+              onDragOver={(event) => {
+                if (!isRecipeStepDrag(event)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+                setDropTargetSessionId(selectedSession.id);
+              }}
+              onDrop={(event) => {
+                receiveRecipeStep(event, selectedSession.id, selectedSession.steps.length);
+              }}
+            >
+              {dropTargetSessionId === selectedSession.id ? <p className="prep-session-drop-hint">Drop into {selectedSessionDateLabel}</p> : null}
+              <div className="prep-step-list">
+                {selectedSession.steps.map((entry, index) => {
+                const resolved = findStep(week, entry.stepId);
                 if (!resolved) return null;
-                const target = stepControlTarget(resolved.meal, resolved.step, resolved.position + 1);
-                const actions = (
-                  <div className="prep-reference-actions prep-schedule-actions">
-                    <button className="step-meal-link" type="button" aria-label={`Open recipe for ${target}`} onClick={(event) => onOpenMeal(resolved.meal.id, event.currentTarget)}>{resolved.meal.title}<ChevronRight size={13} /></button>
-                    <button className="icon-button" type="button" title={`Move ${target} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
-                    <button className="icon-button" type="button" title={`Move ${target} down`} disabled={disabled || index === references.length - 1} onClick={() => void mutate({ type: "movePrepReference", weekId: week.id, referenceId: reference.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
-                    <select value={reference.prepDate} disabled={disabled} aria-label={`Prep date for ${target}`} onChange={(event) => void mutate({ type: "reschedulePrepReference", weekId: week.id, referenceId: reference.id, prepDate: event.target.value as IsoDate })}>
-                      {dates.map((target) => <option key={target} value={target}>{formatCalendarDate(target, { weekday: "short", day: "numeric" })}</option>)}
-                    </select>
-                    <button className="icon-button danger" type="button" title={`Remove ${target} from prep`} disabled={disabled} onClick={() => void mutate({ type: "removePrepReference", weekId: week.id, referenceId: reference.id })}><Trash2 size={14} /></button>
-                  </div>
-                );
-                return <StepCard key={reference.id} step={resolved.step} meal={resolved.meal} stepNumber={resolved.position + 1} week={week} disabled={disabled} mutate={mutate} sendContextMessage={sendContextMessage} contextView="prep" actions={actions} />;
+                return <PrepSessionStepRow
+                  key={entry.id}
+                  entry={entry}
+                  sessionId={selectedSession.id}
+                  step={resolved.step}
+                  meal={resolved.meal}
+                  stepNumber={resolved.position + 1}
+                  queuePosition={index}
+                  week={week}
+                  disabled={disabled}
+                  mutate={mutate}
+                  sendContextMessage={sendContextMessage}
+                  onOpenRecipeSummary={onOpenRecipeSummary}
+                  draggedEntryId={draggedEntryId}
+                  onDragStarted={setDraggedEntryId}
+                  onDragEnded={() => setDraggedEntryId(null)}
+                  onMove={(entryId, targetPosition) => moveEntry(selectedSession.id, entryId, targetPosition)}
+                  onAddStep={(stepId, targetPosition) => addStep(selectedSession.id, stepId, targetPosition)}
+                />;
               })}
-            </section>
-          );
-        })}
-        {!sorted.length ? <p className="empty-copy">No steps are scheduled for prep. Add any recipe step above.</p> : null}
+                {!selectedSession.steps.length ? <p className="empty-copy">Drag recipe instructions here.</p> : null}
+              </div>
+            </section> : null}
+          </> : null}
+          {!week.data.prepSessions.length ? <p className="empty-copy">Create a prep session, then drag recipe instructions into it.</p> : null}
+        </div>
       </div>
+      {sourceOpen && typeof document !== "undefined" ? createPortal(<aside className="prep-source-window" role="dialog" aria-label="Recipe instructions">
+        <header className="prep-source-window-heading">
+          <div><p className="eyebrow">Batch prep</p><h3>Recipe instructions</h3></div>
+          <button className="icon-button" type="button" title="Close recipe steps" aria-label="Close recipe steps" onClick={() => setSourceOpen(false)}><X size={16} /></button>
+        </header>
+        <PrepRecipeSource
+          week={week}
+          disabled={disabled}
+          selectedMealId={selectedMealId}
+          onSelectMeal={setSelectedMealId}
+          targetSessionLabel={selectedSessionDateLabel}
+          onRecipeStepDragStart={() => document.body.classList.add("recipe-step-dragging")}
+          onRecipeStepDragEnd={() => {
+            document.body.classList.remove("recipe-step-dragging");
+            setDropTargetSessionId(null);
+          }}
+        />
+      </aside>, document.body) : null}
     </div>
   );
 }
 
-function GroceryView({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  const [filter, setFilter] = useState<"all" | "open" | "done">("all");
-  const [item, setItem] = useState("");
-  const [detail, setDetail] = useState("");
-  const [section, setSection] = useState<GroceryItem["section"]>("Produce");
-  const [addAttempted, setAddAttempted] = useState(false);
-  const groceryDraft = useVersionedDraft();
-  const visible = week.data.groceries.filter((entry) => filter === "all" || (filter === "done" ? entry.checked : !entry.checked));
-  const checked = week.data.groceries.filter((entry) => entry.checked).length;
-  const addIssues = validateGroceryDraft({ item, detail });
-  const addGrocery = () => {
-    setAddAttempted(true);
-    if (hasValidationIssues(addIssues)) return;
+const GROCERY_SOURCE_LABELS = {
+  shop: "Shop",
+  farm_box: "Farm box",
+  on_hand: "On hand",
+} as const;
+
+type GroceryFilter = "to_buy" | "all" | "shop" | "farm_box" | "on_hand" | "done";
+
+const GROCERY_FILTERS: Array<{ value: GroceryFilter; label: string }> = [
+  { value: "to_buy", label: "To buy" },
+  { value: "all", label: "All" },
+  { value: "shop", label: "Shop" },
+  { value: "farm_box", label: "Farm box" },
+  { value: "on_hand", label: "On hand" },
+  { value: "done", label: "Done" },
+];
+
+function RecipeSummaryLink({
+  meal,
+  onOpenRecipeSummary,
+  className = "grocery-meal-link",
+  role,
+  onBeforeOpen,
+  children,
+}: {
+  meal: Meal;
+  onOpenRecipeSummary: (mealId: string, trigger: HTMLElement) => void;
+  className?: string;
+  role?: "menuitem";
+  onBeforeOpen?: () => void;
+  children?: ReactNode;
+}) {
+  return (
+    <button
+      className={className}
+      type="button"
+      role={role}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onBeforeOpen?.();
+        onOpenRecipeSummary(meal.id, event.currentTarget);
+      }}
+    >{children ?? <><Utensils size={11} /> {meal.title}</>}</button>
+  );
+}
+
+function isGroceryRowControlTarget(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : null;
+  return Boolean(element?.closest("button, input, select, label, a, textarea, [data-grocery-row-control]"));
+}
+
+function GroceryView({
+  week,
+  disabled,
+  mutate,
+  onOpenRecipeSummary,
+}: {
+  week: WeekPlan;
+  disabled: boolean;
+  mutate: Mutate;
+  onOpenRecipeSummary: (mealId: string, trigger: HTMLElement) => void;
+}) {
+  const [filter, setFilter] = useState<GroceryFilter>("to_buy");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const [bulkSource, setBulkSource] = useState<GroceryItem["source"] | "">("");
+  const [draggingSelection, setDraggingSelection] = useState(false);
+  const [dragTarget, setDragTarget] = useState<GroceryItem["source"] | null>(null);
+  const [moveNotice, setMoveNotice] = useState<{ source: GroceryItem["source"]; count: number } | null>(null);
+  const visible = week.data.groceries.filter((entry) => {
+    if (filter === "all") return true;
+    if (filter === "done") return entry.checked;
+    if (filter === "to_buy") return !entry.checked && entry.source === "shop";
+    if (filter === "shop") return entry.source === "shop";
+    return entry.source === filter;
+  });
+  const selectedGroceries = week.data.groceries.filter((entry) => selectedIds.has(entry.id));
+  const visibleIdsInDisplayOrder = GROCERY_SECTIONS.flatMap((group) =>
+    visible.filter((entry) => entry.section === group).map((entry) => entry.id),
+  );
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setSelectionAnchorId(null);
+    setBulkSource("");
+  };
+  const closeSelectionMode = () => {
+    clearSelection();
+    setSelectionMode(false);
+    setDraggingSelection(false);
+    setDragTarget(null);
+  };
+  const selectRow = (itemId: string, event: ReactMouseEvent<HTMLElement>, allowControlTarget = false) => {
+    if (disabled) return;
+    if (!allowControlTarget && isGroceryRowControlTarget(event.target)) return;
+    const additive = event.ctrlKey || event.metaKey;
+    const anchorIndex = selectionAnchorId ? visibleIdsInDisplayOrder.indexOf(selectionAnchorId) : -1;
+    const itemIndex = visibleIdsInDisplayOrder.indexOf(itemId);
+    if (event.shiftKey && anchorIndex >= 0 && itemIndex >= 0) {
+      const rangeIds = visibleIdsInDisplayOrder.slice(
+        Math.min(anchorIndex, itemIndex),
+        Math.max(anchorIndex, itemIndex) + 1,
+      );
+      setSelectedIds(new Set(rangeIds));
+      return;
+    }
+    setSelectedIds((current) => {
+      if (!additive) return new Set([itemId]);
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+    setSelectionAnchorId(itemId);
+  };
+  const moveGroceriesToSource = (itemIds: string[], nextSource: GroceryItem["source"]) => {
+    if (!itemIds.length) return;
     void mutate(
-      { type: "addGroceryItem", weekId: week.id, item: { section, item: item.trim(), detail: detail.trim(), farmBox: false } },
-      groceryDraft.mutationOptions(() => { setItem(""); setDetail(""); setAddAttempted(false); }),
+      {
+        type: "moveGroceryItemsToSource",
+        weekId: week.id,
+        itemIds,
+        source: nextSource,
+      },
+      {
+        onAccepted: () => {
+          setMoveNotice({ source: nextSource, count: itemIds.length });
+          clearSelection();
+          setDraggingSelection(false);
+          setDragTarget(null);
+        },
+      },
     );
+  };
+  const moveSelectedToSource = (nextSource: GroceryItem["source"]) => {
+    const itemIds = selectedGroceries
+      .filter((entry) => entry.source !== nextSource)
+      .map((entry) => entry.id);
+    moveGroceriesToSource(itemIds, nextSource);
   };
   return (
     <div className="grocery-layout">
-      <div className="grocery-list">
+      <div className={`grocery-list ${selectionMode ? "selection-mode" : ""}`}>
         <div className="surface-summary grocery-summary">
-          <div><p className="eyebrow">Shared shopping list</p><h2>Groceries</h2></div>
-          <div className="segmented-control" aria-label="Grocery filter">
-            {(["all", "open", "done"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value}</button>)}
+          <div><p className="eyebrow">This week&apos;s recipes</p><h2>Recipe ingredients</h2><p className="grocery-list-description">Only ingredients connected to this week’s dinners belong here.</p></div>
+          <div className="grocery-summary-controls">
+            <SegmentedControl
+              ariaLabel="Grocery filter"
+              options={GROCERY_FILTERS}
+              value={filter}
+              onChange={(value) => { clearSelection(); setMoveNotice(null); setFilter(value); }}
+            />
+            <button className="secondary-button grocery-selection-toggle" type="button" aria-pressed={selectionMode} onClick={() => selectionMode ? closeSelectionMode() : setSelectionMode(true)}>
+              <ListChecks size={15} /> {selectionMode ? "Cancel" : "Move items"}
+            </button>
           </div>
         </div>
-        {week.status !== "archived" ? <div className="grocery-add-row">
-          <select value={section} onChange={(event) => { groceryDraft.begin(); setSection(event.target.value as GroceryItem["section"]); }} aria-label="Grocery section">{GROCERY_SECTIONS.map((value) => <option key={value}>{value}</option>)}</select>
-          <label className="compact-field"><input maxLength={MAX_GROCERY_ITEM_LENGTH} value={item} onChange={(event) => { groceryDraft.begin(); setItem(event.target.value); }} placeholder="Item" aria-label="New grocery item" aria-invalid={addAttempted && Boolean(addIssues.item)} aria-describedby={addAttempted && addIssues.item ? "grocery-item-error" : undefined} />{addAttempted && addIssues.item ? <small id="grocery-item-error" className="field-error" role="alert">{addIssues.item}</small> : null}</label>
-          <label className="compact-field"><input maxLength={MAX_COMMAND_TEXT_LENGTH} value={detail} onChange={(event) => { groceryDraft.begin(); setDetail(event.target.value); }} placeholder="Amount or detail" aria-label="Grocery detail" aria-invalid={addAttempted && Boolean(addIssues.detail)} aria-describedby={addAttempted && addIssues.detail ? "grocery-detail-error" : undefined} />{addAttempted && addIssues.detail ? <small id="grocery-detail-error" className="field-error" role="alert">{addIssues.detail}</small> : null}</label>
-          <button className="secondary-button" type="button" disabled={disabled} onClick={addGrocery}><Plus size={15} /> Add</button>
+        {selectionMode ? <div className="grocery-bulk-actions" aria-label="Bulk grocery actions" data-testid="grocery-bulk-actions">
+          <div className="grocery-selection-summary"><strong>{selectedGroceries.length} selected</strong><span>Click an ingredient row to select it. Drag a selected item to a source tab, or choose a source below.</span></div>
+          <div className="grocery-source-targets" aria-label="Grocery source tabs">
+            {GROCERY_SOURCES.map((targetSource) => {
+              const canMove = selectedGroceries.some((entry) => entry.source !== targetSource);
+              return <button
+                key={targetSource}
+                className={draggingSelection && dragTarget === targetSource ? "drag-over" : ""}
+                data-testid={`grocery-source-target-${targetSource}`}
+                disabled={disabled || !canMove}
+                type="button"
+                onClick={() => moveSelectedToSource(targetSource)}
+                onDragOver={(event) => {
+                  if (!draggingSelection || disabled || !canMove) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDragTarget(targetSource);
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (!disabled && canMove) moveSelectedToSource(targetSource);
+                  setDraggingSelection(false);
+                  setDragTarget(null);
+                }}
+                title={`Move selected groceries to ${GROCERY_SOURCE_LABELS[targetSource]}`}
+              >{GROCERY_SOURCE_LABELS[targetSource]}</button>;
+            })}
+          </div>
+          <div className="grocery-bulk-dropdown">
+            <select value={bulkSource} aria-label="Move selected groceries to source" onChange={(event) => setBulkSource(event.target.value as GroceryItem["source"] | "")}>
+              <option value="">Move to source…</option>
+              {GROCERY_SOURCES.map((targetSource) => <option key={targetSource} value={targetSource}>{GROCERY_SOURCE_LABELS[targetSource]}</option>)}
+            </select>
+            <button className="secondary-button" type="button" disabled={disabled || !bulkSource || !selectedGroceries.some((entry) => entry.source !== bulkSource)} onClick={() => bulkSource && moveSelectedToSource(bulkSource)}>Move</button>
+          </div>
+        </div> : null}
+        {moveNotice ? <div className="grocery-move-notice" role="status" data-testid="grocery-move-notice">
+          <span>Moved {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.source]}.</span>
+          <button type="button" className="text-button" onClick={() => { setFilter(moveNotice.source); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.source]}</button>
         </div> : null}
         {GROCERY_SECTIONS.map((group) => {
           const entries = visible.filter((entry) => entry.section === group);
@@ -2314,37 +2968,73 @@ function GroceryView({ week, disabled, mutate }: { week: WeekPlan; disabled: boo
           return (
             <section className="grocery-section" key={group}>
               <h3>{group}<span>{entries.length}</span></h3>
-              {entries.map((entry) => (
-                <div className={`grocery-row ${entry.checked ? "checked" : ""}`} key={entry.id}>
-                  <label className="grocery-check">
-                    <input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${entry.item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} />
-                  </label>
-                  <span><strong>{entry.item}</strong><small>{entry.detail || "No amount noted"}</small></span>
-                  {entry.farmBox ? <span className="farm-tag"><Sprout size={12} /> Farm box</span> : (
-                    <button className="icon-button danger" type="button" title={`Remove ${entry.item}`} disabled={disabled} onClick={() => void mutate({ type: "removeGroceryItem", weekId: week.id, itemId: entry.id })}><Trash2 size={14} /></button>
-                  )}
-                </div>
-              ))}
+              {entries.map((entry) => {
+                const linkedMeal = week.data.meals.find((meal) => meal.id === entry.mealId);
+                const ingredient = linkedMeal?.ingredients.find((candidate) => candidate.id === entry.ingredientId);
+                if (!linkedMeal || !ingredient) return null;
+                const item = ingredient.ingredient;
+                const detail = ingredient.amount;
+                return (
+                  <div
+                    className={`grocery-row ${entry.checked ? "checked" : ""} ${selectedIds.has(entry.id) ? "selected" : ""}`}
+                    data-grocery-id={entry.id}
+                    key={entry.id}
+                    onMouseDown={(event) => {
+                      if (event.button !== 0) return;
+                      if (isGroceryRowControlTarget(event.target)) return;
+                      if (!selectionMode) setSelectionMode(true);
+                      selectRow(entry.id, event);
+                    }}
+                  >
+                    <label className="grocery-check" data-grocery-row-control onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+                      <input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} />
+                    </label>
+                    <div className="grocery-item-copy">
+                      <div className="grocery-primary-line">
+                        <div className="grocery-select-target"><strong>{item}</strong><span className="grocery-detail">{detail || "No amount noted"}</span></div>
+                        <select
+                          className="grocery-source-select"
+                          value={entry.source}
+                          disabled={disabled}
+                          aria-label={`Source for ${item}`}
+                          data-grocery-row-control
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => moveGroceriesToSource([entry.id], event.target.value as GroceryItem["source"])}
+                      >
+                          {GROCERY_SOURCES.map((value) => <option key={value} value={value}>{GROCERY_SOURCE_LABELS[value]}</option>)}
+                        </select>
+                      </div>
+                      <div className="grocery-recipe-links"><span>For</span><RecipeSummaryLink meal={linkedMeal} onOpenRecipeSummary={onOpenRecipeSummary} /></div>
+                    </div>
+                    {selectionMode ? selectedIds.has(entry.id) ? <button
+                      className="icon-button grocery-drag-handle"
+                      type="button"
+                      draggable={!disabled}
+                      disabled={disabled}
+                      aria-label={`Drag ${selectedGroceries.length} selected ${selectedGroceries.length === 1 ? "grocery" : "groceries"} to a source tab`}
+                      title="Drag selected groceries to Shop, Farm box, or On hand"
+                      data-grocery-row-control
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", "grocery-selection");
+                        setDraggingSelection(true);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingSelection(false);
+                        setDragTarget(null);
+                      }}
+                    ><GripVertical size={15} /></button> : <span className="grocery-drag-spacer" aria-hidden="true" /> : null}
+                  </div>
+                );
+              })}
             </section>
           );
         })}
         {!visible.length ? <p className="empty-copy">No groceries match this filter.</p> : null}
       </div>
-      <aside className="farm-box-panel">
-        <div className="farm-box-heading"><span><Sprout size={21} /></span><div><p className="eyebrow">Inventory pass</p><h2>Farm box</h2></div></div>
-        <p>Items marked as farm-box produce stay visible. Reconcile only after the list reflects what is already on hand.</p>
-        <div className="reconcile-result"><span>{checked} of {week.data.groceries.length} checked</span><strong>{week.data.farmBoxReconciled ? "Reconciled" : "Not reconciled"}</strong></div>
-        <button
-          className="primary-button full"
-          type="button"
-          disabled={disabled || week.data.farmBoxReconciled}
-          onClick={() => void mutate({
-            type: "reconcileGroceries",
-            weekId: week.id,
-            items: week.data.groceries.map((entry) => ({ id: entry.id, section: entry.section, item: entry.item, detail: entry.detail, checked: entry.checked, farmBox: entry.farmBox })),
-          })}
-        ><CheckCircle2 size={16} /> {week.data.farmBoxReconciled ? "Groceries reconciled" : "Reconcile current list"}</button>
-      </aside>
     </div>
   );
 }
@@ -2361,9 +3051,13 @@ function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled
         return (
           <div key={leftover.id}>
             <span><strong>{leftover.label} · {leftover.portions} portions</strong><small>{leftover.state}{leftover.assignedDate ? ` for ${leftover.assignedDate}` : ""}</small></span>
-            <div className="segmented-control" aria-label={`Quality for ${leftover.label} leftovers`}>
-              {LEFTOVER_QUALITIES.map((quality) => <button key={quality} type="button" aria-label={`Rate ${leftover.label} leftovers ${quality}`} aria-pressed={leftover.quality === quality} className={leftover.quality === quality ? "active" : ""} disabled={disabled} onClick={() => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}>{quality}</button>)}
-            </div>
+            <SegmentedControl
+              ariaLabel={`Quality for ${leftover.label} leftovers`}
+              disabled={disabled}
+              options={LEFTOVER_QUALITIES.map((quality) => ({ value: quality, label: quality, ariaLabel: `Rate ${leftover.label} leftovers ${quality}` }))}
+              value={leftover.quality}
+              onChange={(quality) => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}
+            />
             {leftover.state === "available" && dates.length ? (
               <div className="inline-control-row">
                 <select aria-label={`Dinner date for ${leftover.label} leftovers`} value={target} disabled={disabled} onChange={(event) => { assignmentDraft.begin(); setTargets((current) => ({ ...current, [leftover.id]: event.target.value as IsoDate })); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "short", month: "short", day: "numeric" })}</option>)}</select>
@@ -2403,9 +3097,14 @@ function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: bo
         {week.data.meals.map((meal) => (
           <div className="feedback-row" key={meal.id}>
             <div><strong>{meal.title}</strong><small>{formatCalendarDate(meal.date, { weekday: "long" })} · {meal.status}</small></div>
-            <div className="segmented-control feedback-control" aria-label={`Feedback for ${meal.title}`}>
-              {FEEDBACK_VALUES.map((value) => <button key={value} type="button" aria-label={`Rate ${meal.title} ${value}`} aria-pressed={week.data.feedback[meal.id] === value} className={week.data.feedback[meal.id] === value ? "active" : ""} disabled={disabled} onClick={() => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })}>{value}</button>)}
-            </div>
+            <SegmentedControl
+              ariaLabel={`Feedback for ${meal.title}`}
+              className="feedback-control"
+              disabled={disabled}
+              options={FEEDBACK_VALUES.map((value) => ({ value, label: value, ariaLabel: `Rate ${meal.title} ${value}` }))}
+              value={week.data.feedback[meal.id]}
+              onChange={(value) => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })}
+            />
           </div>
         ))}
       </div>
@@ -2418,6 +3117,67 @@ function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: bo
         <button className="primary-button" type="button" disabled={disabled || week.status !== "active"} onClick={() => void mutate({ type: "archiveWeek", weekId: week.id })}><Archive size={16} /> Archive active week</button>
       </aside>
     </div>
+  );
+}
+
+function RecipeSource({ meal }: { meal: Meal }) {
+  if (!meal.sourceRecipe) return null;
+  return (
+    <p className="recipe-source">
+      <span>Informational recipe source</span>
+      <a href={meal.sourceRecipe.url} target="_blank" rel="noopener noreferrer">
+        {meal.sourceRecipe.identity}
+      </a>
+    </p>
+  );
+}
+
+function RecipeSummaryDrawer({
+  meal,
+  restoreFocusRef,
+  onClose,
+}: {
+  meal: Meal;
+  restoreFocusRef: { current: HTMLElement | null };
+  onClose: () => void;
+}) {
+  return (
+    <ModalDrawer title={meal.title} className="recipe-summary-drawer" onClose={onClose} restoreFocusRef={restoreFocusRef}>
+      <div className="drawer-body recipe-summary-body" tabIndex={0} data-autofocus="true" aria-label={`${meal.title} recipe summary`}>
+        <p className="eyebrow">Recipe summary</p>
+        <p className="recipe-summary-meta">{formatCalendarDate(meal.date, { weekday: "long", month: "short", day: "numeric" })} dinner · {meal.venue}</p>
+        {meal.subtitle ? <p className="recipe-summary-subtitle">{meal.subtitle}</p> : null}
+        {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
+        <RecipeSource meal={meal} />
+
+        <section className="snapshot-section">
+          <div className="section-title"><ShoppingBasket size={16} /><h3>Ingredients</h3></div>
+          <IngredientList meal={meal} emptyClassName="recipe-summary-copy" />
+        </section>
+
+        <section className="snapshot-section">
+          <div className="section-title"><CookingPot size={16} /><h3>Instructions</h3><span>{meal.instructions.length} steps</span></div>
+          {meal.instructions.length ? (
+            <ol className="recipe-summary-steps">
+              {meal.instructions.map((step, index) => (
+                <li key={step.id} className="recipe-summary-step">
+                  <span className="recipe-summary-step-number" aria-hidden="true">{index + 1}</span>
+                  <div>
+                    <InstructionStepContent step={step} />
+                    {step.timerDurationSeconds ? <small className="recipe-summary-timer">Timer: {Math.ceil(step.timerDurationSeconds / 60)} min</small> : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : <p className="recipe-summary-copy">No instructions listed.</p>}
+        </section>
+
+        {meal.notes ? <section className="snapshot-section"><div className="section-title"><StickyNote size={16} /><h3>Recipe note</h3></div><p className="recipe-summary-copy">{meal.notes}</p></section> : null}
+        {meal.prepNote ? <section className="snapshot-section"><div className="section-title"><ListChecks size={16} /><h3>Prep note</h3></div><p className="recipe-summary-copy">{meal.prepNote}</p></section> : null}
+        {meal.leftoverNote ? <section className="snapshot-section"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><p className="recipe-summary-copy">{meal.leftoverNote}</p></section> : null}
+      </div>
+      <div className="drawer-footer"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
+    </ModalDrawer>
   );
 }
 
@@ -2469,7 +3229,7 @@ function MealDrawer(props: {
     prepNote: visibleRecoveryCommand?.changes.prepNote ?? meal.prepNote,
     leftoverNote: visibleRecoveryCommand?.changes.leftoverNote ?? meal.leftoverNote,
     notes: visibleRecoveryCommand?.changes.notes ?? meal.notes,
-    ingredients: (visibleRecoveryCommand?.changes.ingredients ?? meal.ingredients).join("\n"),
+    ingredients: (visibleRecoveryCommand?.changes.ingredients ?? meal.ingredients.map((ingredient) => [ingredient.amount, ingredient.ingredient].filter(Boolean).join(" "))).join("\n"),
   };
   const recipeDraft = useVersionedDraft<typeof canonicalRecipeDraft>();
   const moveDraft = useVersionedDraft();
@@ -2571,22 +3331,10 @@ function MealDrawer(props: {
             onDismiss={pendingRetryLabel ? undefined : onDismissNotice}
           />
         ) : null}
-        {offline ? (
-          <div className="authority-banner warning" role="status">
-            <span>Editing is paused until the server reconnects.</span>
-            <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
-          </div>
-        ) : null}
+        {offline ? <OfflineAuthorityNotice onReconnect={onReconnect} /> : null}
         {week.status === "archived" ? <p className="inline-alert warning">Archived weeks are read-only.</p> : null}
         {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
-        {meal.sourceRecipe ? (
-          <p className="recipe-source">
-            <span>Informational recipe source</span>
-            <a href={meal.sourceRecipe.url} target="_blank" rel="noopener noreferrer">
-              {meal.sourceRecipe.identity}
-            </a>
-          </p>
-        ) : null}
+        <RecipeSource meal={meal} />
         <div className="field-grid">
           <label><span>Title</span><input aria-label="Title" disabled={archived} maxLength={MAX_MEAL_TITLE_LENGTH} value={draftTitle} aria-invalid={saveAttempted && Boolean(mealIssues.title)} aria-describedby={saveAttempted && mealIssues.title ? "meal-title-error" : undefined} onChange={(event) => editRecipeField("title", event.target.value)} /><FieldError id="meal-title-error" message={saveAttempted ? mealIssues.title : undefined} /></label>
           <label><span>Venue</span><input aria-label="Venue" disabled={archived} maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => editRecipeField("venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
@@ -2605,7 +3353,14 @@ function MealDrawer(props: {
             <select aria-label={`Dinner date for ${meal.title}`} value={draftTargetDate} disabled={disabled} onChange={(event) => { moveDraft.begin(); setTargetDate(event.target.value as IsoDate); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select>
             <button className="secondary-button" type="button" disabled={disabled || draftTargetDate === meal.date} onClick={() => void mutate({ type: "moveMeal", weekId: week.id, mealId: meal.id, targetDate: draftTargetDate, slot: "dinner" }, moveDraft.mutationOptions())}>Move dinner</button>
           </div>
-          <div className="segmented-control status-control">{MEAL_STATUSES.map((status) => <button key={status} type="button" aria-pressed={meal.status === status} className={meal.status === status ? "active" : ""} disabled={disabled || meal.status === status} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status })}>{status}</button>)}</div>
+          <SegmentedControl
+            ariaLabel={`Status for ${meal.title}`}
+            className="status-control"
+            disabled={(status) => disabled || meal.status === status}
+            options={MEAL_STATUSES.map((status) => ({ value: status, label: status }))}
+            value={meal.status}
+            onChange={(status) => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status })}
+          />
         </div>
         <div className="snapshot-section">
           <h3>Instructions</h3>
@@ -2620,12 +3375,11 @@ function MealDrawer(props: {
                 disabled={disabled}
                 mutate={mutate}
                 sendContextMessage={sendContextMessage}
-                contextView="week"
                 editable={!archived}
                 actions={<div className="prep-reference-actions recipe-step-actions">
                   <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
                   <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} down`} disabled={disabled || index === meal.instructions.length - 1} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
-                  <button className="icon-button danger" type="button" title={`Delete ${stepControlTarget(meal, step, index + 1)}`} disabled={disabled || week.data.prep.some((reference) => reference.stepId === step.id)} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></button>
+                  <button className="icon-button danger" type="button" title={`Delete ${stepControlTarget(meal, step, index + 1)}`} disabled={disabled || week.data.prepSessions.some((session) => session.steps.some((entry) => entry.stepId === step.id))} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></button>
                 </div>}
               />
             ))}
@@ -2640,224 +3394,6 @@ function MealDrawer(props: {
       </div>
       <div className="drawer-footer"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
     </ModalDrawer>
-  );
-}
-
-function ChatPanel(props: {
-  workspace: InitializedWorkspace;
-  week: WeekPlan | null;
-  view: PlannerView;
-  today: IsoDate;
-  disabled: boolean;
-  health: HealthResponse | null;
-  message: string;
-  onMessageChange: Dispatch<SetStateAction<string>>;
-  intent: ChatTurnIntent;
-  onIntentChange: Dispatch<SetStateAction<ChatTurnIntent>>;
-  onSend: SendContextMessage;
-  onRetry: (turn: ChatTurn) => void;
-  notice?: Notice;
-  onDismissNotice?: () => void;
-  pendingRetryLabel?: string;
-  onRetryPending?: () => void;
-  retryDisabled?: boolean;
-  onDiscardPending?: () => void;
-  offline?: boolean;
-  onReconnect?: () => void;
-  modal?: boolean;
-  onClose?: () => void;
-}) {
-  const {
-    workspace,
-    week,
-    view,
-    today,
-    disabled,
-    health,
-    message,
-    onMessageChange,
-    intent,
-    onIntentChange,
-    onSend,
-    onRetry,
-    notice,
-    onDismissNotice,
-    pendingRetryLabel,
-    onRetryPending,
-    retryDisabled,
-    onDiscardPending,
-    offline = false,
-    onReconnect,
-    modal = false,
-    onClose,
-  } = props;
-  const endRef = useRef<HTMLDivElement>(null);
-  const entries = [...workspace.transcriptEntries].sort((left, right) => left.sequence - right.sequence);
-  const turns = [...workspace.chatTurns].sort((left, right) => right.turnSequence - left.turnSequence);
-  const running = turns.find((turn) => turn.status === "running");
-  const retriedTurnIds = new Set(turns.flatMap((turn) => turn.retryOfTurnId ? [turn.retryOfTurnId] : []));
-  const retryable = turns.find(
-    (turn) =>
-      (turn.status === "failed" || turn.status === "interrupted") &&
-      !retriedTurnIds.has(turn.turnId),
-  );
-  const unappliedTurns = turns.filter(
-    (turn) =>
-      turn.status === "completed" &&
-      (turn.mutationOutcome === "version_conflict" || turn.mutationOutcome === "domain_rejected"),
-  );
-  const tonightMeal = view === "tonight" && week
-    ? week.data.meals.find((meal) => meal.date === today && meal.slot === "dinner")
-    : null;
-  const tonightLeftover = view === "tonight" && week
-    ? week.data.leftovers.find(
-        (leftover) =>
-          leftover.state === "assigned" &&
-          leftover.assignedDate === today &&
-          leftover.assignedSlot === "dinner",
-      )
-    : null;
-  const context = plannerChatContextForView(view, week, today);
-  const activeIntent = week ? intent : DEFAULT_CHAT_INTENT;
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const submittedMessage = message.trim();
-    if (!submittedMessage) return;
-    void onSend(submittedMessage, context, () => {
-      onMessageChange((current) => current.trim() === submittedMessage ? "" : current);
-      onIntentChange(DEFAULT_CHAT_INTENT);
-    }, activeIntent);
-  };
-  useEffect(() => {
-    if (!week && intent.kind !== "planner") onIntentChange(DEFAULT_CHAT_INTENT);
-  }, [intent.kind, onIntentChange, week]);
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
-  }, [entries.length, running?.status]);
-  const codexReady = health?.codex.status === "ready";
-  const codexStatusLabel = !health || health.codex.state === "checking"
-    ? "Checking ChatGPT"
-    : health.codex.state === "compatible"
-      ? "ChatGPT ready"
-      : health.codex.state === "unauthenticated"
-        ? "Planner ready · ChatGPT needs sign-in"
-        : health.codex.state === "incompatible"
-          ? "Planner ready · ChatGPT runtime incompatible"
-          : "Planner ready · ChatGPT unavailable";
-  const recoveryOnlyRetry = Boolean(
-    retryable && (retryable.acceptedEffectCount > 0 || retryable.mode === "recovery"),
-  );
-  const retryLabel = recoveryOnlyRetry
-    ? "Recover the reply (planner changes will not run again)"
-    : "Retry the interrupted ChatGPT request";
-  return (
-    <aside className={`ops-rail chat-rail ${modal ? "open" : ""}`} aria-label={modal ? undefined : "ChatGPT household chat"}>
-      <div className="chat-panel">
-        <div className="chat-header">
-          <div className="chat-title"><span className="bot-icon"><Bot size={18} /></span><span><strong>ChatGPT</strong><small>Shared household transcript</small></span></div>
-          {modal ? <button className="icon-button chat-close" type="button" title="Close chat" onClick={onClose}><X size={18} /></button> : null}
-        </div>
-        <div className={`bridge-status ${codexReady ? "bridge-ready" : "bridge-unavailable"}`}>
-          <span /><small>{codexStatusLabel}</small>
-        </div>
-        <div className="chat-context"><Home size={12} /> {view}{week ? ` · week ${week.id}` : " · household workspace"}{tonightLeftover ? ` · ${tonightLeftover.label} leftovers` : tonightMeal ? ` · ${tonightMeal.title}` : ""}</div>
-        {modal && notice ? (
-          <AuthorityNotice
-            notice={notice}
-            pendingRetryLabel={pendingRetryLabel}
-            onRetryPending={onRetryPending}
-            retryDisabled={retryDisabled}
-            onDiscardPending={onDiscardPending}
-            onDismiss={onDismissNotice}
-            className="chat-inline-notice"
-          />
-        ) : null}
-        {modal && offline ? (
-          <div className="authority-banner warning chat-inline-notice" role="status">
-            <span>You are seeing the last shared plan. Editing is paused until the server reconnects.</span>
-            <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
-          </div>
-        ) : null}
-        <div
-          className="chat-messages"
-          role="log"
-          aria-label="Shared ChatGPT transcript"
-          aria-live="polite"
-          tabIndex={0}
-        >
-          {!entries.length ? <p className="empty-copy">{week ? "Ask about this week or request a planner change." : "Ask ChatGPT to create the first shared week plan."}</p> : null}
-          {entries.map((entry) => (
-            <div key={entry.entryId} className={`chat-message ${entry.role}`}>
-              {entry.context ? <span className="chat-message-context">{entry.context.view}{entry.context.weekId ? ` · ${entry.context.weekId}` : " · household"}</span> : null}
-              <p>{entry.text}</p>
-            </div>
-          ))}
-          {unappliedTurns.map((turn) => (
-            <div key={`unapplied-${turn.turnId}`} className="chat-message unapplied">
-              <span className="chat-message-context">Planner change not applied</span>
-              <p>{turn.mutationOutcome === "version_conflict"
-                ? "The shared plan changed first. Review it, then ask ChatGPT again."
-                : "The proposed change did not fit the current plan. Review it, then ask ChatGPT again."}</p>
-            </div>
-          ))}
-          {retryable ? (
-            <div className={`chat-message ${recoveryOnlyRetry ? "effect-recovery" : "unapplied"}`}>
-              <span className="chat-message-context">
-                {recoveryOnlyRetry ? "Planner changes saved · reply interrupted" : "ChatGPT request interrupted"}
-              </span>
-              <p>{recoveryOnlyRetry
-                ? "The accepted planner changes are already durable. Recovery reconstructs the reply without running them again."
-                : "No planner changes were accepted. Retry starts a new attempt."}</p>
-            </div>
-          ) : null}
-          {running ? <div className="chat-message"><span className="chat-message-context">Working</span><p><LoaderCircle className="spin inline-spinner" size={14} /> {running.researchKind === "sourced_recipe" ? "ChatGPT is researching a recipe…" : "ChatGPT is updating the shared plan…"}</p></div> : null}
-          <div ref={endRef} />
-        </div>
-        {retryable ? <button className="suggestion-button" type="button" disabled={disabled || Boolean(running)} onClick={() => onRetry(retryable)}><RotateCcw size={14} /> {retryLabel}</button> : null}
-        <fieldset className="chat-intent-controls" disabled={disabled || Boolean(running)}>
-          <legend>ChatGPT task</legend>
-          <label className={activeIntent.kind === "planner" ? "active" : ""}>
-            <input
-              type="radio"
-              name={`chat-intent-${modal ? "modal" : "rail"}`}
-              checked={activeIntent.kind === "planner"}
-              onChange={() => onIntentChange(DEFAULT_CHAT_INTENT)}
-            />
-            Plan
-          </label>
-          <label className={activeIntent.kind === "sourced_recipe" ? "active" : ""} aria-disabled={!week}>
-            <input
-              type="radio"
-              name={`chat-intent-${modal ? "modal" : "rail"}`}
-              checked={activeIntent.kind === "sourced_recipe"}
-              disabled={!week}
-              onChange={() => onIntentChange({ kind: "sourced_recipe" })}
-            />
-            Research recipe
-          </label>
-        </fieldset>
-        {activeIntent.kind === "planner" && week ? (
-          <label className="archive-chat-grant">
-            <input
-              type="checkbox"
-              checked={activeIntent.archiveContextWeek}
-              disabled={disabled || Boolean(running)}
-              onChange={(event) => onIntentChange({
-                kind: "planner",
-                archiveContextWeek: event.target.checked,
-              })}
-            />
-            Allow archiving week {week.id} for this message
-          </label>
-        ) : activeIntent.kind === "sourced_recipe" ? (
-          <p className="chat-research-note">Search the web, then replace one meal only after the source is validated.</p>
-        ) : <p className="chat-research-note">ChatGPT can create the first week without inventing a selected week context.</p>}
-        <form className="chat-form" onSubmit={submit}>
-          <label className="chat-input-field"><textarea data-autofocus={modal ? "true" : undefined} maxLength={MAX_COMMAND_TEXT_LENGTH} value={message} onChange={(event) => onMessageChange(event.target.value)} placeholder="Ask or change the plan…" aria-label="Message ChatGPT" /><small className="field-limit">{message.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
-          <button type="submit" title="Send to ChatGPT" disabled={disabled || Boolean(running) || !message.trim()}>{disabled || running ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>
-        </form>
-      </div>
-    </aside>
   );
 }
 
@@ -2898,12 +3434,7 @@ function HistoryDrawer(props: {
           onDismiss={pendingRetryLabel ? undefined : onDismissNotice}
         />
       ) : null}
-      {offline ? (
-        <div className="authority-banner warning" role="status">
-          <span>Editing is paused until the server reconnects.</span>
-          <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
-        </div>
-      ) : null}
+      {offline ? <OfflineAuthorityNotice onReconnect={onReconnect} /> : null}
       <div className="history-list">
         {!events.length ? <p className="empty-copy">No planner changes yet.</p> : null}
         {events.map((event, index) => (
@@ -2949,7 +3480,7 @@ function ModalChat({ onClose, restoreFocusRef, children }: { onClose: () => void
   useDialogFocus(ref, onClose, restoreFocusRef);
   return (
     <div className="mobile-chat-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div ref={ref} className="mobile-chat-dialog" role="dialog" aria-modal="true" aria-label="ChatGPT household chat">{children}</div>
+      <div ref={ref} className="mobile-chat-dialog" role="dialog" aria-modal="true" aria-label="Codex task">{children}</div>
     </div>
   );
 }

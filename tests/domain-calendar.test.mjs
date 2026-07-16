@@ -153,12 +153,15 @@ test("week creation, handoff, archive, and activation preserve zero-or-one activ
   assert.deepEqual(householdDomain.validateState(state), { ok: true });
 });
 
-test("aggregate validation rejects duplicate slots, bad prep positions, and active-week drift", () => {
+test("aggregate validation rejects duplicate slots, duplicate session references, and active-week drift", () => {
   const state = createCanonicalSeed(context());
   const invalid = structuredClone(state);
   const week = invalid.weeks[0];
   week.data.meals[1].date = week.data.meals[0].date;
-  week.data.prep[0].position = 2;
+  week.data.prepSessions[0].steps.push({
+    id: "duplicate-session-entry",
+    stepId: week.data.prepSessions[0].steps[0].stepId,
+  });
   invalid.activeWeekId = null;
   week.data.meals[0].instructions[0].complete = true;
   week.data.meals[0].instructions[0].timerDurationSeconds = 60;
@@ -167,20 +170,23 @@ test("aggregate validation rejects duplicate slots, bad prep positions, and acti
   const validation = householdDomain.validateState(invalid);
   assert.equal(validation.ok, false);
   assert.ok(validation.issues.some((issue) => /already occupied/i.test(issue.message)));
-  assert.ok(validation.issues.some((issue) => /contiguous/i.test(issue.message)));
+  assert.ok(validation.issues.some((issue) => /only once in one session/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /identify the active week/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /completed step/i.test(issue.message)));
 });
 
-test("aggregate validation enforces canonical prep order and exact reference shape", () => {
+test("aggregate validation scopes prep reference uniqueness to each session", () => {
   const state = createCanonicalSeed(context());
-  const outOfOrder = structuredClone(state);
-  outOfOrder.weeks[0].data.prep.reverse();
-  const orderValidation = householdDomain.validateState(outOfOrder);
-  assert.equal(orderValidation.ok, false);
-  assert.ok(orderValidation.issues.some((issue) => /grouped chronologically/i.test(issue.message)));
+  const sameStepInAnotherSession = structuredClone(state);
+  const firstSession = sameStepInAnotherSession.weeks[0].data.prepSessions[0];
+  sameStepInAnotherSession.weeks[0].data.prepSessions.push({
+    id: "second-prep-session",
+    label: "Finish later",
+    steps: [{ id: "second-session-entry", stepId: firstSession.steps[0].stepId }],
+  });
+  assert.deepEqual(householdDomain.validateState(sameStepInAnotherSession), { ok: true });
 
-  const copiedStepFields = {
+  const copiedInstructionFields = {
     complete: true,
     timerDurationSeconds: 60,
     timerStartedAt: NOW,
@@ -188,9 +194,9 @@ test("aggregate validation enforces canonical prep order and exact reference sha
     inputs: [{ amount: "1", ingredient: "copied input" }],
     instruction: "Copied instruction",
   };
-  for (const [field, value] of Object.entries(copiedStepFields)) {
+  for (const [field, value] of Object.entries(copiedInstructionFields)) {
     const withCopiedField = structuredClone(state);
-    withCopiedField.weeks[0].data.prep[0][field] = value;
+    withCopiedField.weeks[0].data.prepSessions[0].steps[0][field] = value;
     const validation = householdDomain.validateState(withCopiedField);
     assert.equal(validation.ok, false, `prep references must reject copied ${field}`);
     assert.ok(validation.issues.some((issue) => /unsupported fields/i.test(issue.message)));

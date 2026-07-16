@@ -39,7 +39,7 @@ test("the browser has no shared-state authority or alternate chat transport", as
   assert.doesNotMatch(browser, /CODEX_BRIDGE_URL|fetch\([^)]*["']\/chat["']/);
   assert.doesNotMatch(api, /\bactor\s*:/);
   assert.match(api, /PLANNER_API_ROUTES\.commands\.path/);
-  assert.match(api, /PLANNER_API_ROUTES\.chatSubmit\.path/);
+  assert.doesNotMatch(api, /chatSubmit|chatRetry|readTranscriptPage|\/api\/chat|\/api\/transcript/);
 });
 
 test("obsolete browser authority modules and bridge entrypoint stay retired", async () => {
@@ -88,10 +88,9 @@ test("runtime scripts launch the authority rather than the retired bridge", asyn
 });
 
 test("ordered planner operations have one kernel and no transport-owned authority", async () => {
-  const [service, ports, chat, router, apiContract, commandContract, store] = await Promise.all([
+  const [service, ports, router, apiContract, commandContract, store] = await Promise.all([
     source("server/application/planner-service.ts"),
     source("server/application/ports.ts"),
-    source("server/chat/embedded-service.ts"),
     source("server/http/application-router.ts"),
     source("lib/planner-api-contract.ts"),
     source("lib/household-command-contract.ts"),
@@ -100,16 +99,15 @@ test("ordered planner operations have one kernel and no transport-owned authorit
 
   assert.equal((service.match(/\n\s{2}applyPlannerOperations\(/g) ?? []).length, 1);
   assert.equal((service.match(/\n\s{2}previewPlannerOperations\(/g) ?? []).length, 1);
-  assert.doesNotMatch(`${service}\n${ports}\n${chat}`, /applyPlannerCommand\s*\(/);
+  assert.doesNotMatch(`${service}\n${ports}`, /applyPlannerCommand\s*\(/);
   assert.match(ports, /applyOperations\s*\(/);
   assert.match(ports, /previewOperations\s*\(/);
   assert.doesNotMatch(`${router}\n${apiContract}`, /planner\/batches|batchCommands/);
   assert.doesNotMatch(commandContract, /\b(?:actor|actorSource|admission|requestId)\s*:/);
-  assert.doesNotMatch(chat, /server\/store|node:sqlite/);
   assert.doesNotMatch(store, /migrationPath/);
 });
 
-test("managed embedded mediation cannot import the store or create a second live route", async () => {
+test("native Codex runtime mediation cannot import the store or create a second live route", async () => {
   const runtimeFiles = await productionFiles("server/runtime/codex-follow-up");
   for (const file of runtimeFiles) {
     assert.doesNotMatch(
@@ -118,45 +116,17 @@ test("managed embedded mediation cannot import the store or create a second live
       `${relative(root, file)} imports planner persistence`,
     );
   }
-  const [embedded, router, runtime, composition] = await Promise.all([
-    source("server/chat/embedded-service.ts"),
+  const [router, runtime, composition] = await Promise.all([
     source("server/http/application-router.ts"),
     source("server/runtime/planner-runtime.ts"),
     source("server/index.ts"),
   ]);
-  assert.doesNotMatch(embedded, /(?:from|import\()["'][^"']*(?:server\/)?store\//);
   assert.doesNotMatch(`${router}\n${runtime}`, /createInactiveEmbedded|InactiveEmbeddedChatHarness/);
   assert.doesNotMatch(router, /embedded-service|sourced-recipe-intake/);
-  assert.match(runtime, /createManagedEmbeddedChatApplicationService/);
+  assert.doesNotMatch(runtime, /create(?:Managed)?EmbeddedChatApplicationService|from "\.\.\/chat|chatDependencies/);
   assert.match(composition, /createFailSoftManagedCodexFollowUpRuntime/);
   assert.doesNotMatch(`${runtime}\n${composition}`, /createCodexPlannerAdapter|CodexAppServerClient/);
   assert.doesNotMatch(runtime, /codexFollowUp:\s*\{/);
-});
-
-test("durable research handoff stores only the compact reference and no candidate envelope", async () => {
-  const [migration, digestMigration, store, ports] = await Promise.all([
-    source("server/store/migrations/004-sourced-recipe-intake.sql"),
-    source("server/store/migrations/005-research-candidate-digest.sql"),
-    source("server/store/sqlite-store.ts"),
-    source("server/application/ports.ts"),
-  ]);
-  const migrations = (await productionFiles("server/store/migrations"));
-  const allMigrations = (await Promise.all(migrations.map((file) => readFile(file, "utf8")))).join("\n");
-  assert.doesNotMatch(allMigrations, /CREATE TABLE\s+(?:IF NOT EXISTS\s+)?[^\s(]*candidate/i);
-  assert.match(migration, /ADD COLUMN research_candidate_json TEXT/);
-  for (const compactKey of ["schemaVersion", "candidateId", "title", "source", "stepCount"]) {
-    assert.match(migration, new RegExp(`\\$\\.${compactKey}`));
-  }
-  for (const bindingKey of ["digestVersion", "replacementDigest"]) {
-    assert.match(digestMigration, new RegExp(`\\$\\.${bindingKey}`));
-  }
-  assert.match(digestMigration, /replacementDigest[^\n]*64|length\([^\n]*replacementDigest[^\n]*\) <> 64/s);
-  for (const fullField of ["steps", "inputs", "instruction", "yieldText", "timerDurationSeconds"]) {
-    assert.doesNotMatch(`${migration}\n${digestMigration}`, new RegExp(`\\$\\.${fullField}`));
-  }
-  assert.doesNotMatch(migration, /(?:full|body|envelope|payload|draft|steps)_candidate_json|candidate_(?:full|body|envelope|payload|draft|steps)_json/i);
-  assert.doesNotMatch(`${store}\n${ports}`, /\bResearchRecipeCandidate\b/);
-  assert.match(`${store}\n${ports}`, /\bResearchCandidateReference\b/);
 });
 
 test("legacy chat producers are absent after the single-path cutover", async () => {
@@ -166,16 +136,16 @@ test("legacy chat producers are absent after the single-path cutover", async () 
     "server/chat/service.ts",
     "server/chat/codex-adapter.ts",
     "server/chat/output.ts",
+    "server/chat/embedded-service.ts",
+    "server/chat/lifecycle.ts",
+    "server/chat/prompt.ts",
+    "server/chat/index.ts",
     "tests/chat-output-schema.test.mjs",
   ]) {
     await assert.rejects(access(resolve(root, path)), { code: "ENOENT" });
   }
-  const [chatIndex, ports] = await Promise.all([
-    source("server/chat/index.ts"),
-    source("server/application/ports.ts"),
-  ]);
-  assert.doesNotMatch(`${chatIndex}\n${ports}`, /CodexPlannerAdapter|CodexCompletion/);
+  const ports = await source("server/application/ports.ts");
+  assert.doesNotMatch(ports, /CodexPlannerAdapter|CodexCompletion|ChatApplicationService/);
   assert.doesNotMatch(`${ports}\n${await source("server/store/sqlite-store.ts")}`, /updateTurnIfRunning|ChatTurnTerminalUpdate/);
   assert.doesNotMatch(await source("lib/household-command-contract.ts"), /LEGACY_HOUSEHOLD_COMMAND|normalizeLegacyHouseholdCommand|isLegacyHouseholdCommand/);
-  assert.match(chatIndex, /createManagedEmbeddedChatApplicationService/);
 });

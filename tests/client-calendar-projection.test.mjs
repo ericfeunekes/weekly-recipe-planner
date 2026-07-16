@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { isoDateForTimeZone } from "../app/calendar-time.ts";
-import { plannerChatContextForView } from "../app/planner-chat-context.ts";
 import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import { weekContainsDate } from "../lib/household-domain.ts";
 
@@ -20,7 +19,7 @@ function seededWeek() {
   return structuredClone(state.weeks[0]);
 }
 
-test("calendar projection keeps every weekday, prep, dinner, and Tonight chat aligned", () => {
+test("calendar projection keeps every weekday, prep, and dinner aligned", () => {
   for (let dayOffset = 0; dayOffset < 7; dayOffset += 1) {
     const expectedDate = `2026-07-${String(6 + dayOffset).padStart(2, "0")}`;
     const today = isoDateForTimeZone(
@@ -32,22 +31,20 @@ test("calendar projection keeps every weekday, prep, dinner, and Tonight chat al
     meal.date = today;
     week.data.meals = [meal];
     week.data.leftovers = [];
-    week.data.prep = [{
-      id: `prep-${dayOffset}`,
-      stepId: meal.instructions[0].id,
+    week.data.prepSessions = [{
+      id: `prep-session-${dayOffset}`,
+      label: "Daily prep",
       prepDate: today,
-      position: 0,
+      steps: [{ id: `prep-${dayOffset}`, stepId: meal.instructions[0].id }],
     }];
 
     assert.equal(today, expectedDate);
     assert.equal(weekContainsDate(week.id, today), true);
     assert.equal(week.data.meals.find((candidate) => candidate.date === today)?.id, meal.id);
-    assert.equal(week.data.prep.find((reference) => reference.prepDate === today)?.stepId, meal.instructions[0].id);
-    assert.deepEqual(plannerChatContextForView("tonight", week, today), {
-      view: "tonight",
-      weekId: week.id,
-      mealId: meal.id,
-    });
+    assert.equal(
+      week.data.prepSessions.find((session) => session.prepDate === today)?.steps[0]?.stepId,
+      meal.instructions[0].id,
+    );
   }
 });
 
@@ -75,8 +72,4 @@ test("calendar projection respects Halifax week and DST boundaries", () => {
     TIME_ZONE,
   );
   assert.equal(weekContainsDate(week.id, outsideWeek), false);
-  assert.deepEqual(plannerChatContextForView("tonight", week, outsideWeek), {
-    view: "tonight",
-    weekId: week.id,
-  });
 });

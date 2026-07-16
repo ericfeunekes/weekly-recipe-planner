@@ -1,14 +1,13 @@
 import {
   FEEDBACK_VALUES,
+  GROCERY_SOURCES,
   LEFTOVER_QUALITIES,
   MEAL_SLOTS,
   MEAL_STATUSES,
   isIsoDate,
   isWeekId,
   type FeedbackValue,
-  type GroceryItemContentInput,
-  type GroceryItemPlanInput,
-  type GroceryReconciliationItem,
+  type GrocerySource,
   type InstructionStepContentInput,
   type InstructionStepPlanInput,
   type IsoDate,
@@ -52,7 +51,16 @@ export type HouseholdCommand =
   | ({ type: "setInstructionStepComplete"; stepId: string; complete: boolean } & WeekScoped)
   | ({ type: "updateInstructionStepNote"; stepId: string; note: string } & WeekScoped)
   | ({ type: "startInstructionTimer"; stepId: string } & WeekScoped)
+  | ({ type: "pauseInstructionTimer"; stepId: string } & WeekScoped)
   | ({ type: "resetInstructionTimer"; stepId: string } & WeekScoped)
+  | ({ type: "setInstructionTimerRemaining"; stepId: string; remainingSeconds: number } & WeekScoped)
+  | ({ type: "createPrepSession"; label: string; prepDate: IsoDate | null } & WeekScoped)
+  | ({ type: "updatePrepSession"; sessionId: string; label: string; prepDate: IsoDate | null } & WeekScoped)
+  | ({ type: "movePrepSession"; sessionId: string; targetPosition: number } & WeekScoped)
+  | ({ type: "removePrepSession"; sessionId: string } & WeekScoped)
+  | ({ type: "addPrepSessionStep"; sessionId: string; stepId: string; targetPosition: number } & WeekScoped)
+  | ({ type: "movePrepSessionStep"; sessionId: string; entryId: string; targetPosition: number } & WeekScoped)
+  | ({ type: "removePrepSessionStep"; sessionId: string; entryId: string } & WeekScoped)
   | ({
       type: "setPrepPlan";
       entries: Array<{ stepId: string; prepDate: IsoDate }>;
@@ -60,15 +68,12 @@ export type HouseholdCommand =
   | ({ type: "movePrepReference"; referenceId: string; targetPosition: number } & WeekScoped)
   | ({ type: "reschedulePrepReference"; referenceId: string; prepDate: IsoDate } & WeekScoped)
   | ({ type: "removePrepReference"; referenceId: string } & WeekScoped)
-  | ({ type: "addGroceryItem"; item: GroceryItemPlanInput } & WeekScoped)
   | ({
-      type: "updateGroceryItem";
-      itemId: string;
-      changes: GroceryItemContentInput;
+      type: "moveGroceryItemsToSource";
+      itemIds: string[];
+      source: GrocerySource;
     } & WeekScoped)
-  | ({ type: "removeGroceryItem"; itemId: string } & WeekScoped)
   | ({ type: "setGroceryItemChecked"; itemId: string; checked: boolean } & WeekScoped)
-  | ({ type: "reconcileGroceries"; items: GroceryReconciliationItem[] } & WeekScoped)
   | ({ type: "captureFeedback"; mealId: string; value: FeedbackValue } & WeekScoped)
   | ({ type: "captureWeekLesson"; weekLesson: string } & WeekScoped)
   | ({
@@ -88,9 +93,28 @@ export type HouseholdCommand =
   | { type: "activateWeek"; weekId: WeekId }
   | { type: "handoffWeek"; currentWeekId: WeekId; nextWeekId: WeekId };
 
+/**
+ * A read-only record of the grocery reconciliation command that existed before
+ * sources became first-class. It is deliberately not part of HouseholdCommand:
+ * old events remain readable and undoable, but no new caller can submit it.
+ */
+export type HistoricalGroceryReconciliationCommand = {
+  type: "reconcileGroceries";
+  weekId: WeekId;
+  items: Array<{
+    id?: string;
+    section: "Produce" | "Meat & seafood" | "Dairy" | "Pantry";
+    item: string;
+    detail: string;
+    checked: boolean;
+    farmBox: boolean;
+  }>;
+};
+
 export const MAX_COMMAND_TEXT_LENGTH = 4_000;
 export const MAX_ID_LENGTH = 200;
 export const MAX_PREP_ENTRIES = 64;
+export const MAX_PREP_SESSIONS = 32;
 export const MAX_MEALS_PER_WEEK = 14;
 export const MAX_STEPS_PER_MEAL = 64;
 export const MAX_STEP_INPUTS = 32;
@@ -112,11 +136,6 @@ const nonemptyTextSchema = {
   minLength: 1,
   maxLength: MAX_COMMAND_TEXT_LENGTH,
 };
-const groceryItemTextSchema = {
-  type: "string",
-  minLength: 1,
-  maxLength: MAX_GROCERY_ITEM_LENGTH,
-};
 const isoDateSchema = {
   type: "string",
   pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
@@ -129,6 +148,9 @@ const timerDurationSchema = {
 };
 const nullableTimerDurationSchema = {
   anyOf: [timerDurationSchema, { type: "null" }],
+};
+const nullablePrepDateSchema = {
+  anyOf: [isoDateSchema, { type: "null" }],
 };
 const stepInputSchema = {
   type: "object",
@@ -160,36 +182,12 @@ const stepContentSchema = {
     timerDurationSeconds: nullableTimerDurationSchema,
   },
 };
-const groceryContentSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["section", "item", "detail", "farmBox"],
-  properties: {
-    section: {
-      type: "string",
-      enum: ["Produce", "Meat & seafood", "Dairy", "Pantry"],
-    },
-    item: groceryItemTextSchema,
-    detail: textSchema,
-    farmBox: { type: "boolean" },
-  },
-};
-const groceryPlanSchema = {
-  ...groceryContentSchema,
-  required: [...groceryContentSchema.required],
-  properties: {
-    ...groceryContentSchema.properties,
-    checked: { type: "boolean" },
-  },
-};
-const reconciliationItemSchema = {
-  ...groceryContentSchema,
-  required: [...groceryContentSchema.required, "checked"],
-  properties: {
-    ...groceryContentSchema.properties,
-    checked: { type: "boolean" },
-    id: idSchema,
-  },
+const groceryItemIdsSchema = {
+  type: "array",
+  minItems: 1,
+  maxItems: MAX_GROCERY_ITEMS,
+  uniqueItems: true,
+  items: idSchema,
 };
 const mealSnapshotSchema = {
   type: "object",
@@ -257,14 +255,9 @@ const mealPlanSchema = {
 const weekPlanSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["meals", "groceries"],
+  required: ["meals"],
   properties: {
     meals: { type: "array", maxItems: MAX_MEALS_PER_WEEK, items: mealPlanSchema },
-    groceries: {
-      type: "array",
-      maxItems: MAX_GROCERY_ITEMS,
-      items: groceryPlanSchema,
-    },
     weekLesson: textSchema,
   },
 };
@@ -297,7 +290,16 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
   setInstructionStepComplete: weekCommandSchema("setInstructionStepComplete", { stepId: idSchema, complete: { type: "boolean" } }),
   updateInstructionStepNote: weekCommandSchema("updateInstructionStepNote", { stepId: idSchema, note: textSchema }),
   startInstructionTimer: weekCommandSchema("startInstructionTimer", { stepId: idSchema }),
+  pauseInstructionTimer: weekCommandSchema("pauseInstructionTimer", { stepId: idSchema }),
   resetInstructionTimer: weekCommandSchema("resetInstructionTimer", { stepId: idSchema }),
+  setInstructionTimerRemaining: weekCommandSchema("setInstructionTimerRemaining", { stepId: idSchema, remainingSeconds: timerDurationSchema }),
+  createPrepSession: weekCommandSchema("createPrepSession", { label: nonemptyTextSchema, prepDate: nullablePrepDateSchema }),
+  updatePrepSession: weekCommandSchema("updatePrepSession", { sessionId: idSchema, label: nonemptyTextSchema, prepDate: nullablePrepDateSchema }),
+  movePrepSession: weekCommandSchema("movePrepSession", { sessionId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_SESSIONS - 1 } }),
+  removePrepSession: weekCommandSchema("removePrepSession", { sessionId: idSchema }),
+  addPrepSessionStep: weekCommandSchema("addPrepSessionStep", { sessionId: idSchema, stepId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
+  movePrepSessionStep: weekCommandSchema("movePrepSessionStep", { sessionId: idSchema, entryId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
+  removePrepSessionStep: weekCommandSchema("removePrepSessionStep", { sessionId: idSchema, entryId: idSchema }),
   setPrepPlan: weekCommandSchema("setPrepPlan", {
       entries: {
         type: "array",
@@ -313,11 +315,11 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
   movePrepReference: weekCommandSchema("movePrepReference", { referenceId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
   reschedulePrepReference: weekCommandSchema("reschedulePrepReference", { referenceId: idSchema, prepDate: isoDateSchema }),
   removePrepReference: weekCommandSchema("removePrepReference", { referenceId: idSchema }),
-  addGroceryItem: weekCommandSchema("addGroceryItem", { item: groceryPlanSchema }),
-  updateGroceryItem: weekCommandSchema("updateGroceryItem", { itemId: idSchema, changes: groceryContentSchema }),
-  removeGroceryItem: weekCommandSchema("removeGroceryItem", { itemId: idSchema }),
+  moveGroceryItemsToSource: weekCommandSchema("moveGroceryItemsToSource", {
+    itemIds: groceryItemIdsSchema,
+    source: { type: "string", enum: [...GROCERY_SOURCES] },
+  }),
   setGroceryItemChecked: weekCommandSchema("setGroceryItemChecked", { itemId: idSchema, checked: { type: "boolean" } }),
-  reconcileGroceries: weekCommandSchema("reconcileGroceries", { items: { type: "array", maxItems: MAX_GROCERY_ITEMS, items: reconciliationItemSchema } }),
   captureFeedback: weekCommandSchema("captureFeedback", { mealId: idSchema, value: { type: "string", enum: [...FEEDBACK_VALUES] } }),
   captureWeekLesson: weekCommandSchema("captureWeekLesson", { weekLesson: textSchema }),
   captureLeftoverQuality: weekCommandSchema("captureLeftoverQuality", { leftoverId: idSchema, quality: { type: "string", enum: [...LEFTOVER_QUALITIES] } }),
@@ -405,21 +407,6 @@ function hasMealSnapshotFields(value: Record<string, unknown>) {
   );
 }
 
-function isGroceryContent(
-  value: unknown,
-  allowChecked = false,
-  allowId = false,
-  requireChecked = false,
-) {
-  const optional = [allowChecked ? "checked" : "", allowId ? "id" : ""].filter(Boolean);
-  if (!hasKeys(value, ["section", "item", "detail", "farmBox"], optional)) return false;
-  if (!["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(value.section as string)) return false;
-  if (!isText(value.item, MAX_GROCERY_ITEM_LENGTH, false) || !isText(value.detail) || typeof value.farmBox !== "boolean") return false;
-  if (requireChecked && typeof value.checked !== "boolean") return false;
-  if (value.checked !== undefined && typeof value.checked !== "boolean") return false;
-  return value.id === undefined || isId(value.id);
-}
-
 function isMealPlan(value: unknown) {
   if (!hasKeys(value, ["date", "slot", "title", "subtitle", "venue", "protein", "prepNote", "leftoverNote", "notes", "ingredients", "instructions"], ["status", "yieldText"])) return false;
   if (!isIsoDate(value.date) || !MEAL_SLOTS.includes(value.slot as MealSlot)) return false;
@@ -432,13 +419,10 @@ function isMealPlan(value: unknown) {
 
 function isWeekPlan(value: unknown): value is WeekPlanInput {
   return (
-    hasKeys(value, ["meals", "groceries"], ["weekLesson"]) &&
+    hasKeys(value, ["meals"], ["weekLesson"]) &&
     Array.isArray(value.meals) &&
     value.meals.length <= MAX_MEALS_PER_WEEK &&
     value.meals.every(isMealPlan) &&
-    Array.isArray(value.groceries) &&
-    value.groceries.length <= MAX_GROCERY_ITEMS &&
-    value.groceries.every((item) => isGroceryContent(item, true)) &&
     (value.weekLesson === undefined || isText(value.weekLesson))
   );
 }
@@ -467,12 +451,6 @@ function validatePrepPlan(value: Record<string, unknown>): boolean {
   });
 }
 
-function validateGroceryReconciliation(value: Record<string, unknown>): boolean {
-  if (!isWeekCommand(value, ["items"]) || !Array.isArray(value.items) || value.items.length > MAX_GROCERY_ITEMS || !value.items.every((item) => isGroceryContent(item, true, true, true))) return false;
-  const ids = value.items.flatMap((item) => (isRecord(item) && typeof item.id === "string" ? [item.id] : []));
-  return new Set(ids).size === ids.length;
-}
-
 export const HOUSEHOLD_COMMAND_REGISTRY = {
   moveMeal: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveMeal, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "targetDate", "slot"]) && isId(value.mealId) && isIsoDate(value.targetDate) && MEAL_SLOTS.includes(value.slot as MealSlot) },
   updateMealStatus: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateMealStatus, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "status"]) && isId(value.mealId) && MEAL_STATUSES.includes(value.status as MealStatus) },
@@ -485,16 +463,22 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   setInstructionStepComplete: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setInstructionStepComplete, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "complete"]) && isId(value.stepId) && typeof value.complete === "boolean" },
   updateInstructionStepNote: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateInstructionStepNote, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "note"]) && isId(value.stepId) && isText(value.note) },
   startInstructionTimer: { schema: HOUSEHOLD_COMMAND_SCHEMAS.startInstructionTimer, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
+  pauseInstructionTimer: { schema: HOUSEHOLD_COMMAND_SCHEMAS.pauseInstructionTimer, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
   resetInstructionTimer: { schema: HOUSEHOLD_COMMAND_SCHEMAS.resetInstructionTimer, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
+  setInstructionTimerRemaining: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setInstructionTimerRemaining, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "remainingSeconds"]) && isId(value.stepId) && isIntegerInRange(value.remainingSeconds, 1, MAX_TIMER_DURATION_SECONDS) },
+  createPrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.createPrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["label", "prepDate"]) && isText(value.label, MAX_COMMAND_TEXT_LENGTH, false) && (value.prepDate === null || isIsoDate(value.prepDate)) },
+  updatePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updatePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "label", "prepDate"]) && isId(value.sessionId) && isText(value.label, MAX_COMMAND_TEXT_LENGTH, false) && (value.prepDate === null || isIsoDate(value.prepDate)) },
+  movePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "targetPosition"]) && isId(value.sessionId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_SESSIONS - 1) },
+  removePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId"]) && isId(value.sessionId) },
+  addPrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "stepId", "targetPosition"]) && isId(value.sessionId) && isId(value.stepId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
+  movePrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "entryId", "targetPosition"]) && isId(value.sessionId) && isId(value.entryId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
+  removePrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "entryId"]) && isId(value.sessionId) && isId(value.entryId) },
   setPrepPlan: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setPrepPlan, scope: "week", exposure: "ordinary", validate: validatePrepPlan },
   movePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId", "targetPosition"]) && isId(value.referenceId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
   reschedulePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reschedulePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId", "prepDate"]) && isId(value.referenceId) && isIsoDate(value.prepDate) },
   removePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId"]) && isId(value.referenceId) },
-  addGroceryItem: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addGroceryItem, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["item"]) && isGroceryContent(value.item, true) },
-  updateGroceryItem: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateGroceryItem, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId", "changes"]) && isId(value.itemId) && isGroceryContent(value.changes) },
-  removeGroceryItem: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removeGroceryItem, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId"]) && isId(value.itemId) },
+  moveGroceryItemsToSource: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveGroceryItemsToSource, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "source"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && GROCERY_SOURCES.includes(value.source as GrocerySource) },
   setGroceryItemChecked: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemChecked, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId", "checked"]) && isId(value.itemId) && typeof value.checked === "boolean" },
-  reconcileGroceries: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reconcileGroceries, scope: "week", exposure: "ordinary", validate: validateGroceryReconciliation },
   captureFeedback: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureFeedback, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "value"]) && isId(value.mealId) && FEEDBACK_VALUES.includes(value.value as FeedbackValue) },
   captureWeekLesson: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureWeekLesson, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["weekLesson"]) && isText(value.weekLesson) },
   captureLeftoverQuality: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureLeftoverQuality, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId", "quality"]) && isId(value.leftoverId) && LEFTOVER_QUALITIES.includes(value.quality as LeftoverQuality) },
@@ -605,4 +589,24 @@ export function isHouseholdCommand(value: unknown): value is HouseholdCommand {
   if (!isRecord(value) || typeof value.type !== "string") return false;
   const entry = HOUSEHOLD_COMMAND_REGISTRY[value.type as HouseholdCommand["type"]];
   return Boolean(entry?.validate(value));
+}
+
+export function isHistoricalGroceryReconciliationCommand(
+  value: unknown,
+): value is HistoricalGroceryReconciliationCommand {
+  if (!isRecord(value) || !hasKeys(value, ["type", "weekId", "items"])) return false;
+  if (value.type !== "reconcileGroceries" || !isWeekId(value.weekId) || !Array.isArray(value.items)) {
+    return false;
+  }
+  return value.items.length <= MAX_GROCERY_ITEMS && value.items.every((item) => {
+    if (!hasKeys(item, ["section", "item", "detail", "checked", "farmBox"], ["id"])) {
+      return false;
+    }
+    return ["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(item.section as string) &&
+      isText(item.item, MAX_GROCERY_ITEM_LENGTH, false) &&
+      isText(item.detail) &&
+      typeof item.checked === "boolean" &&
+      typeof item.farmBox === "boolean" &&
+      (item.id === undefined || isId(item.id));
+  });
 }

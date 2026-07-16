@@ -2,6 +2,7 @@ export function deriveTimerDisplay(
   durationSeconds: number,
   startedAt: number | undefined,
   now: number,
+  paused = false,
 ) {
   const elapsed = startedAt === undefined
     ? 0
@@ -10,7 +11,7 @@ export function deriveTimerDisplay(
   return {
     remainingSeconds,
     status: startedAt === undefined
-      ? "timer"
+      ? paused ? "paused" : "timer"
       : remainingSeconds === 0
         ? "elapsed"
         : "running",

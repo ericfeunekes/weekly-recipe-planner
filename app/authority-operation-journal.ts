@@ -6,8 +6,6 @@ export const AUTHORITY_OPERATION_JOURNAL_EVENT =
 export const AUTHORITY_OPERATION_KINDS = [
   "planner",
   "bootstrap",
-  "chat-submit",
-  "chat-retry",
   "undo",
 ] as const;
 
@@ -58,8 +56,6 @@ const MAX_LABEL_LENGTH = 240;
 const OPERATION_PATHS: Record<AuthorityOperationKind, string> = {
   planner: "/api/commands",
   bootstrap: "/api/bootstrap",
-  "chat-submit": "/api/chat/submit",
-  "chat-retry": "/api/chat/retry",
   undo: "/api/undo",
 };
 

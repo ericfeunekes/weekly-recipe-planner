@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,21 +30,6 @@ async function withDeadline(promise, label, timeoutMs = REQUEST_TIMEOUT_MS) {
   }
 }
 
-async function waitForPath(path, label) {
-  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
-  while (true) {
-    try {
-      await access(path);
-      return;
-    } catch {
-      if (Date.now() >= deadline) {
-        throw new Error(`${label} did not complete within ${REQUEST_TIMEOUT_MS}ms.`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-}
-
 function instrumentCodexRuntime(runtime) {
   const stats = { spawnCalls: 0 };
   return {
@@ -63,13 +48,9 @@ function instrumentCodexRuntime(runtime) {
 
 async function startListenerRuntime(t, prefix, codexState) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
-  const overlapStartedMarkerPath = join(directory, ".held-overlap-started");
-  const overlapReleaseMarkerPath = join(directory, ".held-overlap-release");
   const instrumentedCodex = instrumentCodexRuntime(
     createDeterministicCodexRuntime(codexState, {
       fixedCwd: APP_CWD,
-      overlapStartedMarkerPath,
-      overlapReleaseMarkerPath,
     }),
   );
   let runtime;
@@ -99,10 +80,6 @@ async function startListenerRuntime(t, prefix, codexState) {
     runtime,
     baseUrl: `http://127.0.0.1:${address.port}`,
     codexStats: instrumentedCodex.stats,
-    waitForCompletionStart: () =>
-      waitForPath(overlapStartedMarkerPath, "Codex completion start"),
-    releaseCompletion: () =>
-      writeFile(overlapReleaseMarkerPath, "release\n", { flag: "wx" }),
   };
 }
 
@@ -139,120 +116,6 @@ function addDays(isoDate, days) {
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
-
-test(
-  "overlapping listener-backed chat submissions admit one authenticated Codex completion",
-  { timeout: TEST_TIMEOUT_MS },
-  async (t) => {
-    const fixture = await startListenerRuntime(
-      t,
-      "planner-chat-http-overlap-",
-      "compatible",
-    );
-    const { baseUrl } = fixture;
-    const bootstrap = await postJson(baseUrl, "/api/bootstrap", {
-      requestId: "bootstrap-chat-overlap",
-      mode: "seed",
-    });
-    assert.equal(bootstrap.status, 201);
-    const initial = bootstrap.body.workspace;
-    const weekId = initial.state.activeWeekId;
-    assert.equal(typeof weekId, "string");
-
-    const winnerRequestId = "chat-overlap-winner";
-    const loserRequestId = "chat-overlap-loser";
-    const winnerMessage = "Propose conflicting meal change during retry isolation.";
-    const loserMessage = "This request must observe the durable busy turn.";
-    const submit = (requestId, message) =>
-      postJson(baseUrl, "/api/chat/submit", {
-        requestId,
-        basePlannerVersion: initial.plannerVersion,
-        message,
-        context: { view: "week", weekId },
-        intent: { kind: "planner", archiveContextWeek: false },
-      });
-
-    const winnerPromise = submit(winnerRequestId, winnerMessage);
-    void winnerPromise.catch(() => {});
-    let winnerResponse;
-    try {
-      const startOutcome = await Promise.race([
-        fixture.waitForCompletionStart().then(() => ({ status: "started" })),
-        winnerPromise.then((response) => ({ status: "completed_early", response })),
-      ]);
-      assert.equal(
-        startOutcome.status,
-        "started",
-        `Winning chat completed before the controlled Codex barrier: ${JSON.stringify(
-          startOutcome.status === "completed_early"
-            ? {
-                status: startOutcome.response.status,
-                decision: startOutcome.response.body.decision,
-              }
-            : startOutcome,
-        )}`,
-      );
-
-      // The winner's listener request remains open at the adapter while this
-      // second request traverses the same real HTTP and SQLite boundaries.
-      const loserResponse = await submit(loserRequestId, loserMessage);
-      assert.equal(loserResponse.status, 409);
-      assert.equal(loserResponse.body.decision.status, "turn_busy");
-      assert.equal(loserResponse.body.decision.runningTurn.requestId, winnerRequestId);
-      assertNoSqliteOrServerLeak(loserResponse);
-
-      const pendingReadback = await requestJson(baseUrl, "/api/workspace");
-      assert.equal(pendingReadback.status, 200);
-      assert.deepEqual(loserResponse.body.workspace, pendingReadback.body);
-      const pendingUserEntries = pendingReadback.body.transcriptEntries.filter(
-        (entry) => entry.role === "user",
-      );
-      assert.equal(pendingUserEntries.length, 1);
-      assert.equal(pendingUserEntries[0].text, winnerMessage);
-      assert.equal(pendingReadback.body.chatTurns.length, 1);
-      assert.equal(pendingReadback.body.chatTurns[0].requestId, winnerRequestId);
-      assert.equal(pendingReadback.body.chatTurns[0].status, "running");
-      assert.equal(
-        pendingUserEntries[0].turnId,
-        pendingReadback.body.chatTurns[0].turnId,
-      );
-      assert.equal(fixture.codexStats.spawnCalls, 1);
-
-      await fixture.releaseCompletion();
-      winnerResponse = await withDeadline(winnerPromise, "winning chat HTTP response");
-      assert.equal(winnerResponse.status, 202);
-      assert.equal(winnerResponse.body.decision.status, "accepted");
-      assert.equal(winnerResponse.body.decision.turn.requestId, winnerRequestId);
-      assert.equal(winnerResponse.body.decision.turn.status, "completed");
-      assertNoSqliteOrServerLeak(winnerResponse);
-
-      const finalReadback = await requestJson(baseUrl, "/api/workspace");
-      assert.deepEqual(winnerResponse.body.workspace, finalReadback.body);
-      const finalUserEntries = finalReadback.body.transcriptEntries.filter(
-        (entry) => entry.role === "user",
-      );
-      assert.equal(finalUserEntries.length, 1);
-      assert.equal(finalUserEntries[0].text, winnerMessage);
-      assert.equal(finalReadback.body.chatTurns.length, 1);
-      assert.equal(finalReadback.body.chatTurns[0].requestId, winnerRequestId);
-      assert.equal(finalReadback.body.chatTurns[0].status, "completed");
-      assert.equal(
-        finalReadback.body.chatTurns.some((turn) => turn.requestId === loserRequestId),
-        false,
-      );
-      assert.equal(
-        finalReadback.body.transcriptEntries.some((entry) => entry.text === loserMessage),
-        false,
-      );
-      assert.equal(fixture.codexStats.spawnCalls, 1);
-    } finally {
-      await fixture.releaseCompletion().catch((error) => {
-        if (error?.code !== "EEXIST") throw error;
-      });
-      if (!winnerResponse) await winnerPromise.catch(() => {});
-    }
-  },
-);
 
 test(
   "same-version archive and handoff HTTP commands commit one canonical lifecycle",

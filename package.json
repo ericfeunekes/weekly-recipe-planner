@@ -20,6 +20,7 @@
     "planner:service": "node --disable-warning=ExperimentalWarning scripts/planner-service.mjs",
     "planner:global": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/planner-global-client.ts",
     "probe:codex-follow-up": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/probe-codex-follow-up.mjs",
+    "smoke:native-codex": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/smoke-live-chat.mjs",
     "smoke:live-chat": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/smoke-live-chat.mjs",
     "verify:codex-activation": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/verify-codex-activation.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"

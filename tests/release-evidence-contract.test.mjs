@@ -95,11 +95,15 @@ test("release-candidate evidence rejects unknown and credential-derived projecti
     (projection) => projection.capabilityEvidence,
     (projection) => projection.releaseBinding,
     (projection) => projection.scenarios,
-    (projection) => projection.scenarios.dependentPlanner,
-    (projection) => projection.scenarios.sourcedRecipe,
-    (projection) => projection.scenarios.sourcedRecipe.observedWebSearch,
-    (projection) => projection.scenarios.failureAfterEffect,
-    (projection) => projection.scenarios.recoveryOnly,
+    (projection) => projection.scenarios.nativeHistory,
+    (projection) => projection.scenarios.nativeTurn,
+    (projection) => projection.scenarios.nativeTurn.plannerEffect,
+    (projection) => projection.scenarios.nativeTurn.hostedWebSearch,
+    (projection) => projection.scenarios.nativeTurn.activity,
+    (projection) => projection.scenarios.nativeTurn.worker,
+    (projection) => projection.scenarios.interactions,
+    (projection) => projection.scenarios.interactions.question,
+    (projection) => projection.scenarios.interrupt,
     (projection) => projection.scenarios.globalUds,
     (projection) => projection.scenarios.incompatibleIndependence,
     (projection) => projection.scenarios.incompatibleIndependence.target,
@@ -109,7 +113,7 @@ test("release-candidate evidence rejects unknown and credential-derived projecti
     (projection) => projection.dedicatedRuntimeRetention.classes.state_sqlite,
     (projection) => projection.dedicatedRuntimeRetention.databaseTables[0],
     (projection) => projection.dedicatedRuntimeRetention.databaseTables[0].counts,
-    (projection) => projection.dedicatedRuntimeRetention.ephemeralCounts,
+    (projection) => projection.dedicatedRuntimeRetention.nativeStateCounts,
   ];
   for (const insertionPoint of insertionPoints) {
     for (const field of forbiddenFields) {
@@ -129,14 +133,14 @@ test("release-candidate evidence rejects unknown and credential-derived projecti
   }
 });
 
-test("release-candidate evidence binds the live hosted-search mode", () => {
+test("release-candidate evidence binds one native hosted-search capability surface", () => {
   const { releaseCandidate } = fixtureChain();
   for (const mode of [undefined, "indexed", "disabled"]) {
     const changed = structuredClone(releaseCandidate);
     if (mode === undefined) {
-      delete changed.projection.capabilityEvidence.researchWebSearchMode;
+      delete changed.projection.capabilityEvidence.hostedWebSearchMode;
     } else {
-      changed.projection.capabilityEvidence.researchWebSearchMode = mode;
+      changed.projection.capabilityEvidence.hostedWebSearchMode = mode;
     }
     assert.throws(() => createReleaseArtifact({
       artifactType: "release-candidate",
@@ -151,10 +155,10 @@ test("release-candidate evidence binds the live hosted-search mode", () => {
 test("release-candidate evidence requires an observed hosted-search operation bound to its turn", () => {
   const { releaseCandidate } = fixtureChain();
   const mutations = [
-    (projection) => { delete projection.scenarios.sourcedRecipe.observedWebSearch; },
-    (projection) => { projection.scenarios.sourcedRecipe.observedWebSearch.status = "started"; },
+    (projection) => { delete projection.scenarios.nativeTurn.hostedWebSearch; },
+    (projection) => { projection.scenarios.nativeTurn.hostedWebSearch.status = "started"; },
     (projection) => {
-      projection.scenarios.sourcedRecipe.observedWebSearch.durableTurnIdSha256 = "f".repeat(64);
+      projection.scenarios.nativeTurn.hostedWebSearch.turnIdSha256 = "f".repeat(64);
     },
   ];
   for (const mutate of mutations) {
@@ -168,6 +172,93 @@ test("release-candidate evidence requires an observed hosted-search operation bo
     }), /invalid exact contract/);
     assert.throws(() => assertReleaseArtifact(rehash(changed)), /invalid exact contract/);
   }
+});
+
+test("release-candidate evidence requires one authoritative recipe-derived farm-box move", () => {
+  const { releaseCandidate } = fixtureChain();
+  const mutations = [
+    (projection) => { projection.scenarios.nativeTurn.plannerEffect.plannerVersionDelta = 2; },
+    (projection) => { projection.scenarios.nativeTurn.plannerEffect.source = "shop"; },
+    (projection) => { projection.scenarios.nativeTurn.plannerEffect.ingredientNameSha256 = "not-a-sha"; },
+    (projection) => { projection.scenarios.nativeTurn.plannerEffect.authoritativeReadback = false; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(releaseCandidate);
+    mutate(changed.projection);
+    assert.throws(() => createReleaseArtifact({
+      artifactType: "release-candidate",
+      activationId,
+      predecessorSha256: releaseCandidate.predecessorSha256,
+      projection: changed.projection,
+    }), /invalid exact contract/);
+  }
+});
+
+test("release-candidate evidence requires observed labels and a completed parent worker result", () => {
+  const { releaseCandidate } = fixtureChain();
+  const mutations = [
+    (projection) => { delete projection.scenarios.nativeTurn.activity.humanLabelsObserved; },
+    (projection) => { projection.scenarios.nativeTurn.activity.humanLabelsObserved = false; },
+    (projection) => { delete projection.scenarios.nativeTurn.worker.parentResultObserved; },
+    (projection) => { projection.scenarios.nativeTurn.worker.parentResultObserved = false; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(releaseCandidate);
+    mutate(changed.projection);
+    assert.throws(() => createReleaseArtifact({
+      artifactType: "release-candidate",
+      activationId,
+      predecessorSha256: releaseCandidate.predecessorSha256,
+      projection: changed.projection,
+    }), /invalid exact contract/);
+  }
+});
+
+test("release-candidate evidence cross-binds native root, interaction, worker, and interrupt identities", () => {
+  const { releaseCandidate } = fixtureChain();
+  const mutations = [
+    (projection) => {
+      projection.scenarios.nativeHistory.primaryThreadIdSha256 = "f".repeat(64);
+    },
+    (projection) => {
+      projection.scenarios.interactions.question.threadIdSha256 = "f".repeat(64);
+    },
+    (projection) => {
+      projection.scenarios.nativeTurn.worker.workerThreadIdSha256 =
+        projection.scenarios.nativeTurn.threadIdSha256;
+    },
+    (projection) => {
+      projection.scenarios.interrupt.threadIdSha256 = "f".repeat(64);
+    },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(releaseCandidate);
+    mutate(changed.projection);
+    assert.throws(() => createReleaseArtifact({
+      artifactType: "release-candidate",
+      activationId,
+      predecessorSha256: releaseCandidate.predecessorSha256,
+      projection: changed.projection,
+    }), /invalid exact contract/);
+    assert.throws(() => assertReleaseArtifact(rehash(changed)), /invalid exact contract/);
+  }
+});
+
+test("release-candidate evidence does not claim an unobserved approval interaction", () => {
+  const { releaseCandidate } = fixtureChain();
+  const changed = structuredClone(releaseCandidate);
+  changed.projection.scenarios.interactions.approval = {
+    policy: "never",
+    rejectedByPolicy: true,
+    noDecisionSurface: true,
+  };
+  assert.throws(() => createReleaseArtifact({
+    artifactType: "release-candidate",
+    activationId,
+    predecessorSha256: releaseCandidate.predecessorSha256,
+    projection: changed.projection,
+  }), /invalid exact contract/);
+  assert.throws(() => assertReleaseArtifact(rehash(changed)), /invalid exact contract/);
 });
 
 test("self-rehashed evidence rejects unknown outer-envelope fields", () => {

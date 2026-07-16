@@ -12,7 +12,6 @@ import type {
   LegacyV2Payload,
   PageRequest,
   PlannerEventPage,
-  TranscriptPage,
   UndoLatestRequest,
   WorkspaceResponse,
 } from "../lib/planner-api-contract.ts";
@@ -21,11 +20,6 @@ import {
   PLANNER_API_ROUTES,
   isDiagnosticExportEnvelope,
 } from "../lib/planner-api-contract.ts";
-import type {
-  ChatTurnDecision,
-  RetryChatTurnRequest,
-  SubmitChatTurnRequest,
-} from "../lib/planner-chat-contract.ts";
 import {
   markAuthorityOperationAmbiguous,
   prepareAuthorityOperation,
@@ -45,11 +39,6 @@ export type WorkspaceReadResult =
       etag: string | null;
       serverDate: number | null;
     };
-
-export type ChatServiceResponse = {
-  decision: ChatTurnDecision;
-  workspace: InitializedWorkspace;
-};
 
 export type LegacyImportCandidate =
   | { present: false; payload: null; error: null }
@@ -181,8 +170,6 @@ type PostResolution =
 const DEFAULT_OPERATION_LABELS: Record<AuthorityOperationKind, string> = {
   planner: "Save shared planner change",
   bootstrap: "Set up shared planner",
-  "chat-submit": "Send ChatGPT message",
-  "chat-retry": "Retry ChatGPT request",
   undo: "Undo latest change",
 };
 
@@ -350,46 +337,9 @@ export async function undoLatest(
       }, presentation);
 }
 
-export async function submitChatTurn(
-  request: SubmitChatTurnRequest,
-  presentation?: AuthorityOperationPresentation,
-): Promise<ChatServiceResponse> {
-  return postJson("chat-submit", PLANNER_API_ROUTES.chatSubmit.path, request, (_response, value) => {
-    if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
-      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
-    }
-    return value as ChatServiceResponse;
-  }, (result) => result.decision.status === "accepted"
-    ? { accepted: true }
-    : {
-        accepted: false,
-        code: result.decision.status,
-        message: "ChatGPT did not accept this request against the current shared plan.",
-      }, presentation);
-}
-
-export async function retryChatTurn(
-  request: RetryChatTurnRequest,
-  presentation?: AuthorityOperationPresentation,
-): Promise<ChatServiceResponse> {
-  return postJson("chat-retry", PLANNER_API_ROUTES.chatRetry.path, request, (_response, value) => {
-    if (!isRecord(value) || !isRecord(value.decision) || !isInitializedWorkspace(value.workspace)) {
-      throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid chat response." });
-    }
-    return value as ChatServiceResponse;
-  }, (result) => result.decision.status === "accepted"
-    ? { accepted: true }
-    : {
-        accepted: false,
-        code: result.decision.status,
-        message: "The interrupted ChatGPT request could not be retried against the current plan.",
-      }, presentation);
-}
-
 export type AuthorityOperationReplayResult =
   | { kind: "planner" | "undo"; response: ApplyPlannerCommandResponse }
-  | { kind: "bootstrap"; response: BootstrapWorkspaceResponse }
-  | { kind: "chat-submit" | "chat-retry"; response: ChatServiceResponse };
+  | { kind: "bootstrap"; response: BootstrapWorkspaceResponse };
 
 export async function replayAuthorityOperation(
   operation: PendingAuthorityOperation,
@@ -411,21 +361,9 @@ export async function replayAuthorityOperation(
       response: await bootstrapWorkspace(request as BootstrapWorkspaceRequest, presentation),
     };
   }
-  if (operation.kind === "undo") {
-    return {
-      kind: operation.kind,
-      response: await undoLatest(request as UndoLatestRequest, presentation),
-    };
-  }
-  if (operation.kind === "chat-submit") {
-    return {
-      kind: operation.kind,
-      response: await submitChatTurn(request as SubmitChatTurnRequest, presentation),
-    };
-  }
   return {
-    kind: operation.kind,
-    response: await retryChatTurn(request as RetryChatTurnRequest, presentation),
+    kind: "undo",
+    response: await undoLatest(request as UndoLatestRequest, presentation),
   };
 }
 
@@ -450,14 +388,6 @@ export async function readHistoryPage(request: PageRequest = {}): Promise<Planne
     throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid history response." });
   }
   return value as PlannerEventPage;
-}
-
-export async function readTranscriptPage(request: PageRequest = {}): Promise<TranscriptPage> {
-  const value = await getJson(pagePath(PLANNER_API_ROUTES.transcript.path, request));
-  if (!isRecord(value) || value.order !== "newest_first" || !Array.isArray(value.items)) {
-    throw new PlannerApiError({ status: 0, code: "INVALID_RESPONSE", message: "Invalid transcript response." });
-  }
-  return value as TranscriptPage;
 }
 
 export async function exportWorkspace(): Promise<DiagnosticExportEnvelope> {

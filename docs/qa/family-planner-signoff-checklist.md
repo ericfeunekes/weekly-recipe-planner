@@ -2,7 +2,7 @@
 
 **Status:** Test inventory complete after three independent review passes and two adversarial challenges; execution is tracked in `outputs/qa/2026-07-12-schema4-candidate/qa-report.md`
 
-**Target:** reusable schema-4 household baseline; revised ChatGPT rows target a future frozen native-thread-wrapper Codex candidate
+**Target:** reusable schema-4 household baseline; revised Codex rows target the native-thread-wrapper candidate
 
 **Production data:** Never used or mutated
 
@@ -10,7 +10,7 @@
 
 The row-level statuses below remain the reusable signoff baseline; they are not a claim that every story ran in the 2026-07-12 candidate pass. The execution report identifies the exercised journeys, confirmed failures, automated coverage mapping, and residual gaps.
 
-The ChatGPT rows were revised on 2026-07-15 for the current native-thread-wrapper requirements. They are future acceptance criteria and were not exercised by the historical schema-4/split-context candidate report.
+The Codex rows were revised on 2026-07-15 for the current native-thread-wrapper requirements. They are future acceptance criteria and were not exercised by the historical schema-4/split-context candidate report.
 
 ## Test Model
 
@@ -22,7 +22,7 @@ The ChatGPT rows were revised on 2026-07-15 for the current native-thread-wrappe
 | Prep cook | Executes advance steps in a time-ordered list, including timers and notes |
 | Dinner cook | Opens Tonight, sees completed prep, and finishes the meal |
 | Family member | Reads and updates the same plan or selected native Codex thread from another device |
-| Household operator | Recovers from offline, restart, conflicts, and interrupted ChatGPT work |
+| Household operator | Recovers from offline, restart, conflicts, and interrupted Codex work |
 
 ### Canonical data profiles
 
@@ -34,7 +34,7 @@ The ChatGPT rows were revised on 2026-07-15 for the current native-thread-wrappe
 | D3 | D2 plus a planned future week and an archived prior week |
 | D4 | Overflow fixture with seven dense dinners, all eight prep dates, all grocery sections, many leftovers/events/native thread items, maximum valid values, and one unbroken URL/token |
 | D5 | D2 opened by two independent browser contexts |
-| D6 | D2 with deterministic ChatGPT ready, running/steer, unavailable, incompatible, and interrupted states |
+| D6 | D2 with deterministic Codex ready, running/steer, unavailable, incompatible, and interrupted states |
 | D7 | Initialized workspace with zero weeks |
 | D8 | Current-night assigned leftovers plus all meal status tones |
 | D9 | Populated schema-v1, v2, and v3 databases with events, undo state, legacy transcript/chat rows, and running/interrupted turns |
@@ -75,9 +75,9 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | NAV-06 | P0 | Select a planned week and choose Make active while another week is active. | One atomic handoff archives the old week and activates the selected week. | Before/after API and history | NOT RUN |
 | NAV-07 | P1 | Race week handoff from two clients. | One lifecycle wins, one client receives a version conflict and authoritative state, and at most one week is active. | Two-client trace and API readback | NOT RUN |
 | NAV-08 | P1 | Select a week that does not contain today and open Tonight. | The empty-state explanation directs the user back to the correct week without rendering the wrong dinner. | Screenshot at all core viewports | NOT RUN |
-| NAV-10 | P1 | Open and close Meal, History, and mobile ChatGPT surfaces by button, Escape, and backdrop where supported. | Focus enters the surface, remains trapped where modal, returns to the trigger/fallback, and body scroll is restored. | Keyboard recording and focus readback | NOT RUN |
+| NAV-10 | P1 | Open and close Meal, History, and mobile Codex surfaces by button, Escape, and backdrop where supported. | Focus enters the surface, remains trapped where modal, returns to the trigger/fallback, and body scroll is restored. | Keyboard recording and focus readback | NOT RUN |
 | NAV-11 | P0 | Select a planned week when `activeWeekId` is null and choose Make active. | The planned week becomes the only active week without requiring a handoff source. | Before/after lifecycle readback | NOT RUN |
-| NAV-12 | P0 | Open D7. | The user has a viable way to create the first week. The current "Ask ChatGPT" copy with no rendered chat is a blocking dead end unless the state is made unreachable. | Screenshot and reachability proof | NOT RUN |
+| NAV-12 | P0 | Open D7. | The user has a viable way to create the first week. The current **New thread** control remains available when no week exists. | Screenshot and reachability proof | NOT RUN |
 
 ### Week, Meal, And Recipe Editing
 
@@ -94,7 +94,7 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | MEAL-06 | P1 | Change a meal through planned, moved, cooking, cooked, leftover, and skipped/flex statuses. | Status badges and available actions remain coherent in every view. | Status montage | NOT RUN |
 | MEAL-07 | P0 | Start cooking from Tonight and then mark cooked. | Status persists across clients and reload; leftover availability follows the canonical rule once. | Two-client recording and readback | NOT RUN |
 | MEAL-08 | P1 | Open an informational sourced recipe link. | It is visibly labeled informational and opens the exact HTTP(S) source in a separate tab without losing planner state. | Screenshot and target/href inspection | NOT RUN |
-| MEAL-09 | P0 | Ask ChatGPT to use the web and replace a recipe when no protected execution state exists. | Recipe-owned fields and informational source update; date, slot, status, venue, notes, prep/leftover notes, and meal identity remain protected. | Before/after API projection and UI | NOT RUN |
+| MEAL-09 | P0 | Ask Codex to use the web and replace a recipe when no protected execution state exists. | Recipe-owned fields and informational source update; date, slot, status, venue, notes, prep/leftover notes, and meal identity remain protected. | Before/after API projection and UI | NOT RUN |
 | MEAL-10 | P0 | Attempt recipe replacement while a step is complete, timed, noted, or referenced by prep. | Replacement refuses before mutation and explains the protected state; explicit cleanup must be a separate accepted action. | Failure screenshot and unchanged meal | NOT RUN |
 | MEAL-11 | P1 | Lose the response after a recipe edit commits, then use exact-envelope recovery. | The draft is retained until authoritative readback; exact retry cannot apply a second edit. Discard is not offered for ambiguous committed-response recovery. | Network trace and history count | NOT RUN |
 | MEAL-12 | P1 | Edit the same meal from two clients using different fields. | One accepted version wins; the stale client sees a conflict and preserves its draft for deliberate reconciliation. | Two-client recording | NOT RUN |
@@ -112,8 +112,8 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | STEP-05 | P1 | Use timers at 0.5 minutes and 1,440 minutes; reject below, above, or invalid values. | Boundary values persist and invalid values show accessible errors with no mutation. | Field/error screenshots | NOT RUN |
 | STEP-06 | P0 | Add a step note. | The note appears on the canonical step in every referencing view and creates one event. | Cross-view screenshots and history | NOT RUN |
 | STEP-07 | P0 | Clear a step note. | Only the optional note clears; instruction, timer, completion, and prep reference remain. | Before/after screenshots | NOT RUN |
-| STEP-08 | P0 | Use Send to ChatGPT from a step comment without Add note. | The selected native thread receives one identity-bound user item with stable step context; the step note does not change. | Chat/step screenshots and native item readback | NOT RUN |
-| STEP-09 | P0 | Use Add note from a step comment without Send to ChatGPT. | The note changes and no native conversation item is created. | Step/chat screenshots and counts | NOT RUN |
+| STEP-08 | P0 | Use Ask Codex from a step comment without saving it. | The selected native thread receives one identity-bound user item with stable step context; the step note does not change. | Chat/step screenshots and native item readback | NOT RUN |
+| STEP-09 | P0 | Save a comment without Ask Codex. | The note changes and no native conversation item is created. | Step/chat screenshots and counts | NOT RUN |
 | STEP-10 | P0 | Edit amount lines, free-text instruction, and optional timer duration. | Amounts render above the instruction in recipe order everywhere; shared execution state is preserved. | Before/after screenshots and readback | NOT RUN |
 | STEP-11 | P0 | Add a new instruction step. | A stable new step appears once in recipe order and can be referenced by prep. | Drawer/Prep screenshots | NOT RUN |
 | STEP-12 | P1 | Reorder steps in Meal. | Recipe order changes while Prep manual order remains unchanged. | Before/after order evidence | NOT RUN |
@@ -138,19 +138,19 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | PREP-09 | P1 | Run D4 with many references and long recipe/step labels. | No horizontal overflow, overlapping reorder controls, clipped dates, or inaccessible remove button. | Viewport screenshots | NOT RUN |
 | PREP-10 | P1 | Change prep order while another client completes the same step. | Both independent changes survive when valid or one conflicts with a recoverable authoritative readback. | Two-client trace | NOT RUN |
 
-### Groceries, Farm Box, Leftovers, And Closeout
+### Groceries, Sources, Leftovers, And Closeout
 
 | ID | Priority | User story and actions | Expected result | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| GROC-01 | P0 | Add a grocery item with section and detail. | It appears once in the correct section and on the other client. | Two-client screenshots | NOT RUN |
+| GROC-01 | P0 | Add a grocery item with section, detail, source, and linked dinner. | It appears once in the correct section, source filter, linked dinner, and on the other client. | Two-client screenshots and authority readback | NOT RUN |
 | GROC-02 | P0 | Submit blank/whitespace input, maximum valid UI input, and injected API maximum-plus-one values. | Invalid input is blocked accessibly; `maxLength` is coherent; valid boundary input persists/wraps; API overflow has zero effect. | Error/overflow screenshots | NOT RUN |
-| GROC-03 | P0 | Check and uncheck a grocery item. | Shared state updates immediately; All/Open/Done filters show correct counts and membership. | Filter recording | NOT RUN |
+| GROC-03 | P0 | Check and uncheck a grocery item. | Shared state updates immediately; To buy, All, Farm box, On hand, and Done filters show correct membership. | Filter recording | NOT RUN |
 | GROC-04 | P0 | Remove an item, including while a filter is active. | The correct item disappears once and filter state remains coherent. | Before/after screenshots | NOT RUN |
 | GROC-05 | P1 | Lose an Add or Check response after commit. | Pending retry preserves the draft or intended state and cannot duplicate the item/event. | Network trace and readback | NOT RUN |
 | GROC-06 | P1 | Add same-named groceries in different sections/details. | Stable IDs keep actions attached to the selected item; labels remain distinguishable enough to operate safely. | Screenshot and command readback | NOT RUN |
-| GROC-07 | P0 | Use Reconcile current list in the Grocery view after the list reflects owned produce. | Exact before/after grocery readback reconciles atomically, the flag persists, and a second click is disabled. | Before/after screenshot/readback and receipt | NOT RUN |
+| GROC-07 | P0 | Tag an existing grocery as Farm box or On hand, filter it, and open its linked dinner. | Source updates once, To buy excludes non-Shop items, and the dinner link opens the correct recipe. | Before/after screenshot, authority readback, and recipe drawer recording | NOT RUN |
 | GROC-08 | P1 | Open a large D4 grocery list on phone/tablet/desktop. | Sections, filters, checkboxes, delete controls, and add form remain usable without layout overflow. | Viewport screenshots | NOT RUN |
-| GROC-09 | P1 | Preview and apply farm-box substitutions through ChatGPT or Global Codex. | Accepted/added/removed items match the preview and no unrelated grocery is changed. | Diff screenshot and receipt | NOT RUN |
+| GROC-09 | P1 | Preview and apply grocery source or dinner-link changes through Codex or Global Codex. | Accepted changes match the preview and no unrelated grocery is changed. | Diff screenshot and receipt | NOT RUN |
 | GROC-10 | P1 | Try to edit an existing grocery's name/detail/section. | The command capability is verified, and the missing family UI path is recorded explicitly as a product gap. | UI inventory and command readback | NOT RUN |
 | LEFT-01 | P0 | Cook a meal that yields leftovers. | One leftover record becomes available with correct label and portions. | Closeout/API evidence | NOT RUN |
 | LEFT-02 | P0 | Rate leftover quality good, mixed, and poor. | Exactly one quality is selected and persists across reload. | Segmented-control screenshots | NOT RUN |
@@ -161,10 +161,10 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | CLOSE-01 | P0 | Record repeat/modify/drop feedback on each meal. | Exactly one value per meal persists and remains associated with the correct snapshot. | Closeout screenshot/readback | NOT RUN |
 | CLOSE-02 | P0 | Save, edit, clear, and max-fill the week lesson. | One canonical lesson persists with accessible limits and no cross-week draft leakage. | Field/readback evidence | NOT RUN |
 | CLOSE-03 | P0 | Archive the active week after closeout. | Week becomes archived and read-only, history records it, and no second archive occurs. | Before/after screenshots and event | NOT RUN |
-| CLOSE-04 | P1 | Attempt planner-week archive with stale state or from the embedded ChatGPT thread. | Direct stale action conflicts; the embedded thread has no planner-archive authority; no hidden lifecycle mutation occurs. | Chat/history/API evidence | NOT RUN |
+| CLOSE-04 | P1 | Attempt planner-week archive with stale state or from the embedded Codex thread. | Direct stale action conflicts; the embedded thread has no planner-archive authority; no hidden lifecycle mutation occurs. | Chat/history/API evidence | NOT RUN |
 | CLOSE-05 | P1 | View closeout with no leftovers, no feedback, or already archived. | Empty/read-only states explain what remains without broken or misleading controls. | State screenshots | NOT RUN |
 
-### ChatGPT, Web-Assisted Planning, And Shared Conversation
+### Codex, Web-Assisted Planning, And Shared Conversation
 
 | ID | Priority | User story and actions | Expected result | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -176,10 +176,10 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | CHAT-06 | P0 | Terminate the app-server/authority during search or after tool planning but before any accepted effect. | The turn ends with zero planner effect; recoverable restart re-reads the same native thread; retry is a new foreground turn on it. No raw page body enters planner state, application logs, or evidence, while private Codex retention is disclosed rather than denied. | Native thread/workspace/effect and private-retention evidence | NOT RUN |
 | CHAT-07 | P0 | Terminate the app-server/authority after effect commit but before tool response, during item streaming, and after terminal effect CAS. | UI says changes are durable; recovery creates no additional planner effect. Any host-only recovery notice is typed as planner status rather than fabricated as a native assistant item. | Recording, native items, and event/effect counts | NOT RUN |
 | CHAT-08 | P0 | Submit additional input to one ordinary running top-level thread, then select another thread and submit there while the first continues. | The first input uses native `turn/start`; additional same-thread input uses `turn/steer` with its own client message ID. The other top-level thread runs independently; history shows both statuses and their items/effects never cross. Neither send carries planner-archive authority. | Two-client native start/steer/thread trace | NOT RUN |
-| CHAT-09 | P0 | Make ChatGPT unavailable after readiness but during submit, returning an injected 503. | Draft remains with no task-intent state; planner controls remain usable. Steady-state disabled Send is covered by CHAT-10. | Screenshot and field readback | NOT RUN |
+| CHAT-09 | P0 | Make Codex unavailable after readiness but during submit, returning an injected 503. | Draft remains with no task-intent state; planner controls remain usable. Steady-state disabled Send is covered by CHAT-10. | Screenshot and field readback | NOT RUN |
 | CHAT-10 | P0 | Cycle checking, unauthenticated, incompatible, unavailable, and ready states. | Status copy is accurate; Send is gated except when ready; planner remains usable in every state. | State montage | NOT RUN |
 | CHAT-11 | P1 | Change viewport between modal and rail with an unsent chat draft. | The draft stays in the same active client session without becoming a native item; there is no hidden task-mode state. | Resize recording and native item count | NOT RUN |
-| CHAT-12 | P0 | Use mobile ChatGPT, then continue on tablet/desktop. | Both clients read the app-wide selected top-level thread and native history. After one changes selection, any stale client must reconcile before its next send; an already-current client is not blocked waiting for peer acknowledgement. Planner view/device never creates a thread. | Cross-device screenshots, selection revision, and native readback | NOT RUN |
+| CHAT-12 | P0 | Use mobile Codex, then continue on tablet/desktop. | Both clients read the app-wide selected top-level thread and native history. After one changes selection, any stale client must reconcile before its next send; an already-current client is not blocked waiting for peer acknowledgement. Planner view/device never creates a thread. | Cross-device screenshots, selection revision, and native readback | NOT RUN |
 | CHAT-13 | P1 | Enter empty, whitespace-only, maximum valid UI, and injected API over-limit messages. | Invalid sends stay blocked; limit is visible; maximum content wraps; authority rejects bypass overflow with zero native-item/turn/effect change. | Boundary screenshots and native/API counts | NOT RUN |
 | CHAT-14 | P1 | Render long source identity, assistant reply, error, and recovery controls. | Chat remains scrollable; composer/send remain reachable; no message or control overflows. | D4 viewport screenshots | NOT RUN |
 | CHAT-15 | P0 | Crash/restart the authority or Codex app-server while a turn/worker is running and between normal turns. | Startup reloads the native catalogue, exact selected pointer, thread context, and worker status; interrupted-effect recovery creates no duplicate planner effect. | Restart recording, native readback, selection, and effect rows | NOT RUN |
@@ -203,9 +203,9 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 
 | ID | Priority | User story and actions | Expected result | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| HIST-01 | P0 | Open Recent changes after UI and ChatGPT mutations. | Events are newest-first, readable, identify Household/Codex, command summary, target, and time. | Drawer screenshot and API page | NOT RUN |
+| HIST-01 | P0 | Open Recent changes after UI and Codex mutations. | Events are newest-first, readable, identify Household/Codex, command summary, target, and time. | Drawer screenshot and API page | NOT RUN |
 | HIST-02 | P0 | Undo the latest eligible UI mutation. | Exact inverse applies once, affected views refresh, and history records the undo. | Before/after recording | NOT RUN |
-| HIST-03 | P0 | Undo the latest eligible ChatGPT mutation. | The same undo authority applies; the native conversation item remains historical while planner state reverts. | Chat/history/view evidence | NOT RUN |
+| HIST-03 | P0 | Undo the latest eligible Codex mutation. | The same undo authority applies; the native conversation item remains historical while planner state reverts. | Chat/history/view evidence | NOT RUN |
 | HIST-04 | P0 | Attempt undo after dependent later change, from stale client, twice, and after archive/handoff followed by a concurrent write. | Unsafe/duplicate undo is rejected; valid lifecycle undo preserves one-active-week invariants and records the exact `reverts_event_id`. | Event graph and failure trace | NOT RUN |
 | HIST-05 | P1 | Scroll a long event history and open/close on phone. | Drawer content scrolls independently, close control remains available, and focus returns correctly. | Phone recording | NOT RUN |
 | HIST-06 | P0 | Undo archive as the latest event. | Lifecycle restores atomically with exactly one active-week invariant while native conversation history remains unchanged. | Before/after event and lifecycle readback | NOT RUN |
@@ -242,14 +242,14 @@ Every cell requires a viewport screenshot and geometry JSON asserting document w
 | Surface | Empty | Loading | Error/offline | Populated | Overflow | Interactive overlays |
 | --- | --- | --- | --- | --- | --- | --- |
 | Bootstrap | D0 no legacy | Initial read/bootstrap busy | Authority failure, corrupt import, interrupted retry | D1 valid import candidate | Long labels/errors | Import/Fresh/Retry and busy transitions |
-| Shared shell | D7 initialized/no weeks | Saving and ChatGPT working indicators | Offline, notice, conflict, pending retry with Retry/Discard/Dismiss | Active/planned/archived picker | Long week labels/banners | Nav, Make active, week switch, visible H1 focus |
+| Shared shell | D7 initialized/no weeks | Saving and Codex activity indicators | Offline, notice, conflict, pending retry with Retry/Discard/Dismiss | Active/planned/archived picker | Long week labels/banners | Nav, Make active, week switch, visible H1 focus |
 | Week | Seven open dinners | NOT APPLICABLE: no per-view loader | Archived/offline shell | D2/D3 mixed meals and D8 leftovers/status tones | D4 seven dense meals | Open recipe, pressure strip, scroll clearance |
 | Tonight | Outside week / no meal | NOT APPLICABLE: no per-view loader | Offline/pending mutation | Recipe states plus D8 assigned leftovers | D4 recipe/steps/source | Status, checkbox, note, timer, meal drawer |
 | Prep | No references / archived form absent | NOT APPLICABLE: no per-view loader | Validation/conflict/offline | Multiple dated groups | D4 all eight dates/long steps | Add, reorder, reschedule, remove, drawer, timer |
-| Groceries | No items / empty filter | NOT APPLICABLE: no per-view loader | Validation/conflict/offline | All sections, mixed completion, farm-box state | D4 long list/details | Add, filters, check/remove/reconcile/draft |
+| Groceries | No items / empty filter | NOT APPLICABLE: no per-view loader | Validation/conflict/offline | All sections, mixed completion, source and dinner links | D4 long list/details | Add, source/filter, check/remove, dinner link/draft |
 | Close out | No ratings/leftovers | NOT APPLICABLE: no per-view loader | Read-only/error/conflict | Partial feedback, leftover lifecycle, archived summary | D4 names/leftovers/lesson | Rate, lesson, assign/consume, archive |
-| ChatGPT rail: T768/D1280/W1920 | Empty native catalogue/new-thread composer | Health checking, history picker, selected thread using web/planner tools, nested workers | Unavailable/incompatible thread, stale selection, unapplied conflict, interrupted native turn, ambiguous-send history refresh, effect readback | D13 mixed top-level/worker activity | D4 long history/items/context/errors | History/select/new, composer start/steer, worker drill-down, native conversation archive, reconnect/refresh, scroll/focus |
-| ChatGPT modal: P375/P428 | Empty native catalogue/new-thread composer | Health checking, history picker, selected thread using web/planner tools, nested workers | Rail errors plus unavailable selection, ambiguous-send history refresh, and offline recovery | D13 mixed top-level/worker activity | D4 long history/items/context/errors | Open/close, history/select/new, composer start/steer, worker drill-down, native conversation archive, reconnect/refresh, trap, Escape, keyboard, resize |
+| Codex rail: T768/D1280/W1920 | Empty native catalogue/new-thread composer | Health checking, history picker, selected thread using web/planner tools, nested workers | Unavailable/incompatible thread, stale selection, unapplied conflict, interrupted native turn, ambiguous-send history refresh, effect readback | D13 mixed top-level/worker activity | D4 long history/items/context/errors | History/select/new, composer start/steer, worker drill-down, native conversation archive, reconnect/refresh, scroll/focus |
+| Codex modal: P375/P428 | Empty native catalogue/new-thread composer | Health checking, history picker, selected thread using web/planner tools, nested workers | Rail errors plus unavailable selection, ambiguous-send history refresh, and offline recovery | D13 mixed top-level/worker activity | D4 long history/items/context/errors | Open/close, history/select/new, composer start/steer, worker drill-down, native conversation archive, reconnect/refresh, trap, Escape, keyboard, resize |
 | Meal drawer | No ingredients/instructions/notes | Save pending/disabled | Validation/offline/conflict/archived | Normal and sourced recipe | D4 fields/steps/editors | Trap/restore, move/status/edit/reorder/timer/delete |
 | History drawer | No events | NOT APPLICABLE: no drawer loader | Offline/pending retry/undo conflict | Household/Codex events and undo state | D4 long event tail | Trap, Escape/backdrop, scrolling, undo, restore |
 
@@ -259,7 +259,7 @@ Every cell requires a viewport screenshot and geometry JSON asserting document w
 | --- | --- | --- |
 | VP-375 | 375x812 | Small iPhone and worst-case bottom navigation/chat width |
 | VP-428 | 428x926 | Large phone and long-content wrapping |
-| VP-768 | 768x1024 | iPad portrait with persistent ChatGPT rail |
+| VP-768 | 768x1024 | iPad portrait with persistent Codex rail |
 | VP-1280 | 1280x900 | Standard desktop operations surface |
 | VP-1920 | 1920x1080 | Wide desktop density, max-width, and unused-space behavior |
 
@@ -281,7 +281,7 @@ Every cell requires a viewport screenshot and geometry JSON asserting document w
 | A11Y-01 | P0 | Keyboard-only traverse buttons, links, summaries, fields, nav, programmatically focused H1, and every overlay. | Logical order, visible focus not hidden by fixed UI, correct mobile-nav order, no trap outside modal, no unreachable command. | NOT RUN |
 | A11Y-02 | P0 | Inspect headings, landmarks, current navigation, dialogs, alerts, status, groups, and field labels. | Semantics describe the visible structure and dynamic state accurately. | NOT RUN |
 | A11Y-03 | P0 | Trigger every validation error. | Error is associated with its field, announced, and not communicated by color alone. | NOT RUN |
-| A11Y-04 | P0 | Measure every interactive target, especially ChatGPT history/select/new-thread/worker/composer/archive controls, segmented controls, timers, prep icons, nav, recipe links, checkboxes, and close buttons. | Every target is at least 44x44 CSS pixels or has a documented justified exception and safe separation. | NOT RUN |
+| A11Y-04 | P0 | Measure every interactive target, especially Codex history/select/new-thread/worker/composer/archive controls, segmented controls, timers, prep icons, nav, recipe links, checkboxes, and close buttons. | Every target is at least 44x44 CSS pixels or has a documented justified exception and safe separation. | NOT RUN |
 | A11Y-05 | P1 | Check text, controls, status tones, disabled states, focus rings, and links with contrast tooling. | At least 4.5:1 normal text and 3:1 large text, UI components, and focus indicators. | NOT RUN |
 | A11Y-06 | P1 | Test 400% desktop zoom or equivalent 320 CSS-pixel reflow plus large mobile text. | Content reflows without two-dimensional scrolling or loss of functionality. | NOT RUN |
 | A11Y-07 | P1 | Exercise reduced-motion preference. | Spinners/transitions remain understandable and nonessential animation is reduced. | NOT RUN |
@@ -309,7 +309,7 @@ Every cell requires a viewport screenshot and geometry JSON asserting document w
 - `BOOT-09`, `RESTORE-01`, `STORE-01`, `CHAT-17`, `CHAT-21`, `CHAT-24` through `CHAT-30`, `SYNC-09`, and all `DEPLOY-*` rows are mandatory release gates; screenshots alone cannot satisfy them.
 - Every primary surface has populated visual evidence at all five required viewports.
 - Empty, loading, error/offline, overflow, and interactive states are covered wherever applicable, with explicit `NOT APPLICABLE` rationale rather than silent omission.
-- Keyboard/focus, touch target, long-content, console/network, two-client, restart, timer persistence, and ChatGPT readiness/recovery gates are complete.
+- Keyboard/focus, touch target, long-content, console/network, two-client, restart, timer persistence, and Codex readiness/recovery gates are complete.
 - Database hashes, `quick_check`, receipt/event/effect counts, and immutable release-chain hashes accompany durability and deployment claims.
 - Findings use `VQA-NNN` or `EXP-NNN`, contain reproduction steps and evidence, and are severity-ranked.
 - The final report separates automated proof, runtime observation, visual judgment, and untested gaps.

@@ -43,11 +43,6 @@ function createDependencies() {
       nextBeforeSequence: null,
       request,
     }),
-    readTranscriptPage: () => ({
-      order: "newest_first",
-      items: [],
-      nextBeforeSequence: null,
-    }),
     applyCommand(request) {
       calls.push(["command", request]);
       return {
@@ -81,50 +76,9 @@ function createDependencies() {
       chatTurns: [],
     }),
   };
-  const chat = {
-    async submit(request) {
-      calls.push(["chat", request]);
-      return {
-        decision: {
-          status: "accepted",
-          turn: {
-            turnId: "turn-1",
-            requestId: request.requestId,
-            turnSequence: 1,
-            status: "running",
-            userEntryId: "entry-1",
-            context: request.context,
-            inputPlannerVersion: request.basePlannerVersion,
-            replyEntryId: null,
-            proposedCommand: null,
-            mutationOutcome: null,
-            retryOfTurnId: null,
-            errorCode: null,
-            errorDetail: null,
-            createdAt: 1,
-            startedAt: 1,
-            completedAt: null,
-          },
-        },
-        workspace: { ...WORKSPACE, syncRevision: 4 },
-      };
-    },
-    async retry(request) {
-      calls.push(["chat-retry", request]);
-      return {
-        decision: {
-          status: "domain_rejected",
-          message: "Only failed or interrupted chat turns can be retried.",
-        },
-        workspace: WORKSPACE,
-      };
-    },
-    interruptRunningTurns: () => 0,
-  };
   return {
     dependencies: {
       planner,
-      chat,
       readHealth: () => ({
         status: "degraded",
         web: { status: "ready" },
@@ -186,7 +140,7 @@ async function startRealSourcedApplication(t) {
           ingredients: [],
           instructions: [],
         }],
-        prep: [], groceries: [], leftovers: [], farmBoxReconciled: false,
+        prepSessions: [], groceries: [], leftovers: [],
         feedback: {}, weekLesson: "",
       },
     }],
@@ -202,11 +156,6 @@ async function startRealSourcedApplication(t) {
   planner.bootstrap({ requestId: "bootstrap-source-http", mode: "seed" });
   const handler = createApplicationRouter({
     planner,
-    chat: {
-      submit: async () => { throw new Error("chat outside sourced ingress proof"); },
-      retry: async () => { throw new Error("chat outside sourced ingress proof"); },
-      interruptRunningTurns: () => 0,
-    },
     readHealth: () => ({
       status: "ready",
       web: { status: "ready" },
@@ -413,7 +362,12 @@ test("household HTTP sourced replacement reaches shared reducer without embedded
   assert.equal(meal.title, "HTTP lentil soup");
   assert.equal(meal.subtitle, "Keep subtitle");
   assert.deepEqual(meal.sourceRecipe, sourcedHttpCommand().recipe.source);
-  assert.deepEqual(meal.ingredients, ["1 cup lentils"]);
+  assert.equal(meal.ingredients.length, 1);
+  assert.deepEqual(
+    meal.ingredients.map(({ amount, ingredient }) => ({ amount, ingredient })),
+    [{ amount: "1 cup", ingredient: "lentils" }],
+  );
+  assert.match(meal.ingredients[0].id, /^ingredient-\d+$/u);
 
   const replay = await fetch(`${baseUrl}/api/commands`, {
     method: "POST", headers, body: JSON.stringify(request),
@@ -517,59 +471,74 @@ test("an explicitly configured Tailnet HTTPS host and origin can mutate", async 
   assert.equal(calls.length, 1);
 });
 
-test("chat accepts structured canonical context and returns its durable running turn", async (t) => {
-  const { baseUrl, calls } = await startApplication(t);
-  const response = await fetch(`${baseUrl}/api/chat/submit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
-    body: JSON.stringify({
-      requestId: "chat-request-1",
-      basePlannerVersion: 2,
-      message: "What can I prep now?",
-      context: { view: "prep", weekId: "2026-07-06" },
-      intent: { kind: "planner", archiveContextWeek: false },
-    }),
-  });
-  assert.equal(response.status, 202);
-  assert.equal((await response.json()).decision.turn.status, "running");
-  assert.equal(calls[0][0], "chat");
-  assert.deepEqual(calls[0][1].intent, {
-    kind: "planner",
-    archiveContextWeek: false,
-  });
-});
-
-test("chat submit rejects missing, mixed, extra, and unknown intent without calling chat", async (t) => {
-  const { baseUrl, calls } = await startApplication(t);
-  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
-  const base = {
-    requestId: "chat-intent-invalid",
-    basePlannerVersion: 2,
-    message: "Plan dinner.",
-    context: { view: "week", weekId: "2026-07-06" },
+test("legacy conversation routes are unavailable while native thread history remains composed", async (t) => {
+  const { dependencies, calls } = createDependencies();
+  let nativeListCalls = 0;
+  dependencies.codex = {
+    listThreads(request) {
+      nativeListCalls += 1;
+      assert.deepEqual(request, {});
+      return {
+        threads: [],
+        nextCursor: null,
+        selection: { threadId: null, revision: 0 },
+        connectionEpoch: "epoch-cutover",
+        activityRevision: 0,
+      };
+    },
+    readThread() { throw new Error("not used"); },
+    newThread() { throw new Error("not used"); },
+    selectThread() { throw new Error("not used"); },
+    archiveThread() { throw new Error("not used"); },
+    sendTurn() { throw new Error("not used"); },
+    interruptTurn() { throw new Error("not used"); },
+    listInteractions() { throw new Error("not used"); },
+    respondInteraction() { throw new Error("not used"); },
+    waitForEvents() { throw new Error("not used"); },
   };
-  for (const [label, body] of [
-    ["missing", base],
-    ["mixed", { ...base, intent: { kind: "sourced_recipe", archiveContextWeek: false } }],
-    ["extra", { ...base, intent: { kind: "planner", archiveContextWeek: false, target: "week-x" } }],
-    ["unknown", { ...base, intent: { kind: "other" } }],
-    ["raw grant", {
-      ...base,
-      intent: { kind: "planner", archiveContextWeek: false },
-      foregroundAuthority: [{ commandType: "archiveWeek", target: "week-x" }],
-    }],
+  const handler = createApplicationRouter(dependencies, {
+    allowedOrigins: new Set(["http://localhost:3001"]),
+    allowOriginlessMutations: false,
+  });
+  const server = await listenHttpServer({ handler, port: 0 });
+  t.after(() => closeHttpServer(server));
+  const address = server.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const nativeHistory = await fetch(`${baseUrl}/api/codex/threads`);
+  assert.equal(nativeHistory.status, 200);
+  assert.deepEqual(await nativeHistory.json(), {
+    threads: [],
+    nextCursor: null,
+    selection: { threadId: null, revision: 0 },
+    connectionEpoch: "epoch-cutover",
+    activityRevision: 0,
+  });
+  assert.equal(nativeListCalls, 1);
+
+  for (const [path, method] of [
+    ["/api/chat/submit", "POST"],
+    ["/api/chat/retry", "POST"],
+    ["/api/transcript", "GET"],
   ]) {
-    const response = await fetch(`${baseUrl}/api/chat/submit`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      ...(method === "POST"
+        ? {
+            headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
+            body: JSON.stringify({ requestId: "retired-route" }),
+          }
+        : {}),
     });
-    assert.equal(response.status, 400, label);
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), {
+      error: { code: "NOT_FOUND", message: "Not found." },
+    });
   }
   assert.deepEqual(calls, []);
 });
 
-test("undo and chat lifecycle rejections preserve their durable conflict status", async (t) => {
+test("undo lifecycle rejections preserve their durable conflict status", async (t) => {
   const { baseUrl, calls } = await startApplication(t);
   const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
   const undo = await fetch(`${baseUrl}/api/undo`, {
@@ -583,19 +552,7 @@ test("undo and chat lifecycle rejections preserve their durable conflict status"
   });
   assert.equal(undo.status, 409);
   assert.equal((await undo.json()).decision.status, "domain_rejected");
-
-  const retry = await fetch(`${baseUrl}/api/chat/retry`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      requestId: "retry-ineligible",
-      basePlannerVersion: 2,
-      turnId: "turn-completed",
-    }),
-  });
-  assert.equal(retry.status, 409);
-  assert.equal((await retry.json()).decision.status, "domain_rejected");
-  assert.deepEqual(calls.map(([kind]) => kind), ["undo", "chat-retry"]);
+  assert.deepEqual(calls.map(([kind]) => kind), ["undo"]);
 });
 
 test("service failures retain field errors and authoritative workspace readback", async (t) => {

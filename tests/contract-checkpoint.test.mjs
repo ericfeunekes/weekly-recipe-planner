@@ -17,7 +17,6 @@ import {
   normalizePageRequest,
 } from "../lib/planner-api-contract.ts";
 import {
-  MODEL_TRANSCRIPT_TAIL_LIMIT,
   WORKSPACE_CHAT_TURN_TAIL_LIMIT,
   WORKSPACE_TRANSCRIPT_TAIL_LIMIT,
   isPlannerChatContext,
@@ -26,7 +25,6 @@ import {
 test("contract checkpoint freezes bounded workspace and prep semantics", () => {
   assert.equal(PREP_DAYS_BEFORE_WEEK_START, 1);
   assert.equal(PREP_DAYS_AFTER_WEEK_START, 6);
-  assert.equal(MODEL_TRANSCRIPT_TAIL_LIMIT, 12);
   assert.equal(WORKSPACE_EVENT_TAIL_LIMIT, 50);
   assert.equal(WORKSPACE_TRANSCRIPT_TAIL_LIMIT, 50);
   assert.equal(WORKSPACE_CHAT_TURN_TAIL_LIMIT, 20);
@@ -96,9 +94,10 @@ test("contract checkpoint freezes bounded workspace and prep semantics", () => {
       weekId: "2026-07-06",
       item: {
         section: "Produce",
-        item: "x".repeat(1_001),
+        item: "Carrots",
         detail: "",
-        farmBox: false,
+        source: "shop",
+        mealIds: [],
       },
     }),
     false,
@@ -147,20 +146,37 @@ test("contract checkpoint freezes bounded workspace and prep semantics", () => {
   );
   assert.equal(
     isHouseholdCommand({
-      type: "reconcileGroceries",
+      type: "pauseInstructionTimer",
       weekId: "2026-07-06",
-      items: [
-        {
-          id: "g-1",
-          section: "Produce",
-          item: "Carrots",
-          detail: "1 bunch",
-          farmBox: true,
-          checked: false,
-        },
-      ],
+      stepId: "step-1",
     }),
     true,
+  );
+  assert.equal(
+    isHouseholdCommand({
+      type: "setInstructionTimerRemaining",
+      weekId: "2026-07-06",
+      stepId: "step-1",
+      remainingSeconds: 90,
+    }),
+    true,
+  );
+  assert.equal(
+    isHouseholdCommand({
+      type: "setInstructionTimerRemaining",
+      weekId: "2026-07-06",
+      stepId: "step-1",
+      remainingSeconds: 0,
+    }),
+    false,
+  );
+  assert.equal(
+    isHouseholdCommand({
+      type: "reconcileGroceries",
+      weekId: "2026-07-06",
+      items: [],
+    }),
+    false,
   );
 });
 

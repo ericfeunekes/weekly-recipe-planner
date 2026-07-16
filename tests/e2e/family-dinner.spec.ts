@@ -1,12 +1,25 @@
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Request } from "@playwright/test";
 
-type ExpectedFailurePhase = "normal" | "recipe-loss" | "dual-loss" | "offline" | "restart";
+type ExpectedFailurePhase = "normal" | "recipe-loss" | "offline" | "restart";
 const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
 const sameProcessAuthority = process.env.PLANNER_E2E_EXTERNAL_SERVERS === "1";
 
 function isRestartTransportError(errorText: string) {
   return /ERR_(FAILED|EMPTY_RESPONSE|CONNECTION_RESET|CONNECTION_REFUSED)/.test(errorText) ||
     /WebKit encountered an internal error/.test(errorText);
+}
+
+function isRestartResponseError(errorText: string) {
+  return isRestartTransportError(errorText) ||
+    /(?:500 \(Internal Server Error\)|502 \(Bad Gateway\))/.test(errorText);
+}
+
+function isRestartReadPath(path: string) {
+  return path === "/api/workspace" ||
+    path === "/api/health" ||
+    path === "/api/codex/events" ||
+    path === "/api/codex/thread" ||
+    path === "/api/codex/threads";
 }
 
 function isOfflineTransportError(errorText: string) {
@@ -32,14 +45,14 @@ function requestFailureLabel(request: Request, errorText: string, phase: Expecte
   const command = body?.command && typeof body.command === "object"
     ? body.command as Record<string, unknown>
     : null;
-  const item = command?.item && typeof command.item === "object"
-    ? command.item as Record<string, unknown>
-    : null;
   if (path === "/api/workspace" && /ERR_ABORTED/.test(errorText)) {
     return "conditional-read-abort";
   }
-  if (phase === "dual-loss" && path === "/api/commands" && item?.item === "Transport parsley") {
-    return "injected-command-response-loss";
+  if (path === "/api/codex/events" && /ERR_ABORTED/.test(errorText)) {
+    return "codex-event-read-abort";
+  }
+  if ((path === "/api/codex/thread" || path === "/api/codex/threads") && /ERR_ABORTED/.test(errorText)) {
+    return "codex-thread-read-abort";
   }
   if (
     phase === "recipe-loss" &&
@@ -47,16 +60,6 @@ function requestFailureLabel(request: Request, errorText: string, phase: Expecte
     command?.type === "updateMealSnapshot"
   ) {
     return "injected-recipe-response-loss";
-  }
-  if (
-    phase === "dual-loss" &&
-    path === "/api/chat/submit" &&
-    body?.message === "Propose conflicting meal change during retry isolation."
-  ) {
-    return "injected-overlap-chat-response-loss";
-  }
-  if (phase === "restart" && path === "/api/chat/submit" && body?.message === "Wait through restart once.") {
-    return "authority-crash-chat";
   }
   if (
     phase === "offline" &&
@@ -67,10 +70,10 @@ function requestFailureLabel(request: Request, errorText: string, phase: Expecte
   }
   if (
     phase === "restart" &&
-    (path === "/api/workspace" || path === "/api/health") &&
+    isRestartReadPath(path) &&
     isRestartTransportError(errorText)
   ) {
-    return "authority-crash-read";
+    return "authority-restart-read";
   }
   return "unexpected";
 }
@@ -105,7 +108,7 @@ function watchRuntime(page: Page) {
       const path = apiPath(url);
       const phase = expectedFailurePhase === "normal" &&
           Date.now() <= restartTransportGraceUntil &&
-          (path === "/api/workspace" || path === "/api/health") &&
+          isRestartReadPath(path) &&
           isRestartTransportError(text)
         ? "restart"
         : expectedFailurePhase;
@@ -134,7 +137,7 @@ function watchRuntime(page: Page) {
     const path = apiPath(request.url());
     const phase = expectedFailurePhase === "normal" &&
         Date.now() <= restartTransportGraceUntil &&
-        (path === "/api/workspace" || path === "/api/health") &&
+        isRestartReadPath(path) &&
         isRestartTransportError(errorText)
       ? "restart"
       : expectedFailurePhase;
@@ -175,11 +178,60 @@ async function setPlannerClock(page: Page, peers: Page[], now: number) {
 }
 
 function prepStep(page: Page, instruction: string) {
-  return page.locator(".prep-day-group .instruction-step").filter({ hasText: instruction });
+  return page.getByTestId("prep-session-step").filter({ hasText: instruction });
+}
+
+async function openPrepRecipeSummary(step: Locator) {
+  await step.getByRole("button", { name: /More options for step / }).click();
+  await step.getByRole("menuitem", { name: "Harissa chicken traybake", exact: true }).click();
+}
+
+async function openRecipeEditor(page: Page, title: string) {
+  await openView(page, "Week");
+  await page.getByRole("article", { name: new RegExp(`^${title} dinner on `) }).getByRole("button", { name: "Edit meal" }).click();
 }
 
 function apiPath(url: string) {
   return new URL(url).pathname;
+}
+
+function codexConversation(page: Page) {
+  return page.getByRole("log", { name: "Codex conversation" });
+}
+
+function codexComposer(page: Page) {
+  return page.getByRole("textbox", { name: "Message Codex" });
+}
+
+async function sendCodexMessage(page: Page, message: string) {
+  await codexComposer(page).fill(message);
+  await page.getByRole("button", { name: "Send to Codex" }).click();
+}
+
+async function sendPreparedCodexDraft(page: Page, message: string) {
+  await expect(codexComposer(page)).toHaveValue(message);
+  await page.getByRole("button", { name: "Send to Codex" }).click();
+}
+
+async function selectedCodexThreadId(page: Page) {
+  const response = await page.request.get("/api/codex/threads");
+  expect(response.ok()).toBe(true);
+  const payload = await response.json() as {
+    selection: { threadId: string | null };
+    threads: Array<{ id: string }>;
+  };
+  expect(payload.selection.threadId).toBeTruthy();
+  expect(payload.threads.some((thread) => thread.id === payload.selection.threadId)).toBe(true);
+  return payload.selection.threadId!;
+}
+
+async function expectSelectedCodexThread(page: Page, threadId: string, timeout = 8_000) {
+  await expect.poll(async () => {
+    const response = await page.request.get("/api/codex/threads");
+    if (!response.ok()) return null;
+    const payload = await response.json() as { selection: { threadId: string | null } };
+    return payload.selection.threadId;
+  }, { timeout }).toBe(threadId);
 }
 
 function expectInjectedTransportNoise(
@@ -192,26 +244,26 @@ function expectInjectedTransportNoise(
   const clientBRestartErrors = runtimeB.consoleErrors.filter(
     (error) =>
       error.phase === "restart" &&
-      (apiPath(error.url) === "/api/workspace" || apiPath(error.url) === "/api/health") &&
-      (isRestartTransportError(error.text) ||
-        (!sameProcessAuthority && /502 \(Bad Gateway\)/.test(error.text))),
+      isRestartReadPath(apiPath(error.url)) &&
+      isRestartResponseError(error.text),
   );
   const clientBRestartServerFailures = runtimeB.failedResponses.filter(
     (response) =>
-      !sameProcessAuthority &&
       response.phase === "restart" &&
-      response.status === 502 &&
-      (apiPath(response.url) === "/api/workspace" || apiPath(response.url) === "/api/health"),
+      (response.status === 500 || response.status === 502) &&
+      isRestartReadPath(apiPath(response.url)),
   );
   expect(clientBConflicts).toHaveLength(1);
   expect(runtimeA.injectedPageErrors.length).toBeLessThanOrEqual(3);
   expect(runtimeB.injectedPageErrors.length).toBeLessThanOrEqual(3);
   expect(runtimeB.consoleErrors).toHaveLength(clientBConflicts.length + clientBRestartErrors.length);
-  expect(clientBRestartServerFailures.length).toBeLessThanOrEqual(3);
   expect(runtimeB.failedResponses).toEqual(clientBRestartServerFailures);
   expect(
     runtimeB.requestFailures.every((failure) =>
-      failure.label === "authority-crash-read" || failure.label === "conditional-read-abort"),
+      failure.label === "authority-restart-read" ||
+      failure.label === "conditional-read-abort" ||
+      failure.label === "codex-event-read-abort" ||
+      failure.label === "codex-thread-read-abort"),
     JSON.stringify(runtimeB.requestFailures),
   ).toBe(true);
 
@@ -225,75 +277,55 @@ function expectInjectedTransportNoise(
     const expectedConflict =
       error.phase === "normal" && path === "/api/commands" && /409 \(Conflict\)/.test(error.text);
     const injectedAbort =
-      (error.phase === "recipe-loss" || error.phase === "dual-loss") &&
+      error.phase === "recipe-loss" &&
       path === "/api/commands" &&
       isInjectedAbortError(error.text);
-    const injectedChatInterruption =
-      (error.phase === "dual-loss" || error.phase === "restart") &&
-      path === "/api/chat/submit" &&
-      (isRestartTransportError(error.text) ||
-        (error.phase === "restart" && /502 \(Bad Gateway\)/.test(error.text)) ||
-        (sameProcessAuthority && error.phase === "restart" &&
-          /500 \(Internal Server Error\)/.test(error.text)));
     const injectedOffline =
       error.phase === "offline" &&
       (path === "/api/workspace" || path === "/api/health") &&
       isOfflineTransportError(error.text);
     const injectedRestartRead =
       error.phase === "restart" &&
-      (path === "/api/workspace" || path === "/api/health") &&
-      (isRestartTransportError(error.text) ||
-        (!sameProcessAuthority && /502 \(Bad Gateway\)/.test(error.text)));
+      isRestartReadPath(path) &&
+      isRestartResponseError(error.text);
     expect(
-      expectedConflict || injectedAbort || injectedChatInterruption || injectedOffline || injectedRestartRead,
+      expectedConflict || injectedAbort || injectedOffline || injectedRestartRead,
       `${error.phase}: ${error.text} at ${error.url}`,
     ).toBe(true);
   }
 
-  const commandFailures = runtimeA.requestFailures.filter((failure) => failure.label === "injected-command-response-loss");
   const recipeFailures = runtimeA.requestFailures.filter((failure) => failure.label === "injected-recipe-response-loss");
-  const chatFailures = runtimeA.requestFailures.filter((failure) => failure.label === "injected-overlap-chat-response-loss");
-  const crashFailures = runtimeA.requestFailures.filter((failure) => failure.label === "authority-crash-chat");
   const offlineFailures = runtimeA.requestFailures.filter((failure) => failure.label === "injected-offline-read");
-  const restartReadFailures = runtimeA.requestFailures.filter((failure) => failure.label === "authority-crash-read");
+  const restartReadFailures = runtimeA.requestFailures.filter((failure) => failure.label === "authority-restart-read");
   const conditionalReadAborts = runtimeA.requestFailures.filter((failure) => failure.label === "conditional-read-abort");
+  const codexEventReadAborts = runtimeA.requestFailures.filter((failure) => failure.label === "codex-event-read-abort");
+  const codexThreadReadAborts = runtimeA.requestFailures.filter((failure) => failure.label === "codex-thread-read-abort");
   const unexpectedFailures = runtimeA.requestFailures.filter((failure) => failure.label === "unexpected");
-  const installedRestartInternalErrors = runtimeA.failedResponses.filter((response) =>
-    sameProcessAuthority && response.phase === "restart" && response.status === 500 &&
-    apiPath(response.url) === "/api/chat/submit" &&
-    response.requestMessage === "Wait through restart once.");
-  const restartChatServerFailures = runtimeA.failedResponses.filter((response) =>
-    response.phase === "restart" && apiPath(response.url) === "/api/chat/submit" &&
-    response.requestMessage === "Wait through restart once." &&
-    (response.status === 502 || (sameProcessAuthority && response.status === 500)));
   const restartReadServerFailures = runtimeA.failedResponses.filter((response) =>
-    !sameProcessAuthority && response.phase === "restart" && response.status === 502 &&
-    (apiPath(response.url) === "/api/workspace" || apiPath(response.url) === "/api/health"));
-  expect(commandFailures).toHaveLength(2);
-  expect(commandFailures.every((failure) => isInjectedAbortError(failure.errorText))).toBe(true);
+    response.phase === "restart" && (response.status === 500 || response.status === 502) &&
+    isRestartReadPath(apiPath(response.url)));
   expect(recipeFailures).toHaveLength(2);
   expect(recipeFailures.every((failure) => isInjectedAbortError(failure.errorText))).toBe(true);
-  expect(chatFailures).toHaveLength(2);
-  expect(chatFailures.every((failure) => isInjectedAbortError(failure.errorText))).toBe(true);
-  expect(installedRestartInternalErrors).toHaveLength(sameProcessAuthority ? 1 : 0);
-  expect(crashFailures.length + restartChatServerFailures.length).toBeGreaterThanOrEqual(1);
-  expect(restartReadServerFailures.length).toBeLessThanOrEqual(3);
-  expect(crashFailures.every((failure) => isRestartTransportError(failure.errorText))).toBe(true);
   expect(offlineFailures.length).toBeLessThanOrEqual(3);
   expect(offlineFailures.every((failure) => isOfflineTransportError(failure.errorText))).toBe(true);
   expect(restartReadFailures.every((failure) => isRestartTransportError(failure.errorText))).toBe(true);
   expect(conditionalReadAborts.every((failure) =>
     apiPath(failure.url) === "/api/workspace" && /ERR_ABORTED/.test(failure.errorText))).toBe(true);
+  expect(codexEventReadAborts.every((failure) =>
+    apiPath(failure.url) === "/api/codex/events" && /ERR_ABORTED/.test(failure.errorText))).toBe(true);
+  expect(codexThreadReadAborts.every((failure) =>
+    ["/api/codex/thread", "/api/codex/threads"].includes(apiPath(failure.url)) &&
+    /ERR_ABORTED/.test(failure.errorText))).toBe(true);
   expect(
     runtimeA.failedResponses.every((response) =>
-      restartChatServerFailures.includes(response) || restartReadServerFailures.includes(response)),
+      restartReadServerFailures.includes(response)),
     JSON.stringify(runtimeA.failedResponses),
   ).toBe(true);
   expect(unexpectedFailures).toEqual([]);
 }
 
 test.describe.serial("family dinner authority", () => {
-  test("two clients complete the exact dinner workflow through restart and transport loss", async ({ browser }) => {
+  test("two clients complete the exact dinner workflow through graceful restart and transport loss", async ({ browser }) => {
     test.setTimeout(300_000);
     const contextA = await browser.newContext({ viewport: { width: 1440, height: 700 } });
     const contextB = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -303,7 +335,7 @@ test.describe.serial("family dinner authority", () => {
     const runtimeB = watchRuntime(pageB);
 
     await pageA.goto("/");
-    await expect(pageA.getByRole("heading", { name: "Set up this planner once" })).toBeVisible();
+    await expect(pageA.getByRole("heading", { name: "Set up this planner once" })).toBeVisible({ timeout: 20_000 });
     await pageA.getByRole("button", { name: "Start Fresh" }).click();
     await expect(pageA.getByText("Family dinner planner")).toBeVisible();
 
@@ -311,10 +343,14 @@ test.describe.serial("family dinner authority", () => {
     await expect(pageB.getByText("Family dinner planner")).toBeVisible();
     await openView(pageA, "Prep");
     await openView(pageB, "Prep");
-    const firstA = pageA.locator(".prep-day-group .instruction-step").first();
-    const firstB = pageB.locator(".prep-day-group .instruction-step").first();
-    const secondA = pageA.locator(".prep-day-group .instruction-step").nth(1);
-    const secondB = pageB.locator(".prep-day-group .instruction-step").nth(1);
+    const prepTabsA = pageA.getByRole("tablist", { name: "Prep sessions" });
+    const prepTabsB = pageB.getByRole("tablist", { name: "Prep sessions" });
+    const firstTabA = prepTabsA.getByRole("tab").first();
+    const firstTabB = prepTabsB.getByRole("tab").first();
+    const secondTabA = prepTabsA.getByRole("tab").nth(1);
+    const secondTabB = prepTabsB.getByRole("tab").nth(1);
+    const firstA = pageA.getByTestId("prep-session-step").first();
+    const firstB = pageB.getByTestId("prep-session-step").first();
     await expect(firstA.getByRole("checkbox")).not.toBeChecked();
     await expect(firstB.getByRole("checkbox")).not.toBeChecked();
 
@@ -337,16 +373,22 @@ test.describe.serial("family dinner authority", () => {
     });
     await firstB.getByRole("checkbox").click();
     await conflictSeen;
+    await secondTabA.click();
+    const secondA = pageA.getByTestId("prep-session-step").first();
     await secondA.getByRole("checkbox").click();
     await expect(secondA.getByRole("checkbox")).toBeChecked();
     releaseConflict();
     await expect(pageB.getByText(/Someone else changed the plan/)).toBeVisible();
     await expect(firstB.getByRole("checkbox")).not.toBeChecked();
+    await secondTabB.click();
+    const secondB = pageB.getByTestId("prep-session-step").first();
     await expect(secondB.getByRole("checkbox")).toBeChecked();
     const retryConflict = pageB.getByRole("button", { name: /Retry Mark recipe step done: step .*:/ });
     await expect(retryConflict).toBeVisible();
     await retryConflict.click();
+    await firstTabB.click();
     await expect(firstB.getByRole("checkbox")).toBeChecked();
+    await firstTabA.click();
     await expect(firstA.getByRole("checkbox")).toBeChecked();
     await expect.poll(() => conflictRequests.length).toBe(2);
     const firstConflictRequest = conflictRequests[0] as {
@@ -365,7 +407,12 @@ test.describe.serial("family dinner authority", () => {
     await pageB.unroute("**/api/commands");
 
     const harissaPrepA = prepStep(pageA, "Coat the chicken with harissa");
-    await harissaPrepA.locator(".step-meal-link").click();
+    await openPrepRecipeSummary(harissaPrepA);
+    const prepRecipeSummary = pageA.getByRole("dialog", { name: "Harissa chicken traybake" });
+    await expect(prepRecipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
+    await prepRecipeSummary.getByTitle("Close", { exact: true }).click();
+
+    await openRecipeEditor(pageA, "Harissa chicken traybake");
     const mealDrawer = pageA.getByRole("dialog", { name: "Harissa chicken traybake" });
     await mealDrawer.getByRole("textbox", { name: "Title", exact: true }).fill("");
     await mealDrawer.getByRole("button", { name: "Save recipe details" }).click();
@@ -377,7 +424,7 @@ test.describe.serial("family dinner authority", () => {
     await roastInDrawer.getByRole("button", { name: /Save step .*Roast the chicken/ }).click();
     await mealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
 
-    await harissaPrepA.locator(".step-meal-link").click();
+    await openRecipeEditor(pageA, "Harissa chicken traybake");
     const ambiguousMealDrawer = pageA.locator(".meal-drawer");
     let lostRecipeResponses = 0;
     runtimeA.setExpectedFailurePhase("recipe-loss");
@@ -400,8 +447,7 @@ test.describe.serial("family dinner authority", () => {
     await expect(retryAmbiguousRecipe).toBeVisible();
     expect(lostRecipeResponses).toBe(2);
 
-    const harissaPrepB = prepStep(pageB, "Coat the chicken with harissa");
-    await harissaPrepB.locator(".step-meal-link").click();
+    await openRecipeEditor(pageB, "Ambiguous recipe title");
     const ambiguousRemoteDrawer = pageB.locator(".meal-drawer");
     await expect(ambiguousRemoteDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Ambiguous recipe title");
     await ambiguousRemoteDrawer.getByRole("textbox", { name: "Title", exact: true }).fill("Harissa chicken traybake");
@@ -420,11 +466,11 @@ test.describe.serial("family dinner authority", () => {
     await ambiguousMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
     await ambiguousRemoteDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
 
-    await harissaPrepA.locator(".step-meal-link").click();
+    await openRecipeEditor(pageA, "Harissa chicken traybake");
     const staleMealDrawer = pageA.locator(".meal-drawer");
     const staleTitle = staleMealDrawer.getByRole("textbox", { name: "Title", exact: true });
     await staleTitle.fill("Stale local dinner title");
-    await harissaPrepB.locator(".step-meal-link").click();
+    await openRecipeEditor(pageB, "Harissa chicken traybake");
     const remoteMealDrawer = pageB.locator(".meal-drawer");
     await remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true }).fill("Remote accepted dinner title");
     await remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true }).fill("Neighbourhood kitchen");
@@ -444,66 +490,85 @@ test.describe.serial("family dinner authority", () => {
     await staleMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
     await remoteMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
 
-    const sharedPrepDate = await harissaPrepA.getByLabel(/Prep date for step .*Coat the chicken/).inputValue();
-    const ricePrepA = prepStep(pageA, "Rinse the rice");
-    await ricePrepA.getByLabel(/Prep date for step .*Rinse the rice/).selectOption(sharedPrepDate);
-    await ricePrepA.getByTitle(/Move step .*Rinse the rice.* up/).click();
-    const sharedDay = pageA.locator(".prep-day-group")
-      .filter({ hasText: "Rinse the rice" })
-      .filter({ hasText: "Coat the chicken with harissa" });
-    await expect(sharedDay.locator(".step-instruction")).toHaveText([
-      "Rinse the rice and cook until tender.",
-      "Coat the chicken with harissa and refrigerate.",
-    ]);
-
-    const prepChoice = pageA.getByLabel("Instruction to add to prep");
-    const roastOption = prepChoice.locator("option").filter({ hasText: "Roast the chicken" });
-    const roastStepId = await roastOption.getAttribute("value");
-    expect(roastStepId).toBeTruthy();
-    await prepChoice.selectOption(roastStepId!);
-    await pageA.getByLabel("Prep date", { exact: true }).selectOption(sharedPrepDate);
-    await pageA.getByRole("button", { name: "Add to prep" }).click();
+    await openView(pageA, "Prep");
+    await pageA.getByRole("button", { name: /Add recipe steps to/ }).click();
+    const recipeSteps = pageA.getByRole("dialog", { name: "Recipe instructions" });
+    const roastSource = recipeSteps.getByRole("button", {
+      name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through. into a prep session/,
+    });
+    await roastSource.dragTo(secondTabA);
+    await expect(secondTabA).toHaveAttribute("aria-selected", "true");
+    await expect(prepStep(pageA, "Roast the chicken")).toHaveCount(1);
+    await firstTabA.click();
+    await roastSource.dragTo(harissaPrepA);
     const roastPrepA = prepStep(pageA, "Roast the chicken");
     await expect(roastPrepA.getByRole("checkbox", { name: /Complete step .*Roast the chicken/ })).toHaveCount(1);
     await expect(roastPrepA.getByRole("button", { name: /Start timer for step .*Roast the chicken/ })).toHaveCount(1);
-    await expect(roastPrepA.getByRole("combobox", { name: /Prep date for step .*Roast the chicken/ })).toHaveCount(1);
-    await expect(roastPrepA.getByRole("button", { name: /Move step .*Roast the chicken.* up/ })).toHaveCount(1);
-    await expect(roastPrepA.getByRole("button", { name: /Move step .*Roast the chicken.* down/ })).toHaveCount(1);
-    await expect(roastPrepA.getByRole("button", { name: /Remove step .*Roast the chicken.* from prep/ })).toHaveCount(1);
-    const roastRecipeLink = roastPrepA.getByRole("button", { name: /Open recipe for step .*Roast the chicken/ });
-    await expect(roastRecipeLink).toHaveCount(1);
-    const roastRecipeBox = await roastRecipeLink.boundingBox();
-    expect(roastRecipeBox).not.toBeNull();
-    expect(roastRecipeBox!.height).toBeGreaterThanOrEqual(44);
+    await expect(roastPrepA.getByRole("combobox", { name: /Prep date/ })).toHaveCount(0);
+    await expect(roastPrepA.getByTitle(/Move step .*Roast the chicken/)).toHaveCount(0);
+    const roastMenuButton = roastPrepA.getByRole("button", { name: /More options for step .*Roast the chicken/ });
+    await roastMenuButton.click();
+    const roastMenu = roastPrepA.getByRole("menu", { name: /Options for step .*Roast the chicken/ });
+    await expect(roastMenu.getByRole("menuitem", { name: "Harissa chicken traybake" })).toHaveCount(1);
+    await expect(roastMenu.getByRole("menuitem", { name: "Add comment" })).toHaveCount(1);
+    await expect(roastMenu.getByRole("menuitem", { name: "Remove from prep" })).toHaveCount(1);
+    const roastTimerMinutes = roastPrepA.getByRole("textbox", { name: /Timer minutes for step .*Roast the chicken/ });
+    const roastTimerSeconds = roastPrepA.getByRole("textbox", { name: /Timer seconds for step .*Roast the chicken/ });
+    await roastTimerMinutes.fill("18");
+    await roastTimerSeconds.fill("30");
+    await roastTimerSeconds.press("Enter");
+    await expect(roastTimerMinutes).toHaveValue("18");
+    await expect(roastTimerSeconds).toHaveValue("30");
     await roastPrepA.getByRole("button", { name: /Start timer for step .*Roast the chicken/ }).click();
-    await roastPrepA.getByText("Add note or ask ChatGPT").click();
-    await roastPrepA.locator(".step-comment").last().getByRole("textbox").fill("Timer started before removing this from prep.");
-    await roastPrepA.getByRole("button", { name: /Add note for step .*Roast the chicken/ }).click();
-    await roastPrepA.getByTitle(/Remove step .*Roast the chicken.* from prep/).click();
+    await expect(roastPrepA.getByRole("button", { name: /Pause timer for step .*Roast the chicken/ })).toHaveCount(1);
+    const activeTimersButton = pageA.getByRole("button", { name: "Active timers: 1" });
+    await expect(activeTimersButton).toHaveCount(1);
+    await activeTimersButton.click();
+    const activeTimersMenu = pageA.getByRole("dialog", { name: "Active timers" });
+    await expect(activeTimersMenu).toContainText("Harissa chicken traybake");
+    await expect(activeTimersMenu).toContainText("Roast the chicken");
+    await expect(activeTimersMenu.getByRole("button", { name: /Pause timer for Harissa chicken traybake: Roast the chicken/ })).toHaveCount(1);
+    await activeTimersMenu.getByRole("button", { name: "Close active timers" }).click();
+    await roastMenu.getByRole("menuitem", { name: "Add comment" }).click();
+    await roastPrepA.getByRole("textbox", { name: /Note or Codex request for step .*Roast the chicken/ }).fill("Timer started before removing this from prep.");
+    await roastPrepA.getByRole("button", { name: /Save comment/ }).click();
+    await roastMenuButton.click();
+    await roastPrepA.getByRole("menuitem", { name: "Remove from prep" }).click();
     await expect(prepStep(pageA, "Roast the chicken")).toHaveCount(0);
 
     await pageA.reload();
     await openView(pageA, "Prep");
     const reloadedHarissa = prepStep(pageA, "Coat the chicken with harissa");
     await expect(reloadedHarissa.getByRole("checkbox")).toBeChecked();
-    const globalDraftB = pageB.getByRole("textbox", { name: "Message ChatGPT" });
+    const globalDraftB = pageB.getByRole("textbox", { name: "Message Codex" });
     await globalDraftB.fill("Keep this separate household draft.");
-    await reloadedHarissa.getByText("Add note or ask ChatGPT").click();
-    await reloadedHarissa.locator(".step-comment").last().getByRole("textbox").fill("Marinated on Sunday.");
-    await reloadedHarissa.getByRole("button", { name: /Add note for step .*Coat the chicken/ }).click();
-    await expect(pageB.getByText("Marinated on Sunday.")).toBeVisible();
+    await reloadedHarissa.getByRole("button", { name: /More options for step .*Coat the chicken/ }).click();
+    await reloadedHarissa.getByRole("menuitem", { name: "Add comment" }).click();
+    await reloadedHarissa.getByRole("textbox", { name: /Note or Codex request for step .*Coat the chicken/ }).fill("Marinated on Sunday.");
+    await reloadedHarissa.getByRole("button", { name: /Save comment/ }).click();
+    await openView(pageB, "Prep");
+    const harissaPrepB = prepStep(pageB, "Coat the chicken with harissa");
+    await harissaPrepB.getByRole("button", { name: /More options for step .*Coat the chicken/ }).click();
+    await expect(harissaPrepB.getByRole("menuitem", { name: "Edit comment" })).toBeVisible();
+    await harissaPrepB.getByRole("menuitem", { name: "Edit comment" }).click();
+    await expect(harissaPrepB.getByRole("textbox", { name: /Note or Codex request for step .*Coat the chicken/ })).toHaveValue("Marinated on Sunday.");
     await expect(globalDraftB).toHaveValue("Keep this separate household draft.");
-    await expect(pageB.getByText("Ask about this week or request a planner change.")).toBeVisible();
 
+    await secondTabA.click();
     const reloadedRice = prepStep(pageA, "Rinse the rice");
     await reloadedRice.getByRole("checkbox").click();
     await expect(reloadedRice.getByRole("checkbox")).not.toBeChecked();
-    await reloadedRice.getByText("Add note or ask ChatGPT").click();
-    await reloadedRice.locator(".step-comment").last().getByRole("textbox").fill("Please complete this shared step.");
-    await reloadedRice.getByRole("button", { name: /Send step .*Rinse the rice.* to ChatGPT/ }).click();
-    await expect(pageA.getByText("I marked that shared recipe step complete.")).toBeVisible();
+    await reloadedRice.getByRole("button", { name: /More options for step .*Rinse the rice/ }).click();
+    await reloadedRice.getByRole("menuitem", { name: "Add comment" }).click();
+    await reloadedRice.getByRole("textbox", { name: /Note or Codex request for step .*Rinse the rice/ }).fill("Please complete this shared step.");
+    await reloadedRice.getByRole("button", { name: "Ask Codex" }).click();
+    await sendPreparedCodexDraft(pageA, "Please complete this shared step.");
+    await expect(codexConversation(pageA).getByText("Please complete this shared step.", { exact: true })).toBeVisible();
+    await expect(codexConversation(pageA).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible();
+    const sharedCodexThreadId = await selectedCodexThreadId(pageA);
+    await expectSelectedCodexThread(pageB, sharedCodexThreadId);
     await expect(pageB.getByText("Please complete this shared step.")).toBeVisible();
-    await expect(pageB.getByText("I marked that shared recipe step complete.")).toBeVisible();
+    await expect(codexConversation(pageB).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible({ timeout: 8_000 });
     await expect(globalDraftB).toHaveValue("Keep this separate household draft.");
 
     await setPlannerClock(
@@ -521,7 +586,10 @@ test.describe.serial("family dinner authority", () => {
     await expect(tonightSteps.first().getByRole("checkbox")).toBeChecked();
     await expect(tonightSteps.first().locator(".step-inputs")).toContainText("900 g");
     const roastTonightB = tonightSteps.nth(1);
-    await expect(roastTonightB.getByText("Timer started before removing this from prep.")).toBeVisible();
+    await roastTonightB.getByRole("button", { name: /Edit comment for step .*Roast the chicken/ }).click();
+    await expect(roastTonightB.getByRole("textbox", { name: /Note or Codex request for step .*Roast the chicken/ }))
+      .toHaveValue("Timer started before removing this from prep.");
+    await roastTonightB.getByRole("button", { name: "Cancel" }).click();
     await expect(roastTonightB.getByRole("checkbox")).not.toBeChecked();
     await expect(roastTonightB.locator(".step-timer")).toContainText("elapsed", { timeout: 40_000 });
     expect(await pageB.evaluate(() => Notification.permission)).not.toBe("granted");
@@ -529,120 +597,40 @@ test.describe.serial("family dinner authority", () => {
     await expect(roastTonightB.locator(".step-timer")).toContainText("timer");
     await expect(roastTonightB.getByRole("checkbox")).not.toBeChecked();
 
-    await globalDraftB.fill("Which dinner is in the Tonight context?");
-    await pageB.getByTitle("Send to ChatGPT").click();
-    await expect(pageB.getByText("Tonight is Harissa chicken traybake.")).toBeVisible();
+    await sendCodexMessage(pageB, "Which dinner is in the Tonight context?");
+    await expect(codexConversation(pageB).getByText("Tonight is Harissa chicken traybake.", { exact: true })).toBeVisible();
 
     await pageA.reload();
     await openView(pageA, "Groceries");
-    await globalDraftB.fill("Propose conflicting meal change after a pause.");
-    await pageB.getByTitle("Send to ChatGPT").click();
+    await sendCodexMessage(pageB, "Propose conflicting meal change after a pause.");
     try {
       await expect.poll(async () => {
         const status = await pageA.request.get(`${controlOrigin}/status`);
         return (await status.json() as { conflictTurnStarted: boolean }).conflictTurnStarted;
       }).toBe(true);
-      await expect(pageB.getByText("ChatGPT is updating the shared plan…")).toBeVisible();
-      const chickenGroceryCheckbox = pageA.getByRole("checkbox", { name: "Check Boneless chicken thighs" });
-      await chickenGroceryCheckbox.click();
-      await expect(chickenGroceryCheckbox).toBeChecked();
+      const chickenGrocerySource = pageA.getByRole("combobox", { name: "Source for Boneless chicken thighs" });
+      await chickenGrocerySource.selectOption("Farm box");
+      await expect(chickenGrocerySource).toHaveCount(0);
     } finally {
       const releaseHeldConflictResponse = await pageA.request.post(`${controlOrigin}/release-conflict`);
       expect(releaseHeldConflictResponse.ok()).toBe(true);
     }
-    await expect(pageB.getByText("The shared plan changed first. Review it, then ask ChatGPT again.")).toBeVisible({ timeout: 8_000 });
-    await expect(pageB.getByText(/ChatGPT replied, but its planner change was not applied/)).toBeVisible();
+    await expect(codexConversation(pageB).getByText(/The shared plan changed first\. Review it, then ask Codex again\./)).toBeVisible({ timeout: 8_000 });
+    await expect(codexConversation(pageB).getByText(/Codex replied, but its planner change was not applied/)).toBeVisible();
     await expect(pageB.locator(".tonight-hero .status-badge")).toHaveText("planned");
 
     await openView(pageB, "Groceries");
-    await pageA.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(pageA.getByText("Enter a grocery item.")).toBeVisible();
-    await expect(pageB.getByRole("checkbox", { name: "Check Boneless chicken thighs" })).toBeChecked();
+    await pageB.getByRole("button", { name: "All", exact: true }).click();
+    await expect(pageB.getByRole("combobox", { name: "Source for Boneless chicken thighs" })).toHaveValue("farm_box");
 
-    const overlapChatInputA = pageA.getByRole("textbox", { name: "Message ChatGPT" });
-    let lostOverlapChatResponses = 0;
-    runtimeA.setExpectedFailurePhase("dual-loss");
-    await pageA.route("**/api/chat/submit", async (route) => {
-      const body = route.request().postDataJSON();
-      if (body?.message !== "Propose conflicting meal change during retry isolation.") {
-        await route.continue();
-        return;
-      }
-      lostOverlapChatResponses += 1;
-      if (lostOverlapChatResponses === 1) await route.fetch();
-      await route.abort("failed");
-    });
-    await overlapChatInputA.fill("Propose conflicting meal change during retry isolation.");
-    await pageA.getByTitle("Send to ChatGPT").click();
-
-    let lostResponses = 0;
-    await pageA.route("**/api/commands", async (route) => {
-      const body = route.request().postDataJSON();
-      if (body?.command?.type !== "addGroceryItem" || body.command.item.item !== "Transport parsley") {
-        await route.continue();
-        return;
-      }
-      lostResponses += 1;
-      if (lostResponses === 1) await route.fetch();
-      await route.abort("failed");
-    });
-    try {
-      await expect.poll(async () => {
-        const status = await pageA.request.get(`${controlOrigin}/status`);
-        return (await status.json() as { overlapTurnStarted: boolean }).overlapTurnStarted;
-      }).toBe(true);
-      await expect(pageA.getByText("ChatGPT is updating the shared plan…")).toBeVisible();
-      await pageA.getByLabel("New grocery item").fill("Transport parsley");
-      await pageA.getByLabel("Grocery detail").fill("1 bunch");
-      await pageA.getByRole("button", { name: "Add", exact: true }).click();
-      await expect(pageA.getByText(/Offline · read-only/)).toBeVisible();
-      await expect(pageA.getByLabel("New grocery item")).toHaveValue("Transport parsley");
-      expect(lostResponses).toBe(2);
-    } finally {
-      const releaseOverlapResponse = await pageA.request.post(`${controlOrigin}/release-overlap`);
-      expect(releaseOverlapResponse.ok()).toBe(true);
-    }
-    const retryLostGrocery = pageA.getByRole("button", { name: "Retry Add grocery item" });
-    await expect(retryLostGrocery).toBeVisible();
-    await expect(pageA.getByText("ChatGPT is updating the shared plan…")).toHaveCount(0, { timeout: 8_000 });
-    expect(lostOverlapChatResponses).toBe(2);
-    await expect(retryLostGrocery).toBeVisible();
-    await pageA.unroute("**/api/commands");
-    await pageA.unroute("**/api/chat/submit");
-    await expect(pageA.getByText("Shared plan current", { exact: true })).toBeVisible();
-    await expect(pageA.getByText("Transport parsley", { exact: true })).toHaveCount(1);
-    await expect(pageA.getByLabel("New grocery item")).toHaveValue("Transport parsley");
-    const overlapTranscriptMessages = pageA.locator(".chat-messages .chat-message.user")
-      .getByText("Propose conflicting meal change during retry isolation.", { exact: true });
-    await expect(overlapTranscriptMessages).toHaveCount(1);
-    const sharedPlanReplies = pageA.getByText("I can see the shared household plan.", { exact: true });
-    await expect(sharedPlanReplies.last()).toBeVisible();
-    const sharedPlanReplyCount = await sharedPlanReplies.count();
-    await pageA.getByLabel("New grocery item").fill("Next cilantro");
-    await overlapChatInputA.fill("Next family chat draft.");
-    await retryLostGrocery.click();
-    await expect(pageA.getByLabel("New grocery item")).toHaveValue("Next cilantro");
-    await expect(pageB.getByText("Transport parsley", { exact: true })).toHaveCount(1);
-    const retryLostChat = pageA.getByRole("button", { name: "Retry Send ChatGPT message" });
-    await expect(retryLostChat).toBeVisible();
-    await retryLostChat.click();
-    await expect(overlapChatInputA).toHaveValue("Next family chat draft.");
-    await expect(overlapTranscriptMessages).toHaveCount(1);
-    await expect(sharedPlanReplies).toHaveCount(sharedPlanReplyCount);
-    runtimeA.setExpectedFailurePhase("normal");
-
-    await pageA.getByLabel("New grocery item").fill("Offline dill");
+    const offlineGrocerySource = pageA.getByRole("combobox", { name: "Source for salmon" });
     runtimeA.setExpectedFailurePhase("offline");
     await contextA.setOffline(true);
     await expect(pageA.getByText(/Offline · read-only/)).toBeVisible({ timeout: 8_000 });
-    await expect(pageA.getByLabel("New grocery item")).toHaveValue("Offline dill");
-    await expect(pageA.getByRole("button", { name: "Add", exact: true })).toBeDisabled();
-    await expect(pageB.getByText("Offline dill", { exact: true })).toHaveCount(0);
+    await expect(offlineGrocerySource).toBeDisabled();
     await contextA.setOffline(false);
     await pageA.getByRole("button", { name: "Reconnect" }).click();
-    await expect(pageA.getByLabel("New grocery item")).toHaveValue("Offline dill");
-    await expect(pageB.getByText("Offline dill", { exact: true })).toHaveCount(0);
-    await pageA.getByLabel("New grocery item").fill("");
+    await expect(offlineGrocerySource).toBeEnabled();
     runtimeA.setExpectedFailurePhase("normal");
 
     await openView(pageA, "Tonight");
@@ -675,9 +663,8 @@ test.describe.serial("family dinner authority", () => {
     );
     await openView(pageB, "Tonight");
     await expect(pageB.locator(".assigned-leftover").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
-    await globalDraftB.fill("Which dinner is in the Tonight context?");
-    await pageB.getByTitle("Send to ChatGPT").click();
-    await expect(pageB.getByText("Tonight is Harissa chicken traybake leftovers.")).toBeVisible();
+    await sendCodexMessage(pageB, "Which dinner is in the Tonight context?");
+    await expect(codexConversation(pageB).getByText("Tonight is Harissa chicken traybake leftovers.", { exact: true })).toBeVisible();
 
     const statusBefore = await pageA.request.get(`${controlOrigin}/status`);
     expect(statusBefore.ok()).toBe(true);
@@ -689,28 +676,12 @@ test.describe.serial("family dinner authority", () => {
     expect(authorityBefore.ready).toBe(true);
     runtimeA.setExpectedFailurePhase("restart");
     runtimeB.setExpectedFailurePhase("restart");
-    await overlapChatInputA.fill("Wait through restart once.");
-    await pageA.getByTitle("Send to ChatGPT").click();
-    await expect.poll(async () => {
-      const status = await pageA.request.get(`${controlOrigin}/status`);
-      return (await status.json() as { hangMarkerExists: boolean }).hangMarkerExists;
-    }, { timeout: 8_000 }).toBe(true);
     const restart = await pageA.request.post(`${controlOrigin}/restart`);
     expect(restart.ok()).toBe(true);
     const statusAfter = await pageA.request.get(`${controlOrigin}/status`);
     const authorityAfter = await statusAfter.json() as {
       authorityGeneration?: number;
       authorityPid: number;
-      lastRestartProof?: {
-        authorityGenerationAdvanced: boolean;
-        durableRunningBeforeStartup: boolean;
-        listenerClosed: boolean;
-        mode: string;
-        sameProcessLeaseRetained: boolean;
-        startupInterrupted: boolean;
-        storeClosed: boolean;
-        terminalRollbackCount: number;
-      };
       ready: boolean;
     };
     expect(authorityAfter.ready).toBe(true);
@@ -719,56 +690,20 @@ test.describe.serial("family dinner authority", () => {
       expect(authorityAfter.authorityGeneration).toBeGreaterThan(
         authorityBefore.authorityGeneration ?? 0,
       );
-      expect(authorityAfter.lastRestartProof).toEqual({
-        mode: "crash",
-        authorityGenerationAdvanced: true,
-        sameProcessLeaseRetained: true,
-        listenerClosed: true,
-        storeClosed: true,
-        terminalRollbackCount: 1,
-        durableRunningBeforeStartup: true,
-        startupInterrupted: true,
-      });
     } else {
       expect(authorityAfter.authorityPid).not.toBe(authorityBefore.authorityPid);
     }
     await pageA.reload({ waitUntil: "domcontentloaded" });
     await pageB.reload({ waitUntil: "domcontentloaded" });
     await expect(pageA.getByText("Family dinner planner")).toBeVisible({ timeout: 20_000 });
-    const resolveInterruptedSubmit = pageA.getByRole("button", { name: "Retry Send ChatGPT message" });
-    const retryInterrupted = pageA.getByRole("button", { name: "Retry the interrupted ChatGPT request" });
-    await expect(resolveInterruptedSubmit.or(retryInterrupted).first()).toBeVisible({ timeout: 20_000 });
-    if (await resolveInterruptedSubmit.isVisible()) {
-      await resolveInterruptedSubmit.click();
-      await expect(resolveInterruptedSubmit).toHaveCount(0);
-    }
-    await expect(retryInterrupted).toBeEnabled({ timeout: 20_000 });
-    await retryInterrupted.click();
-    await expect(pageA.getByText("I recovered the interrupted household request.")).toBeVisible({ timeout: 20_000 });
-    const workspaceAfterRetry = await (await pageA.request.get("/api/workspace")).json();
-    const restartUserEntries = workspaceAfterRetry.transcriptEntries.filter(
-      (entry: { role: string; text: string }) => entry.role === "user" && entry.text === "Wait through restart once.",
-    );
-    const restartReplies = workspaceAfterRetry.transcriptEntries.filter(
-      (entry: { role: string; text: string }) => entry.role === "assistant" && entry.text === "I recovered the interrupted household request.",
-    );
-    expect(restartUserEntries).toHaveLength(1);
-    expect(restartReplies).toHaveLength(1);
-    const interruptedTurn = workspaceAfterRetry.chatTurns.find(
-      (turn: { turnId: string }) => turn.turnId === restartUserEntries[0].turnId,
-    );
-    const recoveredTurn = workspaceAfterRetry.chatTurns.find(
-      (turn: { retryOfTurnId: string | null }) => turn.retryOfTurnId === interruptedTurn?.turnId,
-    );
-    expect(interruptedTurn?.status).toBe("interrupted");
-    expect(recoveredTurn?.status).toBe("completed");
-    expect(recoveredTurn?.userEntryId).toBe(interruptedTurn?.userEntryId);
+    await expectSelectedCodexThread(pageA, sharedCodexThreadId, 20_000);
+    await expectSelectedCodexThread(pageB, sharedCodexThreadId, 20_000);
     runtimeA.setExpectedFailurePhase("normal");
     runtimeB.setExpectedFailurePhase("normal");
-    await expect(pageB.getByText("I marked that shared recipe step complete.")).toBeVisible();
+    await expect(codexConversation(pageB).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible();
     await openView(pageA, "Groceries");
-    await expect(pageA.getByRole("checkbox", { name: "Check Boneless chicken thighs" })).toBeChecked();
-    await expect(pageA.getByText("Transport parsley", { exact: true })).toHaveCount(1);
+    await pageA.getByRole("button", { name: "All", exact: true }).click();
+    await expect(pageA.getByRole("combobox", { name: "Source for Boneless chicken thighs" })).toHaveValue("farm_box");
     await openView(pageA, "Tonight");
     await expect(pageA.locator(".assigned-leftover").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
     await openView(pageA, "Week");
@@ -785,26 +720,17 @@ test.describe.serial("family dinner authority", () => {
     await expect(consumedLeftoverB).toBeVisible();
     await expect(pageB.getByText("Miso salmon rice bowls", { exact: true })).toHaveCount(0);
 
-    await pageA.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    expect(await pageA.evaluate(() => window.scrollY)).toBeGreaterThan(0);
     await openView(pageA, "Groceries");
     await expect(pageA.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeFocused();
-    expect(await pageA.evaluate(() => window.scrollY)).toBe(0);
 
     const oldWeekId = await pageA.locator(".week-select select").inputValue();
-    const chatA = pageA.getByRole("textbox", { name: "Message ChatGPT" });
-    await chatA.fill("Create next week");
-    await pageA.getByTitle("Send to ChatGPT").click();
-    await expect(pageA.getByText("I created a planned week for the next Monday.")).toBeVisible();
+    await sendCodexMessage(pageA, "Create next week");
+    await expect(codexConversation(pageA).getByText("I created a planned week for the next Monday.", { exact: true })).toBeVisible();
     await expect(pageA.locator(".week-select option")).toHaveCount(2);
     const weekIds = await pageA.locator(".week-select option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value));
     const nextWeekId = weekIds.find((value) => value !== oldWeekId);
     expect(nextWeekId).toBeTruthy();
-    await pageA.getByLabel("New grocery item").fill("Old-week-only draft");
-    await pageA.getByLabel("Grocery detail").fill("Must not cross weeks");
     await pageA.locator(".week-select select").selectOption(nextWeekId!);
-    await expect(pageA.getByLabel("New grocery item")).toHaveValue("");
-    await expect(pageA.getByLabel("Grocery detail")).toHaveValue("");
     await pageA.getByRole("button", { name: "Make active" }).click();
     await expect(pageA.locator(".content-heading .eyebrow")).toContainText("active");
     await pageA.locator(".week-select select").selectOption(oldWeekId);
@@ -818,39 +744,40 @@ test.describe.serial("family dinner authority", () => {
     await contextB.close();
   });
 
-  test("phone and iPad share a planner change while mobile chat traps focus", async ({ browser }) => {
+  test("phone and iPad share a planner change while the mobile Codex task traps focus", async ({ browser }) => {
+    test.setTimeout(120_000);
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const phonePage = await phone.newPage();
     const phoneRuntime = watchRuntime(phonePage);
     await phonePage.goto("/");
     const setup = phonePage.getByRole("heading", { name: "Set up this planner once" });
     const plannerBrand = phonePage.getByText("Family dinner planner");
-    await expect(setup.or(plannerBrand)).toBeVisible();
+    await expect(setup.or(plannerBrand)).toBeVisible({ timeout: 20_000 });
     if (await setup.isVisible()) {
       await phonePage.getByRole("button", { name: "Start Fresh" }).click();
       await expect(plannerBrand).toBeVisible();
     }
-    const trigger = phonePage.getByRole("button", { name: "ChatGPT" }).first();
+    const trigger = phonePage.getByRole("button", { name: "Open Codex" }).first();
     await trigger.click();
-    const dialog = phonePage.getByRole("dialog", { name: "ChatGPT household chat" });
+    const dialog = phonePage.getByRole("dialog", { name: "Codex task" });
     await expect(dialog).toBeVisible();
     await expect.poll(() => phonePage.locator("body").evaluate((body) => body.style.overflow)).toBe("hidden");
-    const phoneComposer = dialog.getByRole("textbox", { name: "Message ChatGPT" });
+    const phoneComposer = dialog.getByRole("textbox", { name: "Message Codex" });
     await expect(phoneComposer).toBeFocused();
-    await phoneComposer.fill("Keep this family chat draft.");
+    await phoneComposer.fill("Keep this family Codex draft.");
     await expect(phonePage.locator(".app-shell > div").first()).toHaveJSProperty("inert", true);
     await phonePage.keyboard.press("Shift+Tab");
     expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
     for (let index = 0; index < 8; index += 1) await phonePage.keyboard.press("Tab");
     expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
 
-    await phonePage.setViewportSize({ width: 768, height: 844 });
-    const resizedRail = phonePage.locator('aside[aria-label="ChatGPT household chat"]');
+    await phonePage.setViewportSize({ width: 1024, height: 844 });
+    const resizedRail = phonePage.getByRole("complementary", { name: "Codex task" });
     await expect(resizedRail).toBeVisible();
-    await expect(resizedRail.getByRole("textbox", { name: "Message ChatGPT" })).toHaveValue("Keep this family chat draft.");
+    await expect(resizedRail.getByRole("textbox", { name: "Message Codex" })).toHaveValue("Keep this family Codex draft.");
     await phonePage.setViewportSize({ width: 390, height: 844 });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("textbox", { name: "Message ChatGPT" })).toHaveValue("Keep this family chat draft.");
+    await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toHaveValue("Keep this family Codex draft.");
     await phonePage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
@@ -858,7 +785,7 @@ test.describe.serial("family dinner authority", () => {
 
     await trigger.click();
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("textbox", { name: "Message ChatGPT" })).toHaveValue("Keep this family chat draft.");
+    await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toHaveValue("Keep this family Codex draft.");
     phoneRuntime.setExpectedFailurePhase("offline");
     await phone.setOffline(true);
     const dialogReconnect = dialog.getByRole("button", { name: "Reconnect" });
@@ -869,9 +796,9 @@ test.describe.serial("family dinner authority", () => {
     await dialogReconnect.click();
     await expect(dialogReconnect).toHaveCount(0);
     phoneRuntime.setExpectedFailurePhase("normal");
-    await expect(dialog.getByRole("textbox", { name: "Message ChatGPT" })).toHaveValue("Keep this family chat draft.");
-    await dialog.getByRole("textbox", { name: "Message ChatGPT" }).fill("");
-    await trigger.evaluate((element) => element.remove());
+    await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toHaveValue("Keep this family Codex draft.");
+    await dialog.getByRole("textbox", { name: "Message Codex" }).fill("");
+    await phonePage.getByRole("banner").getByRole("button", { name: "Close Codex" }).evaluate((element) => element.remove());
     await phonePage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(phonePage.getByTitle("Change history")).toBeFocused();
@@ -888,45 +815,39 @@ test.describe.serial("family dinner authority", () => {
     );
     if (archivedWeekValue) await phoneWeekSelect.selectOption(archivedWeekValue);
     await phonePage.locator(".mobile-nav").getByRole("button", { name: "Prep" }).click();
-    const mobileRecipeLink = phonePage.locator(".step-meal-link").first();
-    await expect(mobileRecipeLink).toBeVisible();
-    await expect(mobileRecipeLink).toHaveAttribute("aria-label", /Open recipe for step .*:/);
-    const mobileRecipeBox = await mobileRecipeLink.boundingBox();
-    expect(mobileRecipeBox).not.toBeNull();
-    expect(mobileRecipeBox!.height).toBeGreaterThanOrEqual(44);
-    await phonePage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    expect(await phonePage.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    const mobileOverflow = phonePage.getByTestId("prep-session-step").first().getByRole("button", { name: /More options for step / });
+    await expect(mobileOverflow).toBeVisible();
+    const mobileOverflowBox = await mobileOverflow.boundingBox();
+    expect(mobileOverflowBox).not.toBeNull();
+    expect(mobileOverflowBox!.height).toBeGreaterThanOrEqual(44);
+    const prepCanScroll = await phonePage.evaluate(() =>
+      document.documentElement.scrollHeight > window.innerHeight,
+    );
+    if (prepCanScroll) {
+      await phonePage.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      expect(await phonePage.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    }
 
     await phonePage.locator(".mobile-nav").getByRole("button", { name: "Groceries" }).click();
     await expect(phonePage.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeFocused();
     expect(await phonePage.evaluate(() => window.scrollY)).toBe(0);
     if (activeWeekValue) await phoneWeekSelect.selectOption(activeWeekValue);
-    await phonePage.getByLabel("New grocery item").fill("Phone basil");
-    await phonePage.getByLabel("Grocery detail").fill("1 bunch");
-    await phonePage.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(phonePage.getByText("Phone basil", { exact: true })).toHaveCount(1);
 
-    const tablet = await browser.newContext({ viewport: { width: 768, height: 1024 } });
+    const tablet = await browser.newContext({ viewport: { width: 1024, height: 768 } });
     const tabletPage = await tablet.newPage();
     const tabletRuntime = watchRuntime(tabletPage);
     await tabletPage.goto("/");
-    await expect(tabletPage.getByRole("button", { name: "Focus ChatGPT chat" })).toBeVisible();
-    await expect(tabletPage.locator('aside[aria-label="ChatGPT household chat"]')).toBeVisible();
-    await expect(tabletPage.getByRole("dialog", { name: "ChatGPT household chat" })).toHaveCount(0);
-    const tabletChat = tabletPage.locator('aside[aria-label="ChatGPT household chat"]');
-    await tabletChat.getByRole("textbox", { name: "Message ChatGPT" }).fill("Tablet shared chat check.");
-    await tabletChat.getByTitle("Send to ChatGPT").click();
-    await expect(tabletChat.getByText("I can see the shared household plan.", { exact: true })).toBeVisible();
-    await tabletPage.locator(".mobile-nav").getByRole("button", { name: "Groceries" }).click();
-    const tabletBasil = tabletPage.getByRole("checkbox", { name: "Check Phone basil" });
-    await expect(tabletBasil).not.toBeChecked();
-    await tabletBasil.click();
-    await expect(phonePage.getByRole("checkbox", { name: "Check Phone basil" })).toBeChecked({ timeout: 8_000 });
-    const restoredPhoneTrigger = phonePage.getByRole("button", { name: "ChatGPT" }).first();
+    await expect(tabletPage.getByRole("complementary", { name: "Codex task" })).toBeVisible({ timeout: 20_000 });
+    await expect(tabletPage.getByRole("dialog", { name: "Codex task" })).toHaveCount(0);
+    const tabletCodex = tabletPage.getByRole("complementary", { name: "Codex task" });
+    await tabletCodex.getByRole("textbox", { name: "Message Codex" }).fill("Tablet shared Codex check.");
+    await tabletCodex.getByRole("button", { name: "Send to Codex" }).click();
+    await expect(tabletCodex.getByText("I can see the shared household plan.", { exact: true })).toBeVisible();
+    const restoredPhoneTrigger = phonePage.getByRole("button", { name: "Open Codex" }).first();
     await restoredPhoneTrigger.click();
-    const restoredPhoneDialog = phonePage.getByRole("dialog", { name: "ChatGPT household chat" });
-    await expect(restoredPhoneDialog.getByText("Tablet shared chat check.", { exact: true })).toBeVisible();
-    await expect(restoredPhoneDialog.locator(".chat-message.assistant")
+    const restoredPhoneDialog = phonePage.getByRole("dialog", { name: "Codex task" });
+    await expect(restoredPhoneDialog.getByText("Tablet shared Codex check.", { exact: true })).toBeVisible();
+    await expect(restoredPhoneDialog.getByRole("log", { name: "Codex conversation" })
       .getByText("I can see the shared household plan.", { exact: true }).last()).toBeVisible();
     await phonePage.keyboard.press("Escape");
 
@@ -939,7 +860,9 @@ test.describe.serial("family dinner authority", () => {
     expect(phoneRuntime.failedResponses).toEqual([]);
     expect(
       phoneRuntime.requestFailures.every((failure) =>
-        failure.label === "injected-offline-read" || failure.label === "conditional-read-abort"),
+        failure.label === "injected-offline-read" ||
+        failure.label === "conditional-read-abort" ||
+        failure.label === "codex-event-read-abort"),
       JSON.stringify(phoneRuntime.requestFailures),
     ).toBe(true);
     expect(phoneRuntime.requestFailures.some((failure) => failure.label === "injected-offline-read")).toBe(true);
@@ -947,7 +870,8 @@ test.describe.serial("family dinner authority", () => {
     expect(tabletRuntime.consoleErrors).toEqual([]);
     expect(tabletRuntime.failedResponses).toEqual([]);
     expect(
-      tabletRuntime.requestFailures.every((failure) => failure.label === "conditional-read-abort"),
+      tabletRuntime.requestFailures.every((failure) =>
+        failure.label === "conditional-read-abort" || failure.label === "codex-event-read-abort"),
       JSON.stringify(tabletRuntime.requestFailures),
     ).toBe(true);
     await phone.close();

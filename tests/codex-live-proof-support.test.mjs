@@ -21,6 +21,7 @@ import test from "node:test";
 import {
   collectCandidateSourceManifest,
   collectDedicatedRuntimeRetention,
+  collectNativeReleaseRuntimeRetention,
   createHostOnlyGlobalClientRunner,
   parseSupportedGlobalClientOutput,
   readObservedCapabilityProjection,
@@ -183,6 +184,14 @@ test("dedicated retention inventory proves ephemeral rows empty and records boun
     collectDedicatedRuntimeRetention(home),
     /persisted forbidden thread\/tool\/job rows/,
   );
+  const nativeRetention = await collectNativeReleaseRuntimeRetention(home);
+  assert.deepEqual(nativeRetention.nativeStateCounts, {
+    threads: 1,
+    thread_dynamic_tools: 0,
+    agent_jobs: 0,
+    agent_job_items: 0,
+  });
+  assert.equal(Object.hasOwn(nativeRetention, "ephemeralCounts"), false);
 });
 
 test("capability projection is bound to the same activation coordinates", async (t) => {
@@ -206,11 +215,22 @@ test("capability projection is bound to the same activation coordinates", async 
       researchWebSearchMode: "live",
       researchTools: ["update_plan", "web_search"],
       plannerTools: ["update_plan", "planner"],
+      workerTools: [
+        "update_plan", "request_user_input", "spawn_agent", "send_message",
+        "followup_task", "wait_agent", "interrupt_agent", "list_agents",
+        "skills", "web_search",
+      ],
       plannerNamespaceMembers: ["read", "preview", "apply"],
       forbiddenHits: [],
       unexpectedRpcMethods: [],
+      plannerReadObserved: true,
+      workerWaitCallObserved: true,
+      workerWaitResultObserved: true,
+      workerResultObserved: true,
+      userInputRoundTripObserved: true,
       dependentResultObserved: true,
       outboundPolicyRejected: true,
+      approvalPolicy: "never",
       permissionProfile: ":read-only",
       effectiveSandbox: "read-only-network-disabled",
     },
@@ -223,13 +243,17 @@ test("capability projection is bound to the same activation coordinates", async 
       },
       systemConfigPaths: ["/etc/codex/config.toml"],
       instructionSourceHashes: { "dedicated:0": coordinates.instructionSha256 },
+      skillNames: ["fixture-skill"],
       mcpServerNames: [],
       appNames: [],
       pluginNames: [],
     },
   }), { mode: 0o600 });
   const projection = await readObservedCapabilityProjection(home, coordinates);
-  assert.equal(projection.researchWebSearchMode, "live");
+  assert.equal(projection.hostedWebSearchMode, "live");
+  assert.equal(projection.threadSource, "weekly_recipe_planner");
+  assert.deepEqual(projection.skillsNamespaceMembers, ["list", "read"]);
+  assert.equal(projection.standaloneSkillCount, 1);
   assert.deepEqual(projection.plannerNamespaceMembers, ["read", "preview", "apply"]);
   await assert.rejects(
     readObservedCapabilityProjection(home, { ...coordinates, sha256: "0".repeat(64) }),

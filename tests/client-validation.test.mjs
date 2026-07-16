@@ -9,7 +9,6 @@ import {
 } from "../lib/household-command-contract.ts";
 import {
   hasValidationIssues,
-  validateGroceryDraft,
   validateMealDraft,
   validateStepDraft,
 } from "../app/planner-validation.ts";
@@ -59,14 +58,5 @@ test("meal draft validation covers required fields and per-line ingredient limit
       ingredients: Array.from({ length: MAX_INGREDIENT_LINES + 1 }, () => "item").join("\n"),
     }).ingredients,
     /no more than 128 ingredient lines/i,
-  );
-});
-
-test("grocery validation retains drafts while naming item and detail failures", () => {
-  assert.deepEqual(validateGroceryDraft({ item: "Carrots", detail: "2 bunches" }), {});
-  assert.match(validateGroceryDraft({ item: "", detail: "" }).item, /grocery item/i);
-  assert.match(
-    validateGroceryDraft({ item: "Carrots", detail: "x".repeat(MAX_COMMAND_TEXT_LENGTH + 1) }).detail,
-    /4,000 characters or fewer/i,
   );
 });

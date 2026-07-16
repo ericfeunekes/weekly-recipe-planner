@@ -44,7 +44,28 @@ test("strict v2 transform preserves planner and transcript state while normalizi
   assert.equal(result.state.weeks[0].data.meals[0].date, "2026-07-06");
   assert.equal(result.state.weeks[0].data.meals[0].slot, "dinner");
   assert.equal(result.state.weeks[0].data.meals[0].status, "cooked");
-  assert.equal(result.state.weeks[0].data.prep[0].prepDate, "2026-07-05");
+  assert.equal(result.state.weeks[0].data.prepSessions[0].prepDate, "2026-07-05");
+  const week = result.state.weeks[0];
+  assert.equal(
+    week.data.groceries.length,
+    week.data.meals.reduce((count, meal) => count + meal.ingredients.length, 0),
+    "import projects every canonical ingredient into groceries",
+  );
+  const chickenIngredient = week.data.meals[0].ingredients.find((ingredient) => ingredient.ingredient === "boneless chicken thighs");
+  const chickenGrocery = week.data.groceries.find((grocery) => grocery.mealId === week.data.meals[0].id && grocery.ingredientId === chickenIngredient?.id);
+  assert.deepEqual(chickenGrocery && {
+    mealId: chickenGrocery.mealId,
+    ingredientId: chickenGrocery.ingredientId,
+    section: chickenGrocery.section,
+    source: chickenGrocery.source,
+    checked: chickenGrocery.checked,
+  }, {
+    mealId: week.data.meals[0].id,
+    ingredientId: chickenIngredient?.id,
+    section: "Meat & seafood",
+    source: "shop",
+    checked: false,
+  });
   assert.equal(result.state.weeks[0].data.leftovers[0].assignedDate, "2026-07-08");
   assert.equal(result.state.weeks[0].data.meals[0].instructions[1].timerStartedAt, 1783353600000);
   assert.deepEqual(result.transcriptEntries, [
@@ -67,7 +88,7 @@ test("strict v2 transform preserves planner and transcript state while normalizi
   assert.deepEqual(householdDomain.validateState(result.state), { ok: true });
 });
 
-test("v2 transform normalizes legacy global prep positions within each date", () => {
+test("v2 transform normalizes legacy date-grouped prep positions into an ordered session", () => {
   const payload = copyFixture();
   payload.data.prep = [
     { id: "prep-rice", stepId: "meal-mon-rice", due: "Sun, Jul 5", position: 9 },
@@ -76,10 +97,18 @@ test("v2 transform normalizes legacy global prep positions within each date", ()
   payload.events.push(null, { obsolete: true });
   const result = transformLegacyV2(payload, context());
   assert.deepEqual(
-    result.state.weeks[0].data.prep.map(({ id, position }) => ({ id, position })),
+    result.state.weeks[0].data.prepSessions.map((session) => ({
+      prepDate: session.prepDate,
+      steps: session.steps.map(({ id, stepId }) => ({ id, stepId })),
+    })),
     [
-      { id: "prep-marinate", position: 0 },
-      { id: "prep-rice", position: 1 },
+      {
+        prepDate: "2026-07-05",
+        steps: [
+          { id: "prep-marinate", stepId: "meal-mon-marinate" },
+          { id: "prep-rice", stepId: "meal-mon-rice" },
+        ],
+      },
     ],
   );
   assert.equal(result.discardedEventCount, 3);
@@ -104,7 +133,7 @@ test("v2 transform fails visibly and never substitutes seed data", () => {
     (error) => {
       assert.ok(error instanceof LegacyV2ImportError);
       assert.ok(
-        Object.keys(error.fieldErrors).some((path) => path.includes("prep[0].stepId")),
+        Object.keys(error.fieldErrors).some((path) => path.includes("prepSessions[0].steps[0].stepId")),
       );
       return true;
     },
@@ -135,10 +164,10 @@ test("canonical seed uses injected time and IDs and returns valid active state",
   assert.equal(seed.weeks[0].data.meals[0].date, "2026-07-10");
   assert.ok(seed.weeks[0].data.meals.some((meal) => meal.date === "2026-07-10"));
   assert.deepEqual(
-    seed.weeks[0].data.prep.map(({ prepDate, position }) => ({ prepDate, position })),
+    seed.weeks[0].data.prepSessions.map(({ prepDate, steps }) => ({ prepDate, stepCount: steps.length })),
     [
-      { prepDate: "2026-07-05", position: 0 },
-      { prepDate: "2026-07-08", position: 0 },
+      { prepDate: "2026-07-05", stepCount: 1 },
+      { prepDate: "2026-07-08", stepCount: 1 },
     ],
   );
   assert.deepEqual(householdDomain.validateState(seed), { ok: true });

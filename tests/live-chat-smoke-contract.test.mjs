@@ -16,6 +16,7 @@ import test from "node:test";
 import {
   createLiveSmokeGlobalEndpoint,
   createLiveSmokeRoot,
+  deriveNativeObservationEvidence,
   parseLiveChatSmokeArguments,
   writePrivateLiveChatArtifact,
 } from "../scripts/smoke-live-chat.mjs";
@@ -67,7 +68,7 @@ test("live smoke allocates Global UDS paths below the macOS byte limit", async (
   assert.equal((await stat(lease.socketPath)).isSocket(), true);
 });
 
-test("authenticated live smoke grammar is closed and explicit", () => {
+test("authenticated native Codex smoke grammar is closed and explicit", () => {
   assert.throws(() => parseLiveChatSmokeArguments([]), /--authorized/);
   assert.throws(
     () => parseLiveChatSmokeArguments(["--authorized", "--scenario", "all"]),
@@ -129,7 +130,7 @@ test("authenticated live smoke grammar is closed and explicit", () => {
   );
 });
 
-test("live smoke evidence is private, bounded, and refuses overwrite", async (t) => {
+test("native Codex smoke evidence is private, bounded, and refuses overwrite", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "planner-live-smoke-contract-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const output = join(root, "proof.json");
@@ -149,7 +150,67 @@ test("live smoke evidence is private, bounded, and refuses overwrite", async (t)
   );
 });
 
-test("live smoke source uses the final configured runtime and no legacy bridge", async () => {
+test("native release observation evidence fails when a label, worker result, or child readback was not observed", () => {
+  const observed = {
+    plannerActivity: {
+      kind: "activity",
+      category: "tool",
+      label: "Reading the planner",
+      status: "completed",
+    },
+    webActivity: {
+      kind: "activity",
+      category: "web",
+      label: "Opening a source",
+      status: "completed",
+    },
+    assistantMessage: { kind: "message", role: "assistant" },
+    workerActivity: {
+      kind: "worker",
+      operation: "wait",
+      status: "completed",
+      workerThreadIds: ["worker-1"],
+      workerStates: [{ threadId: "worker-1", status: "completed" }],
+    },
+    workerSummary: { threadId: "worker-1", status: "completed" },
+    workerReadback: {
+      thread: {
+        id: "worker-1",
+        threadKind: "worker",
+        parentThreadId: "parent-1",
+      },
+    },
+    parentThreadId: "parent-1",
+  };
+  assert.deepEqual(deriveNativeObservationEvidence(observed), {
+    activity: {
+      categories: ["tool", "web"],
+      humanLabelsObserved: true,
+      assistantMessageObserved: true,
+    },
+    worker: {
+      workerActivityObserved: true,
+      childReadback: true,
+      parentResultObserved: true,
+    },
+  });
+
+  for (const mutate of [
+    (value) => { value.webActivity.label = ""; },
+    (value) => { delete value.assistantMessage; },
+    (value) => { value.workerActivity.workerStates = []; },
+    (value) => { value.workerReadback.thread.parentThreadId = "other-parent"; },
+  ]) {
+    const changed = structuredClone(observed);
+    mutate(changed);
+    assert.throws(
+      () => deriveNativeObservationEvidence(changed),
+      /omitted an observed human label, assistant message, worker result, or child readback/,
+    );
+  }
+});
+
+test("release smoke uses native thread HTTP and the final configured runtime", async () => {
   const source = await readFile(new URL("../scripts/smoke-live-chat.mjs", import.meta.url), "utf8");
   assert.match(source, /startConfiguredPlannerRuntime/);
   assert.match(source, /activationCoordinatesFromStatus\(await runtime\.evaluate\(\)\)/);
@@ -164,14 +225,19 @@ test("live smoke source uses the final configured runtime and no legacy bridge",
   assert.match(source, /PLANNER_RUNTIME_OWNER_SOCKET/);
   assert.doesNotMatch(source, /PLANNER_GLOBAL_CODEX_(?:SOCKET|PATH)/u);
   assert.match(source, /readObservedCapabilityProjection/);
-  assert.match(source, /researchEvidenceObserver/);
-  assert.match(source, /observedWebSearch/);
+  assert.match(source, /runNativeReleaseScenarios/);
+  assert.match(source, /CODEX_THREAD_API_ROUTES\.threadNew/);
+  assert.match(source, /CODEX_THREAD_API_ROUTES\.turnSend/);
+  assert.match(source, /CODEX_THREAD_API_ROUTES\.threadArchive/);
+  assert.match(source, /collectNativeReleaseRuntimeRetention/);
+  assert.match(source, /native_codex_authenticated_release_candidate/);
+  assert.match(source, /schemaVersion: NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION/);
+  assert.doesNotMatch(source, /researchEvidenceObserver|researchKind|sourced_recipe/);
   assert.doesNotMatch(source, /snapshotStableNormalCodexInputs|normalCodexState|normalAuthUnchanged/);
   assert.match(source, /isReleaseCandidateBinding/);
   assert.match(source, /releaseBinding/);
   assert.match(source, /createBoundReleaseCandidateArtifact/);
   assert.match(source, /derived release-candidate receipt path/);
-  assert.match(source, /collectDedicatedRuntimeRetention/);
   assert.match(source, /collectCandidateSourceManifest/);
   assert.match(source, /assertEligibleReleaseCandidateArtifact/);
   assert.doesNotMatch(source, /bridge\/app-server-client|createCodexPlannerAdapter|startPlannerRuntime/);

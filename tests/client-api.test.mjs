@@ -12,9 +12,7 @@ import {
   readHistoryPage,
   readWorkspace,
   replayAuthorityOperation,
-  retryChatTurn,
   shouldAcceptWorkspace,
-  submitChatTurn,
   undoLatest,
 } from "../app/planner-api.ts";
 import { readAuthorityOperations } from "../app/authority-operation-journal.ts";
@@ -192,10 +190,6 @@ test("ambiguous POST envelopes replay only for the original request ID", async (
     decision: { status: "accepted", eventId: "event-1", plannerVersion: 9 },
     workspace,
   };
-  const chatResponse = {
-    decision: { status: "context_stale", expectedVersion: 8, actualVersion: 9 },
-    workspace,
-  };
   const cases = [
     {
       name: "planner command",
@@ -225,30 +219,6 @@ test("ambiguous POST envelopes replay only for the original request ID", async (
       first: { requestId: "bootstrap-original", mode: "seed" },
       run: bootstrapWorkspace,
       response: { imported: false, workspace },
-    },
-    {
-      name: "chat submit",
-      path: "/api/chat/submit",
-      first: {
-        requestId: "chat-submit-original",
-        basePlannerVersion: 8,
-        message: "Move dinner to Tuesday",
-        context: { view: "week", weekId: "2026-07-06" },
-        intent: { kind: "planner", archiveContextWeek: false },
-      },
-      run: submitChatTurn,
-      response: chatResponse,
-    },
-    {
-      name: "chat retry",
-      path: "/api/chat/retry",
-      first: {
-        requestId: "chat-retry-original",
-        basePlannerVersion: 8,
-        turnId: "turn-1",
-      },
-      run: retryChatTurn,
-      response: chatResponse,
     },
   ];
 
@@ -483,5 +453,5 @@ test("client authority source has no browser writes or legacy reducers", async (
   const readOnlyLine = source.match(/const isReadOnly = [^;]+;/)?.[0] ?? "";
   assert.match(readOnlyLine, /plannerPending/);
   assert.doesNotMatch(readOnlyLine, /chatPending/);
-  assert.match(source, /ChatGPT working · planner available/);
+  assert.match(source, /CodexThreadRail/);
 });

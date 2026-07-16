@@ -189,6 +189,12 @@ test("browser client exposes all ten routes with full queries, typed bodies, and
     clientUserMessageId: "message-1",
     message: "Hello",
   });
+  assert.deepEqual(requests[7].body, {
+    requestId: "request-interrupt",
+    threadId: "thread-1",
+    expectedSelectionRevision: 4,
+    turnId: "turn-1",
+  });
   assert.deepEqual(requests[8].body, {
     requestId: "request-respond",
     threadId: "thread-1",

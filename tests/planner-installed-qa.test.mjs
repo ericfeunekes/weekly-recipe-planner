@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
   assertNoForbiddenInstalledAssetReferences,
+  proveInstalledBoundaries,
   runInstalledPlannerQa,
 } from "../scripts/support/planner-installed-qa.mjs";
+import { acquireRuntimeOwnershipLease } from "../scripts/support/runtime-ownership.mjs";
+import * as installedE2eRuntime from "./support/e2e-runtime.mjs";
 
 async function fixture(t, prefix) {
   const root = await realpath(await mkdtemp(join(tmpdir(), prefix)));
@@ -44,6 +48,71 @@ test("installed browser asset scan rejects staging and baseline path leakage", a
   );
 });
 
+test("installed boundary proof exercises the complete native task lifecycle across restart", {
+  timeout: 60_000,
+}, async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "planner-installed-native-boundary-")));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataPath = join(root, "data");
+  const udsPath = join(root, "uds");
+  const markerPath = join(root, "markers");
+  await Promise.all([
+    mkdir(dataPath, { mode: 0o700 }),
+    mkdir(udsPath, { mode: 0o700 }),
+    mkdir(markerPath, { mode: 0o700 }),
+  ]);
+  const [dataDirectory, globalCodexParentDirectory, markerRoot] = await Promise.all([
+    realpath(dataPath),
+    realpath(udsPath),
+    realpath(markerPath),
+  ]);
+  const runtimeOwnershipSocketPath = join(root, "runtime-owner.sock");
+  const runtimeOwnershipLease = await acquireRuntimeOwnershipLease({
+    socketPath: runtimeOwnershipSocketPath,
+  });
+  t.after(() => runtimeOwnershipLease.close());
+  const webServer = createServer((_request, response) => response.writeHead(204).end());
+  await new Promise((resolveListen, rejectListen) => {
+    webServer.once("error", rejectListen);
+    webServer.listen(0, "127.0.0.1", resolveListen);
+  });
+  t.after(() => new Promise((resolveClose, rejectClose) => {
+    webServer.close((error) => error ? rejectClose(error) : resolveClose());
+  }));
+  const webAddress = webServer.address();
+  if (webAddress === null || typeof webAddress === "string") {
+    throw new Error("Installed boundary fixture did not expose its web port.");
+  }
+
+  const projection = await proveInstalledBoundaries({
+    appRoot: await realpath(new URL("../", import.meta.url)),
+    dataDirectory,
+    webOrigin: `http://127.0.0.1:${webAddress.port}`,
+    publicPort: 0,
+    runtimeOwnershipLease,
+    runtimeOwnershipSocketPath,
+    globalCodexParentDirectory,
+    markerRoot,
+    e2eRuntime: installedE2eRuntime,
+  });
+
+  for (const field of [
+    "nativeThreadHttpReady",
+    "nativeThreadCreateListSelect",
+    "nativeThreadSendExactReplay",
+    "nativeThreadChangedReplayRejected",
+    "nativeThreadReadback",
+    "nativeThreadActivityObserved",
+    "nativeThreadWorkerReadback",
+    "nativeThreadQuestionAnswered",
+    "nativeThreadInterruptReadback",
+    "nativeThreadArchiveHistory",
+    "nativeThreadRestartReadback",
+  ]) {
+    assert.equal(projection[field], true, `${field} must be observed by installed QA`);
+  }
+});
+
 test("installed QA binds the exact identity, cloned data, inherited lease, and path-safe projection", async (t) => {
   const value = await fixture(t, "planner-installed-orchestration-");
   const identity = Object.freeze({
@@ -65,6 +134,7 @@ test("installed QA binds the exact identity, cloned data, inherited lease, and p
     activationId: "12345678-1234-4234-9234-123456789012",
     releaseEvidenceBinding: {
       activationId: "12345678-1234-4234-9234-123456789012",
+      releaseCandidateEvidenceSchemaVersion: 2,
     },
   }, {
     inspectInstalledIdentity: async () => identity,
@@ -90,7 +160,12 @@ test("installed QA binds the exact identity, cloned data, inherited lease, and p
     },
     runBoundarySuites: async () => {
       calls.push("boundary-suites");
-      return { http: true, dynamicChatCutover: true, fileCount: 2 };
+      return {
+        http: true,
+        nativeThreadService: true,
+        legacyConversationCutover: true,
+        fileCount: 3,
+      };
     },
     runPlaywright: async () => {
       calls.push("playwright");
@@ -100,7 +175,7 @@ test("installed QA binds the exact identity, cloned data, inherited lease, and p
         selectedCloneBrowserReadback: true,
         freshDeterministicJourneys: {
           familyDinnerSpec: true,
-          codexFollowUpSpec: true,
+          nativeCodexPreviewPresentationSpec: true,
         },
       };
     },
@@ -129,8 +204,9 @@ test("installed QA binds the exact identity, cloned data, inherited lease, and p
   assert.equal(projection.browser.selectedCloneSha256, "1".repeat(64));
   assert.deepEqual(projection.browser.freshDeterministicJourneys, {
     familyDinnerSpec: true,
-    codexFollowUpSpec: true,
+    nativeCodexPreviewPresentationSpec: true,
   });
+  assert.equal(projection.nativeCodexReleaseEvidenceSchemaVersion, 2);
   assert.deepEqual(projection.releaseEvidence, {
     relativePath: "installed-release/evidence/manifest.json",
     sha256: "9".repeat(64),

@@ -2,13 +2,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { validateHouseholdState } from "./household-domain.ts";
-import { isHouseholdCommand } from "./household-command-contract.ts";
+import {
+  isHistoricalGroceryReconciliationCommand,
+  isHouseholdCommand,
+} from "./household-command-contract.ts";
 import type { HouseholdPlannerState } from "./household-contract.ts";
 import type {
   PlannerEvent,
   PlannerEventCommand,
 } from "./planner-api-contract.ts";
 import {
+  isHistoricalPlannerEventOperationList,
   isPlannerOperationList,
   type PlannerEventProvenance,
   type PlannerOperation,
@@ -141,9 +145,11 @@ function isProvenance(value: unknown): value is PlannerEventProvenance {
 
 function isPlannerEventCommand(value: unknown): value is PlannerEventCommand {
   if (isHouseholdCommand(value)) return true;
+  if (isHistoricalGroceryReconciliationCommand(value)) return true;
   if (!isRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "plannerBatch") {
-    return hasExactKeys(value, ["type", "operations"]) && isPlannerOperationList(value.operations);
+    return hasExactKeys(value, ["type", "operations"]) &&
+      isHistoricalPlannerEventOperationList(value.operations);
   }
   return value.type === "undoLatest" &&
     hasExactKeys(value, ["type", "targetEventId"]) &&

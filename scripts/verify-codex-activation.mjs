@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import { readRuntimeConfig } from "../server/runtime/config.ts";
 import { createFailSoftManagedCodexFollowUpRuntime } from "../server/runtime/codex-follow-up/readiness.ts";
 import { readBoundedFile } from "../server/runtime/codex-follow-up/resource-policy.ts";
-import { collectCandidateSourceManifest } from "./support/codex-live-proof.mjs";
+import {
+  collectCandidateSourceManifest,
+  readObservedCapabilityProjection,
+} from "./support/codex-live-proof.mjs";
 import {
   ACTIVATION_COORDINATE_KEYS,
   RELEASE_CANDIDATE_BINDING_KEYS,
@@ -17,6 +20,9 @@ import {
   isReleaseCandidateBinding,
   releaseCandidateProjectionFromArtifact,
 } from "./support/codex-release-candidate-contract.mjs";
+import {
+  assertNativeCapabilityEvidenceProjection,
+} from "./support/planner-release-evidence-contract.mjs";
 
 export {
   ACTIVATION_COORDINATE_KEYS,
@@ -60,6 +66,20 @@ async function readReleaseCandidateCoordinates(path) {
 function releaseBindingsEqual(left, right) {
   return isReleaseCandidateBinding(left) && isReleaseCandidateBinding(right) &&
     RELEASE_CANDIDATE_BINDING_KEYS.every((key) => left[key] === right[key]);
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+function stableCapabilityProjection(value) {
+  const accepted = assertNativeCapabilityEvidenceProjection(value);
+  return Object.fromEntries(
+    Object.entries(accepted).filter(([key]) => key !== "evaluatedAt"),
+  );
 }
 
 export async function verifyCodexActivation(
@@ -113,6 +133,23 @@ export async function verifyCodexActivation(
     if (!activationCoordinatesEqual(acceptedArtifact.activationCoordinates, freshCoordinates)) {
       throw new Error(
         "Codex activation coordinates changed after the release-candidate gate; rerun the live smoke.",
+      );
+    }
+    const codexHome = config?.codexFollowUp?.ok === true
+      ? config.codexFollowUp.deployment.codexHome
+      : runtimeEnvironment.PLANNER_CODEX_HOME;
+    if (typeof codexHome !== "string") {
+      throw new Error("The activation verifier could not resolve the dedicated Codex home.");
+    }
+    const currentCapability = await (
+      dependencies.readCapabilityProjection ?? readObservedCapabilityProjection
+    )(codexHome, freshCoordinates);
+    if (
+      canonicalJson(stableCapabilityProjection(currentCapability)) !==
+      canonicalJson(stableCapabilityProjection(acceptedArtifact.capabilityEvidence))
+    ) {
+      throw new Error(
+        "The native thread, worker, skill, web, or planner capability changed after the release-candidate gate.",
       );
     }
     const currentSourceManifest = await (dependencies.collectSourceManifest ??

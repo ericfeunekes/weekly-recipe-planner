@@ -18,6 +18,16 @@ import { fileURLToPath } from "node:url";
 
 import { startConfiguredPlannerRuntime } from "../server/index.ts";
 import {
+  CODEX_THREAD_API_ROUTES,
+  isCodexApiFailure,
+  isCodexInteractionListResponse,
+  isCodexInteractionMutationResponse,
+  isCodexThreadListResponse,
+  isCodexThreadMutationResponse,
+  isCodexThreadReadResponse,
+  isCodexTurnMutationResponse,
+} from "../lib/codex-thread-contract.ts";
+import {
   activationCoordinatesEqual,
   activationCoordinatesFromStatus,
   assertEligibleReleaseCandidateArtifact,
@@ -26,15 +36,19 @@ import {
 } from "./support/codex-release-candidate-contract.mjs";
 import {
   collectCandidateSourceManifest,
-  collectDedicatedRuntimeRetention,
+  collectNativeReleaseRuntimeRetention,
   readIncompatibleEvidenceProjection,
   readObservedCapabilityProjection,
   createHostOnlyGlobalClientRunner,
 } from "./support/codex-live-proof.mjs";
 import { createCodexRuntimeFixture } from "./support/codex-runtime-fixture.mjs";
+import {
+  NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
+} from "./support/planner-release-evidence-contract.mjs";
 
 const ARTIFACT_BYTES_LIMIT = 64 * 1_024;
 const READINESS_TIMEOUT_MS = 180_000;
+const NATIVE_TURN_TIMEOUT_MS = 300_000;
 const MACOS_UNIX_SOCKET_PATH_BYTES = 103;
 const PACKAGE_ROOT = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const QA_OUTPUT_ROOT = join(PACKAGE_ROOT, "outputs", "qa");
@@ -82,9 +96,9 @@ export function parseLiveChatSmokeArguments(argv, options = {}) {
     }
     throw new TypeError(`Unsupported argument: ${argument}`);
   }
-  if (!authorized) throw new TypeError("The live ChatGPT smoke requires --authorized.");
-  if (scenario !== "all") throw new TypeError("The live ChatGPT smoke requires --scenario all.");
-  if (!output) throw new TypeError("The live ChatGPT smoke requires --output.");
+  if (!authorized) throw new TypeError("The native Codex smoke requires --authorized.");
+  if (scenario !== "all") throw new TypeError("The native Codex smoke requires --scenario all.");
+  if (!output) throw new TypeError("The native Codex smoke requires --output.");
   const isOutputAllowed = options.isOutputAllowed ?? isWithinQaOutputRoot;
   if (!output.endsWith(".json") || !isOutputAllowed(output)) {
     throw new TypeError(
@@ -102,7 +116,7 @@ function sha256(value) {
 export async function writePrivateLiveChatArtifact(path, value) {
   const payload = `${JSON.stringify(value, null, 2)}\n`;
   if (Buffer.byteLength(payload, "utf8") > ARTIFACT_BYTES_LIMIT) {
-    throw new Error("The live ChatGPT smoke artifact exceeded its closed byte limit.");
+    throw new Error("The native Codex smoke artifact exceeded its closed byte limit.");
   }
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -129,7 +143,7 @@ export async function writePrivateLiveChatArtifact(path, value) {
   }
   const written = await lstat(path);
   if ((written.mode & 0o777) !== 0o600) {
-    throw new Error("The live ChatGPT smoke artifact is not mode 0600.");
+    throw new Error("The native Codex smoke artifact is not mode 0600.");
   }
 }
 
@@ -260,14 +274,6 @@ function runtimeBaseUrl(runtime) {
   return `http://127.0.0.1:${serverPort(runtime.server)}`;
 }
 
-function assertAccepted(result, label) {
-  if (!result.response.ok || result.body?.decision?.status !== "accepted") {
-    const decision = result.body?.decision?.status ?? result.body?.error?.code ?? "unknown";
-    throw new Error(`${label} failed with HTTP ${result.response.status} (${decision}).`);
-  }
-  return result.body;
-}
-
 async function waitForCodex(runtime) {
   const deadline = Date.now() + READINESS_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -276,28 +282,6 @@ async function waitForCodex(runtime) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error("Timed out waiting for embedded Codex readiness.");
-}
-
-class ArmedFailureInjector {
-  #point = null;
-  #fired = false;
-
-  arm(point) {
-    if (this.#point !== null) throw new Error("A smoke failpoint is already armed.");
-    this.#point = point;
-    this.#fired = false;
-  }
-
-  hit(point) {
-    if (point !== this.#point) return;
-    this.#point = null;
-    this.#fired = true;
-    throw new Error(`Authorized live smoke failpoint: ${point}`);
-  }
-
-  get fired() {
-    return this.#fired;
-  }
 }
 
 function configuredEnvironment(
@@ -330,215 +314,186 @@ async function bootstrap(baseUrl, origin) {
   return result.body.workspace;
 }
 
-async function submit(baseUrl, origin, workspace, message, context, intent) {
-  return assertAccepted(await requestJson(baseUrl, origin, "/api/chat/submit", {
-    method: "POST",
-    body: JSON.stringify({
-      requestId: randomUUID(),
-      basePlannerVersion: workspace.plannerVersion,
-      message,
-      context,
-      intent,
-    }),
-  }), "ChatGPT submission");
+function query(path, values) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== null && value !== undefined) search.set(key, String(value));
+  }
+  const suffix = search.toString();
+  return suffix.length === 0 ? path : `${path}?${suffix}`;
 }
 
-async function retry(baseUrl, origin, workspace, turnId) {
-  return assertAccepted(await requestJson(baseUrl, origin, "/api/chat/retry", {
-    method: "POST",
-    body: JSON.stringify({
-      requestId: randomUUID(),
-      basePlannerVersion: workspace.plannerVersion,
-      turnId,
-    }),
-  }), "ChatGPT recovery");
+function assertNativeResponse(result, expectedStatus, validator, label) {
+  if (result.response.status !== expectedStatus || !validator(result.body)) {
+    const code = result.body?.error?.code ?? "INVALID_RESPONSE";
+    throw new Error(
+      `${label} returned HTTP ${result.response.status} with ${code}.`,
+    );
+  }
+  return result.body;
 }
 
-async function runLiveScenarios(
-  runtime,
-  origin,
-  failureInjector,
-  runGlobalClient,
-  researchEvidenceObservations,
-) {
-  const baseUrl = runtimeBaseUrl(runtime);
-  const health = await requestJson(baseUrl, origin, "/api/health");
-  if (
-    !health.response.ok ||
-    health.body?.status !== "ready" ||
-    health.body?.codex?.status !== "ready" ||
-    health.body?.globalCodex?.status !== "ready"
-  ) {
-    throw new Error("The final configured runtime did not expose ready core, embedded, and Global UDS health.");
-  }
-  let workspace = await bootstrap(baseUrl, origin);
-  const week = workspace.state.weeks[0];
-  const meal = week?.data.meals[0];
-  if (!week || !meal) throw new Error("The disposable planner seed has no meal context.");
-  const originalRecipeStepIds = new Set(meal.instructions.map((step) => step.id));
-  const context = { view: "week", weekId: week.id };
-  const uniqueDependentItem = `RC dependent ${randomUUID().slice(0, 8)}`;
-  const dependent = await submit(
+async function nativeGet(baseUrl, origin, path, validator, label) {
+  return assertNativeResponse(
+    await requestJson(baseUrl, origin, path),
+    200,
+    validator,
+    label,
+  );
+}
+
+async function nativePost(baseUrl, origin, route, body, expectedStatus, validator, label) {
+  const serialized = typeof body === "string" ? body : JSON.stringify(body);
+  return assertNativeResponse(
+    await requestJson(baseUrl, origin, route.path, {
+      method: "POST",
+      body: serialized,
+    }),
+    expectedStatus,
+    validator,
+    label,
+  );
+}
+
+async function listNativeThreads(baseUrl, origin, options = {}) {
+  return nativeGet(
     baseUrl,
     origin,
-    workspace,
-    `Use planner tools to add one Pantry grocery item named exactly \"${uniqueDependentItem}\" with detail \"first call\" and farmBox false. Do not batch the update with the add. After the add succeeds, use the authoritative server-assigned grocery item ID from that result in a second planner apply call to change its detail to exactly \"second dependent call\". Finish only after reading back the updated item.`,
-    context,
-    { kind: "planner", archiveContextWeek: false },
+    query(CODEX_THREAD_API_ROUTES.threadsList.path, options),
+    isCodexThreadListResponse,
+    "Native thread list",
   );
-  const dependentTurn = dependent.decision.turn;
-  workspace = dependent.workspace;
-  const dependentItems = workspace.state.weeks[0].data.groceries.filter(
-    (item) => item.item === uniqueDependentItem,
+}
+
+async function readNativeThread(baseUrl, origin, threadId) {
+  return nativeGet(
+    baseUrl,
+    origin,
+    query(CODEX_THREAD_API_ROUTES.threadRead.path, { threadId }),
+    isCodexThreadReadResponse,
+    "Native thread read",
   );
+}
+
+async function waitForNativeThread(baseUrl, origin, threadId, predicate, label) {
+  const deadline = Date.now() + NATIVE_TURN_TIMEOUT_MS;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await readNativeThread(baseUrl, origin, threadId);
+    if (predicate(last)) return last;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error(`${label} did not become authoritative before timeout (${last?.thread?.status?.state ?? "unknown"}).`);
+}
+
+async function collectNativeThreadPages(baseUrl, origin, options = {}) {
+  const threads = [];
+  let cursor;
+  let pageCount = 0;
+  let last = null;
+  do {
+    last = await listNativeThreads(baseUrl, origin, { ...options, cursor });
+    threads.push(...last.threads);
+    cursor = last.nextCursor ?? undefined;
+    pageCount += 1;
+    if (pageCount > 1_000) throw new Error("Native thread pagination exceeded its proof bound.");
+  } while (cursor !== undefined);
+  return { threads, pageCount, coordinates: last };
+}
+
+function turnById(readback, turnId) {
+  return readback.thread.turns.find((turn) => turn.id === turnId) ?? null;
+}
+
+function groceryIngredientName(week, grocery) {
+  const meal = week.data.meals.find((candidate) => candidate.id === grocery.mealId);
+  return meal?.ingredients.find((candidate) => candidate.id === grocery.ingredientId)
+    ?.ingredient ?? null;
+}
+
+export function deriveNativeObservationEvidence({
+  plannerActivity,
+  webActivity,
+  assistantMessage,
+  workerActivity,
+  workerSummary,
+  workerReadback,
+  parentThreadId,
+}) {
+  const categories = [plannerActivity?.category, webActivity?.category];
+  const humanWebLabels = new Set([
+    "Searching the web",
+    "Opening a source",
+    "Searching within a source",
+  ]);
+  const humanLabelsObserved = plannerActivity?.label === "Reading the planner" &&
+    humanWebLabels.has(webActivity?.label);
+  const assistantMessageObserved = assistantMessage?.kind === "message" &&
+    assistantMessage.role === "assistant";
+  const workerThreadIds = Array.isArray(workerActivity?.workerThreadIds)
+    ? workerActivity.workerThreadIds
+    : [];
+  const workerStates = Array.isArray(workerActivity?.workerStates)
+    ? workerActivity.workerStates
+    : [];
+  const workerActivityObserved = workerActivity?.kind === "worker" &&
+    workerActivity.status === "completed" &&
+    workerThreadIds.includes(workerSummary?.threadId);
+  const parentResultObserved = workerActivityObserved &&
+    workerActivity.operation === "wait" &&
+    workerStates.some((state) =>
+      state.threadId === workerSummary?.threadId && state.status === "completed"
+    ) && workerSummary?.status === "completed";
+  const childReadback = workerReadback?.thread?.threadKind === "worker" &&
+    workerReadback.thread.parentThreadId === parentThreadId &&
+    workerReadback.thread.id === workerSummary?.threadId;
   if (
-    dependentTurn.status !== "completed" ||
-    dependentTurn.acceptedEffectCount < 2 ||
-    dependentItems.length !== 1 ||
-    dependentItems[0].detail !== "second dependent call"
+    categories[0] !== "tool" ||
+    categories[1] !== "web" ||
+    !humanLabelsObserved ||
+    !assistantMessageObserved ||
+    !workerActivityObserved ||
+    !parentResultObserved ||
+    !childReadback
   ) {
     throw new Error(
-      "The real model did not complete two dependent durable planner effects " +
-        `(status=${dependentTurn.status}, errorCode=${dependentTurn.errorCode ?? "none"}, ` +
-        `terminalOutcome=${dependentTurn.terminalOutcome ?? "none"}, ` +
-        `acceptedEffects=${dependentTurn.acceptedEffectCount}, ` +
-        `matchingItems=${dependentItems.length}, detailMatched=${
-          dependentItems[0]?.detail === "second dependent call"
-        }, errorDetail=${JSON.stringify(
-          (dependentTurn.errorDetail ?? "none").replace(/\s+/gu, " ").slice(0, 240),
-        )}).`,
+      "Unified native turn omitted an observed human label, assistant message, worker result, or child readback.",
     );
   }
+  return Object.freeze({
+    activity: Object.freeze({
+      categories: Object.freeze(categories),
+      humanLabelsObserved,
+      assistantMessageObserved,
+    }),
+    worker: Object.freeze({
+      workerActivityObserved,
+      childReadback,
+      parentResultObserved,
+    }),
+  });
+}
 
-  const sourced = await submit(
-    baseUrl,
-    origin,
-    workspace,
-    "Use live web search to find a primary publisher recipe for a practical family dinner. Remove any prep references to the selected meal's old recipe steps in a separate earlier planner apply call if required, then replace the recipe snapshot with the validated sourced candidate. Keep the source visible and informational.",
-    { view: "week", weekId: week.id, mealId: meal.id },
-    { kind: "sourced_recipe" },
-  );
-  const sourcedTurn = sourced.decision.turn;
-  workspace = sourced.workspace;
-  const matchingResearchObservations = researchEvidenceObservations.filter(
-    (observation) => observation.durableTurnId === sourcedTurn.turnId,
-  );
-  const sourcedMeal = workspace.state.weeks[0].data.meals.find((candidate) => candidate.id === meal.id);
-  const stalePrepReferencePresent = workspace.state.weeks[0].data.prep.some(
-    (reference) => originalRecipeStepIds.has(reference.stepId),
-  );
-  if (
-    sourcedTurn.status !== "completed" ||
-    sourcedTurn.researchKind !== "sourced_recipe" ||
-    sourcedTurn.acceptedEffectCount < 2 ||
-    !sourcedMeal?.sourceRecipe ||
-    stalePrepReferencePresent ||
-    matchingResearchObservations.length !== 1
-  ) {
-    throw new Error(
-      "The real live-search recipe replacement was not durable " +
-        `(status=${sourcedTurn.status}, researchKind=${sourcedTurn.researchKind}, ` +
-        `errorCode=${sourcedTurn.errorCode ?? "none"}, ` +
-        `terminalOutcome=${sourcedTurn.terminalOutcome ?? "none"}, ` +
-        `acceptedEffects=${sourcedTurn.acceptedEffectCount}, ` +
-        `sourceRecipePresent=${Boolean(sourcedMeal?.sourceRecipe)}, ` +
-        `stalePrepReferencePresent=${stalePrepReferencePresent}, ` +
-        `observedHostedSearches=${matchingResearchObservations.length}, errorDetail=${JSON.stringify(
-          (sourcedTurn.errorDetail ?? "none").replace(/\s+/gu, " ").slice(0, 240),
-        )}).`,
-    );
-  }
-  const observedWebSearch = matchingResearchObservations[0];
-
-  const failureItem = `RC recovery ${randomUUID().slice(0, 8)}`;
-  const versionBeforeFailure = workspace.plannerVersion;
-  failureInjector.arm("after_tool_effect_commit");
-  const failed = await submit(
-    baseUrl,
-    origin,
-    workspace,
-    `Add one Pantry grocery item named exactly \"${failureItem}\" with detail \"reply-loss proof\" and farmBox false. Use one planner apply call, then report the result.`,
-    context,
-    { kind: "planner", archiveContextWeek: false },
-  );
-  const failedTurn = failed.decision.turn;
-  workspace = failed.workspace;
-  const failureItems = workspace.state.weeks[0].data.groceries.filter(
-    (item) => item.item === failureItem,
-  );
-  if (
-    !failureInjector.fired ||
-    failedTurn.status !== "failed" ||
-    failedTurn.terminalOutcome !== "failed_after_effect" ||
-    failedTurn.acceptedEffectCount !== 1 ||
-    workspace.plannerVersion !== versionBeforeFailure + 1 ||
-    failureItems.length !== 1
-  ) {
-    throw new Error("The failure-after-effect state was not durably visible.");
-  }
-
-  const versionBeforeRecovery = workspace.plannerVersion;
-  const recovered = await retry(baseUrl, origin, workspace, failedTurn.turnId);
-  const recoveryTurn = recovered.decision.turn;
-  workspace = recovered.workspace;
-  const recoveredItems = workspace.state.weeks[0].data.groceries.filter(
-    (item) => item.item === failureItem,
-  );
-  if (
-    recoveryTurn.status !== "completed" ||
-    recoveryTurn.mode !== "recovery" ||
-    recoveryTurn.recoveryOfTurnId !== failedTurn.turnId ||
-    recoveryTurn.acceptedEffectCount !== 0 ||
-    workspace.plannerVersion !== versionBeforeRecovery ||
-    recoveredItems.length !== 1
-  ) {
-    throw new Error("Recovery-only Retry repeated or lost a durable planner effect.");
-  }
-
-  const secondClient = await requestJson(baseUrl, origin, "/api/workspace");
-  if (!secondClient.response.ok) {
-    throw new Error(`Second-client workspace read failed with HTTP ${secondClient.response.status}.`);
-  }
-  const secondWorkspace = secondClient.body;
-  const persistedTurns = new Map(secondWorkspace.chatTurns.map((turn) => [turn.turnId, turn]));
-  if (
-    persistedTurns.get(dependentTurn.turnId)?.acceptedEffectCount < 2 ||
-    persistedTurns.get(sourcedTurn.turnId)?.researchKind !== "sourced_recipe" ||
-    persistedTurns.get(failedTurn.turnId)?.terminalOutcome !== "failed_after_effect" ||
-    persistedTurns.get(recoveryTurn.turnId)?.mode !== "recovery"
-  ) {
-    throw new Error("An independent client could not read back every live scenario outcome.");
-  }
-
+async function proveGlobalUds(baseUrl, origin, runGlobalClient, weekId) {
   const globalHealth = await runGlobalClient("health", null);
   const globalWorkspace = await runGlobalClient("workspace", null);
-  if (
-    globalHealth.status !== "ready" ||
-    !globalWorkspace.planner?.initialized
-  ) {
+  if (globalHealth.status !== "ready" || !globalWorkspace.planner?.initialized) {
     throw new Error("The supported Global UDS client did not read a ready planner.");
   }
-  const globalRequestId = randomUUID();
   const globalLesson = `RC Global UDS ${randomUUID().slice(0, 8)}`;
   const globalBatch = {
     contractVersion: 1,
-    requestId: globalRequestId,
+    requestId: randomUUID(),
     basePlannerVersion: globalWorkspace.planner.plannerVersion,
     operations: [{ command: {
       type: "captureWeekLesson",
-      weekId: week.id,
+      weekId,
       weekLesson: globalLesson,
     } }],
   };
   const serializedGlobalBatch = JSON.stringify(globalBatch);
-  const globalApplied = await runGlobalClient(
-    "apply",
-    serializedGlobalBatch,
-  );
-  const globalReplayed = await runGlobalClient(
-    "apply",
-    serializedGlobalBatch,
-  );
+  const globalApplied = await runGlobalClient("apply", serializedGlobalBatch);
+  const globalReplayed = await runGlobalClient("apply", serializedGlobalBatch);
   const globalChanged = await runGlobalClient("apply", JSON.stringify({
     ...globalBatch,
     operations: [{ command: {
@@ -546,57 +501,427 @@ async function runLiveScenarios(
       weekLesson: `${globalLesson} changed reuse`,
     } }],
   }));
-  const globalBrowserReadback = await requestJson(baseUrl, origin, "/api/workspace");
+  const browserReadback = await requestJson(baseUrl, origin, "/api/workspace");
   if (
     globalApplied.decision?.status !== "accepted" ||
     JSON.stringify(globalReplayed.decision) !== JSON.stringify(globalApplied.decision) ||
     globalChanged.error?.code !== "request_id_reuse" ||
-    !globalBrowserReadback.response.ok ||
-    globalBrowserReadback.body.state.weeks.find((candidate) => candidate.id === week.id)
+    !browserReadback.response.ok ||
+    browserReadback.body.state.weeks.find((candidate) => candidate.id === weekId)
       ?.data.weekLesson !== globalLesson
   ) {
     throw new Error("The supported Global UDS apply/replay/readback contract failed.");
   }
-
   return {
-    dependentPlanner: {
-      turnIdSha256: sha256(dependentTurn.turnId),
-      acceptedEffectCount: dependentTurn.acceptedEffectCount,
-      outcome: dependentTurn.terminalOutcome,
+    supportedClient: true,
+    applyAccepted: true,
+    exactReplay: true,
+    changedPayloadRejected: true,
+    browserReadback: true,
+  };
+}
+
+export async function runNativeReleaseScenarios({
+  runtime,
+  origin,
+  runGlobalClient,
+  restartRuntime,
+}) {
+  let currentRuntime = runtime;
+  let baseUrl = runtimeBaseUrl(currentRuntime);
+  const health = await requestJson(baseUrl, origin, "/api/health");
+  if (
+    !health.response.ok ||
+    (health.body?.status ?? health.body?.application?.status) !== "ready" ||
+    health.body?.codex?.status !== "ready" ||
+    health.body?.globalCodex?.status !== "ready"
+  ) {
+    throw new Error("The final configured runtime did not expose ready planner, native Codex, and Global UDS health.");
+  }
+  let workspace = await bootstrap(baseUrl, origin);
+  const week = workspace.state.weeks[0];
+  if (!week) throw new Error("The disposable planner seed has no active week.");
+
+  const initial = await listNativeThreads(baseUrl, origin, { limit: 1 });
+  const primary = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.threadNew,
+    { requestId: randomUUID(), expectedSelectionRevision: initial.selection.revision },
+    201,
+    isCodexThreadMutationResponse,
+    "Native thread creation",
+  );
+  if (primary.thread === null || primary.selection.threadId !== primary.thread.id) {
+    throw new Error("Native thread creation did not select its provider-owned root.");
+  }
+  const primaryThreadId = primary.thread.id;
+
+  const questionAdmission = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.turnSend,
+    {
+      requestId: randomUUID(),
+      threadId: primaryThreadId,
+      expectedSelectionRevision: primary.selection.revision,
+      clientUserMessageId: `native-question-${randomUUID()}`,
+      message: "Before doing anything else, ask exactly one closed-choice question with options Tacos and Soup. After I answer, reply briefly without using planner or web tools.",
     },
-    sourcedRecipe: {
-      turnIdSha256: sha256(sourcedTurn.turnId),
-      acceptedEffectCount: sourcedTurn.acceptedEffectCount,
-      outcome: sourcedTurn.terminalOutcome,
-      sourceKind: sourcedMeal.sourceRecipe.kind,
-      sourceUrlSha256: sha256(sourcedMeal.sourceRecipe.url),
-      observedWebSearch: {
-        operation: observedWebSearch.operation,
-        status: observedWebSearch.status,
-        durableTurnIdSha256: sha256(observedWebSearch.durableTurnId),
-        researchThreadIdSha256: sha256(observedWebSearch.appServerThreadId),
-        researchTurnIdSha256: sha256(observedWebSearch.appServerTurnId),
-        operationIdSha256: sha256(observedWebSearch.appServerItemId),
+    202,
+    isCodexTurnMutationResponse,
+    "Native question turn",
+  );
+  const pendingQuestion = await waitForNativeThread(
+    baseUrl,
+    origin,
+    primaryThreadId,
+    (readback) => readback.interactions.some((entry) =>
+      entry.kind === "user_input" && entry.turnId === questionAdmission.turnId),
+    "Native closed-choice question",
+  );
+  const interactionList = await nativeGet(
+    baseUrl,
+    origin,
+    query(CODEX_THREAD_API_ROUTES.interactionsList.path, { threadId: primaryThreadId }),
+    isCodexInteractionListResponse,
+    "Native interaction list",
+  );
+  const question = interactionList.interactions.find((entry) =>
+    entry.kind === "user_input" && entry.turnId === questionAdmission.turnId);
+  const firstQuestion = question?.questions[0];
+  const selectedOption = firstQuestion?.options[0]?.label;
+  if (!question || !firstQuestion || !selectedOption) {
+    throw new Error("Native interaction readback omitted its listed option contract.");
+  }
+  await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.interactionRespond,
+    {
+      requestId: randomUUID(),
+      threadId: primaryThreadId,
+      expectedSelectionRevision: pendingQuestion.selection.revision,
+      interactionId: question.id,
+      response: {
+        kind: "answers",
+        answers: [{ questionId: firstQuestion.id, answers: [selectedOption] }],
       },
     },
-    failureAfterEffect: {
-      turnIdSha256: sha256(failedTurn.turnId),
-      acceptedEffectCount: failedTurn.acceptedEffectCount,
-      outcome: failedTurn.terminalOutcome,
+    200,
+    isCodexInteractionMutationResponse,
+    "Native interaction response",
+  );
+  await waitForNativeThread(
+    baseUrl,
+    origin,
+    primaryThreadId,
+    (readback) => turnById(readback, questionAdmission.turnId)?.status === "completed" &&
+      !readback.interactions.some((entry) => entry.id === question.id),
+    "Native question resolution",
+  );
+
+  workspace = (await requestJson(baseUrl, origin, "/api/workspace")).body;
+  const plannerVersionBefore = workspace.plannerVersion;
+  const proofIngredient = "Boneless chicken thighs";
+  const requestId = randomUUID();
+  const clientUserMessageId = `native-release-${randomUUID()}`;
+  const admissionBody = JSON.stringify({
+    requestId,
+    threadId: primaryThreadId,
+    expectedSelectionRevision: primary.selection.revision,
+    clientUserMessageId,
+    message: `Use planner.read to inspect the current workspace. Use hosted web search for a primary-source family dinner idea. Spawn one background worker to find a second useful primary source, wait for its result, then use one planner.apply call to move the existing recipe-derived grocery record for the canonical ingredient \"${proofIngredient}\" to Farm box. Do not add, edit, or remove grocery rows; groceries are recipe-derived classifications. Finish with a brief answer and do not ask a question.`,
+  });
+  const admitted = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.turnSend,
+    admissionBody,
+    202,
+    isCodexTurnMutationResponse,
+    "Unified native turn",
+  );
+  const replayed = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.turnSend,
+    admissionBody,
+    202,
+    isCodexTurnMutationResponse,
+    "Unified native turn replay",
+  );
+  if (replayed.threadId !== admitted.threadId || replayed.turnId !== admitted.turnId) {
+    throw new Error("Byte-identical native turn replay changed provider identity.");
+  }
+  const changedReuse = await requestJson(baseUrl, origin, CODEX_THREAD_API_ROUTES.turnSend.path, {
+    method: "POST",
+    body: JSON.stringify({ ...JSON.parse(admissionBody), message: `${proofIngredient} changed reuse` }),
+  });
+  if (
+    changedReuse.response.status !== 409 ||
+    !isCodexApiFailure(changedReuse.body) ||
+    changedReuse.body.error.code !== "REQUEST_ID_REUSE"
+  ) {
+    throw new Error("Changed-payload native request-ID reuse did not fail closed.");
+  }
+
+  const completed = await waitForNativeThread(
+    baseUrl,
+    origin,
+    primaryThreadId,
+    (readback) => turnById(readback, admitted.turnId)?.status === "completed" &&
+      readback.thread.workers.length > 0,
+    "Unified native thread",
+  );
+  const completedTurn = turnById(completed, admitted.turnId);
+  const webActivity = completedTurn?.items.find((item) =>
+    item.kind === "activity" && item.category === "web" && item.status === "completed");
+  const plannerActivity = completedTurn?.items.find((item) =>
+    item.kind === "activity" && item.category === "tool" && item.status === "completed");
+  const assistantMessage = completedTurn?.items.find((item) =>
+    item.kind === "message" && item.role === "assistant");
+  const workerSummary = completed.thread.workers.find((worker) => worker.status === "completed");
+  const workerActivity = completedTurn?.items.find((item) =>
+    item.kind === "worker" && item.operation === "wait" && item.status === "completed" &&
+    workerSummary !== undefined && item.workerThreadIds.includes(workerSummary.threadId) &&
+    item.workerStates.some((state) =>
+      state.threadId === workerSummary.threadId && state.status === "completed"));
+  if (!completedTurn || !webActivity || !plannerActivity || !workerActivity ||
+      !assistantMessage || !workerSummary) {
+    throw new Error("Unified native turn omitted hosted web, planner, worker, or assistant activity.");
+  }
+  const workerReadback = await readNativeThread(baseUrl, origin, workerSummary.threadId);
+  const observedNativeTurn = deriveNativeObservationEvidence({
+    plannerActivity,
+    webActivity,
+    assistantMessage,
+    workerActivity,
+    workerSummary,
+    workerReadback,
+    parentThreadId: primaryThreadId,
+  });
+
+  const independentThreadRead = await readNativeThread(baseUrl, origin, primaryThreadId);
+  if (turnById(independentThreadRead, admitted.turnId)?.status !== "completed") {
+    throw new Error("An independent native client could not read back the completed turn.");
+  }
+  workspace = (await requestJson(baseUrl, origin, "/api/workspace")).body;
+  const proofWeek = workspace.state.weeks[0];
+  const matchingItems = proofWeek.data.groceries.filter((item) =>
+    groceryIngredientName(proofWeek, item) === proofIngredient,
+  );
+  if (
+    workspace.plannerVersion !== plannerVersionBefore + 1 ||
+    matchingItems.length !== 1 ||
+    matchingItems[0].source !== "farm_box" ||
+    groceryIngredientName(proofWeek, matchingItems[0]) !== proofIngredient
+  ) {
+    throw new Error("The unified native turn did not move one authoritative recipe-derived grocery classification.");
+  }
+
+  const secondary = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.threadNew,
+    { requestId: randomUUID(), expectedSelectionRevision: completed.selection.revision },
+    201,
+    isCodexThreadMutationResponse,
+    "Second native thread creation",
+  );
+  if (secondary.thread === null) throw new Error("Second native thread creation omitted its root.");
+  const secondaryThreadId = secondary.thread.id;
+  const paged = await collectNativeThreadPages(baseUrl, origin, { limit: 1 });
+  if (
+    paged.pageCount < 2 ||
+    ![primaryThreadId, secondaryThreadId].every((threadId) =>
+      paged.threads.some((thread) => thread.id === threadId))
+  ) {
+    throw new Error("Native history pagination did not preserve both release roots.");
+  }
+  const interruptAdmission = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.turnSend,
+    {
+      requestId: randomUUID(),
+      threadId: secondaryThreadId,
+      expectedSelectionRevision: secondary.selection.revision,
+      clientUserMessageId: `native-interrupt-${randomUUID()}`,
+      message: "Start a background worker and a broad hosted web investigation, wait for the worker, and do not finish until every source has been compared.",
     },
-    recoveryOnly: {
-      turnIdSha256: sha256(recoveryTurn.turnId),
-      acceptedEffectCount: recoveryTurn.acceptedEffectCount,
-      outcome: recoveryTurn.terminalOutcome,
-      plannerVersionUnchanged: true,
+    202,
+    isCodexTurnMutationResponse,
+    "Native interrupt turn",
+  );
+  await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.turnInterrupt,
+    {
+      requestId: randomUUID(),
+      threadId: secondaryThreadId,
+      expectedSelectionRevision: secondary.selection.revision,
+      turnId: interruptAdmission.turnId,
     },
-    secondClientReadback: true,
-    globalUds: {
-      supportedClient: true,
-      applyAccepted: true,
-      exactReplay: true,
-      changedPayloadRejected: true,
-      browserReadback: true,
+    200,
+    isCodexTurnMutationResponse,
+    "Native turn interrupt",
+  );
+  await waitForNativeThread(
+    baseUrl,
+    origin,
+    secondaryThreadId,
+    (readback) => turnById(readback, interruptAdmission.turnId)?.status === "interrupted",
+    "Interrupted native turn readback",
+  );
+  const archivedSecondary = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.threadArchive,
+    {
+      requestId: randomUUID(),
+      threadId: secondaryThreadId,
+      expectedSelectionRevision: secondary.selection.revision,
+    },
+    200,
+    isCodexThreadMutationResponse,
+    "Native thread archive",
+  );
+  const selectedPrimary = await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.threadSelect,
+    {
+      requestId: randomUUID(),
+      threadId: primaryThreadId,
+      expectedSelectionRevision: archivedSecondary.selection.revision,
+    },
+    200,
+    isCodexThreadMutationResponse,
+    "Native thread selection",
+  );
+
+  for (const [path, options] of [
+    ["/api/transcript", {}],
+    ["/api/chat/submit", { method: "POST", body: "{}" }],
+  ]) {
+    const legacy = await requestJson(baseUrl, origin, path, options);
+    if (legacy.response.status !== 404) {
+      throw new Error(`Retired planner conversation route remained reachable: ${path}.`);
+    }
+  }
+
+  currentRuntime = await restartRuntime(currentRuntime);
+  baseUrl = runtimeBaseUrl(currentRuntime);
+  const restartedStatus = await waitForCodex(currentRuntime);
+  if (restartedStatus.state !== "compatible") {
+    throw new Error("Native release restart did not recover a compatible Codex runtime.");
+  }
+  const restartedActive = await collectNativeThreadPages(baseUrl, origin, { limit: 50 });
+  const restartedArchived = await collectNativeThreadPages(baseUrl, origin, {
+    archived: true,
+    limit: 50,
+  });
+  const restartedPrimary = await readNativeThread(baseUrl, origin, primaryThreadId);
+  if (
+    restartedActive.coordinates.selection.threadId !== primaryThreadId ||
+    !restartedActive.threads.some((thread) => thread.id === primaryThreadId) ||
+    restartedActive.threads.some((thread) => thread.id === secondaryThreadId) ||
+    !restartedArchived.threads.some((thread) => thread.id === secondaryThreadId) ||
+    turnById(restartedPrimary, admitted.turnId)?.status !== "completed" ||
+    !restartedPrimary.thread.workers.some((worker) => worker.threadId === workerSummary.threadId)
+  ) {
+    throw new Error("Native history, selection, archive, or worker readback changed after restart.");
+  }
+
+  const globalUds = await proveGlobalUds(baseUrl, origin, runGlobalClient, week.id);
+  await nativePost(
+    baseUrl,
+    origin,
+    CODEX_THREAD_API_ROUTES.threadArchive,
+    {
+      requestId: randomUUID(),
+      threadId: primaryThreadId,
+      expectedSelectionRevision: selectedPrimary.selection.revision,
+    },
+    200,
+    isCodexThreadMutationResponse,
+    "Primary native thread archive",
+  );
+  const finalActive = await collectNativeThreadPages(baseUrl, origin, { limit: 50 });
+  const finalArchived = await collectNativeThreadPages(baseUrl, origin, {
+    archived: true,
+    limit: 50,
+  });
+  if (
+    [primaryThreadId, secondaryThreadId].some((threadId) =>
+      finalActive.threads.some((thread) => thread.id === threadId)) ||
+    ![primaryThreadId, secondaryThreadId].every((threadId) =>
+      finalArchived.threads.some((thread) => thread.id === threadId))
+  ) {
+    throw new Error("Native release probe roots were not archived out of the default picker.");
+  }
+
+  return {
+    runtime: currentRuntime,
+    scenarios: {
+      nativeHistory: {
+        threadSource: "weekly_recipe_planner",
+        createdTopLevelThreadCount: 2,
+        primaryThreadIdSha256: sha256(primaryThreadId),
+        archivedThreadIdSha256: sha256(secondaryThreadId),
+        paginationObserved: true,
+        selectionObserved: true,
+        restartReadback: true,
+        archivedAbsentFromActive: true,
+        archivedPresentInHistory: true,
+      },
+      nativeTurn: {
+        threadIdSha256: sha256(primaryThreadId),
+        turnIdSha256: sha256(admitted.turnId),
+        clientUserMessageIdSha256: sha256(clientUserMessageId),
+        exactAdmissionReplay: true,
+        changedPayloadRejected: true,
+        secondClientReadback: true,
+        plannerEffect: {
+          operation: "move_grocery_items_to_source",
+          plannerVersionDelta: 1,
+          itemIdentitySha256: sha256(matchingItems[0].id),
+          source: "farm_box",
+          ingredientNameSha256: sha256(proofIngredient),
+          authoritativeReadback: true,
+        },
+        hostedWebSearch: {
+          operation: "web_search",
+          status: "completed",
+          threadIdSha256: sha256(primaryThreadId),
+          turnIdSha256: sha256(admitted.turnId),
+          activityIdSha256: sha256(webActivity.id),
+        },
+        activity: observedNativeTurn.activity,
+        worker: {
+          parentThreadIdSha256: sha256(primaryThreadId),
+          workerThreadIdSha256: sha256(workerSummary.threadId),
+          ...observedNativeTurn.worker,
+        },
+      },
+      interactions: {
+        question: {
+          interactionIdSha256: sha256(question.id),
+          threadIdSha256: sha256(primaryThreadId),
+          turnIdSha256: sha256(questionAdmission.turnId),
+          listedOptionRoundTrip: true,
+          resolved: true,
+        },
+      },
+      interrupt: {
+        threadIdSha256: sha256(secondaryThreadId),
+        turnIdSha256: sha256(interruptAdmission.turnId),
+        readbackStatus: "interrupted",
+      },
+      legacyConversationAbsent: true,
+      globalUds,
     },
   };
 }
@@ -686,7 +1011,7 @@ async function proveIncompatibleIndependence(
   }
 }
 
-export async function runLiveChatSmoke(
+export async function runNativeCodexReleaseSmoke(
   argv = process.argv.slice(2),
   environment = process.env,
   dependencies = {},
@@ -695,7 +1020,7 @@ export async function runLiveChatSmoke(
   if (!home.startsWith("/")) throw new Error("HOME must be an absolute path.");
   const releaseBinding = dependencies.releaseBinding;
   if (releaseBinding !== undefined && !isReleaseCandidateBinding(releaseBinding)) {
-    throw new TypeError("The live smoke received a malformed stage/install/auth binding.");
+    throw new TypeError("The native Codex smoke received a malformed stage/install/auth binding.");
   }
   const expectedReleaseOutput = releaseBinding === undefined
     ? null
@@ -712,7 +1037,7 @@ export async function runLiveChatSmoke(
   });
   try {
     await lstat(args.output);
-    throw new Error("Refusing to overwrite an existing live ChatGPT smoke artifact.");
+    throw new Error("Refusing to overwrite an existing native Codex smoke artifact.");
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
@@ -729,8 +1054,6 @@ export async function runLiveChatSmoke(
   const candidateSourceBefore = await collectSourceManifest();
   const root = await createLiveSmokeRoot(environment);
   const dataDirectory = join(root, "planner-data");
-  const failureInjector = new ArmedFailureInjector();
-  const researchEvidenceObservations = [];
   const web = await startWebProbe();
   const globalCodexEndpoints = [];
   let runtime = null;
@@ -746,19 +1069,25 @@ export async function runLiveChatSmoke(
       globalCodexEndpoint.runtimeOwnerSocketPath,
     );
     runtime = await startConfiguredPlannerRuntime(sourceEnvironment, {
-      failureInjector,
       globalCodexParentDirectory: globalCodexEndpoint.parentDirectory,
-      researchEvidenceObserver: (observation) => researchEvidenceObservations.push(observation),
     });
     const acceptedStatus = await waitForCodex(runtime);
     const activationCoordinates = activationCoordinatesFromStatus(acceptedStatus);
-    const scenarios = await runLiveScenarios(
+    const nativeProof = await runNativeReleaseScenarios({
       runtime,
-      web.origin,
-      failureInjector,
-      globalCodexEndpoint.runClient,
-      researchEvidenceObservations,
-    );
+      origin: web.origin,
+      runGlobalClient: globalCodexEndpoint.runClient,
+      restartRuntime: async (current) => {
+        await current.close();
+        runtime = null;
+        runtime = await startConfiguredPlannerRuntime(sourceEnvironment, {
+          globalCodexParentDirectory: globalCodexEndpoint.parentDirectory,
+        });
+        return runtime;
+      },
+    });
+    runtime = nativeProof.runtime;
+    const scenarios = nativeProof.scenarios;
     const finalCoordinates = activationCoordinatesFromStatus(await runtime.evaluate());
     if (!activationCoordinatesEqual(finalCoordinates, activationCoordinates)) {
       throw new Error("Codex activation coordinates changed during the live release-candidate gate.");
@@ -769,7 +1098,7 @@ export async function runLiveChatSmoke(
     );
     await runtime.close();
     runtime = null;
-    const dedicatedRuntimeRetention = await collectDedicatedRuntimeRetention(dedicatedHome);
+    const dedicatedRuntimeRetention = await collectNativeReleaseRuntimeRetention(dedicatedHome);
 
     const incompatibleGlobalCodexEndpoint = await createLiveSmokeGlobalEndpoint("incompatible");
     globalCodexEndpoints.push(incompatibleGlobalCodexEndpoint);
@@ -782,10 +1111,10 @@ export async function runLiveChatSmoke(
       throw new Error("The release-candidate source changed during the live gate.");
     }
     const artifact = {
-      schemaVersion: 1,
+      schemaVersion: NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
       completedAt: new Date().toISOString(),
-      disposition: "compatible_authenticated_release_candidate",
-      scenario: args.scenario,
+      disposition: "native_codex_authenticated_release_candidate",
+      scenario: "native_threads",
       authenticationMutationPerformedByProbe: false,
       activationCoordinates,
       activationCoordinatesRecheckedEqual: true,
@@ -815,13 +1144,16 @@ export async function runLiveChatSmoke(
   }
 }
 
+/** Compatibility export only; every invocation now emits the native schema-v2 contract. */
+export const runLiveChatSmoke = runNativeCodexReleaseSmoke;
+
 const isEntrypoint =
   typeof process.argv[1] === "string" &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isEntrypoint) {
-  await runLiveChatSmoke().then(() => {
-    console.log("Live ChatGPT release-candidate smoke passed; secret-free evidence was written.");
+  await runNativeCodexReleaseSmoke().then(() => {
+    console.log("Native Codex release-candidate smoke passed; secret-free evidence was written.");
   }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

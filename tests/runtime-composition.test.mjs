@@ -140,7 +140,6 @@ test("composed authority bootstraps once and survives a real process restart", a
 
   const restarted = await startPlannerRuntime(sharedOptions);
   t.after(() => restarted.close());
-  assert.equal(restarted.interruptedTurns, 0);
   const readback = await (await fetch(`${runtimeBaseUrl(restarted)}/api/workspace`)).json();
   assert.equal(readback.initialized, true);
   assert.equal(readback.state.activeWeekId, "2026-07-06");

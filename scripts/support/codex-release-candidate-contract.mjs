@@ -10,6 +10,7 @@ import {
   assertAuthLifecycleReleaseArtifact,
 } from "./codex-auth-lifecycle.mjs";
 import {
+  NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
   assertReleaseCandidateEvidenceProjection,
 } from "./planner-release-evidence-contract.mjs";
 
@@ -20,6 +21,7 @@ export const RELEASE_CANDIDATE_BINDING_KEYS = Object.freeze([
   "stageSha256",
   "installedSha256",
   "authLifecycleSha256",
+  "evidenceSchemaVersion",
 ]);
 
 export const ACTIVATION_COORDINATE_KEYS = Object.freeze([
@@ -57,7 +59,9 @@ function sha256(value) {
 export function isReleaseCandidateBinding(value) {
   return isRecord(value) && exactKeys(value, RELEASE_CANDIDATE_BINDING_KEYS) &&
     isActivationId(value.activationId) &&
-    RELEASE_CANDIDATE_BINDING_KEYS.slice(1).every((key) => SHA256.test(value[key]));
+    ["stageSha256", "installedSha256", "authLifecycleSha256"]
+      .every((key) => SHA256.test(value[key])) &&
+    value.evidenceSchemaVersion === NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION;
 }
 
 export function releaseCandidateBindingFromArtifacts(
@@ -84,6 +88,7 @@ export function releaseCandidateBindingFromArtifacts(
     stageSha256: stage.sha256,
     installedSha256: installed.sha256,
     authLifecycleSha256: auth.sha256,
+    evidenceSchemaVersion: NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
   });
 }
 
@@ -171,7 +176,11 @@ function assertReleaseCandidateChainProjection({
     coordinates.instructionSha256 !== runtime.instructionSha256 ||
     coordinates.accountKind !== auth.account.kind ||
     projection.capabilityEvidence.rawSchemaBundleSha256 !==
-      auth.schemaBinding.rawSchemaBundleSha256
+      auth.schemaBinding.rawSchemaBundleSha256 ||
+    projection.capabilityEvidence.standaloneSkillCount !==
+      auth.deploymentReadback.standaloneSkillCount ||
+    projection.capabilityEvidence.standaloneSkillIdentitySha256 !==
+      auth.deploymentReadback.standaloneSkillIdentitySha256
   ) {
     throw new TypeError(
       "The release-candidate evidence changed its staged source or authenticated runtime binding.",

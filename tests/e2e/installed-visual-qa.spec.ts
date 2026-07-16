@@ -24,10 +24,10 @@ for (const viewport of QA_VIEWPORTS) {
     await expect(page.getByText("Family dinner planner")).toBeVisible();
 
     if (viewport.width <= 841) {
-      const openChat = page.getByRole("button", { name: "ChatGPT" }).first();
+      const openChat = page.getByRole("button", { name: "Open Codex" }).first();
       if (await openChat.isVisible().catch(() => false)) await openChat.click();
     }
-    await expect(page.getByRole("textbox", { name: "Message ChatGPT" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message Codex" })).toBeVisible();
     await captureAccessibleQaEvidence({
       page,
       evidenceDirectory,

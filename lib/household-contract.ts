@@ -12,6 +12,7 @@ export const MEAL_STATUSES = [
 ] as const;
 export const FEEDBACK_VALUES = ["repeat", "modify", "drop"] as const;
 export const LEFTOVER_QUALITIES = ["good", "mixed", "poor"] as const;
+export const GROCERY_SOURCES = ["shop", "farm_box", "on_hand"] as const;
 
 import type { SourceRecipe } from "./sourced-recipe-contract.ts";
 
@@ -25,19 +26,30 @@ export type WeekStatus = (typeof WEEK_STATUSES)[number];
 export type MealStatus = (typeof MEAL_STATUSES)[number];
 export type FeedbackValue = (typeof FEEDBACK_VALUES)[number];
 export type LeftoverQuality = (typeof LEFTOVER_QUALITIES)[number];
+export type GrocerySource = (typeof GROCERY_SOURCES)[number];
+export type GrocerySection = "Produce" | "Meat & seafood" | "Dairy" | "Pantry";
 
 export type IngredientAmountLine = {
   amount: string;
   ingredient: string;
 };
 
+export type RecipeIngredient = IngredientAmountLine & {
+  id: string;
+};
+
+export type IngredientUse = IngredientAmountLine & {
+  ingredientId: string;
+};
+
 export type InstructionStep = {
   id: string;
-  inputs: IngredientAmountLine[];
+  inputs: IngredientUse[];
   instruction: string;
   complete: boolean;
   timerDurationSeconds?: number;
   timerStartedAt?: number;
+  timerPaused?: boolean;
   note?: string;
 };
 
@@ -55,24 +67,34 @@ export type Meal = {
   prepNote: string;
   leftoverNote: string;
   notes: string;
-  ingredients: string[];
+  ingredients: RecipeIngredient[];
   instructions: InstructionStep[];
 };
 
-export type PrepReference = {
+export type PrepSessionStep = {
   id: string;
   stepId: string;
-  prepDate: IsoDate;
-  position: number;
+};
+
+export type PrepSession = {
+  id: string;
+  label: string;
+  prepDate?: IsoDate;
+  steps: PrepSessionStep[];
 };
 
 export type GroceryItem = {
   id: string;
-  section: "Produce" | "Meat & seafood" | "Dairy" | "Pantry";
-  item: string;
-  detail: string;
+  /**
+   * Grocery execution state is attached to one canonical recipe-ingredient
+   * occurrence. The name, amount, and recipe link are derived from this pair
+   * at read time; they must never become a competing editable grocery copy.
+   */
+  mealId: string;
+  ingredientId: string;
+  section: GrocerySection;
   checked: boolean;
-  farmBox: boolean;
+  source: GrocerySource;
 };
 
 export type Leftover = {
@@ -88,10 +110,9 @@ export type Leftover = {
 
 export type WeekPlannerData = {
   meals: Meal[];
-  prep: PrepReference[];
+  prepSessions: PrepSession[];
   groceries: GroceryItem[];
   leftovers: Leftover[];
-  farmBoxReconciled: boolean;
   feedback: Record<string, FeedbackValue>;
   weekLesson: string;
 };
@@ -118,48 +139,31 @@ export type InstructionStepPlanInput = {
 
 export type MealPlanInput = Omit<
   Meal,
-  "id" | "status" | "instructions" | "sourceRecipe"
+  "id" | "status" | "ingredients" | "instructions" | "sourceRecipe"
 > & {
   status?: MealStatus;
+  ingredients: string[];
   instructions: InstructionStepPlanInput[];
-};
-
-export type GroceryItemPlanInput = Omit<GroceryItem, "id" | "checked"> & {
-  checked?: boolean;
 };
 
 export type WeekPlanInput = {
   meals: MealPlanInput[];
-  groceries: GroceryItemPlanInput[];
   weekLesson?: string;
 };
 
 export type MealSnapshotInput = Pick<
   Meal,
-  | "title"
-  | "subtitle"
-  | "venue"
-  | "prepNote"
-  | "leftoverNote"
-  | "notes"
-  | "ingredients"
-> & { yieldText: string | null };
+  "title" | "subtitle" | "venue" | "prepNote" | "leftoverNote" | "notes"
+> & {
+  ingredients: string[];
+  yieldText: string | null;
+};
 
 export type InstructionStepContentInput = Omit<
   InstructionStepPlanInput,
   "note" | "timerDurationSeconds"
 > & {
   timerDurationSeconds: number | null;
-};
-
-export type GroceryItemContentInput = Pick<
-  GroceryItem,
-  "section" | "item" | "detail" | "farmBox"
->;
-
-export type GroceryReconciliationItem = GroceryItemContentInput & {
-  id?: string;
-  checked: boolean;
 };
 
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -195,7 +199,7 @@ export function parseWeekId(value: unknown): WeekId {
   return value;
 }
 
-// Prep is grouped chronologically by date and manually ordered within each date.
+// Prep sessions are ordered worklists. Each can be dated for the active week or left undated.
 // A week's valid prep interval is the Sunday before its Monday start through
 // the Sunday ending that week, inclusive.
 export const PREP_DAYS_BEFORE_WEEK_START = 1;
