@@ -28,6 +28,7 @@ import {
   projectCodexThreadSummary,
 } from "./activity-projection.ts";
 import {
+  NATIVE_CODEX_THREAD_SOURCE,
   NativeCodexSession,
   NativeCodexSessionError,
 } from "./native-session.ts";
@@ -46,6 +47,12 @@ const DEFAULT_SELECTION_PAGE_SIZE = 100;
 const MAX_DEFAULT_SELECTION_PAGES = 64;
 const ARCHIVED_ROOT_PAGE_SIZE = 100;
 const MAX_ARCHIVED_ROOT_PAGES = 64;
+const DEFAULT_TURN_HISTORY_CONVERGENCE_WAIT_MS = 5_000;
+const MAX_TURN_HISTORY_CONVERGENCE_WAIT_MS = 30_000;
+const DEFAULT_CLIENT_MESSAGE_COMPLETION_WAIT_MS = 90_000;
+const MAX_CLIENT_MESSAGE_COMPLETION_WAIT_MS = 300_000;
+const MIN_TURN_HISTORY_WAIT_SLICE_MS = 10;
+const MAX_TURN_HISTORY_WAIT_SLICE_MS = 250;
 
 type ReplayEntry = {
   payloadHash: string;
@@ -65,6 +72,10 @@ export type NativeCodexThreadServiceOptions = {
   now?: () => number;
   /** Testable hard cap; production always uses the default maximum. */
   replayLimit?: number;
+  /** Testable convergence budget; production uses the bounded default. */
+  turnHistoryConvergenceWaitMs?: number;
+  /** Testable first-message lifecycle budget; production uses the bounded default. */
+  clientMessageCompletionWaitMs?: number;
   /** Stable only for this live service instance; defaults to a random UUID. */
   admissionOwnerId?: string;
   /**
@@ -142,11 +153,40 @@ function serviceError(code: CodexApiErrorCode, message: string, cause?: unknown)
 }
 
 function isMissingThreadResponse(message: string) {
-  const normalized = message.toLowerCase();
+  const normalized = message.trim().toLowerCase();
   return normalized.includes("thread not found") ||
     normalized.includes("no rollout found for thread id") ||
     normalized.includes("no rollout found for conversation id") ||
     normalized.includes("invalid thread id");
+}
+
+function isThreadNotLoadedReadResponse(
+  method: string,
+  code: number,
+  message: string,
+  expectedThreadId: string,
+) {
+  return method === "thread/read" && code === -32600 &&
+    message.trim() === `thread not loaded: ${expectedThreadId}`;
+}
+
+const UNMATERIALIZED_THREAD_READ_SUFFIX =
+  " is not materialized yet; includeTurns is unavailable before first user message";
+
+function isUnmaterializedThreadReadResponse(
+  method: string,
+  code: number,
+  message: string,
+  expectedThreadId?: string,
+) {
+  if (method !== "thread/read" || code !== -32600) return false;
+  const normalized = message.trim();
+  if (expectedThreadId !== undefined) {
+    return normalized === `thread ${expectedThreadId}${UNMATERIALIZED_THREAD_READ_SUFFIX}`;
+  }
+  return normalized.startsWith("thread ") &&
+    normalized.length > `thread ${UNMATERIALIZED_THREAD_READ_SUFFIX}`.length &&
+    normalized.endsWith(UNMATERIALIZED_THREAD_READ_SUFFIX);
 }
 
 function isTurnConflictResponse(method: string, message: string) {
@@ -163,6 +203,13 @@ function mapRejectedNativeRequest(error: NativeCodexSessionError) {
   const method = error.requestMethod;
   if (response === null || method === null) {
     return serviceError("CODEX_INCOMPATIBLE", "Codex returned an invalid error response.", error);
+  }
+  if (isUnmaterializedThreadReadResponse(method, response.code, response.message)) {
+    return serviceError(
+      "CODEX_UNAVAILABLE",
+      "Codex has allocated this conversation but has not materialized its first message yet.",
+      error,
+    );
   }
   if (response.code === -32600 && isMissingThreadResponse(response.message)) {
     return serviceError("NOT_FOUND", "That Codex conversation is not available.", error);
@@ -184,11 +231,39 @@ function mapRejectedNativeRequest(error: NativeCodexSessionError) {
   return serviceError("CODEX_INCOMPATIBLE", "Codex returned an unknown error response.", error);
 }
 
+function isUnmaterializedThreadReadError(error: unknown, expectedThreadId: string) {
+  if (!(error instanceof CodexThreadServiceError) ||
+      !(error.cause instanceof NativeCodexSessionError)) return false;
+  const response = error.cause.responseError;
+  const method = error.cause.requestMethod;
+  return response !== null && method !== null &&
+    isUnmaterializedThreadReadResponse(
+      method,
+      response.code,
+      response.message,
+      expectedThreadId,
+    );
+}
+
+function isThreadNotLoadedReadError(error: unknown, expectedThreadId: string) {
+  if (!(error instanceof CodexThreadServiceError) ||
+      !(error.cause instanceof NativeCodexSessionError)) return false;
+  const response = error.cause.responseError;
+  const method = error.cause.requestMethod;
+  return response !== null && method !== null &&
+    isThreadNotLoadedReadResponse(
+      method,
+      response.code,
+      response.message,
+      expectedThreadId,
+    );
+}
+
 function rootThreadAtFixedCwd(value: unknown, fixedCwd: string) {
   return isRecord(value) && isNativeIdentifier(value.id) && value.cwd === fixedCwd &&
     value.ephemeral === false &&
     (value.parentThreadId === null || value.parentThreadId === undefined) &&
-    value.source === "appServer";
+    value.threadSource === NATIVE_CODEX_THREAD_SOURCE;
 }
 
 function threadResult(value: unknown) {
@@ -293,6 +368,8 @@ export class NativeCodexThreadService {
   readonly #locks = new AsyncKeyLock();
   readonly #replays = new Map<string, ReplayEntry>();
   readonly #replayLimit: number;
+  readonly #turnHistoryConvergenceWaitMs: number;
+  readonly #clientMessageCompletionWaitMs: number;
   readonly #admissionOwnerId: string;
 
   constructor(options: NativeCodexThreadServiceOptions) {
@@ -303,6 +380,22 @@ export class NativeCodexThreadService {
     }
     this.#options = options;
     this.#replayLimit = replayLimit;
+    const turnHistoryConvergenceWaitMs = options.turnHistoryConvergenceWaitMs ??
+      DEFAULT_TURN_HISTORY_CONVERGENCE_WAIT_MS;
+    if (!Number.isSafeInteger(turnHistoryConvergenceWaitMs) ||
+        turnHistoryConvergenceWaitMs < 0 ||
+        turnHistoryConvergenceWaitMs > MAX_TURN_HISTORY_CONVERGENCE_WAIT_MS) {
+      throw new TypeError("Native Codex turn-history convergence wait is invalid.");
+    }
+    this.#turnHistoryConvergenceWaitMs = turnHistoryConvergenceWaitMs;
+    const clientMessageCompletionWaitMs = options.clientMessageCompletionWaitMs ??
+      DEFAULT_CLIENT_MESSAGE_COMPLETION_WAIT_MS;
+    if (!Number.isSafeInteger(clientMessageCompletionWaitMs) ||
+        clientMessageCompletionWaitMs < 0 ||
+        clientMessageCompletionWaitMs > MAX_CLIENT_MESSAGE_COMPLETION_WAIT_MS) {
+      throw new TypeError("Native Codex client-message completion wait is invalid.");
+    }
+    this.#clientMessageCompletionWaitMs = clientMessageCompletionWaitMs;
     const admissionOwnerId = options.admissionOwnerId ?? randomUUID();
     if (!isNativeIdentifier(admissionOwnerId)) {
       throw new TypeError("Native Codex admission owner id is invalid.");
@@ -322,8 +415,9 @@ export class NativeCodexThreadService {
       cwd: this.#options.session.fixedCwd,
       cursor: request.cursor ?? null,
       limit: request.limit ?? CODEX_THREAD_LIST_LIMIT_DEFAULT,
+      parentThreadId: null,
       searchTerm: request.search ?? null,
-      sourceKinds: ["appServer"],
+      sourceKinds: [],
       sortKey: "recency_at",
       sortDirection: "desc",
     });
@@ -333,17 +427,43 @@ export class NativeCodexThreadService {
       throw serviceError("CODEX_INCOMPATIBLE", "Codex returned an invalid thread list.");
     }
     const archived = request.archived ?? false;
-    const threads = result.data.flatMap((thread): CodexThreadSummary[] => {
-      if (!rootThreadAtFixedCwd(thread, this.#options.session.fixedCwd)) return [];
+    const threads: CodexThreadSummary[] = [];
+    for (const thread of result.data) {
+      if (!await this.#authenticateRootProjection(thread, archived)) continue;
       if (archived) this.#options.session.forgetThread(thread.id);
-      else this.#options.session.observeThread(thread);
       const projected = projectCodexThreadSummary(thread);
-      return projected === null ? [] : [projected];
-    });
+      if (projected !== null) threads.push(projected);
+    }
+    let selection = this.#options.store.readSelection();
+    const selectedThreadId = selection.selectedThreadId;
+    if (!archived && request.cursor === undefined && request.limit === undefined &&
+        request.search === undefined &&
+        selectedThreadId !== null &&
+        !threads.some((thread) => thread.id === selectedThreadId) &&
+        (this.#options.session.isUnmaterializedRoot(selectedThreadId) ||
+          !this.#options.session.isEligibleRoot(selectedThreadId))) {
+      const selected = await this.#readSelectedUnmaterializedSummary(selectedThreadId);
+      if (selected.kind === "found") {
+        threads.unshift(selected.thread);
+      } else {
+        // A blank thread/start result is process-local in the native provider:
+        // it is absent from history until the first user turn and cannot be
+        // resumed after app-server restarts. Reconcile that dead pointer so a
+        // read-only load returns the empty state and the next message can
+        // allocate a fresh root instead of permanently failing the rail.
+        const cleared = this.#options.store.compareAndSetSelection(
+          selection.revision,
+          null,
+          this.#now(),
+        );
+        selection = cleared ?? this.#options.store.readSelection();
+        if (cleared !== null) this.#options.session.mark("selection", null);
+      }
+    }
     return {
       threads,
       nextCursor: typeof result.nextCursor === "string" ? result.nextCursor : null,
-      selection: selectionView(this.#options.store.readSelection()),
+      selection: selectionView(selection),
       ...this.#options.session.coordinates(),
     };
   }
@@ -452,6 +572,7 @@ export class NativeCodexThreadService {
         if (projected === null) {
           throw serviceError("CODEX_INCOMPATIBLE", "Codex created an invalid native thread.");
         }
+        this.#options.session.markRootUnmaterialized(projected.id);
         const completion = this.#options.store.completeThreadStartAdmission({
           requestId: request.requestId,
           ownerId: this.#admissionOwnerId,
@@ -593,37 +714,39 @@ export class NativeCodexThreadService {
         if (selection.selectedThreadId !== request.threadId) {
           throw serviceError("SELECTION_CONFLICT", "This Codex thread is no longer selected.");
         }
-        let thread = await this.#readRoot(request.threadId, true);
-        const priorMapping = clientMessageTurnMapping(thread, request.clientUserMessageId);
-        if (priorMapping.status === "ambiguous") {
-          throw serviceError(
-            "CODEX_INCOMPATIBLE",
-            "Codex history contains duplicate client message identities.",
-          );
-        }
-        if (priorMapping.status === "unique") {
-          throw serviceError(
-            "REQUEST_ID_REUSE",
-            "This client message id already belongs to a completed Codex operation.",
-          );
-        }
-        const status = isRecord(thread.status) ? thread.status.type : null;
-        if (status === "notLoaded") {
-          const resumed = await this.#request(
-            "thread/resume",
-            this.#options.session.lockedThreadResumeParams(request.threadId),
-          );
-          const resumedThread = authorizedRootThreadResult(
-            resumed,
-            this.#options.session.fixedCwd,
-          );
-          if (!this.#options.session.observeThread(resumedThread)) {
-            throw serviceError("CODEX_INCOMPATIBLE", "Codex resumed an invalid native thread.");
+        let thread = await this.#readRootForSend(request.threadId);
+        if (thread !== null) {
+          const priorMapping = clientMessageTurnMapping(thread, request.clientUserMessageId);
+          if (priorMapping.status === "ambiguous") {
+            throw serviceError(
+              "CODEX_INCOMPATIBLE",
+              "Codex history contains duplicate client message identities.",
+            );
           }
-          thread = resumedThread;
+          if (priorMapping.status === "unique") {
+            throw serviceError(
+              "REQUEST_ID_REUSE",
+              "This client message id already belongs to a completed Codex operation.",
+            );
+          }
+          const status = isRecord(thread.status) ? thread.status.type : null;
+          if (status === "notLoaded") {
+            const resumed = await this.#request(
+              "thread/resume",
+              this.#options.session.lockedThreadResumeParams(request.threadId),
+            );
+            const resumedThread = authorizedRootThreadResult(
+              resumed,
+              this.#options.session.fixedCwd,
+            );
+            if (!this.#options.session.observeThread(resumedThread)) {
+              throw serviceError("CODEX_INCOMPATIBLE", "Codex resumed an invalid native thread.");
+            }
+            thread = resumedThread;
+          }
         }
         const input = [{ type: "text", text: request.message, text_elements: [] }];
-        const currentStatus = isRecord(thread.status) ? thread.status : null;
+        const currentStatus = thread !== null && isRecord(thread.status) ? thread.status : null;
         const waiting = currentStatus?.type === "active" && Array.isArray(currentStatus.activeFlags)
           ? currentStatus.activeFlags
           : [];
@@ -634,7 +757,16 @@ export class NativeCodexThreadService {
         let expectedTurnId: string | null;
         let nativeMethod: "turn/start" | "turn/steer";
         let nativeParams: Record<string, unknown>;
-        if (currentStatus?.type === "active") {
+        if (thread === null) {
+          operation = "start";
+          expectedTurnId = null;
+          nativeMethod = "turn/start";
+          nativeParams = {
+            threadId: request.threadId,
+            clientUserMessageId: request.clientUserMessageId,
+            input,
+          };
+        } else if (currentStatus?.type === "active") {
           expectedTurnId = activeTurnId(thread);
           if (expectedTurnId === null) {
             throw serviceError("TURN_CONFLICT", "The active Codex turn cannot be steered.");
@@ -716,25 +848,16 @@ export class NativeCodexThreadService {
             "Codex returned a turn outside the selected top-level conversation.",
           );
         }
-        const authoritativeThread = await this.#readRoot(request.threadId, true);
-        const authoritativeMapping = clientMessageTurnMapping(
-          authoritativeThread,
+        await this.#waitForCompletedClientMessage(
+          request.threadId,
+          turnId,
           request.clientUserMessageId,
         );
-        if (authoritativeMapping.status === "absent") {
-          throw serviceError(
-            "CODEX_UNAVAILABLE",
-            "Codex accepted the message but its authoritative history is not ready.",
-          );
-        }
-        if (authoritativeMapping.status === "ambiguous" ||
-            authoritativeMapping.turnId !== turnId ||
-            (operation === "steer" && authoritativeMapping.turnId !== expectedTurnId)) {
-          throw serviceError(
-            "CODEX_INCOMPATIBLE",
-            "Codex history does not match the admitted native message operation.",
-          );
-        }
+        await this.#confirmAdmittedTurnHistory(
+          request.threadId,
+          request.clientUserMessageId,
+          turnId,
+        );
         const completion = this.#options.store.completeTurnAdmission({
           threadId: request.threadId,
           requestId: request.requestId,
@@ -851,7 +974,8 @@ export class NativeCodexThreadService {
       archived: false,
       cwd: this.#options.session.fixedCwd,
       limit: ROOT_RECONCILIATION_PAGE_SIZE,
-      sourceKinds: ["appServer"],
+      parentThreadId: null,
+      sourceKinds: [],
       sortKey: "created_at",
       sortDirection: "desc",
       ...(cursor === null ? {} : { cursor }),
@@ -880,7 +1004,7 @@ export class NativeCodexThreadService {
     for (let pageIndex = 0; pageIndex < MAX_ROOT_RECONCILIATION_PAGES; pageIndex += 1) {
       const page = await this.#readRootPage(cursor);
       for (const value of page.data) {
-        if (!rootThreadAtFixedCwd(value, this.#options.session.fixedCwd)) continue;
+        if (!await this.#authenticateRootProjection(value)) continue;
         const valueCreatedAt = createdAtSeconds(value.createdAt);
         if (valueCreatedAt === null) {
           throw serviceError(
@@ -918,7 +1042,7 @@ export class NativeCodexThreadService {
       const page = await this.#readRootPage(cursor);
       let reachedBeforeBoundary = false;
       for (const value of page.data) {
-        if (!rootThreadAtFixedCwd(value, this.#options.session.fixedCwd)) continue;
+        if (!await this.#authenticateRootProjection(value)) continue;
         const valueCreatedAt = createdAtSeconds(value.createdAt);
         if (valueCreatedAt === null ||
             (priorCreatedAt !== null && valueCreatedAt > priorCreatedAt)) {
@@ -976,6 +1100,7 @@ export class NativeCodexThreadService {
     if (!this.#options.session.observeThread(candidate)) return "ambiguous";
     const projected = projectCodexThreadSummary(candidate);
     if (projected === null) return "ambiguous";
+    this.#options.session.markRootUnmaterialized(projected.id);
     const completion = this.#options.store.completeThreadStartAdmission({
       requestId: admission.requestId,
       ownerId: this.#admissionOwnerId,
@@ -1009,9 +1134,24 @@ export class NativeCodexThreadService {
         "Another live planner runtime owns the unresolved message operation.",
       );
     }
-    let thread: Record<string, unknown>;
     try {
-      thread = await this.#readRoot(admission.threadId, true);
+      const mapping = await this.#confirmAdmittedTurnHistory(
+        admission.threadId,
+        admission.clientUserMessageId,
+        admission.operation === "steer" ? admission.expectedTurnId : null,
+      );
+      const completion = this.#options.store.completeTurnAdmission({
+        threadId: admission.threadId,
+        requestId: admission.requestId,
+        ownerId: this.#admissionOwnerId,
+        payloadHash: admission.payloadHash,
+        turnId: mapping.turnId,
+        completedAt: this.#now(),
+      });
+      if (completion.status !== "completed") {
+        throw serviceError("INTERNAL_ERROR", "The native message admission changed unexpectedly.");
+      }
+      return;
     } catch (error) {
       if (error instanceof CodexThreadServiceError && error.code === "NOT_FOUND") {
         this.#options.store.clearTurnAdmission(
@@ -1024,33 +1164,109 @@ export class NativeCodexThreadService {
       }
       throw error;
     }
-    const mapping = clientMessageTurnMapping(thread, admission.clientUserMessageId);
-    if (mapping.status === "absent") {
-      if (this.#options.store.clearTurnAdmission(
-        admission.threadId,
-        admission.requestId,
-        this.#admissionOwnerId,
-        admission.payloadHash,
-      )) return;
-      throw serviceError("INTERNAL_ERROR", "The native message admission changed unexpectedly.");
+  }
+
+  async #confirmAdmittedTurnHistory(
+    threadId: string,
+    clientUserMessageId: string,
+    expectedTurnId: string | null,
+  ): Promise<{ status: "unique"; turnId: string }> {
+    let remainingWaitMs = this.#turnHistoryConvergenceWaitMs;
+    let waitSliceMs = MIN_TURN_HISTORY_WAIT_SLICE_MS;
+    while (true) {
+      let thread: Record<string, unknown> | null = null;
+      try {
+        thread = await this.#readRoot(threadId, true);
+      } catch (error) {
+        if (!isUnmaterializedThreadReadError(error, threadId) ||
+            !this.#options.session.markRootUnmaterialized(threadId)) {
+          throw error;
+        }
+      }
+      if (thread !== null) {
+        const mapping = clientMessageTurnMapping(thread, clientUserMessageId);
+        if (mapping.status === "ambiguous" ||
+            (mapping.status === "unique" && expectedTurnId !== null &&
+              mapping.turnId !== expectedTurnId)) {
+          throw serviceError(
+            "CODEX_INCOMPATIBLE",
+            "Codex history does not uniquely match the admitted native message operation.",
+          );
+        }
+        if (mapping.status === "unique") {
+          if (!this.#options.session.markRootMaterialized(threadId)) {
+            throw serviceError(
+              "CODEX_INCOMPATIBLE",
+              "Codex materialized a turn outside the selected top-level conversation.",
+            );
+          }
+          return mapping;
+        }
+      }
+      if (remainingWaitMs === 0) {
+        throw serviceError(
+          "CODEX_UNAVAILABLE",
+          "Codex accepted the message but its authoritative history is not ready.",
+        );
+      }
+      const boundedWaitMs = Math.min(waitSliceMs, remainingWaitMs);
+      const coordinates = this.#options.session.coordinates();
+      try {
+        await this.#options.session.waitForEvents({
+          connectionEpoch: coordinates.connectionEpoch,
+          afterRevision: coordinates.activityRevision,
+          waitMs: boundedWaitMs,
+          threadId,
+        });
+      } catch (error) {
+        throw this.#mapSessionError(error);
+      }
+      remainingWaitMs -= boundedWaitMs;
+      waitSliceMs = Math.min(waitSliceMs * 2, MAX_TURN_HISTORY_WAIT_SLICE_MS);
     }
-    if (mapping.status === "ambiguous" ||
-        (admission.operation === "steer" && mapping.turnId !== admission.expectedTurnId)) {
-      throw serviceError(
-        "CODEX_INCOMPATIBLE",
-        "Codex history does not uniquely match the admitted native message operation.",
-      );
-    }
-    const completion = this.#options.store.completeTurnAdmission({
-      threadId: admission.threadId,
-      requestId: admission.requestId,
-      ownerId: this.#admissionOwnerId,
-      payloadHash: admission.payloadHash,
-      turnId: mapping.turnId,
-      completedAt: this.#now(),
-    });
-    if (completion.status !== "completed") {
-      throw serviceError("INTERNAL_ERROR", "The native message admission changed unexpectedly.");
+  }
+
+  async #waitForCompletedClientMessage(
+    threadId: string,
+    turnId: string,
+    clientUserMessageId: string,
+  ) {
+    const deadline = performance.now() + this.#clientMessageCompletionWaitMs;
+    while (true) {
+      try {
+        if (this.#options.session.hasCompletedClientMessage(
+          threadId,
+          turnId,
+          clientUserMessageId,
+        )) return;
+      } catch (error) {
+        throw this.#mapSessionError(error);
+      }
+      const remainingWaitMs = Math.max(0, Math.ceil(deadline - performance.now()));
+      if (remainingWaitMs === 0) {
+        throw serviceError(
+          "CODEX_UNAVAILABLE",
+          "Codex accepted the message but has not completed its client-message lifecycle yet.",
+        );
+      }
+      const coordinates = this.#options.session.coordinates();
+      let event;
+      try {
+        event = await this.#options.session.waitForEvents({
+          connectionEpoch: coordinates.connectionEpoch,
+          afterRevision: coordinates.activityRevision,
+          waitMs: remainingWaitMs,
+          threadId,
+        });
+      } catch (error) {
+        throw this.#mapSessionError(error);
+      }
+      if (event.resyncRequired || event.connectionEpoch !== coordinates.connectionEpoch) {
+        throw serviceError(
+          "CODEX_UNAVAILABLE",
+          "Codex restarted before the admitted client message could be confirmed.",
+        );
+      }
     }
   }
 
@@ -1067,7 +1283,8 @@ export class NativeCodexThreadService {
           cwd: this.#options.session.fixedCwd,
           cursor,
           limit: DEFAULT_SELECTION_PAGE_SIZE,
-          sourceKinds: ["appServer"],
+          parentThreadId: null,
+          sourceKinds: [],
           sortKey: "recency_at",
           sortDirection: "desc",
         });
@@ -1076,11 +1293,14 @@ export class NativeCodexThreadService {
               !isNativeCursor(result.nextCursor))) {
           throw serviceError("CODEX_INCOMPATIBLE", "Codex returned an invalid default history list.");
         }
-        const thread = result.data.find((candidate) =>
-          rootThreadAtFixedCwd(candidate, this.#options.session.fixedCwd)
-        );
-        if (thread && isRecord(thread) && isNativeIdentifier(thread.id)) {
-          this.#options.session.observeThread(thread);
+        let thread: Record<string, unknown> | null = null;
+        for (const candidate of result.data) {
+          if (await this.#authenticateRootProjection(candidate)) {
+            thread = candidate;
+            break;
+          }
+        }
+        if (thread !== null && isNativeIdentifier(thread.id)) {
           const selection = this.#options.store.compareAndSetSelection(0, thread.id, this.#now());
           if (selection) this.#options.session.mark("selection", thread.id);
           return;
@@ -1095,14 +1315,75 @@ export class NativeCodexThreadService {
     });
   }
 
+  async #readRootForSend(threadId: string): Promise<Record<string, unknown> | null> {
+    if (!this.#options.session.isEligibleRoot(threadId)) {
+      await this.#readRoot(threadId, false);
+    }
+    if (this.#options.session.isUnmaterializedRoot(threadId)) {
+      if (!this.#options.session.isEligibleRoot(threadId) || await this.#isArchivedRoot(threadId)) {
+        throw serviceError("NOT_FOUND", "That active Codex conversation is not available.");
+      }
+      return null;
+    }
+    try {
+      return await this.#readRoot(threadId, true);
+    } catch (error) {
+      if (!isUnmaterializedThreadReadError(error, threadId) ||
+          !this.#options.session.markRootUnmaterialized(threadId)) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
+  async #readSelectedUnmaterializedSummary(
+    threadId: string,
+  ): Promise<
+    | { kind: "found"; thread: CodexThreadSummary }
+    | { kind: "missing" }
+  > {
+    let thread: Record<string, unknown>;
+    try {
+      thread = await this.#readRoot(threadId, false);
+    } catch (error) {
+      if (error instanceof CodexThreadServiceError && error.code === "NOT_FOUND") {
+        return { kind: "missing" };
+      }
+      throw error;
+    }
+    const unmaterialized = this.#options.session.markRootUnmaterialized(threadId);
+    const projected = projectCodexThreadSummary(unmaterialized
+      ? { ...thread, status: { type: "notLoaded" } }
+      : thread);
+    if (projected?.id !== threadId) {
+      throw serviceError(
+        "CODEX_INCOMPATIBLE",
+        "Codex returned an invalid selected conversation summary.",
+      );
+    }
+    return { kind: "found", thread: projected };
+  }
+
   async #readRoot(threadId: string, includeTurns: boolean) {
     if (await this.#isArchivedRoot(threadId)) {
       throw serviceError("NOT_FOUND", "That active Codex conversation is not available.");
     }
-    const result = await this.#request("thread/read", { threadId, includeTurns });
+    let result: unknown;
+    try {
+      result = await this.#request("thread/read", { threadId, includeTurns });
+    } catch (error) {
+      if (isThreadNotLoadedReadError(error, threadId)) {
+        throw serviceError(
+          "NOT_FOUND",
+          "That Codex conversation is not available.",
+          error,
+        );
+      }
+      throw error;
+    }
     const thread = threadResult(result);
-    if (!rootThreadAtFixedCwd(thread, this.#options.session.fixedCwd) ||
-        !this.#options.session.observeThread(thread)) {
+    if (!isRecord(thread) || thread.id !== threadId ||
+        !await this.#authenticateRootProjection(thread)) {
       throw serviceError("NOT_FOUND", "That Codex conversation is not available to the planner.");
     }
     return thread as Record<string, unknown>;
@@ -1117,7 +1398,8 @@ export class NativeCodexThreadService {
         cwd: this.#options.session.fixedCwd,
         cursor,
         limit: ARCHIVED_ROOT_PAGE_SIZE,
-        sourceKinds: ["appServer"],
+        parentThreadId: null,
+        sourceKinds: [],
         sortKey: "updated_at",
         sortDirection: "desc",
       });
@@ -1126,13 +1408,12 @@ export class NativeCodexThreadService {
             !isNativeCursor(result.nextCursor))) {
         throw serviceError("CODEX_INCOMPATIBLE", "Codex returned an invalid archive history list.");
       }
-      const archived = result.data.some((candidate) =>
-        rootThreadAtFixedCwd(candidate, this.#options.session.fixedCwd) &&
-        candidate.id === threadId
-      );
-      if (archived) {
-        this.#options.session.forgetThread(threadId);
-        return true;
+      for (const candidate of result.data) {
+        if (!isRecord(candidate) || candidate.id !== threadId) continue;
+        if (await this.#authenticateRootProjection(candidate, true)) {
+          this.#options.session.forgetThread(threadId);
+          return true;
+        }
       }
       cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
       if (cursor === null) return false;
@@ -1141,6 +1422,7 @@ export class NativeCodexThreadService {
   }
 
   async #readEligibleThread(threadId: string, includeTurns: boolean) {
+    await this.#isArchivedRoot(threadId);
     return this.#readEligibleThreadWithAncestry(
       threadId,
       includeTurns,
@@ -1162,8 +1444,10 @@ export class NativeCodexThreadService {
     if (!isRecord(thread)) {
       throw serviceError("NOT_FOUND", "That Codex conversation is not available to the planner.");
     }
-    if (rootThreadAtFixedCwd(thread, this.#options.session.fixedCwd)) {
-      this.#options.session.observeThread(thread);
+    if (await this.#authenticateRootProjection(
+      thread,
+      this.#options.session.isKnownArchived(threadId),
+    )) {
       return thread;
     }
     if (!this.#options.session.observeThread(thread)) {
@@ -1176,6 +1460,7 @@ export class NativeCodexThreadService {
       if (parentThreadId === null) {
         throw serviceError("NOT_FOUND", "That Codex conversation is not available to the planner.");
       }
+      await this.#isArchivedRoot(parentThreadId);
       await this.#readEligibleThreadWithAncestry(parentThreadId, false, ancestry);
       if (!this.#options.session.isEligibleThread(threadId)) {
         throw serviceError("NOT_FOUND", "That Codex conversation is not available to the planner.");
@@ -1239,6 +1524,16 @@ export class NativeCodexThreadService {
   async #request(method: Parameters<NativeCodexSession["request"]>[0], params: unknown) {
     try {
       return await this.#options.session.request(method, params);
+    } catch (error) {
+      throw this.#mapSessionError(error);
+    }
+  }
+
+  async #authenticateRootProjection(value: unknown, archived = false) {
+    try {
+      return await this.#options.session.authenticateRootProjection(value, {
+        archived,
+      });
     } catch (error) {
       throw this.#mapSessionError(error);
     }

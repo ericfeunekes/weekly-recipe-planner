@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -83,6 +83,8 @@ async function createFixture(t, fixtureEnvironment = {}, hostOptions = {}) {
       store: hostOptions.decorateStore?.(baseStore) ?? baseStore,
       now: () => 1_000,
       replayLimit: hostOptions.replayLimit,
+      turnHistoryConvergenceWaitMs: hostOptions.turnHistoryConvergenceWaitMs,
+      clientMessageCompletionWaitMs: hostOptions.clientMessageCompletionWaitMs,
       admissionOwnerId: `fixture-owner-${serviceGeneration += 1}`,
       recoverAdmissionsOnStartup: true,
     });
@@ -96,6 +98,8 @@ async function createFixture(t, fixtureEnvironment = {}, hostOptions = {}) {
       store: createSqliteCodexThreadStore(siblingSqlite),
       now: () => 1_000,
       replayLimit: hostOptions.replayLimit,
+      turnHistoryConvergenceWaitMs: hostOptions.turnHistoryConvergenceWaitMs,
+      clientMessageCompletionWaitMs: hostOptions.clientMessageCompletionWaitMs,
       admissionOwnerId: ownerId,
     });
     const sibling = {
@@ -122,7 +126,7 @@ async function createFixture(t, fixtureEnvironment = {}, hostOptions = {}) {
     sqlite.close();
     await rm(directory, { recursive: true, force: true });
   });
-  return { service, session, sqlite, dispatched, reopen, openSibling };
+  return { service, session, sqlite, dispatched, directory, reopen, openSibling };
 }
 
 test("startup queues native interactions until persistent-thread eligibility is hydrated", async (t) => {
@@ -152,6 +156,41 @@ test("startup hydrates every root page before dispatching an early native intera
   assert.equal(pending.interactions[0].threadId, "native-thread-306");
 });
 
+test("startup revalidates markerless planner history and rejects markerless foreign roots", async (t) => {
+  const planner = await createFixture(t, {
+    FAKE_NATIVE_ROOT_COUNT: "1",
+    FAKE_NATIVE_REVALIDATION_NULL_READS: "1",
+  });
+  const plannerHistory = await planner.service.listThreads({});
+  assert.deepEqual(plannerHistory.threads.map((thread) => thread.id), ["native-thread-1"]);
+  assert.equal(planner.session.isEligibleRoot("native-thread-1"), true);
+  const plannerStats = await planner.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.deepEqual(plannerStats.threadReadRequests.slice(0, 2), [
+    { threadId: "native-thread-1", includeTurns: true },
+    { threadId: "native-thread-1", includeTurns: true },
+  ]);
+
+  const foreign = await createFixture(t, { FAKE_NATIVE_FOREIGN_MATERIALIZED_ROOT: "1" });
+  const foreignHistory = await foreign.service.listThreads({});
+  assert.deepEqual(foreignHistory.threads, []);
+  assert.deepEqual(foreignHistory.selection, { threadId: null, revision: 0 });
+  assert.equal(foreign.session.isEligibleRoot("native-thread-1"), false);
+  const foreignStats = await foreign.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(foreignStats.threadReadRequests.every((entry) =>
+    entry.threadId === "native-thread-1" && entry.includeTurns === true
+  ), true);
+});
+
+test("an unknown markerless root stays ineligible when thread/read cannot recover provenance", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNVERIFIABLE_MATERIALIZED_ROOT: "1",
+  });
+  const history = await fixture.service.listThreads({});
+  assert.deepEqual(history.threads, []);
+  assert.deepEqual(history.selection, { threadId: null, revision: 0 });
+  assert.equal(fixture.session.isEligibleRoot("native-thread-1"), false);
+});
+
 for (const [label, environment] of [
   ["a repeated cursor", { FAKE_NATIVE_LIST_REPEAT_CURSOR: "1" }],
   ["an endless catalogue", { FAKE_NATIVE_LIST_ENDLESS_CURSOR: "1" }],
@@ -171,12 +210,642 @@ test("locked thread requests use the experimental read-only permissions field ex
   const resume = session.lockedThreadResumeParams("native-thread-1");
   assert.equal(start.permissions, ":read-only");
   assert.equal(resume.permissions, ":read-only");
+  assert.equal(start.threadSource, "weekly_recipe_planner");
   assert.equal(Object.hasOwn(start, "sandbox"), false);
   assert.equal(Object.hasOwn(resume, "sandbox"), false);
 });
 
+test("an allocated root accepts its first turn without a premature history read and replays exactly", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "unmaterialized-direct-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "unmaterialized-direct-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "unmaterialized-direct-client",
+    message: "Materialize this root exactly once",
+  };
+
+  const sent = await fixture.service.sendTurn(request);
+  const replay = await fixture.service.sendTurn(request);
+  assert.deepEqual(replay, sent);
+
+  const stats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"], 1);
+  assert.equal(stats.requestCounts["thread/read"], 1);
+  assert.ok(
+    stats.requestSequence.indexOf("turn/start") < stats.requestSequence.indexOf("thread/read"),
+    "history must be read only after the accepted turn enters its client-message lifecycle",
+  );
+  assert.deepEqual(stats.threadReadRequests, [{
+    threadId: created.thread.id,
+    includeTurns: true,
+  }]);
+  const rawRead = await fixture.session.request("thread/read", {
+    threadId: created.thread.id,
+    includeTurns: true,
+  });
+  assert.equal(rawRead.thread.threadSource, null);
+  const rawList = await fixture.session.request("thread/list", {
+    archived: false,
+    cwd: fixture.directory,
+    parentThreadId: null,
+    sourceKinds: [],
+    sortKey: "updated_at",
+    sortDirection: "desc",
+  });
+  assert.equal(
+    rawList.data.find((thread) => thread.id === created.thread.id)?.threadSource,
+    null,
+  );
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 1);
+});
+
+test("a non-null post-materialization thread source mismatch fails closed", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_LIVE_READ_THREAD_SOURCE: "foreign-native-thread",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "materialized-source-drift-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "materialized-source-drift-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "materialized-source-drift-client",
+    message: "Reject a changed materialized root namespace",
+  };
+
+  await assert.rejects(
+    fixture.service.sendTurn(request),
+    (error) => error.code === "NOT_FOUND" && /not available to the planner/iu.test(error.message),
+  );
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions WHERE request_id = ?",
+  ).get(request.requestId).count, 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 0);
+});
+
+test("an acknowledged first turn waits for completed client identity and delayed history without duplication", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_DELAY_FIRST_TURN_MATERIALIZATION_MS: "75",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "delayed-materialization-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "delayed-materialization-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "delayed-materialization-client",
+    message: "Materialize this acknowledged message exactly once",
+  };
+
+  const sent = await fixture.service.sendTurn(request);
+  const replay = await fixture.service.sendTurn(request);
+  assert.deepEqual(replay, sent);
+
+  const acceptanceStats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(acceptanceStats.requestCounts["turn/start"], 1);
+  assert.ok(acceptanceStats.requestCounts["thread/read"] >= 2);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 1);
+
+  const read = await fixture.service.readThread({ threadId: created.thread.id });
+  const matching = read.thread.turns.flatMap((turn) => turn.items).filter((item) =>
+    item.kind === "message" && item.clientUserMessageId === request.clientUserMessageId
+  );
+  assert.equal(matching.length, 1);
+});
+
+test("a delayed correct client completion keeps the admitted first send pending without reading history", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_BLOCK_USER_MESSAGE_COMPLETION: "1",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "delayed-client-completion-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "delayed-client-completion-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "delayed-client-completion-id",
+    message: "Wait for my exact completed client identity",
+  };
+  let settled = false;
+  const sending = fixture.service.sendTurn(request).finally(() => {
+    settled = true;
+  });
+  const startedMarker = join(fixture.directory, ".fake-native-user-completion-started");
+  const releaseMarker = join(fixture.directory, ".fake-native-user-completion-release");
+  await eventually(
+    () => access(startedMarker).then(() => true, () => false),
+    (started) => started,
+  );
+
+  const pendingStats = await eventually(
+    () => fixture.session.request("thread/list", { searchTerm: "__stats__" }),
+    (stats) => stats.requestCounts["turn/start"] === 1,
+  );
+  assert.equal(settled, false);
+  assert.equal(pendingStats.requestCounts["turn/start"], 1);
+  assert.equal(pendingStats.requestCounts["thread/read"] ?? 0, 0);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE scope = 'send'",
+  ).get().count, 0);
+  const selectedWhilePending = fixture.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.equal(selectedWhilePending.selected_thread_id, created.thread.id);
+  assert.equal(selectedWhilePending.revision, created.selection.revision);
+
+  await writeFile(releaseMarker, "release\n", { mode: 0o600 });
+  const sent = await sending;
+  const replay = await fixture.service.sendTurn(request);
+  assert.deepEqual(replay, sent);
+  const completedStats = await fixture.session.request("thread/list", {
+    searchTerm: "__stats__",
+  });
+  assert.equal(completedStats.requestCounts["turn/start"], 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 1);
+  const selectedAfterCompletion = fixture.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.deepEqual(selectedAfterCompletion, selectedWhilePending);
+});
+
+test("a completed client identity on the wrong turn fails closed without a receipt or duplicate send", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_USER_MESSAGE_COMPLETION_TURN_ID: "wrong-completion-turn",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "wrong-client-completion-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "wrong-client-completion-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "wrong-client-completion-id",
+    message: "Reject a completion on the wrong turn",
+  };
+
+  await assert.rejects(
+    fixture.service.sendTurn(request),
+    (error) => error.code === "CODEX_INCOMPATIBLE" &&
+      error.cause?.code === "PROTOCOL_ERROR" &&
+      /unexpected turn/iu.test(error.cause.message),
+  );
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 0);
+  const selected = fixture.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.equal(selected.selected_thread_id, created.thread.id);
+  assert.equal(selected.revision, created.selection.revision);
+
+  const recovered = await fixture.service.sendTurn(request);
+  assert.equal(recovered.turnId, "native-turn-1");
+  const replay = await fixture.service.sendTurn(request);
+  assert.deepEqual(replay, recovered);
+  const read = await fixture.service.readThread({ threadId: created.thread.id });
+  const matching = read.thread.turns.flatMap((turn) => turn.items).filter((item) =>
+    item.kind === "message" && item.clientUserMessageId === request.clientUserMessageId
+  );
+  assert.equal(matching.length, 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 1);
+  const selectedAfterRecovery = fixture.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.deepEqual(selectedAfterRecovery, selected);
+  const stats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"], 1);
+});
+
+test("restart recovers durable first-send history when its client completion notification was missing", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_OMIT_USER_MESSAGE_COMPLETION: "1",
+  }, { clientMessageCompletionWaitMs: 25 });
+  const created = await fixture.service.newThread({
+    requestId: "missing-completion-recovery-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "missing-completion-recovery-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "missing-completion-recovery-id",
+    message: "Recover my one durable message after restart",
+  };
+
+  await assert.rejects(
+    fixture.service.sendTurn(request),
+    (error) => error.code === "CODEX_UNAVAILABLE" &&
+      /client-message lifecycle/iu.test(error.message),
+  );
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 0);
+
+  const reopened = await fixture.reopen();
+  const read = await reopened.service.readThread({ threadId: created.thread.id });
+  assert.equal(read.thread.id, created.thread.id);
+  assert.equal(reopened.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+  assert.equal(reopened.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE request_id = ?",
+  ).get(request.requestId).count, 1);
+  const recovered = await reopened.service.sendTurn(request);
+  const replay = await reopened.service.sendTurn(request);
+  assert.deepEqual(replay, recovered);
+  const reopenedStats = await reopened.session.request("thread/list", {
+    searchTerm: "__stats__",
+  });
+  assert.equal(reopenedStats.requestCounts["turn/start"] ?? 0, 0);
+  const selected = reopened.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.equal(selected.selected_thread_id, created.thread.id);
+  assert.equal(selected.revision, created.selection.revision);
+  await assert.rejects(
+    reopened.service.sendTurn({ ...request, message: "Changed after recovery" }),
+    (error) => error.code === "REQUEST_ID_REUSE",
+  );
+});
+
+test("a missing client-message completion and absent history stay fenced without a second turn", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_OMIT_USER_MESSAGE_COMPLETION: "1",
+    FAKE_NATIVE_OMIT_TURN_START_HISTORY: "1",
+  }, {
+    clientMessageCompletionWaitMs: 25,
+    turnHistoryConvergenceWaitMs: 25,
+  });
+  const created = await fixture.service.newThread({
+    requestId: "missing-completion-new",
+    expectedSelectionRevision: 0,
+  });
+  const request = {
+    requestId: "missing-completion-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "missing-completion-client",
+    message: "Keep this admitted message fenced",
+  };
+
+  await assert.rejects(
+    fixture.service.sendTurn(request),
+    (error) => error.code === "CODEX_UNAVAILABLE" &&
+      /client-message lifecycle/iu.test(error.message),
+  );
+  await assert.rejects(
+    fixture.service.sendTurn(request),
+    (error) => error.code === "CODEX_UNAVAILABLE" &&
+      /authoritative history/iu.test(error.message),
+  );
+
+  const stats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"], 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 1);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE scope = 'send'",
+  ).get().count, 0);
+});
+
+test("list cannot clear a blank root that concurrently materializes", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    FAKE_NATIVE_BLOCK_THREAD_READ: "1",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "unmaterialized-race-new",
+    expectedSelectionRevision: 0,
+  });
+  const listing = fixture.service.listThreads({});
+  const startedMarker = join(fixture.directory, ".fake-native-thread-read-started");
+  const releaseMarker = join(fixture.directory, ".fake-native-thread-read-release");
+  await eventually(
+    () => access(startedMarker).then(() => true, () => false),
+    (started) => started,
+  );
+
+  const sending = fixture.service.sendTurn({
+    requestId: "unmaterialized-race-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "unmaterialized-race-client",
+    message: "Materialize while history is probing the blank root",
+  });
+  await eventually(
+    () => fixture.session.request("thread/list", { searchTerm: "__stats__" }),
+    (stats) => stats.requestCounts["turn/start"] === 1,
+  );
+  await writeFile(releaseMarker, "release\n", { mode: 0o600 });
+
+  const [listed, sent] = await Promise.all([listing, sending]);
+  assert.equal(sent.threadId, created.thread.id);
+  assert.deepEqual(listed.selection, created.selection);
+  assert.deepEqual(listed.threads.map((thread) => thread.id), [created.thread.id]);
+  const selected = fixture.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.equal(selected.selected_thread_id, created.thread.id);
+  assert.equal(selected.revision, created.selection.revision);
+});
+
+test("restart rejects a process-local blank root and a later list clears its selection", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "unmaterialized-restart-new",
+    expectedSelectionRevision: 0,
+  });
+  const reopened = await fixture.reopen();
+  const request = {
+    requestId: "unmaterialized-restart-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "unmaterialized-restart-client",
+    message: "Recover and materialize this root once",
+  };
+
+  await assert.rejects(
+    reopened.service.sendTurn(request),
+    (error) => error.code === "NOT_FOUND",
+  );
+  const stats = await reopened.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"] ?? 0, 0);
+  assert.deepEqual(stats.threadReadRequests, [{
+    threadId: created.thread.id,
+    includeTurns: false,
+  }]);
+  assert.equal(reopened.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+
+  const listed = await reopened.service.listThreads({});
+  assert.deepEqual(listed.selection, { threadId: null, revision: 2 });
+  assert.deepEqual(listed.threads, []);
+});
+
+test("a restarted list reconciles its process-local blank root to empty", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "unmaterialized-list-new",
+    expectedSelectionRevision: 0,
+  });
+  const reopened = await fixture.reopen();
+
+  const listed = await reopened.service.listThreads({});
+  assert.deepEqual(listed.selection, {
+    threadId: null,
+    revision: created.selection.revision + 1,
+  });
+  assert.deepEqual(listed.threads, []);
+  const stats = await reopened.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.deepEqual(stats.threadReadRequests, [{
+    threadId: created.thread.id,
+    includeTurns: false,
+  }]);
+  assert.equal(reopened.session.isUnmaterializedRoot(created.thread.id), false);
+});
+
+test("an absent foreign selected root is cleared without widening first-turn authority", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_FOREIGN_UNMATERIALIZED_ROOT: "1",
+  });
+  await fixture.service.listThreads({});
+  fixture.sqlite.database.prepare(
+    `UPDATE codex_thread_selection
+     SET selected_thread_id = ?, revision = 1, updated_at = 1000
+     WHERE id = 'planner'`,
+  ).run("native-thread-1");
+  const listed = await fixture.service.listThreads({});
+  assert.deepEqual(listed.selection, { threadId: null, revision: 2 });
+  assert.deepEqual(listed.threads, []);
+
+  await assert.rejects(
+    fixture.service.sendTurn({
+      requestId: "foreign-unmaterialized-send",
+      threadId: "native-thread-1",
+      expectedSelectionRevision: 1,
+      clientUserMessageId: "foreign-unmaterialized-client",
+      message: "Do not widen authority to this root",
+    }),
+    (error) => error.code === "SELECTION_CONFLICT",
+  );
+  const stats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"] ?? 0, 0);
+  assert.deepEqual(stats.threadReadRequests, [{
+    threadId: "native-thread-1",
+    includeTurns: false,
+  }]);
+  assert.equal(fixture.session.isEligibleRoot("native-thread-1"), false);
+});
+
+test("a provider-lost blank root is reconciled to empty after app-server restart", async (t) => {
+  const staleThreadId = "native-thread-lost-blank";
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_NOT_LOADED_THREAD_ID: staleThreadId,
+  });
+  fixture.sqlite.database.prepare(
+    `UPDATE codex_thread_selection
+     SET selected_thread_id = ?, revision = 1, updated_at = 1000
+     WHERE id = 'planner'`,
+  ).run(staleThreadId);
+
+  const listed = await fixture.service.listThreads({});
+  assert.deepEqual(listed.selection, { threadId: null, revision: 2 });
+  assert.deepEqual(listed.threads, []);
+  assert.equal(listed.activityRevision, 1);
+
+  const stats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.deepEqual(stats.threadReadRequests, [{
+    threadId: staleThreadId,
+    includeTurns: false,
+  }]);
+
+  const relisted = await fixture.service.listThreads({});
+  assert.deepEqual(relisted.selection, { threadId: null, revision: 2 });
+  assert.deepEqual(relisted.threads, []);
+  const afterStats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.deepEqual(afterStats.threadReadRequests, stats.threadReadRequests);
+});
+
+test("a mismatched thread-not-loaded identity fails closed without clearing selection", async (t) => {
+  const selectedThreadId = "native-thread-selected-blank";
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_NOT_LOADED_THREAD_ID: selectedThreadId,
+    FAKE_NATIVE_NOT_LOADED_RESPONSE_THREAD_ID: "native-thread-other-blank",
+  });
+  fixture.sqlite.database.prepare(
+    `UPDATE codex_thread_selection
+     SET selected_thread_id = ?, revision = 1, updated_at = 1000
+     WHERE id = 'planner'`,
+  ).run(selectedThreadId);
+
+  await assert.rejects(
+    fixture.service.listThreads({}),
+    (error) => error.code === "CODEX_INCOMPATIBLE",
+  );
+  const selected = fixture.sqlite.database.prepare(
+    "SELECT selected_thread_id, revision FROM codex_thread_selection WHERE id = 'planner'",
+  ).get();
+  assert.equal(selected.selected_thread_id, selectedThreadId);
+  assert.equal(selected.revision, 1);
+});
+
+test("selection and archive remain safe for an allocated unmaterialized root", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "unmaterialized-navigation-new",
+    expectedSelectionRevision: 0,
+  });
+  const cleared = await fixture.service.selectThread({
+    requestId: "unmaterialized-navigation-clear",
+    threadId: null,
+    expectedSelectionRevision: created.selection.revision,
+  });
+  const selected = await fixture.service.selectThread({
+    requestId: "unmaterialized-navigation-select",
+    threadId: created.thread.id,
+    expectedSelectionRevision: cleared.selection.revision,
+  });
+  const sent = await fixture.service.sendTurn({
+    requestId: "unmaterialized-navigation-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: selected.selection.revision,
+    clientUserMessageId: "unmaterialized-navigation-client",
+    message: "Send after navigation",
+  });
+  assert.equal(sent.turnId, "native-turn-1");
+  const navigationStats = await fixture.session.request(
+    "thread/list",
+    { searchTerm: "__stats__" },
+  );
+  assert.deepEqual(
+    navigationStats.threadReadRequests.map((entry) => entry.includeTurns),
+    [false, true],
+  );
+
+  const second = await fixture.service.newThread({
+    requestId: "unmaterialized-archive-new",
+    expectedSelectionRevision: selected.selection.revision,
+  });
+  const archived = await fixture.service.archiveThread({
+    requestId: "unmaterialized-archive",
+    threadId: second.thread.id,
+    expectedSelectionRevision: second.selection.revision,
+  });
+  assert.deepEqual(archived.selection, {
+    threadId: null,
+    revision: second.selection.revision + 1,
+  });
+  await assert.rejects(
+    fixture.service.sendTurn({
+      requestId: "unmaterialized-archived-send",
+      threadId: second.thread.id,
+      expectedSelectionRevision: second.selection.revision,
+      clientUserMessageId: "unmaterialized-archived-client",
+      message: "Do not start this archived root",
+    }),
+    (error) => error.code === "SELECTION_CONFLICT",
+  );
+  const archiveStats = await fixture.session.request(
+    "thread/list",
+    { searchTerm: "__stats__" },
+  );
+  assert.equal(archiveStats.requestCounts["turn/start"], 1);
+  assert.equal(archiveStats.requestCounts["thread/archive"], 1);
+});
+
+test("an unrecognized pre-turn read rejection never authorizes turn/start", async (t) => {
+  const fixture = await createFixture(t, {
+    FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT: "1",
+    // Deliberately model a hypothetical provider that persists the blank root
+    // but changes its pre-turn read error. The real 0.142.5 lifecycle is
+    // covered separately by the process-local restart tests above.
+    FAKE_NATIVE_PERSIST_UNMATERIALIZED_ROOT: "1",
+    FAKE_NATIVE_UNMATERIALIZED_READ_ERROR_CODE: "-32600",
+    FAKE_NATIVE_UNMATERIALIZED_READ_MESSAGE: "thread is not ready for an unspecified reason",
+  });
+  const created = await fixture.service.newThread({
+    requestId: "unmaterialized-drift-new",
+    expectedSelectionRevision: 0,
+  });
+  const reopened = await fixture.reopen();
+  await assert.rejects(
+    reopened.service.sendTurn({
+      requestId: "unmaterialized-drift-send",
+      threadId: created.thread.id,
+      expectedSelectionRevision: created.selection.revision,
+      clientUserMessageId: "unmaterialized-drift-client",
+      message: "Do not infer materialization",
+    }),
+    (error) => error.code === "CODEX_INCOMPATIBLE",
+  );
+  const stats = await reopened.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"] ?? 0, 0);
+  assert.equal(reopened.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 0);
+});
+
 test("native service creates, lists, reads, starts, steers, interrupts, and archives", async (t) => {
-  const { service } = await createFixture(t);
+  const { service, session } = await createFixture(t);
   const created = await service.newThread({
     requestId: "new-1",
     expectedSelectionRevision: 0,
@@ -245,6 +914,8 @@ test("native service creates, lists, reads, starts, steers, interrupts, and arch
   assert.deepEqual(archiveHistory.threads.map((thread) => thread.id), ["native-thread-1"]);
   const archivedRead = await service.readThread({ threadId: "native-thread-1" });
   assert.equal(archivedRead.thread.threadKind, "conversation");
+  assert.equal(session.isEligibleRoot("native-thread-1"), false);
+  assert.equal(session.isEligibleRootTurn("native-thread-1", started.turnId), false);
   await assert.rejects(
     service.selectThread({
       requestId: "select-archived",
@@ -271,6 +942,8 @@ test("archived roots remain ineligible after the native session and store reopen
   const reopened = await fixture.reopen();
   const history = await reopened.service.readThread({ threadId: created.thread.id });
   assert.equal(history.thread.threadKind, "conversation");
+  assert.equal(reopened.session.isEligibleRoot(created.thread.id), false);
+  assert.equal(reopened.session.isEligibleRootTurn(created.thread.id, "native-turn-1"), false);
   await assert.rejects(
     reopened.service.selectThread({
       requestId: "archive-reopen-select",
@@ -941,6 +1614,7 @@ for (const drift of [
   "permissionProfileExtends",
   "sandboxType",
   "networkAccess",
+  "threadSource",
 ]) {
   test(`native thread/start rejects ${drift} authority drift`, async (t) => {
     const { service } = await createFixture(t, {
@@ -1256,31 +1930,40 @@ test("turn begin observes a winner receipt committed after its stale read and se
   ).get().count, 1);
 });
 
-test("direct turn success remains unreceipted until authoritative history contains its client id", async (t) => {
+test("a completed client message remains unreceipted while its durable history projection is absent", async (t) => {
   const fixture = await createFixture(t, {
     FAKE_NATIVE_OMIT_TURN_START_HISTORY: "1",
-  });
+  }, { turnHistoryConvergenceWaitMs: 25 });
   const created = await fixture.service.newThread({
     requestId: "history-proof-thread",
     expectedSelectionRevision: 0,
   });
+  const request = {
+    requestId: "history-proof-send",
+    threadId: created.thread.id,
+    expectedSelectionRevision: created.selection.revision,
+    clientUserMessageId: "history-proof-client",
+    message: "Accept before the history projection converges",
+  };
   await assert.rejects(
-    fixture.service.sendTurn({
-      requestId: "history-proof-send",
-      threadId: created.thread.id,
-      expectedSelectionRevision: created.selection.revision,
-      clientUserMessageId: "history-proof-client",
-      message: "Require authoritative history",
-    }),
+    fixture.service.sendTurn(request),
     (error) => error.code === "CODEX_UNAVAILABLE" &&
       /authoritative history/iu.test(error.message),
   );
   assert.equal(fixture.sqlite.database.prepare(
-    "SELECT count(*) AS count FROM codex_turn_admissions",
-  ).get().count, 1);
-  assert.equal(fixture.sqlite.database.prepare(
     "SELECT count(*) AS count FROM codex_native_mutation_receipts WHERE scope = 'send'",
   ).get().count, 0);
+  assert.equal(fixture.sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_turn_admissions",
+  ).get().count, 1);
+  await assert.rejects(
+    fixture.service.sendTurn(request),
+    (error) => error.code === "CODEX_UNAVAILABLE" &&
+      /authoritative history/iu.test(error.message),
+  );
+  const stats = await fixture.session.request("thread/list", { searchTerm: "__stats__" });
+  assert.equal(stats.requestCounts["turn/start"], 1);
+  assert.ok(stats.requestCounts["thread/read"] >= 2);
 });
 
 test("duplicate authoritative client-message mappings fail reconciliation closed", async (t) => {

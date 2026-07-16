@@ -19,6 +19,26 @@ export const CODEX_THREAD_LIST_LIMIT_MAX = 100;
 export const CODEX_EVENT_WAIT_MS_DEFAULT = 25_000;
 export const CODEX_EVENT_WAIT_MS_MAX = 30_000;
 export const CODEX_INTERACTION_ANSWER_MAX_LENGTH = 2_000;
+export const CODEX_TITLE_MAX_LENGTH = 200;
+export const CODEX_PREVIEW_MAX_LENGTH = 500;
+export const CODEX_DISPLAY_TEXT_MAX_LENGTH = 32_000;
+export const CODEX_ACTIVITY_DETAIL_MAX_LENGTH = 1_000;
+export const CODEX_API_ERROR_MESSAGE_MAX_LENGTH = 4_000;
+export const CODEX_REASONING_SUMMARIES_MAX = 20;
+export const CODEX_MESSAGE_ATTACHMENTS_MAX = 20;
+export const CODEX_WORKERS_PER_ITEM_MAX = 20;
+export const CODEX_THREAD_TURNS_MAX = 200;
+export const CODEX_TURN_ITEMS_MAX = 1_000;
+export const CODEX_THREAD_WORKER_SUMMARIES_MAX =
+  CODEX_THREAD_TURNS_MAX * CODEX_TURN_ITEMS_MAX * CODEX_WORKERS_PER_ITEM_MAX;
+export const CODEX_INTERACTIONS_MAX = 128;
+export const CODEX_INTERACTION_QUESTIONS_MAX = 3;
+export const CODEX_INTERACTION_OPTIONS_MIN = 2;
+export const CODEX_INTERACTION_OPTIONS_MAX = 3;
+export const CODEX_INTERACTION_HEADER_MAX_BYTES = 128;
+export const CODEX_INTERACTION_QUESTION_MAX_BYTES = 4_096;
+export const CODEX_INTERACTION_OPTION_LABEL_MAX_BYTES = 256;
+export const CODEX_INTERACTION_OPTION_DESCRIPTION_MAX_BYTES = 1_024;
 
 export const CODEX_THREAD_API_ROUTES = {
   threadsList: { method: "GET", path: "/api/codex/threads" },
@@ -340,6 +360,8 @@ export type CodexApiFailure = {
   };
 };
 
+const UTF8_ENCODER = new TextEncoder();
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -361,6 +383,15 @@ function isBoundedString(value: unknown, maxLength: number, allowEmpty = false):
     (allowEmpty || value.trim().length > 0);
 }
 
+function isBoundedUtf8String(
+  value: unknown,
+  maxBytes: number,
+  allowEmpty = false,
+): value is string {
+  return isBoundedString(value, maxBytes, allowEmpty) &&
+    UTF8_ENCODER.encode(value).byteLength <= maxBytes;
+}
+
 function isIdentifier(value: unknown): value is string {
   return isBoundedString(value, CODEX_THREAD_ID_MAX_LENGTH);
 }
@@ -371,6 +402,515 @@ function isRequestId(value: unknown): value is string {
 
 function isRevision(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isNullableNonnegativeInteger(value: unknown): value is number | null {
+  return value === null || isRevision(value);
+}
+
+function isBoundedArray<T>(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  validator: (entry: unknown) => entry is T,
+): value is T[] {
+  return Array.isArray(value) &&
+    value.length >= minimum &&
+    value.length <= maximum &&
+    value.every(validator);
+}
+
+function hasUniqueStrings(values: readonly string[]): boolean {
+  return new Set(values).size === values.length;
+}
+
+function hasValidThreadSummaryFields(value: Record<string, unknown>): boolean {
+  return isIdentifier(value.id) &&
+    isBoundedString(value.title, CODEX_TITLE_MAX_LENGTH) &&
+    isBoundedString(value.preview, CODEX_PREVIEW_MAX_LENGTH, true) &&
+    isCodexThreadStatus(value.status) &&
+    isNullableNonnegativeInteger(value.createdAtMs) &&
+    isNullableNonnegativeInteger(value.updatedAtMs) &&
+    isNullableNonnegativeInteger(value.recencyAtMs);
+}
+
+export function isCodexThreadStatus(value: unknown): value is CodexThreadStatus {
+  return isRecord(value) &&
+    hasExactKeys(value, ["state", "waitingFor"]) &&
+    (value.state === "not_loaded" ||
+      value.state === "idle" ||
+      value.state === "active" ||
+      value.state === "error" ||
+      value.state === "unknown") &&
+    (value.waitingFor === null ||
+      value.waitingFor === "approval" ||
+      value.waitingFor === "user_input");
+}
+
+export function isCodexThreadSelection(value: unknown): value is CodexThreadSelection {
+  return isRecord(value) &&
+    hasExactKeys(value, ["threadId", "revision"]) &&
+    (value.threadId === null || isIdentifier(value.threadId)) &&
+    isRevision(value.revision);
+}
+
+export function isCodexThreadSummary(value: unknown): value is CodexThreadSummary {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "id",
+      "title",
+      "preview",
+      "status",
+      "createdAtMs",
+      "updatedAtMs",
+      "recencyAtMs",
+    ]) &&
+    hasValidThreadSummaryFields(value);
+}
+
+export function isCodexMessageAttachment(value: unknown): value is CodexMessageAttachment {
+  return isRecord(value) &&
+    hasExactKeys(value, ["kind", "label"]) &&
+    (value.kind === "image" || value.kind === "skill" || value.kind === "mention") &&
+    isBoundedString(value.label, CODEX_TITLE_MAX_LENGTH);
+}
+
+export function isCodexMessageItem(value: unknown): value is CodexMessageItem {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "kind",
+      "id",
+      "role",
+      "phase",
+      "text",
+      "clientUserMessageId",
+      "attachments",
+    ]) &&
+    value.kind === "message" &&
+    isIdentifier(value.id) &&
+    (value.role === "user" || value.role === "assistant") &&
+    (value.phase === null || value.phase === "commentary" || value.phase === "final") &&
+    isBoundedString(value.text, CODEX_DISPLAY_TEXT_MAX_LENGTH, true) &&
+    (value.clientUserMessageId === null || isIdentifier(value.clientUserMessageId)) &&
+    isBoundedArray(
+      value.attachments,
+      0,
+      CODEX_MESSAGE_ATTACHMENTS_MAX,
+      isCodexMessageAttachment,
+    );
+}
+
+export function isCodexReasoningItem(value: unknown): value is CodexReasoningItem {
+  return isRecord(value) &&
+    hasExactKeys(value, ["kind", "id", "label", "summaries"]) &&
+    value.kind === "reasoning" &&
+    isIdentifier(value.id) &&
+    value.label === "Thinking" &&
+    isBoundedArray(
+      value.summaries,
+      0,
+      CODEX_REASONING_SUMMARIES_MAX,
+      (summary): summary is string =>
+        isBoundedString(summary, CODEX_ACTIVITY_DETAIL_MAX_LENGTH),
+    );
+}
+
+export function isCodexActivityStatus(value: unknown): value is CodexActivityStatus {
+  return value === "pending" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "interrupted" ||
+    value === "unknown";
+}
+
+export function isCodexActivityItem(value: unknown): value is CodexActivityItem {
+  return isRecord(value) &&
+    hasExactKeys(value, ["kind", "id", "category", "label", "detail", "status"]) &&
+    value.kind === "activity" &&
+    isIdentifier(value.id) &&
+    (value.category === "plan" ||
+      value.category === "tool" ||
+      value.category === "web" ||
+      value.category === "system" ||
+      value.category === "restricted" ||
+      value.category === "other") &&
+    isBoundedString(value.label, CODEX_TITLE_MAX_LENGTH) &&
+    (value.detail === null || isBoundedString(value.detail, CODEX_DISPLAY_TEXT_MAX_LENGTH)) &&
+    isCodexActivityStatus(value.status);
+}
+
+export function isCodexWorkerOperation(value: unknown): value is CodexWorkerOperation {
+  return value === "start" ||
+    value === "message" ||
+    value === "resume" ||
+    value === "wait" ||
+    value === "close" ||
+    value === "activity";
+}
+
+export function isCodexWorkerState(value: unknown): value is CodexWorkerState {
+  return isRecord(value) &&
+    hasExactKeys(value, ["threadId", "status"]) &&
+    isIdentifier(value.threadId) &&
+    isCodexActivityStatus(value.status);
+}
+
+export function isCodexWorkerActivityItem(value: unknown): value is CodexWorkerActivityItem {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "kind",
+    "id",
+    "label",
+    "operation",
+    "workerThreadIds",
+    "workerStates",
+    "status",
+  ])) {
+    return false;
+  }
+  const workerThreadIds = value.workerThreadIds;
+  const workerStates = value.workerStates;
+  if (value.kind !== "worker" ||
+      !isIdentifier(value.id) ||
+      !isBoundedString(value.label, CODEX_TITLE_MAX_LENGTH) ||
+      !isCodexWorkerOperation(value.operation) ||
+      !isBoundedArray(
+        workerThreadIds,
+        0,
+        CODEX_WORKERS_PER_ITEM_MAX,
+        isIdentifier,
+      ) ||
+      !hasUniqueStrings(workerThreadIds) ||
+      !isBoundedArray(
+        workerStates,
+        0,
+        CODEX_WORKERS_PER_ITEM_MAX,
+        isCodexWorkerState,
+      ) ||
+      !isCodexActivityStatus(value.status)) {
+    return false;
+  }
+  return workerStates.length === workerThreadIds.length &&
+    workerStates.every((state, index) => state.threadId === workerThreadIds[index]);
+}
+
+export function isCodexThreadItemView(value: unknown): value is CodexThreadItemView {
+  if (!isRecord(value)) return false;
+  switch (value.kind) {
+    case "message":
+      return isCodexMessageItem(value);
+    case "reasoning":
+      return isCodexReasoningItem(value);
+    case "activity":
+      return isCodexActivityItem(value);
+    case "worker":
+      return isCodexWorkerActivityItem(value);
+    default:
+      return false;
+  }
+}
+
+export function isCodexTurnView(value: unknown): value is CodexTurnView {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "id",
+      "status",
+      "itemsView",
+      "startedAtMs",
+      "completedAtMs",
+      "durationMs",
+      "errorMessage",
+      "items",
+    ]) &&
+    isIdentifier(value.id) &&
+    (value.status === "completed" ||
+      value.status === "interrupted" ||
+      value.status === "failed" ||
+      value.status === "in_progress" ||
+      value.status === "unknown") &&
+    (value.itemsView === "full" ||
+      value.itemsView === "summary" ||
+      value.itemsView === "not_loaded" ||
+      value.itemsView === "unknown") &&
+    isNullableNonnegativeInteger(value.startedAtMs) &&
+    isNullableNonnegativeInteger(value.completedAtMs) &&
+    isNullableNonnegativeInteger(value.durationMs) &&
+    (value.errorMessage === null ||
+      isBoundedString(value.errorMessage, CODEX_ACTIVITY_DETAIL_MAX_LENGTH)) &&
+    isBoundedArray(value.items, 0, CODEX_TURN_ITEMS_MAX, isCodexThreadItemView);
+}
+
+export function isCodexWorkerSummary(value: unknown): value is CodexWorkerSummary {
+  return isRecord(value) &&
+    hasExactKeys(value, ["threadId", "label", "status"]) &&
+    isIdentifier(value.threadId) &&
+    isBoundedString(value.label, CODEX_TITLE_MAX_LENGTH) &&
+    isCodexActivityStatus(value.status);
+}
+
+export function isCodexThreadView(value: unknown): value is CodexThreadView {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "id",
+    "title",
+    "preview",
+    "status",
+    "createdAtMs",
+    "updatedAtMs",
+    "recencyAtMs",
+    "threadKind",
+    "parentThreadId",
+    "turns",
+    "workers",
+    "historyTruncated",
+  ])) {
+    return false;
+  }
+  if (!hasValidThreadSummaryFields(value) ||
+      (value.threadKind !== "conversation" && value.threadKind !== "worker") ||
+      (value.parentThreadId !== null && !isIdentifier(value.parentThreadId)) ||
+      !isBoundedArray(value.turns, 0, CODEX_THREAD_TURNS_MAX, isCodexTurnView) ||
+      !isBoundedArray(
+        value.workers,
+        0,
+        CODEX_THREAD_WORKER_SUMMARIES_MAX,
+        isCodexWorkerSummary,
+      ) ||
+      typeof value.historyTruncated !== "boolean") {
+    return false;
+  }
+  const workerIds = value.workers.map((worker) => worker.threadId);
+  return hasUniqueStrings(workerIds) &&
+    (value.threadKind === "worker" ? value.parentThreadId !== null : value.parentThreadId === null);
+}
+
+export function isCodexInteractionOption(value: unknown): value is CodexInteractionOption {
+  return isRecord(value) &&
+    hasExactKeys(value, ["label", "description"]) &&
+    isBoundedUtf8String(value.label, CODEX_INTERACTION_OPTION_LABEL_MAX_BYTES) &&
+    isBoundedUtf8String(
+      value.description,
+      CODEX_INTERACTION_OPTION_DESCRIPTION_MAX_BYTES,
+    );
+}
+
+export function isCodexInteractionQuestion(value: unknown): value is CodexInteractionQuestion {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "id",
+    "header",
+    "question",
+    "options",
+    "allowOther",
+    "responseMode",
+  ])) {
+    return false;
+  }
+  if (!isIdentifier(value.id) ||
+      !isBoundedUtf8String(value.header, CODEX_INTERACTION_HEADER_MAX_BYTES) ||
+      !isBoundedUtf8String(value.question, CODEX_INTERACTION_QUESTION_MAX_BYTES) ||
+      !isBoundedArray(
+        value.options,
+        CODEX_INTERACTION_OPTIONS_MIN,
+        CODEX_INTERACTION_OPTIONS_MAX,
+        isCodexInteractionOption,
+      ) ||
+      value.allowOther !== false ||
+      value.responseMode !== "listed_option") {
+    return false;
+  }
+  return hasUniqueStrings(value.options.map((option) => option.label));
+}
+
+function hasValidInteractionBaseFields(value: Record<string, unknown>): boolean {
+  return isIdentifier(value.id) &&
+    isIdentifier(value.threadId) &&
+    isBoundedString(value.title, CODEX_TITLE_MAX_LENGTH) &&
+    isRevision(value.createdAtMs);
+}
+
+export function isCodexPendingUserInputInteraction(
+  value: unknown,
+): value is CodexPendingUserInputInteraction {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "id",
+    "kind",
+    "threadId",
+    "title",
+    "createdAtMs",
+    "turnId",
+    "itemId",
+    "questions",
+    "autoResolveAtMs",
+  ])) {
+    return false;
+  }
+  if (value.kind !== "user_input" ||
+      !hasValidInteractionBaseFields(value) ||
+      !isIdentifier(value.turnId) ||
+      !isIdentifier(value.itemId) ||
+      !isBoundedArray(
+        value.questions,
+        1,
+        CODEX_INTERACTION_QUESTIONS_MAX,
+        isCodexInteractionQuestion,
+      ) ||
+      !isNullableNonnegativeInteger(value.autoResolveAtMs)) {
+    return false;
+  }
+  return hasUniqueStrings(value.questions.map((question) => question.id));
+}
+
+export function isCodexRejectedApprovalInteraction(
+  value: unknown,
+): value is CodexRejectedApprovalInteraction {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "id",
+      "kind",
+      "threadId",
+      "title",
+      "createdAtMs",
+      "turnId",
+      "itemId",
+      "category",
+      "summary",
+      "resolution",
+    ]) &&
+    value.kind === "approval" &&
+    hasValidInteractionBaseFields(value) &&
+    (value.turnId === null || isIdentifier(value.turnId)) &&
+    (value.itemId === null || isIdentifier(value.itemId)) &&
+    (value.category === "command" ||
+      value.category === "file_change" ||
+      value.category === "permission" ||
+      value.category === "mcp" ||
+      value.category === "other") &&
+    isBoundedString(value.summary, CODEX_ACTIVITY_DETAIL_MAX_LENGTH) &&
+    value.resolution === "rejected_by_policy";
+}
+
+export function isCodexInteraction(value: unknown): value is CodexInteraction {
+  if (!isRecord(value)) return false;
+  switch (value.kind) {
+    case "user_input":
+      return isCodexPendingUserInputInteraction(value);
+    case "approval":
+      return isCodexRejectedApprovalInteraction(value);
+    default:
+      return false;
+  }
+}
+
+function isInteractionArray(value: unknown): value is CodexInteraction[] {
+  return isBoundedArray(value, 0, CODEX_INTERACTIONS_MAX, isCodexInteraction);
+}
+
+function hasValidRuntimeCursorFields(value: Record<string, unknown>): boolean {
+  return isIdentifier(value.connectionEpoch) && isRevision(value.activityRevision);
+}
+
+export function isCodexThreadListResponse(value: unknown): value is CodexThreadListResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "threads",
+      "nextCursor",
+      "selection",
+      "connectionEpoch",
+      "activityRevision",
+    ]) &&
+    isBoundedArray(value.threads, 0, CODEX_THREAD_LIST_LIMIT_MAX, isCodexThreadSummary) &&
+    (value.nextCursor === null || isBoundedString(value.nextCursor, CODEX_CURSOR_MAX_LENGTH)) &&
+    isCodexThreadSelection(value.selection) &&
+    hasValidRuntimeCursorFields(value);
+}
+
+export function isCodexThreadReadResponse(value: unknown): value is CodexThreadReadResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "thread",
+      "selection",
+      "interactions",
+      "connectionEpoch",
+      "activityRevision",
+    ]) &&
+    isCodexThreadView(value.thread) &&
+    isCodexThreadSelection(value.selection) &&
+    isInteractionArray(value.interactions) &&
+    hasValidRuntimeCursorFields(value);
+}
+
+export function isCodexInteractionListResponse(
+  value: unknown,
+): value is CodexInteractionListResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, ["interactions", "connectionEpoch", "activityRevision"]) &&
+    isInteractionArray(value.interactions) &&
+    hasValidRuntimeCursorFields(value);
+}
+
+export function isCodexThreadMutationResponse(
+  value: unknown,
+): value is CodexThreadMutationResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, ["thread", "selection", "connectionEpoch", "activityRevision"]) &&
+    (value.thread === null || isCodexThreadSummary(value.thread)) &&
+    isCodexThreadSelection(value.selection) &&
+    hasValidRuntimeCursorFields(value);
+}
+
+export function isCodexTurnMutationResponse(value: unknown): value is CodexTurnMutationResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, ["threadId", "turnId", "connectionEpoch", "activityRevision"]) &&
+    isIdentifier(value.threadId) &&
+    isIdentifier(value.turnId) &&
+    hasValidRuntimeCursorFields(value);
+}
+
+export function isCodexInteractionMutationResponse(
+  value: unknown,
+): value is CodexInteractionMutationResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, ["interactionId", "status", "connectionEpoch", "activityRevision"]) &&
+    isIdentifier(value.interactionId) &&
+    (value.status === "resolved" || value.status === "already_resolved") &&
+    hasValidRuntimeCursorFields(value);
+}
+
+export function isCodexEventReason(value: unknown): value is CodexEventReason {
+  return value === "thread" ||
+    value === "selection" ||
+    value === "interaction" ||
+    value === "runtime";
+}
+
+export function isCodexEventsResponse(value: unknown): value is CodexEventsResponse {
+  return isRecord(value) &&
+    hasExactKeys(value, [
+      "changed",
+      "connectionEpoch",
+      "revision",
+      "resyncRequired",
+      "reasons",
+    ]) &&
+    typeof value.changed === "boolean" &&
+    isIdentifier(value.connectionEpoch) &&
+    isRevision(value.revision) &&
+    typeof value.resyncRequired === "boolean" &&
+    isBoundedArray(value.reasons, 0, 4, isCodexEventReason) &&
+    hasUniqueStrings(value.reasons);
+}
+
+export function isCodexApiErrorCode(value: unknown): value is CodexApiErrorCode {
+  return typeof value === "string" &&
+    CODEX_API_ERROR_CODES.some((code) => code === value);
+}
+
+export function isCodexApiFailure(value: unknown): value is CodexApiFailure {
+  return isRecord(value) &&
+    hasExactKeys(value, ["error"]) &&
+    isRecord(value.error) &&
+    hasExactKeys(value.error, ["code", "message"]) &&
+    isCodexApiErrorCode(value.error.code) &&
+    isBoundedString(value.error.message, CODEX_API_ERROR_MESSAGE_MAX_LENGTH);
 }
 
 export function isCodexThreadListRequest(value: unknown): value is CodexThreadListRequest {

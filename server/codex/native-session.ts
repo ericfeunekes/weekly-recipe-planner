@@ -34,10 +34,20 @@ const ELIGIBILITY_PAGE_SIZE = 100;
 const MAX_ELIGIBILITY_PAGES = 64;
 const NATIVE_CURSOR_LIMIT = 2_048;
 const MAX_EVENT_HISTORY = 512;
+const MAX_COMPLETED_CLIENT_MESSAGE_BINDINGS = 1_024;
 const MAX_REJECTED_APPROVALS = 64;
 const MAX_DEFERRED_SERVER_REQUESTS = 64;
 const MAX_DEFERRED_INBOUND_EVENTS = 512;
 const IDENTIFIER_LIMIT = 200;
+
+/**
+ * The app-server reports its transport source as the caller's host (currently
+ * `vscode`), not as `appServer`. The custom thread source is the namespace that
+ * establishes planner ownership. Codex 0.142.5 drops it from materialized
+ * read/list projections, so the session retains that established provenance
+ * and revalidates markerless history through an unloaded thread/read.
+ */
+export const NATIVE_CODEX_THREAD_SOURCE = "weekly_recipe_planner";
 
 const FORBIDDEN_FEATURES = Object.freeze([
   "apps",
@@ -110,6 +120,7 @@ type ThreadCandidate = {
   id: string;
   parentThreadId: string | null;
   root: boolean;
+  materialization: "unknown" | "unmaterialized" | "materialized";
 };
 
 type EventWaiter = {
@@ -195,19 +206,360 @@ function isNativeCursor(value: unknown): value is string {
     value.length <= NATIVE_CURSOR_LIMIT && !value.includes("\0");
 }
 
+function isRootProjectionAtFixedCwd(
+  value: unknown,
+  fixedCwd: string,
+): value is Record<string, unknown> {
+  return isRecord(value) && isIdentifier(value.id) && value.cwd === fixedCwd &&
+    value.ephemeral === false &&
+    (value.parentThreadId === null || value.parentThreadId === undefined) &&
+    (value.threadSource === NATIVE_CODEX_THREAD_SOURCE ||
+      value.threadSource === null || value.threadSource === undefined);
+}
+
+function isMarkedRootProjectionAtFixedCwd(
+  value: unknown,
+  fixedCwd: string,
+): value is Record<string, unknown> {
+  return isRootProjectionAtFixedCwd(value, fixedCwd) &&
+    value.threadSource === NATIVE_CODEX_THREAD_SOURCE;
+}
+
 function isProtocolRequestId(value: unknown): value is string | number {
   return typeof value === "string" ||
     (typeof value === "number" && Number.isSafeInteger(value));
+}
+
+type NotificationParamsParser = (params: Record<string, unknown>) => boolean;
+
+const TURN_STATUSES = new Set(["completed", "interrupted", "failed", "inProgress"]);
+const THREAD_ACTIVE_FLAGS = new Set(["waitingOnApproval", "waitingOnUserInput"]);
+const IMAGE_DETAILS = new Set(["auto", "low", "high", "original"]);
+const SUB_AGENT_SOURCES = new Set(["review", "compact", "memory_consolidation"]);
+const COLLAB_AGENT_STATUSES = new Set([
+  "pendingInit",
+  "running",
+  "interrupted",
+  "completed",
+  "errored",
+  "shutdown",
+  "notFound",
+]);
+const COLLAB_AGENT_TOOLS = new Set([
+  "spawnAgent",
+  "sendInput",
+  "resumeAgent",
+  "wait",
+  "closeAgent",
+]);
+const COLLAB_TOOL_STATUSES = new Set(["inProgress", "completed", "failed"]);
+const THREAD_ITEM_STATUSES = Object.freeze({
+  commandExecution: new Set(["inProgress", "completed", "failed", "declined"]),
+  dynamicToolCall: new Set(["inProgress", "completed", "failed"]),
+  fileChange: new Set(["inProgress", "completed", "failed", "declined"]),
+  mcpToolCall: new Set(["inProgress", "completed", "failed"]),
+});
+
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return isSafeInteger(value) && value >= 0;
+}
+
+function isInt32(value: unknown): value is number {
+  return isSafeInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647;
+}
+
+function isOptionalNullableString(value: unknown) {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function hasExactlyOneOwn(value: Record<string, unknown>, left: string, right: string) {
+  return Object.hasOwn(value, left) !== Object.hasOwn(value, right);
+}
+
+function isThreadStatus(value: unknown) {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "active") {
+    return Array.isArray(value.activeFlags) &&
+      value.activeFlags.every((flag) =>
+        typeof flag === "string" && THREAD_ACTIVE_FLAGS.has(flag)
+      );
+  }
+  return value.type === "notLoaded" || value.type === "idle" || value.type === "systemError";
+}
+
+function isTurnError(value: unknown) {
+  return isRecord(value) && typeof value.message === "string";
+}
+
+function hasStatus(
+  value: Record<string, unknown>,
+  statuses: ReadonlySet<string>,
+) {
+  return typeof value.status === "string" && statuses.has(value.status);
+}
+
+function isByteRange(value: unknown) {
+  return isRecord(value) && isNonNegativeSafeInteger(value.start) &&
+    isNonNegativeSafeInteger(value.end);
+}
+
+function isTextElement(value: unknown) {
+  return isRecord(value) && isByteRange(value.byteRange) &&
+    isOptionalNullableString(value.placeholder);
+}
+
+function isUserInput(value: unknown) {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  switch (value.type) {
+    case "text":
+      return typeof value.text === "string" &&
+        (value.text_elements === undefined ||
+          (Array.isArray(value.text_elements) && value.text_elements.every(isTextElement)));
+    case "image":
+      return typeof value.url === "string" &&
+        (value.detail === undefined || value.detail === null ||
+          (typeof value.detail === "string" && IMAGE_DETAILS.has(value.detail)));
+    case "localImage":
+      return typeof value.path === "string" &&
+        (value.detail === undefined || value.detail === null ||
+          (typeof value.detail === "string" && IMAGE_DETAILS.has(value.detail)));
+    case "skill":
+    case "mention":
+      return typeof value.name === "string" && typeof value.path === "string";
+    default:
+      return false;
+  }
+}
+
+function isHookPromptFragment(value: unknown) {
+  return isRecord(value) && typeof value.hookRunId === "string" &&
+    typeof value.text === "string";
+}
+
+function isCommandAction(value: unknown) {
+  if (!isRecord(value) || typeof value.type !== "string" ||
+      typeof value.command !== "string") {
+    return false;
+  }
+  switch (value.type) {
+    case "read":
+      return typeof value.name === "string" && typeof value.path === "string" &&
+        isAbsolute(value.path);
+    case "listFiles":
+      return isOptionalNullableString(value.path);
+    case "search":
+      return isOptionalNullableString(value.path) && isOptionalNullableString(value.query);
+    case "unknown":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isPatchChangeKind(value: unknown) {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "update") return isOptionalNullableString(value.move_path);
+  return value.type === "add" || value.type === "delete";
+}
+
+function isFileUpdateChange(value: unknown) {
+  return isRecord(value) && typeof value.diff === "string" &&
+    isPatchChangeKind(value.kind) && typeof value.path === "string";
+}
+
+function isCollabAgentState(value: unknown) {
+  return isRecord(value) && typeof value.status === "string" &&
+    COLLAB_AGENT_STATUSES.has(value.status) && isOptionalNullableString(value.message);
+}
+
+function isThreadItem(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !isIdentifier(value.id) || typeof value.type !== "string") {
+    return false;
+  }
+  switch (value.type) {
+    case "userMessage":
+      return Array.isArray(value.content) && value.content.every(isUserInput) &&
+        isOptionalNullableString(value.clientId);
+    case "hookPrompt":
+      return Array.isArray(value.fragments) && value.fragments.every(isHookPromptFragment);
+    case "agentMessage":
+    case "plan":
+      return typeof value.text === "string";
+    case "reasoning":
+    case "contextCompaction":
+      return true;
+    case "commandExecution":
+      return typeof value.command === "string" && Array.isArray(value.commandActions) &&
+        value.commandActions.every(isCommandAction) &&
+        typeof value.cwd === "string" &&
+        hasStatus(value, THREAD_ITEM_STATUSES.commandExecution);
+    case "fileChange":
+      return Array.isArray(value.changes) && value.changes.every(isFileUpdateChange) &&
+        hasStatus(value, THREAD_ITEM_STATUSES.fileChange);
+    case "mcpToolCall":
+      return Object.hasOwn(value, "arguments") && typeof value.server === "string" &&
+        typeof value.tool === "string" && hasStatus(value, THREAD_ITEM_STATUSES.mcpToolCall);
+    case "dynamicToolCall":
+      return Object.hasOwn(value, "arguments") && typeof value.tool === "string" &&
+        hasStatus(value, THREAD_ITEM_STATUSES.dynamicToolCall);
+    case "collabAgentToolCall":
+      return isRecord(value.agentsStates) && Array.isArray(value.receiverThreadIds) &&
+        Object.values(value.agentsStates).every(isCollabAgentState) &&
+        value.receiverThreadIds.every(isIdentifier) && isIdentifier(value.senderThreadId) &&
+        typeof value.status === "string" && COLLAB_TOOL_STATUSES.has(value.status) &&
+        typeof value.tool === "string" && COLLAB_AGENT_TOOLS.has(value.tool);
+    case "subAgentActivity":
+      return typeof value.agentPath === "string" && isIdentifier(value.agentThreadId) &&
+        (value.kind === "started" || value.kind === "interacted" ||
+          value.kind === "interrupted");
+    case "webSearch":
+      return typeof value.query === "string";
+    case "imageView":
+      return typeof value.path === "string";
+    case "sleep":
+      return isSafeInteger(value.durationMs) && value.durationMs >= 0;
+    case "imageGeneration":
+      return typeof value.result === "string" && typeof value.status === "string";
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+      return typeof value.review === "string";
+    default:
+      return false;
+  }
+}
+
+function isTurn(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !isIdentifier(value.id) || !Array.isArray(value.items) ||
+      !value.items.every(isThreadItem) || typeof value.status !== "string" ||
+      !TURN_STATUSES.has(value.status)) {
+    return false;
+  }
+  for (const field of ["completedAt", "durationMs", "startedAt"] as const) {
+    const candidate = value[field];
+    if (candidate !== undefined && candidate !== null && !isSafeInteger(candidate)) return false;
+  }
+  if (value.error !== undefined && value.error !== null && !isTurnError(value.error)) return false;
+  if (value.itemsView !== undefined && value.itemsView !== "notLoaded" &&
+      value.itemsView !== "summary" && value.itemsView !== "full") {
+    return false;
+  }
+  return true;
+}
+
+function isSessionSource(value: unknown) {
+  if (value === "cli" || value === "vscode" || value === "exec" ||
+      value === "appServer" || value === "unknown") {
+    return true;
+  }
+  if (!isRecord(value) || !hasExactlyOneOwn(value, "custom", "subAgent")) return false;
+  return Object.hasOwn(value, "custom")
+    ? typeof value.custom === "string"
+    : isSubAgentSource(value.subAgent);
+}
+
+function isSubAgentSource(value: unknown) {
+  if (typeof value === "string") return SUB_AGENT_SOURCES.has(value);
+  if (!isRecord(value) || !hasExactlyOneOwn(value, "thread_spawn", "other")) return false;
+  if (Object.hasOwn(value, "other")) return typeof value.other === "string";
+  const spawned = value.thread_spawn;
+  return isRecord(spawned) && isInt32(spawned.depth) &&
+    isIdentifier(spawned.parent_thread_id) &&
+    isOptionalNullableString(spawned.agent_nickname) &&
+    isOptionalNullableString(spawned.agent_path) &&
+    isOptionalNullableString(spawned.agent_role);
+}
+
+function isThread(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || typeof value.cliVersion !== "string" ||
+      !isSafeInteger(value.createdAt) || typeof value.cwd !== "string" ||
+      !isAbsolute(value.cwd) || typeof value.ephemeral !== "boolean" ||
+      !isIdentifier(value.id) || typeof value.modelProvider !== "string" ||
+      typeof value.preview !== "string" || !isIdentifier(value.sessionId) ||
+      !isSessionSource(value.source) || !isThreadStatus(value.status) ||
+      !Array.isArray(value.turns) || !value.turns.every(isTurn) ||
+      !isSafeInteger(value.updatedAt)) {
+    return false;
+  }
+  if (value.parentThreadId !== undefined && value.parentThreadId !== null &&
+      !isIdentifier(value.parentThreadId)) {
+    return false;
+  }
+  if (value.threadSource !== undefined && value.threadSource !== null &&
+      typeof value.threadSource !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function hasIdentifiers(params: Record<string, unknown>, ...fields: readonly string[]) {
+  return fields.every((field) => isIdentifier(params[field]));
+}
+
+const CONSUMED_NOTIFICATION_PARSERS: Readonly<Record<string, NotificationParamsParser>> =
+  Object.freeze({
+    "thread/started": (params) => isThread(params.thread),
+    "thread/status/changed": (params) =>
+      hasIdentifiers(params, "threadId") && isThreadStatus(params.status),
+    "thread/archived": (params) => hasIdentifiers(params, "threadId"),
+    "thread/name/updated": (params) =>
+      hasIdentifiers(params, "threadId") &&
+      (params.threadName === undefined || params.threadName === null ||
+        typeof params.threadName === "string"),
+    "turn/started": (params) => hasIdentifiers(params, "threadId") && isTurn(params.turn),
+    "item/started": (params) =>
+      hasIdentifiers(params, "threadId", "turnId") && isThreadItem(params.item) &&
+      isSafeInteger(params.startedAtMs),
+    "item/agentMessage/delta": (params) =>
+      hasIdentifiers(params, "threadId", "turnId", "itemId") &&
+      typeof params.delta === "string",
+    "item/plan/delta": (params) =>
+      hasIdentifiers(params, "threadId", "turnId", "itemId") &&
+      typeof params.delta === "string",
+    "item/reasoning/summaryPartAdded": (params) =>
+      hasIdentifiers(params, "threadId", "turnId", "itemId") &&
+      isSafeInteger(params.summaryIndex),
+    "item/reasoning/summaryTextDelta": (params) =>
+      hasIdentifiers(params, "threadId", "turnId", "itemId") &&
+      isSafeInteger(params.summaryIndex) && typeof params.delta === "string",
+    "item/completed": (params) =>
+      hasIdentifiers(params, "threadId", "turnId") && isThreadItem(params.item) &&
+      isSafeInteger(params.completedAtMs),
+    "serverRequest/resolved": (params) =>
+      hasIdentifiers(params, "threadId") && isProtocolRequestId(params.requestId),
+    "turn/completed": (params) => hasIdentifiers(params, "threadId") && isTurn(params.turn),
+    error: (params) =>
+      hasIdentifiers(params, "threadId", "turnId") && isTurnError(params.error) &&
+      typeof params.willRetry === "boolean",
+  });
+
+function parseConsumedNotificationParams(notification: AppServerNotification) {
+  if (!Object.hasOwn(CONSUMED_NOTIFICATION_PARSERS, notification.method)) return null;
+  const parser = CONSUMED_NOTIFICATION_PARSERS[notification.method];
+  if (parser === undefined) return null;
+  if (!isRecord(notification.params) || !parser(notification.params)) {
+    throw protocolError(
+      `Codex app-server emitted malformed ${notification.method} notification state.`,
+    );
+  }
+  return notification.params;
 }
 
 function threadIdFromParams(value: unknown) {
   return isRecord(value) && isIdentifier(value.threadId) ? value.threadId : null;
 }
 
-function turnIdFromParams(value: unknown) {
+function turnIdFromTurnParams(value: unknown) {
   return isRecord(value) && isRecord(value.turn) && isIdentifier(value.turn.id)
     ? value.turn.id
     : null;
+}
+
+function turnIdFromItemParams(value: unknown) {
+  return isRecord(value) && isIdentifier(value.turnId) ? value.turnId : null;
 }
 
 function activeTurnIdFromThread(value: unknown) {
@@ -241,6 +593,7 @@ function threadStartParams(fixedCwd: string) {
     baseInstructions: NATIVE_CODEX_THREAD_INSTRUCTIONS,
     developerInstructions: NATIVE_CODEX_THREAD_INSTRUCTIONS,
     serviceName: "weekly_recipe_planner_thread",
+    threadSource: NATIVE_CODEX_THREAD_SOURCE,
     config: NATIVE_CODEX_THREAD_CONFIG,
   };
 }
@@ -342,6 +695,7 @@ export class NativeCodexSession {
   #eligible = new Set<string>();
   #eligibleRoots = new Set<string>();
   #activeRootTurns = new Map<string, string>();
+  #completedClientMessageTurns = new Map<string, string>();
   #archivedThreads = new Set<string>();
   #rejectedApprovals: CodexRejectedApprovalInteraction[] = [];
   #epoch: string;
@@ -410,6 +764,25 @@ export class NativeCodexSession {
     return this.#eligibleRoots.has(threadId);
   }
 
+  isUnmaterializedRoot(threadId: string) {
+    const candidate = this.#candidates.get(threadId);
+    return candidate?.root === true && candidate.materialization === "unmaterialized";
+  }
+
+  markRootUnmaterialized(threadId: string) {
+    const candidate = this.#candidates.get(threadId);
+    if (!candidate?.root || candidate.materialization === "materialized") return false;
+    this.#candidates.set(threadId, { ...candidate, materialization: "unmaterialized" });
+    return true;
+  }
+
+  markRootMaterialized(threadId: string) {
+    const candidate = this.#candidates.get(threadId);
+    if (!candidate?.root) return false;
+    this.#candidates.set(threadId, { ...candidate, materialization: "materialized" });
+    return true;
+  }
+
   isKnownArchived(threadId: string) {
     return this.#archivedThreads.has(threadId);
   }
@@ -432,6 +805,20 @@ export class NativeCodexSession {
     return this.#activeRootTurns.delete(threadId);
   }
 
+  hasCompletedClientMessage(threadId: string, turnId: string, clientUserMessageId: string) {
+    if (!isIdentifier(threadId) || !isIdentifier(turnId) ||
+        !isIdentifier(clientUserMessageId)) {
+      throw new TypeError("Codex completed client-message identity is malformed.");
+    }
+    const observedTurnId = this.#completedClientMessageTurns.get(
+      `${threadId}\0${clientUserMessageId}`,
+    );
+    if (observedTurnId !== undefined && observedTurnId !== turnId) {
+      throw protocolError("Codex completed a client message on an unexpected turn.");
+    }
+    return observedTurnId === turnId;
+  }
+
   observeThread(value: unknown) {
     const observed = this.#observeThread(value);
     if (observed) {
@@ -441,8 +828,29 @@ export class NativeCodexSession {
     return observed;
   }
 
+  async authenticateRootProjection(
+    value: unknown,
+    options: { archived?: boolean } = {},
+  ) {
+    const client = await this.ensureConnected();
+    try {
+      return await this.#authenticateRootProjection(
+        client,
+        value,
+        options.archived === true,
+      );
+    } catch (error) {
+      throw translateClientError(
+        error,
+        "Codex app-server could not authenticate the native thread projection.",
+      );
+    }
+  }
+
   forgetThread(threadId: string) {
     if (!isIdentifier(threadId)) return false;
+    const candidate = this.#candidates.get(threadId);
+    if (!candidate?.root && !this.#archivedThreads.has(threadId)) return false;
     this.#archivedThreads.add(threadId);
     const removed = this.#candidates.delete(threadId);
     if (removed) {
@@ -507,10 +915,12 @@ export class NativeCodexSession {
   async close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#completedClientMessageTurns.clear();
     const error = new NativeCodexSessionError("UNAVAILABLE", "Native Codex session closed.");
     for (const waiter of [...this.#waiters]) this.#rejectWaiter(waiter, error);
-    this.#interactions?.close();
+    const interactions = this.#interactions;
     this.#interactions = null;
+    interactions?.close();
     const client = this.#client;
     const openingClient = this.#openingClient;
     const opening = this.#clientPromise;
@@ -573,7 +983,9 @@ export class NativeCodexSession {
         respond: (id, result) => client!.respond(id, result),
         respondError: (id, error) => client!.respondError(id, error),
         now: this.#options.now,
-        onChange: () => this.mark("interaction"),
+        onChange: () => {
+          if (this.#interactions === registry) this.mark("interaction");
+        },
       });
       const initialized = await client.request("initialize", {
         clientInfo: {
@@ -595,10 +1007,20 @@ export class NativeCodexSession {
       this.#eligible.clear();
       this.#eligibleRoots.clear();
       this.#activeRootTurns.clear();
+      this.#completedClientMessageTurns.clear();
       await this.#hydrateEligibility(client);
       if (this.#closed) throw new NativeCodexSessionError("UNAVAILABLE", "Session closed during startup.");
-      this.#interactions?.close();
+      // Startup requests and notifications arrive on one ordered channel. Validate every
+      // compatibility-consumed notification before replaying any earlier queued request so a
+      // malformed later frame cannot dispatch a planner effect with provisional authority.
+      for (const event of deferredInboundEvents) {
+        if (event.kind === "notification") {
+          parseConsumedNotificationParams(event.notification);
+        }
+      }
+      const previousInteractions = this.#interactions;
       this.#interactions = registry;
+      previousInteractions?.close();
       this.#client = client;
       this.#openingClient = null;
       readyForInboundEvents = true;
@@ -608,6 +1030,7 @@ export class NativeCodexSession {
       }
       return client;
     } catch (error) {
+      if (client) this.#handleFailure(client);
       registry?.close();
       await client?.close().catch(() => undefined);
       if (this.#client === client) this.#client = null;
@@ -628,7 +1051,11 @@ export class NativeCodexSession {
         archived: false,
         cwd: this.#fixedCwd,
         limit: ELIGIBILITY_PAGE_SIZE,
-        sourceKinds: ["appServer"],
+        parentThreadId: null,
+        // `sourceKinds` is intentionally empty: Codex reports app-server
+        // threads as their caller's transport source (for example `vscode`).
+        // The thread-service filters the app-owned marker instead.
+        sourceKinds: [],
         sortKey: "updated_at",
         sortDirection: "desc",
         ...(cursor === null ? {} : { cursor }),
@@ -638,7 +1065,9 @@ export class NativeCodexSession {
             !isNativeCursor(result.nextCursor))) {
         throw protocolError("Codex app-server thread/list response is malformed.");
       }
-      for (const thread of result.data) this.observeThread(thread);
+      for (const thread of result.data) {
+        await this.#authenticateRootProjection(client, thread, false);
+      }
       if (result.nextCursor === null || result.nextCursor === undefined) return;
       if (seenCursors.has(result.nextCursor)) {
         throw protocolError("Codex app-server thread/list cursor repeated during hydration.");
@@ -647,6 +1076,58 @@ export class NativeCodexSession {
       cursor = result.nextCursor;
     }
     throw protocolError("Codex app-server thread catalogue exceeded the hydration bound.");
+  }
+
+  async #authenticateRootProjection(
+    client: AppServerClient,
+    value: unknown,
+    archived: boolean,
+  ) {
+    if (!isRootProjectionAtFixedCwd(value, this.#fixedCwd)) return false;
+    const threadId = value.id as string;
+    const knownArchived = this.#archivedThreads.has(threadId);
+    if (knownArchived) return archived;
+
+    if (!archived && this.observeThread(value)) return true;
+    const retainedActiveRoot = this.#eligibleRoots.has(threadId);
+    let authenticated = value.threadSource === NATIVE_CODEX_THREAD_SOURCE ||
+      (archived && retainedActiveRoot &&
+        (value.threadSource === null || value.threadSource === undefined));
+    if (!authenticated && value.threadSource !== null && value.threadSource !== undefined) {
+      return false;
+    }
+    if (!authenticated) {
+      const recovered = await this.#recoverMarkedRootProjection(client, threadId);
+      if (recovered === null) return false;
+      if (!archived) return this.observeThread(recovered);
+      authenticated = true;
+    }
+    if (!archived) return this.observeThread(value);
+
+    this.#archivedThreads.add(threadId);
+    const removed = this.#candidates.delete(threadId);
+    if (removed) {
+      this.#activeRootTurns.delete(threadId);
+      this.#recomputeEligibility();
+    }
+    return true;
+  }
+
+  async #recoverMarkedRootProjection(client: AppServerClient, threadId: string) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await client.request("thread/read", {
+        threadId,
+        // Codex 0.142.5 restores the persisted custom thread source only on
+        // the full rollout projection. The lightweight read remains lossy.
+        includeTurns: true,
+      });
+      const thread = isRecord(result) && isRecord(result.thread) ? result.thread : null;
+      if (!isRootProjectionAtFixedCwd(thread, this.#fixedCwd) || thread.id !== threadId) {
+        return null;
+      }
+      if (isMarkedRootProjectionAtFixedCwd(thread, this.#fixedCwd)) return thread;
+    }
+    return null;
   }
 
   #observeThread(value: unknown) {
@@ -660,9 +1141,21 @@ export class NativeCodexSession {
         ? value.parentThreadId
         : undefined;
     if (parentThreadId === undefined) return false;
-    const root = parentThreadId === null && value.source === "appServer";
+    const previous = this.#candidates.get(value.id);
+    const missingThreadSource = value.threadSource === null || value.threadSource === undefined;
+    const root = parentThreadId === null &&
+      (value.threadSource === NATIVE_CODEX_THREAD_SOURCE ||
+        (missingThreadSource && previous?.root === true));
     if (parentThreadId === null && !root) return false;
-    this.#candidates.set(value.id, { id: value.id, parentThreadId, root });
+    const materialization = Array.isArray(value.turns) && value.turns.length > 0
+      ? "materialized"
+      : previous?.materialization ?? "unknown";
+    this.#candidates.set(value.id, {
+      id: value.id,
+      parentThreadId,
+      root,
+      materialization,
+    });
     return true;
   }
 
@@ -701,15 +1194,12 @@ export class NativeCodexSession {
 
   #handleNotification(client: AppServerClient, notification: AppServerNotification) {
     if (client !== this.#client && client !== this.#openingClient) return;
-    const params = isRecord(notification.params) ? notification.params : null;
+    const consumedParams = parseConsumedNotificationParams(notification);
+    const params = consumedParams ?? (isRecord(notification.params) ? notification.params : null);
     if (notification.method === "serverRequest/resolved") {
-      if (!params || !isIdentifier(params.threadId) ||
-          !isProtocolRequestId(params.requestId)) {
-        throw protocolError("Codex app-server emitted malformed request-resolution state.");
-      }
       const resolution = this.#interactions?.resolveProtocolRequest(
-        params.requestId,
-        params.threadId,
+        consumedParams!.requestId as string | number,
+        consumedParams!.threadId as string,
       ) ?? "unknown";
       if (resolution === "thread_mismatch") {
         throw protocolError("Codex app-server resolved an interaction on the wrong thread.");
@@ -721,11 +1211,32 @@ export class NativeCodexSession {
       this.forgetThread(params.threadId);
     } else if (notification.method === "turn/started" && params) {
       const threadId = threadIdFromParams(params);
-      const turnId = turnIdFromParams(params);
+      const turnId = turnIdFromTurnParams(params);
       if (threadId !== null && turnId !== null) this.bindActiveRootTurn(threadId, turnId);
+    } else if (notification.method === "item/completed" && params &&
+        isRecord(params.item) && params.item.type === "userMessage" &&
+        isIdentifier(params.item.clientId)) {
+      const threadId = threadIdFromParams(params);
+      const turnId = turnIdFromItemParams(params);
+      if (threadId !== null && turnId !== null && this.isEligibleRoot(threadId)) {
+        const key = `${threadId}\0${params.item.clientId}`;
+        const priorTurnId = this.#completedClientMessageTurns.get(key);
+        if (priorTurnId !== undefined && priorTurnId !== turnId) {
+          throw protocolError("Codex completed a client message on more than one turn.");
+        }
+        if (priorTurnId === undefined) {
+          this.#completedClientMessageTurns.set(key, turnId);
+          while (this.#completedClientMessageTurns.size >
+              MAX_COMPLETED_CLIENT_MESSAGE_BINDINGS) {
+            const oldest = this.#completedClientMessageTurns.keys().next().value;
+            if (oldest === undefined) break;
+            this.#completedClientMessageTurns.delete(oldest);
+          }
+        }
+      }
     } else if (notification.method === "turn/completed" && params) {
       const threadId = threadIdFromParams(params);
-      const turnId = turnIdFromParams(params);
+      const turnId = turnIdFromTurnParams(params);
       if (threadId !== null && turnId !== null) this.clearActiveRootTurn(threadId, turnId);
     }
     const threadId = params && isIdentifier(params.threadId)
@@ -827,12 +1338,15 @@ export class NativeCodexSession {
     if (client !== this.#client && client !== this.#openingClient) return;
     if (this.#client === client) this.#client = null;
     if (this.#openingClient === client) this.#openingClient = null;
-    this.#interactions?.close();
+    const interactions = this.#interactions;
     this.#interactions = null;
+    interactions?.close();
     this.#candidates.clear();
     this.#eligible.clear();
     this.#eligibleRoots.clear();
     this.#activeRootTurns.clear();
+    this.#completedClientMessageTurns.clear();
+    this.#archivedThreads.clear();
     this.#rejectedApprovals = [];
     this.#resetEpoch();
   }

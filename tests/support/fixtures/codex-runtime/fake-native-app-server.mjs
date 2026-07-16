@@ -13,8 +13,11 @@ const restoredState = (() => {
   }
 })();
 const threads = new Map(Array.isArray(restoredState?.threads) ? restoredState.threads : []);
+const liveRootIds = new Set();
 const pendingServerRequests = new Map();
 const requestCounts = Object.create(null);
+const requestSequence = [];
+const threadReadRequests = [];
 const serverResponses = [];
 let nextThread = Number.isSafeInteger(restoredState?.nextThread) ? restoredState.nextThread : 0;
 let nextTurn = Number.isSafeInteger(restoredState?.nextTurn) ? restoredState.nextTurn : 0;
@@ -32,13 +35,24 @@ function environmentInteger(name, fallback = 0) {
   return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+function environmentErrorCode(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isSafeInteger(value) ? value : fallback;
+}
+
 function persistState() {
   if (stateFile === null) return;
   const temporary = `${stateFile}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify({
     nextThread,
     nextTurn,
-    threads: [...threads.entries()],
+    // The real provider does not write an allocated blank root to rollout
+    // history until its first user turn. Keep the deterministic id counter,
+    // but exclude process-local roots from the restart image.
+    threads: [...threads.entries()].filter(([, thread]) =>
+      process.env.FAKE_NATIVE_PERSIST_UNMATERIALIZED_ROOT === "1" ||
+      thread.materialized !== false
+    ),
   }), { encoding: "utf8", mode: 0o600 });
   renameSync(temporary, stateFile);
 }
@@ -49,22 +63,55 @@ function send(message) {
 
 function count(method) {
   requestCounts[method] = (requestCounts[method] ?? 0) + 1;
+  requestSequence.push(method);
 }
 
 function threadView(thread) {
   return {
+    cliVersion: "0.142.5",
     id: thread.id,
     name: thread.name,
     preview: thread.preview,
     cwd: process.cwd(),
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
+    modelProvider: "fake-native-provider",
+    sessionId: `fake-session-${thread.id}`,
     status: thread.status,
     source: thread.source,
+    threadSource: thread.threadSource,
     parentThreadId: thread.parentThreadId,
     ephemeral: thread.ephemeral,
     turns: thread.turns,
   };
+}
+
+function threadListView(thread) {
+  const view = threadView(thread);
+  if (thread.materialized !== false && thread.parentThreadId === null) {
+    // Codex 0.142.5 rebuilds materialized list projections from ThreadItem,
+    // whose schema drops the custom thread source.
+    view.threadSource = null;
+  }
+  return view;
+}
+
+function threadReadView(thread) {
+  const view = threadView(thread);
+  const revalidationNullReads = environmentInteger("FAKE_NATIVE_REVALIDATION_NULL_READS");
+  const readCount = threadReadRequests.filter((request) => request.threadId === thread.id).length;
+  if (!liveRootIds.has(thread.id) && readCount <= revalidationNullReads) {
+    view.threadSource = null;
+    return view;
+  }
+  if (thread.materialized !== false && thread.parentThreadId === null &&
+      liveRootIds.has(thread.id)) {
+    // The same lossy rollout projection replaces the live read once the first
+    // turn materializes. A fresh process can still recover the marker through
+    // the unloaded SQLite projection before the task is resumed.
+    view.threadSource = process.env.FAKE_NATIVE_LIVE_READ_THREAD_SOURCE ?? null;
+  }
+  return view;
 }
 
 function authorizedThreadResult(thread, drift = null) {
@@ -88,6 +135,7 @@ function authorizedThreadResult(thread, drift = null) {
   }
   if (drift === "sandboxType") result.sandbox.type = "workspaceWrite";
   if (drift === "networkAccess") result.sandbox.networkAccess = true;
+  if (drift === "threadSource") result.thread.threadSource = "unmarked-native-thread";
   return result;
 }
 
@@ -102,8 +150,12 @@ function createThread(params, overrides = {}, persist = true) {
     updatedAt: now,
     status: { type: "idle" },
     turns: [],
+    materialized: overrides.materialized ?? true,
     archived: false,
-    source: overrides.source ?? "appServer",
+    // Native Codex returns the host transport source (`vscode`) even for an
+    // app-server thread. The app-owned `threadSource` marker is authoritative.
+    source: overrides.source ?? "vscode",
+    threadSource: overrides.threadSource ?? params?.threadSource ?? "weekly_recipe_planner",
     parentThreadId: overrides.parentThreadId ?? null,
     ephemeral: false,
   };
@@ -115,6 +167,19 @@ function createThread(params, overrides = {}, persist = true) {
 if (restoredState === null) {
   for (let index = 0; index < environmentInteger("FAKE_NATIVE_ROOT_COUNT"); index += 1) {
     createThread({}, {}, false);
+  }
+  if (process.env.FAKE_NATIVE_FOREIGN_UNMATERIALIZED_ROOT === "1") {
+    createThread({}, {
+      materialized: false,
+      threadSource: "foreign-native-thread",
+    }, false);
+  }
+  if (process.env.FAKE_NATIVE_FOREIGN_MATERIALIZED_ROOT === "1") {
+    createThread({}, { threadSource: "foreign-native-thread" }, false);
+  }
+  if (process.env.FAKE_NATIVE_UNVERIFIABLE_MATERIALIZED_ROOT === "1") {
+    const unverifiable = createThread({}, {}, false);
+    liveRootIds.add(unverifiable.id);
   }
   if (process.env.FAKE_NATIVE_DEFAULT_EPHEMERAL_FIRST_PAGE === "1") {
     if (nextThread === 0) createThread({}, {}, false);
@@ -128,15 +193,17 @@ if (restoredState === null) {
     }
   }
   if (process.env.FAKE_NATIVE_LARGE_CHILD === "1" && nextThread > 0) {
+    const parentThreadId = `native-thread-${nextThread}`;
     createThread({}, {
-      parentThreadId: `native-thread-${nextThread}`,
-      source: { subAgent: { threadSpawn: {} } },
+      parentThreadId,
+      source: { subAgent: { thread_spawn: { depth: 1, parent_thread_id: parentThreadId } } },
     }, false);
   }
   if (nextThread > 0) persistState();
 }
 
-if (process.env.FAKE_NATIVE_EARLY_INPUT === "1") {
+if (process.env.FAKE_NATIVE_EARLY_INPUT === "1" ||
+    process.env.FAKE_NATIVE_EARLY_PLANNER_TOOL === "1") {
   earlyInputThread = createThread({});
   earlyInputThread.status = { type: "active" };
   earlyInputThread.turns.push({
@@ -360,22 +427,35 @@ async function handleRequest(message) {
   if (message.method === "initialize") {
     send({ id: message.id, result: { userAgent: "fake-native-app-server" } });
     if (earlyInputThread !== null) {
-      const requestId = askForInput(earlyInputThread.id, "native-turn-early");
-      if (process.env.FAKE_NATIVE_EARLY_INPUT_RESOLVED === "1") {
-        pendingServerRequests.delete(requestId);
-        send({
-          method: "serverRequest/resolved",
-          params: { threadId: earlyInputThread.id, requestId },
-        });
+      if (process.env.FAKE_NATIVE_EARLY_INPUT === "1") {
+        const requestId = askForInput(earlyInputThread.id, "native-turn-early");
+        if (process.env.FAKE_NATIVE_EARLY_INPUT_RESOLVED === "1") {
+          pendingServerRequests.delete(requestId);
+          send({
+            method: "serverRequest/resolved",
+            params: { threadId: earlyInputThread.id, requestId },
+          });
+        }
+      }
+      if (process.env.FAKE_NATIVE_EARLY_PLANNER_TOOL === "1") {
+        askPlannerTool(earlyInputThread.id, "native-turn-early");
       }
       earlyInputThread = null;
+    }
+    if (process.env.FAKE_NATIVE_EARLY_NOTIFICATION !== undefined) {
+      send(JSON.parse(process.env.FAKE_NATIVE_EARLY_NOTIFICATION));
     }
     return;
   }
 
   if (message.method === "thread/start") {
     await delay(environmentInteger("FAKE_NATIVE_DELAY_BEFORE_THREAD_START_MS"));
-    const thread = createThread(message.params);
+    const unmaterialized = process.env.FAKE_NATIVE_UNMATERIALIZED_FIRST_ROOT === "1";
+    const thread = createThread(
+      message.params,
+      unmaterialized ? { materialized: false } : {},
+    );
+    liveRootIds.add(thread.id);
     await delay(environmentInteger("FAKE_NATIVE_DELAY_THREAD_START_MS"));
     send({
       id: message.id,
@@ -387,6 +467,12 @@ async function handleRequest(message) {
 
   if (message.method === "thread/list") {
     const respond = () => {
+      if (message.params?.searchTerm === "__emit_notification__") {
+        send(message.params.fixtureNotification);
+        for (const frame of message.params.fixtureAfterNotification ?? []) send(frame);
+        send({ id: message.id, result: { data: [], nextCursor: null } });
+        return;
+      }
       if (message.params?.searchTerm === "__stats__") {
         send({
           id: message.id,
@@ -394,6 +480,8 @@ async function handleRequest(message) {
             data: [],
             nextCursor: null,
             requestCounts: { ...requestCounts },
+            requestSequence: [...requestSequence],
+            threadReadRequests: structuredClone(threadReadRequests),
             serverResponses: structuredClone(serverResponses),
             initializedNotified,
             protocolViolation,
@@ -418,6 +506,7 @@ async function handleRequest(message) {
         }
       }
       const candidates = [...threads.values()]
+        .filter((thread) => thread.materialized !== false)
         .filter((thread) => thread.archived === (message.params?.archived === true))
         .filter((thread) => message.params?.parentThreadId === undefined ||
           thread.parentThreadId === message.params.parentThreadId)
@@ -449,7 +538,7 @@ async function handleRequest(message) {
       send({
         id: message.id,
         result: {
-          data: page.map(threadView),
+          data: page.map(threadListView),
           nextCursor,
         },
       });
@@ -460,6 +549,19 @@ async function handleRequest(message) {
 
   if (message.method === "thread/read") {
     const threadId = message.params?.threadId;
+    threadReadRequests.push({
+      threadId: typeof threadId === "string" ? threadId : null,
+      includeTurns: message.params?.includeTurns === true,
+    });
+    if (process.env.FAKE_NATIVE_BLOCK_THREAD_READ === "1") {
+      writeFileSync(`${process.cwd()}/.fake-native-thread-read-started`, "started\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      while (!existsSync(`${process.cwd()}/.fake-native-thread-read-release`)) {
+        await delay(5);
+      }
+    }
     if (threadId === "never") return;
     if (threadId === process.env.FAKE_NATIVE_UNAVAILABLE_THREAD_ID) return;
     if (threadId === "missing-native-thread") {
@@ -469,6 +571,18 @@ async function handleRequest(message) {
           code: -32600,
           message: `thread not found: ${threadId}`,
           data: { kind: "missing_thread" },
+        },
+      });
+      return;
+    }
+    if (threadId === process.env.FAKE_NATIVE_NOT_LOADED_THREAD_ID) {
+      send({
+        id: message.id,
+        error: {
+          code: -32600,
+          message: `thread not loaded: ${
+            process.env.FAKE_NATIVE_NOT_LOADED_RESPONSE_THREAD_ID ?? threadId
+          }`,
         },
       });
       return;
@@ -485,12 +599,46 @@ async function handleRequest(message) {
       process.stdout.write("{invalid-json\n");
       return;
     }
-    send({ id: message.id, result: { thread: threadView(requireThread(threadId)) } });
+    if (!threads.has(threadId)) {
+      send({
+        id: message.id,
+        error: {
+          code: -32600,
+          message: `thread not loaded: ${threadId}`,
+        },
+      });
+      return;
+    }
+    const thread = requireThread(threadId);
+    if (thread.materialized === false && message.params?.includeTurns === true) {
+      send({
+        id: message.id,
+        error: {
+          code: environmentErrorCode("FAKE_NATIVE_UNMATERIALIZED_READ_ERROR_CODE", -32600),
+          message: process.env.FAKE_NATIVE_UNMATERIALIZED_READ_MESSAGE ??
+            `thread ${threadId} is not materialized yet; includeTurns is unavailable before first user message`,
+          data: { kind: "unmaterialized_thread" },
+        },
+      });
+      return;
+    }
+    send({ id: message.id, result: { thread: threadReadView(thread) } });
     return;
   }
 
   if (message.method === "thread/resume") {
+    if (!threads.has(message.params?.threadId)) {
+      send({
+        id: message.id,
+        error: {
+          code: -32600,
+          message: `no rollout found for thread id ${message.params?.threadId}`,
+        },
+      });
+      return;
+    }
     const thread = requireThread(message.params?.threadId);
+    liveRootIds.add(thread.id);
     await delay(environmentInteger("FAKE_NATIVE_DELAY_RESUME_MS"));
     send({
       id: message.id,
@@ -508,30 +656,125 @@ async function handleRequest(message) {
   }
 
   if (message.method === "turn/start") {
+    if (!threads.has(message.params?.threadId)) {
+      send({
+        id: message.id,
+        error: {
+          code: -32600,
+          message: `thread not loaded: ${message.params?.threadId}`,
+        },
+      });
+      return;
+    }
     const thread = requireThread(message.params?.threadId);
     await delay(environmentInteger("FAKE_NATIVE_DELAY_BEFORE_TURN_START_MS"));
-    const turn = {
-      id: `native-turn-${++nextTurn}`,
-      status: "inProgress",
-      items: [{
-        id: `user-${nextTurn}`,
-        type: "userMessage",
-        clientId: message.params?.clientUserMessageId ?? null,
-        content: message.params?.input ?? [],
-      }],
+    const turnNumber = ++nextTurn;
+    const userItem = {
+      id: `user-${turnNumber}`,
+      type: "userMessage",
+      clientId: message.params?.clientUserMessageId ?? null,
+      content: message.params?.input ?? [],
     };
+    const turn = {
+      id: `native-turn-${turnNumber}`,
+      status: "inProgress",
+      items: [userItem],
+    };
+    if (process.env.FAKE_NATIVE_PRIVACY_CANARY_ITEMS === "1") {
+      turn.items.push(
+        {
+          id: `reasoning-${nextTurn}`,
+          type: "reasoning",
+          content: "RAW_REASONING_PRIVACY_CANARY",
+          summary: ["Considering the request"],
+        },
+        {
+          id: `planner-tool-${nextTurn}`,
+          type: "dynamicToolCall",
+          namespace: "planner",
+          tool: "read",
+          status: "completed",
+          arguments: { query: "PLANNER_ARGUMENT_PRIVACY_CANARY" },
+          result: "PLANNER_RESULT_PRIVACY_CANARY",
+        },
+        {
+          id: `web-search-${nextTurn}`,
+          type: "webSearch",
+          query: "WEB_QUERY_PRIVACY_CANARY",
+          action: {
+            type: "openPage",
+            url: "https://example.invalid/WEB_URL_PRIVACY_CANARY",
+          },
+        },
+        {
+          id: `command-${nextTurn}`,
+          type: "commandExecution",
+          command: "COMMAND_PRIVACY_CANARY",
+          commandActions: [],
+          cwd: "/private/COMMAND_PATH_PRIVACY_CANARY",
+          status: "completed",
+        },
+      );
+    }
     if (process.env.FAKE_NATIVE_DUPLICATE_CLIENT_MESSAGE === "1") {
       turn.items.push({ ...turn.items[0], id: `user-duplicate-${nextTurn}` });
+    }
+    const startedTurn = {
+      id: turn.id,
+      status: "inProgress",
+      items: [],
+      itemsView: "notLoaded",
+    };
+    const responseDelayMs = environmentInteger("FAKE_NATIVE_DELAY_TURN_START_MS");
+    const delayedMaterializationMs = environmentInteger(
+      "FAKE_NATIVE_DELAY_FIRST_TURN_MATERIALIZATION_MS",
+    );
+    if (responseDelayMs === 0) {
+      send({ id: message.id, result: { turn: startedTurn } });
+    }
+    send({ method: "turn/started", params: { threadId: thread.id, turn: startedTurn } });
+    if (process.env.FAKE_NATIVE_OMIT_USER_MESSAGE_COMPLETION !== "1") {
+      send({
+        method: "item/started",
+        params: { item: userItem, startedAtMs: Date.now(), threadId: thread.id, turnId: turn.id },
+      });
+      if (process.env.FAKE_NATIVE_BLOCK_USER_MESSAGE_COMPLETION === "1") {
+        writeFileSync(`${process.cwd()}/.fake-native-user-completion-started`, "started\n", {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        while (!existsSync(`${process.cwd()}/.fake-native-user-completion-release`)) {
+          await delay(5);
+        }
+      }
+      await delay(environmentInteger("FAKE_NATIVE_DELAY_USER_MESSAGE_COMPLETION_MS"));
+      send({
+        method: "item/completed",
+        params: {
+          completedAtMs: Date.now(),
+          item: userItem,
+          threadId: thread.id,
+          turnId: process.env.FAKE_NATIVE_USER_MESSAGE_COMPLETION_TURN_ID ?? turn.id,
+        },
+      });
+    }
+    if (delayedMaterializationMs > 0) {
+      // Codex emits the completed user item immediately before the legacy
+      // history write that makes thread/read authoritative. Preserve that
+      // ordered race instead of making the fake projection synchronous.
+      await delay(delayedMaterializationMs);
     }
     if (process.env.FAKE_NATIVE_OMIT_TURN_START_HISTORY !== "1") {
       thread.turns.push(turn);
     }
+    thread.materialized = true;
     thread.status = { type: "active" };
     thread.updatedAt = Math.floor(Date.now() / 1_000);
     persistState();
-    await delay(environmentInteger("FAKE_NATIVE_DELAY_TURN_START_MS"));
-    send({ id: message.id, result: { turn } });
-    send({ method: "turn/started", params: { threadId: thread.id, turn } });
+    if (responseDelayMs > 0) {
+      await delay(responseDelayMs);
+      send({ id: message.id, result: { turn: startedTurn } });
+    }
     const prompt = message.params?.input?.[0]?.text;
     if (typeof prompt === "string" && prompt.includes("ask me")) {
       askForInput(thread.id, turn.id);
@@ -560,7 +803,11 @@ async function handleRequest(message) {
     if (typeof prompt === "string" && prompt.includes("worker planner read")) {
       const child = createThread({}, {
         parentThreadId: thread.id,
-        source: { subAgent: { threadSpawn: {} } },
+        source: {
+          subAgent: {
+            thread_spawn: { depth: 1, parent_thread_id: thread.id },
+          },
+        },
       });
       send({ method: "thread/started", params: { thread: threadView(child) } });
       const childTurn = {
@@ -586,13 +833,24 @@ async function handleRequest(message) {
       });
       return;
     }
-    turn?.items.push({
+    const userItem = {
       id: `user-steer-${nextTurn}-${turn.items.length}`,
       type: "userMessage",
       clientId: message.params?.clientUserMessageId ?? null,
       content: message.params?.input ?? [],
-    });
+    };
+    turn?.items.push(userItem);
     persistState();
+    if (process.env.FAKE_NATIVE_OMIT_USER_MESSAGE_COMPLETION !== "1") {
+      send({
+        method: "item/started",
+        params: { item: userItem, startedAtMs: Date.now(), threadId: thread.id, turnId: turn.id },
+      });
+      send({
+        method: "item/completed",
+        params: { completedAtMs: Date.now(), item: userItem, threadId: thread.id, turnId: turn.id },
+      });
+    }
     await delay(environmentInteger("FAKE_NATIVE_DELAY_TURN_STEER_MS"));
     const prompt = message.params?.input?.[0]?.text;
     if (typeof prompt === "string" && prompt.includes("ask me")) {
