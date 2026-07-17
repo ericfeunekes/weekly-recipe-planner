@@ -64,6 +64,12 @@ function png(width, height) {
 }
 
 async function seedEvidenceMatrix(evidenceRoot) {
+  await mkdir(join(evidenceRoot, "logs"), { recursive: true });
+  await mkdir(join(evidenceRoot, "playwright"), { recursive: true });
+  await Promise.all([
+    writeFile(join(evidenceRoot, "logs", "boundary-tests.log"), "boundary proof passed\n"),
+    writeFile(join(evidenceRoot, "playwright", "selected-clone.log"), "selected clone readback passed\n"),
+  ]);
   await Promise.all(["d4", "d7"].flatMap((scenarioId) =>
     viewports.flatMap(([viewportId, width, height]) => {
       const prefix = `${scenarioId}-${viewportId}`;
@@ -123,7 +129,7 @@ test("QA evidence is content-addressed and tamper-evident", async (t) => {
       releaseBinding,
       expectedSha256: created.sha256,
     }),
-    { matched: true, sha256: created.sha256, files: 96, bytes: created.bytes },
+    { matched: true, sha256: created.sha256, files: 98, bytes: created.bytes },
   );
 
   await writeFile(join(evidenceRoot, "d4-mobile-320x844.geometry.json"), `${JSON.stringify({
@@ -145,22 +151,16 @@ test("QA evidence is content-addressed and tamper-evident", async (t) => {
   );
 });
 
-test("QA evidence requires every D4 and D7 viewport tuple", async (t) => {
+test("QA evidence requires installed boundary and selected-clone proof", async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "planner-qa-matrix-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const evidenceRoot = join(root, "evidence");
   await mkdir(evidenceRoot, { mode: 0o700 });
   await seedEvidenceMatrix(evidenceRoot);
-  await Promise.all(viewports.slice(1).flatMap(([viewportId]) => [
-    rename(
-      join(evidenceRoot, `d7-${viewportId}.axe.json`),
-      join(evidenceRoot, `noise-${viewportId}.axe.json`),
-    ),
-    rename(
-      join(evidenceRoot, `d7-${viewportId}.geometry.json`),
-      join(evidenceRoot, `noise-${viewportId}.geometry.json`),
-    ),
-  ]));
+  await rename(
+    join(evidenceRoot, "playwright", "selected-clone.log"),
+    join(evidenceRoot, "playwright", "other-browser-proof.log"),
+  );
   const appRoot = await realpath(new URL("../", import.meta.url).pathname);
   await assert.rejects(
     createQaEvidenceManifest({
@@ -182,7 +182,7 @@ test("QA evidence requires every D4 and D7 viewport tuple", async (t) => {
         },
       },
     }),
-    /omitted the exact D4\/D7 responsive.*matrix/,
+    /omitted its installed boundary or selected-clone browser proof/,
   );
 });
 

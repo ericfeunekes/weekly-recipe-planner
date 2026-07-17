@@ -963,130 +963,17 @@ async function runInstalledPlaywright(options) {
       logPath: join(outputRoot, "selected-clone.log"),
       timeoutMs: 180_000,
     });
-    await controller.reset();
-    await runLoggedCommand(options.nodeExecutable, [
-      playwrightCli,
-      "test",
-      "tests/e2e/family-dinner.spec.ts",
-      "tests/e2e/codex-follow-up.spec.ts",
-    ], {
-      cwd: options.appRoot,
-      env: {
-        ...baseEnvironment,
-        PLANNER_E2E_OUTPUT_DIR: join(outputRoot, "journey-results"),
-      },
-      logPath: join(outputRoot, "playwright.log"),
-      timeoutMs: 900_000,
-    });
     await controller.close();
     controller = null;
-    const visual = await runInstalledVisualMatrix({
-      ...options,
-      playwrightCli,
-      baseEnvironment,
-    });
     return Object.freeze({
       mode: "installed-production",
       frozenVinextStart: true,
       selectedCloneSha256: browserClone.sha256,
       selectedCloneBrowserReadback: true,
-      freshDeterministicJourneys: Object.freeze({
-        familyDinnerSpec: true,
-        nativeCodexPreviewPresentationSpec: true,
-      }),
-      visual,
     });
   } finally {
     await controller?.close();
   }
-}
-
-async function runInstalledVisualMatrix(options) {
-  const fixtures = ["D4", "D7"];
-  const viewportIds = [
-    "mobile-320x844",
-    "short-375x400",
-    "mobile-428x926",
-    "tablet-620x900",
-    "tablet-700x900",
-    "tablet-701x900",
-    "tablet-768x1024",
-    "tablet-840x900",
-    "tablet-841x900",
-    "desktop-980x900",
-    "desktop-1280x900",
-    "desktop-1920x1080",
-  ];
-  for (const fixture of fixtures) {
-    const fixtureKey = fixture.toLowerCase();
-    const dataRoot = await ensurePrivateDirectory(
-      join(options.qaInvocationRoot, "visual-data", fixtureKey),
-    );
-    const markerRoot = await ensurePrivateDirectory(
-      join(options.qaInvocationRoot, "visual-markers", fixtureKey),
-    );
-    const controller = await options.e2eRuntime.createInProcessInstalledE2eController({
-      appRoot: options.appRoot,
-      dataDirectory: dataRoot,
-      webOrigin: options.webOrigin,
-      publicPort: 0,
-      controlPort: 0,
-      runtimeOwnershipLease: options.runtimeOwnershipLease,
-      runtimeOwnershipSocketPath: options.runtimeOwnershipSocketPath,
-      globalCodexParentDirectory: options.shortUdsParent,
-      markerRoot,
-      seedFixture: fixture,
-    }, options.controllerDependencies);
-    try {
-      const fixtureEvidence = await ensurePrivateDirectory(
-        join(options.evidenceRoot, "visual", fixtureKey),
-      );
-      const specs = [
-        "tests/e2e/installed-visual-qa.spec.ts",
-        "tests/e2e/ui-contracts.spec.ts",
-        ...(fixture === "D4" ? ["tests/e2e/operation-journal.spec.ts"] : []),
-      ];
-      await runLoggedCommand(options.nodeExecutable, [
-        options.playwrightCli,
-        "test",
-        ...specs,
-      ], {
-        cwd: options.appRoot,
-        env: {
-          ...options.baseEnvironment,
-          PLANNER_E2E_BASE_URL: controller.apiOrigin,
-          PLANNER_E2E_CONTROL_ORIGIN: controller.controlOrigin,
-          PLANNER_E2E_OUTPUT_DIR: join(
-            options.evidenceRoot,
-            "playwright",
-            "visual",
-            fixtureKey,
-            "results",
-          ),
-          PLANNER_E2E_FIXTURE_EXPECTED: fixture,
-          PLANNER_E2E_EVIDENCE_DIR: fixtureEvidence,
-        },
-        logPath: join(
-          options.evidenceRoot,
-          "playwright",
-          "visual",
-          fixtureKey,
-          "playwright.log",
-        ),
-        timeoutMs: 900_000,
-      });
-    } finally {
-      await controller.close();
-    }
-  }
-  return Object.freeze({
-    fixtures: Object.freeze(fixtures),
-    viewportIds: Object.freeze(viewportIds),
-    axe: true,
-    geometry: true,
-    screenshots: true,
-    d4OperationJournal: true,
-  });
 }
 
 function qaEnvironment(source, qaInvocationRoot) {

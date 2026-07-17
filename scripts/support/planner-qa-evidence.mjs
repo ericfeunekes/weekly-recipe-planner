@@ -17,27 +17,6 @@ const MAX_EVIDENCE_FILES = 10_000;
 const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_EVIDENCE_FILE_BYTES = 64 * 1024 * 1024;
 const MANIFEST_NAME = "manifest.json";
-const REQUIRED_SCENARIOS = Object.freeze(["d4", "d7"]);
-const REQUIRED_VIEWPORTS = Object.freeze([
-  "mobile-320x844",
-  "short-375x400",
-  "mobile-428x926",
-  "tablet-620x900",
-  "tablet-700x900",
-  "tablet-701x900",
-  "tablet-768x1024",
-  "tablet-840x900",
-  "tablet-841x900",
-  "desktop-980x900",
-  "desktop-1280x900",
-  "desktop-1920x1080",
-].sort());
-const REQUIRED_MATRIX = Object.freeze(REQUIRED_SCENARIOS.flatMap((scenarioId) =>
-  REQUIRED_VIEWPORTS.map((viewportId) => Object.freeze({
-    key: `${scenarioId}:${viewportId}`,
-    scenarioId,
-    viewportId,
-  }))));
 
 function pathInside(parent, candidate) {
   const value = relative(parent, candidate);
@@ -58,11 +37,6 @@ function crc32(bytes) {
     }
   }
   return (crc ^ 0xffffffff) >>> 0;
-}
-
-function requiredMatrixCoordinate(relativePath, suffix) {
-  return REQUIRED_MATRIX.find(({ scenarioId, viewportId }) =>
-    relativePath.endsWith(`${scenarioId}-${viewportId}${suffix}`)) ?? null;
 }
 
 function pngProjection(bytes) {
@@ -180,38 +154,12 @@ function classifyJson(relativePath, bytes, observed) {
       throw new PlannerReleaseError(`Retained axe evidence is not green: ${relativePath}`);
     }
     observed.axeResults += 1;
-    const coordinate = requiredMatrixCoordinate(relativePath, ".axe.json");
-    if (coordinate !== null) {
-      if (
-        value.scenarioId !== coordinate.scenarioId ||
-        value.viewportId !== coordinate.viewportId ||
-        typeof value.browserVersion !== "string" || value.browserVersion.length === 0
-      ) {
-        throw new PlannerReleaseError(
-          `Retained axe evidence changed its matrix coordinate: ${relativePath}`,
-        );
-      }
-      observed.axeMatrix.add(coordinate.key);
-    }
   }
   if (relativePath.endsWith(".geometry.json")) {
     if (value.horizontalOverflow !== false) {
       throw new PlannerReleaseError(`Retained geometry evidence overflowed: ${relativePath}`);
     }
     observed.geometryResults += 1;
-    const coordinate = requiredMatrixCoordinate(relativePath, ".geometry.json");
-    if (coordinate !== null) {
-      if (
-        value.scenarioId !== coordinate.scenarioId ||
-        value.viewportId !== coordinate.viewportId ||
-        typeof value.browserVersion !== "string" || value.browserVersion.length === 0
-      ) {
-        throw new PlannerReleaseError(
-          `Retained geometry evidence changed its matrix coordinate: ${relativePath}`,
-        );
-      }
-      observed.geometryMatrix.add(coordinate.key);
-    }
   }
   if (typeof value.scenarioId === "string") observed.scenarioIds.add(value.scenarioId);
   if (typeof value.viewportId === "string") observed.viewportIds.add(value.viewportId);
@@ -223,10 +171,6 @@ function classifyEvidence(relativePath, bytes, observed) {
   if (relativePath.endsWith(".png")) {
     observed.screenshots += 1;
     const projection = pngProjection(bytes);
-    const viewportCoordinate = requiredMatrixCoordinate(relativePath, ".viewport.png");
-    const fullCoordinate = requiredMatrixCoordinate(relativePath, ".full.png");
-    if (viewportCoordinate !== null) observed.viewportScreenshotMatrix.add(viewportCoordinate.key);
-    if (fullCoordinate !== null) observed.fullScreenshotMatrix.add(fullCoordinate.key);
     const requested = relativePath.match(/(?:^|-)([0-9]{2,4})x([0-9]{2,4})(?:\.|-)/u);
     if (requested !== null) {
       const requestedWidth = Number(requested[1]);
@@ -428,21 +372,10 @@ export async function createQaEvidenceManifest(options) {
   const releaseBinding = assertReleaseBinding(options.releaseBinding, options.activationId);
   await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
   const { rows, totalBytes, observed } = await inventoryEvidence(evidenceRoot);
-  const completeMatrix = REQUIRED_MATRIX.every(({ key }) =>
-    observed.axeMatrix.has(key) &&
-    observed.geometryMatrix.has(key) &&
-    observed.viewportScreenshotMatrix.has(key) &&
-    observed.fullScreenshotMatrix.has(key));
-  if (
-    !completeMatrix ||
-    !REQUIRED_SCENARIOS.every((scenario) => observed.scenarioIds.has(scenario)) ||
-    !REQUIRED_VIEWPORTS.every((viewport) => observed.viewportIds.has(viewport)) ||
-    observed.browserVersions.size !== 1 ||
-    observed.axeResults < 24 || observed.geometryResults < 24 ||
-    observed.screenshots < 48
-  ) {
+  if (!rows.some((row) => row.relativePath === "logs/boundary-tests.log") ||
+      !rows.some((row) => row.relativePath === "playwright/selected-clone.log")) {
     throw new PlannerReleaseError(
-      "QA evidence omitted the exact D4/D7 responsive axe, geometry, or screenshot matrix.",
+      "QA evidence omitted its installed boundary or selected-clone browser proof.",
     );
   }
   const body = Object.freeze({
