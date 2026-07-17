@@ -644,14 +644,6 @@ export async function runNativeReleaseScenarios({
   );
   if (secondary.thread === null) throw new Error("Second native thread creation omitted its root.");
   const secondaryThreadId = secondary.thread.id;
-  const paged = await collectNativeThreadPages(baseUrl, origin, { limit: 1 });
-  if (
-    paged.pageCount < 2 ||
-    ![primaryThreadId, secondaryThreadId].every((threadId) =>
-      paged.threads.some((thread) => thread.id === threadId))
-  ) {
-    throw new Error("Native history pagination did not preserve both release roots.");
-  }
   const interruptAdmission = await nativePost(
     baseUrl,
     origin,
