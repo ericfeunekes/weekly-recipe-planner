@@ -5,7 +5,6 @@ import {
   LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   PREP_DAYS_AFTER_WEEK_START,
-  PREP_DAYS_BEFORE_WEEK_START,
   WEEK_STATUSES,
   isIsoDate,
   isWeekId,
@@ -153,7 +152,7 @@ export function weekContainsDate(weekId: WeekId, date: IsoDate): boolean {
 
 export function weekContainsPrepDate(weekId: WeekId, date: IsoDate): boolean {
   const difference = dateOrdinal(date) - dateOrdinal(weekId);
-  return difference >= -PREP_DAYS_BEFORE_WEEK_START && difference <= PREP_DAYS_AFTER_WEEK_START;
+  return difference <= PREP_DAYS_AFTER_WEEK_START;
 }
 
 export function mondayForIsoDate(value: IsoDate): WeekId {
@@ -707,6 +706,21 @@ function materializeId(
   if (!isId(id) || existing.has(id)) return null;
   existing.add(id);
   return id;
+}
+
+function findOrCreatePrepSessionForDate(
+  week: WeekPlan,
+  prepDate: IsoDate,
+  context: HouseholdCommandContext,
+): { session: PrepSession; created: boolean } | { error: string } {
+  const existing = week.data.prepSessions.find((session) => session.prepDate === prepDate);
+  if (existing) return { session: existing, created: false };
+  if (week.data.prepSessions.length >= MAX_PREP_SESSIONS) return { error: "The prep-session list is full." };
+  const id = materializeId(context, "prep-session", new Set(week.data.prepSessions.map((session) => session.id)));
+  if (!id) return { error: "Could not materialize a unique prep-session ID." };
+  const session: PrepSession = { id, label: `Prep ${prepDate}`, prepDate, steps: [] };
+  week.data.prepSessions.push(session);
+  return { session, created: true };
 }
 
 function ingredientKey(ingredient: string): string {
@@ -1446,6 +1460,47 @@ export function executeHouseholdCommand(
       );
     }
 
+    case "addPrepStepsToDate": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      if (!weekContainsPrepDate(week.id, command.prepDate)) {
+        return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
+      }
+      if (command.stepIds.some((stepId) => !findStep(week, stepId))) {
+        return failure(state, "One or more instruction steps could not be found.", { stepIds: "Choose instructions in the selected week." });
+      }
+      const target = findOrCreatePrepSessionForDate(week, command.prepDate, context);
+      if ("error" in target) return failure(state, target.error);
+      const session = target.session;
+      if (command.targetPosition > session.steps.length) {
+        return failure(state, "Prep-session position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
+      }
+      if (command.stepIds.some((stepId) => session.steps.some((entry) => entry.stepId === stepId))) {
+        return failure(state, "One or more instructions are already planned for this date.");
+      }
+      if (prepSessionEntryCount(week.data.prepSessions) + command.stepIds.length > MAX_PREP_ENTRIES) {
+        return failure(state, "The prep-session list is full.");
+      }
+      const existingEntryIds = new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id)));
+      const entries: PrepSessionStep[] = [];
+      for (const stepId of command.stepIds) {
+        const id = materializeId(context, "prep-session-step", existingEntryIds);
+        if (!id) return failure(state, "Could not materialize a unique prep-session step ID.");
+        entries.push({ id, stepId });
+      }
+      session.steps.splice(command.targetPosition, 0, ...entries);
+      return success(
+        state,
+        next,
+        `Added ${entries.length} instructions to prep date ${command.prepDate}`,
+        session.id,
+        [`Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`],
+        {
+          ...(target.created ? { prepSessionId: session.id } : {}),
+          ...Object.fromEntries(entries.map((entry, index) => [`prepSessionStep.${index}`, entry.id])),
+        },
+      );
+    }
+
     case "movePrepSessionStep": {
       if (!week) return rejectMissingWeek(state, command.weekId);
       const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
@@ -1484,6 +1539,46 @@ export function executeHouseholdCommand(
       source.steps.splice(0, source.steps.length, ...source.steps.filter((entry) => !selectedIds.has(entry.id)));
       destination.steps.splice(command.targetPosition, 0, ...selectedEntries);
       return success(state, next, `Moved ${selectedEntries.length} prep-session steps`, destination.id, [`From: ${source.label}`, `To: ${destination.label}`, `Position: ${command.targetPosition}`]);
+    }
+
+    case "movePrepStepsToDate": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      if (!weekContainsPrepDate(week.id, command.prepDate)) {
+        return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
+      }
+      const source = week.data.prepSessions.find((candidate) => candidate.id === command.sourceSessionId);
+      if (!source) return failure(state, "Source prep session not found.", { sourceSessionId: "Choose the prep date that contains these instructions." });
+      const selectedIds = new Set(command.entryIds);
+      const selectedEntries = source.steps.filter((entry) => selectedIds.has(entry.id));
+      if (selectedEntries.length !== command.entryIds.length) {
+        return failure(state, "One or more prep-session steps could not be found.", { entryIds: "Choose steps from the source prep date." });
+      }
+      const target = findOrCreatePrepSessionForDate(week, command.prepDate, context);
+      if ("error" in target) return failure(state, target.error);
+      const destination = target.session;
+      if (command.targetPosition > destination.steps.length) {
+        return failure(state, "Prep-session position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
+      }
+      if (source === destination) {
+        const selectedBeforeTarget = source.steps.slice(0, command.targetPosition).filter((entry) => selectedIds.has(entry.id)).length;
+        const remaining = source.steps.filter((entry) => !selectedIds.has(entry.id));
+        const insertionPosition = Math.max(0, Math.min(command.targetPosition - selectedBeforeTarget, remaining.length));
+        source.steps.splice(0, source.steps.length, ...remaining.slice(0, insertionPosition), ...selectedEntries, ...remaining.slice(insertionPosition));
+        return success(state, next, `Reordered ${selectedEntries.length} prep-session steps`, source.id, [`Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`]);
+      }
+      if (selectedEntries.some((entry) => destination.steps.some((candidate) => candidate.stepId === entry.stepId))) {
+        return failure(state, "One or more instructions are already planned for this date.");
+      }
+      source.steps.splice(0, source.steps.length, ...source.steps.filter((entry) => !selectedIds.has(entry.id)));
+      destination.steps.splice(command.targetPosition, 0, ...selectedEntries);
+      return success(
+        state,
+        next,
+        `Moved ${selectedEntries.length} prep-session steps to ${command.prepDate}`,
+        destination.id,
+        [`From: ${source.prepDate ?? source.label}`, `Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`],
+        target.created ? { prepSessionId: destination.id } : {},
+      );
     }
 
     case "removePrepSessionStep": {

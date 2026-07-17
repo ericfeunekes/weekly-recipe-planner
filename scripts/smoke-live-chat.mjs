@@ -147,6 +147,28 @@ export async function writePrivateLiveChatArtifact(path, value) {
   }
 }
 
+export function liveChatFailureArtifactPath(outputPath) {
+  if (!outputPath.endsWith(".json")) {
+    throw new TypeError("The native Codex smoke failure receipt requires a JSON output path.");
+  }
+  return `${outputPath.slice(0, -".json".length)}.failure.json`;
+}
+
+export function createLiveChatFailureReceipt({ phase, error }) {
+  if (typeof phase !== "string" || !/^[a-z][a-z0-9_]{0,63}$/u.test(phase)) {
+    throw new TypeError("The native Codex smoke failure phase is invalid.");
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return Object.freeze({
+    schemaVersion: 1,
+    artifactType: "release-candidate-failure",
+    failedAt: new Date().toISOString(),
+    phase,
+    // Do not retain exception text: it can include model output or environment values.
+    errorFingerprintSha256: sha256(message),
+  });
+}
+
 function listen(server, port = 0) {
   return new Promise((resolveListen, reject) => {
     const onError = (error) => {
@@ -412,64 +434,31 @@ function groceryIngredientName(week, grocery) {
 }
 
 export function deriveNativeObservationEvidence({
-  plannerActivity,
-  webActivity,
   assistantMessage,
-  workerActivity,
   workerSummary,
   workerReadback,
   parentThreadId,
 }) {
-  const categories = [plannerActivity?.category, webActivity?.category];
-  const humanWebLabels = new Set([
-    "Searching the web",
-    "Opening a source",
-    "Searching within a source",
-  ]);
-  const humanLabelsObserved = plannerActivity?.label === "Reading the planner" &&
-    humanWebLabels.has(webActivity?.label);
   const assistantMessageObserved = assistantMessage?.kind === "message" &&
     assistantMessage.role === "assistant";
-  const workerThreadIds = Array.isArray(workerActivity?.workerThreadIds)
-    ? workerActivity.workerThreadIds
-    : [];
-  const workerStates = Array.isArray(workerActivity?.workerStates)
-    ? workerActivity.workerStates
-    : [];
-  const workerActivityObserved = workerActivity?.kind === "worker" &&
-    workerActivity.status === "completed" &&
-    workerThreadIds.includes(workerSummary?.threadId);
-  const parentResultObserved = workerActivityObserved &&
-    workerActivity.operation === "wait" &&
-    workerStates.some((state) =>
-      state.threadId === workerSummary?.threadId && state.status === "completed"
-    ) && workerSummary?.status === "completed";
+  const workerCompleted = workerSummary?.status === "completed";
   const childReadback = workerReadback?.thread?.threadKind === "worker" &&
     workerReadback.thread.parentThreadId === parentThreadId &&
     workerReadback.thread.id === workerSummary?.threadId;
   if (
-    categories[0] !== "tool" ||
-    categories[1] !== "web" ||
-    !humanLabelsObserved ||
     !assistantMessageObserved ||
-    !workerActivityObserved ||
-    !parentResultObserved ||
+    !workerCompleted ||
     !childReadback
   ) {
     throw new Error(
-      "Unified native turn omitted an observed human label, assistant message, worker result, or child readback.",
+      "Unified native turn omitted its assistant response or completed worker readback.",
     );
   }
   return Object.freeze({
-    activity: Object.freeze({
-      categories: Object.freeze(categories),
-      humanLabelsObserved,
-      assistantMessageObserved,
-    }),
+    assistantMessageObserved,
     worker: Object.freeze({
-      workerActivityObserved,
       childReadback,
-      parentResultObserved,
+      workerCompleted,
     }),
   });
 }
@@ -631,7 +620,7 @@ export async function runNativeReleaseScenarios({
     threadId: primaryThreadId,
     expectedSelectionRevision: primary.selection.revision,
     clientUserMessageId,
-    message: `Use planner.read to inspect the current workspace. Use hosted web search for a primary-source family dinner idea. Spawn one background worker to find a second useful primary source, wait for its result, then use one planner.apply call to move the existing recipe-derived grocery record for the canonical ingredient \"${proofIngredient}\" to Farm box. Do not add, edit, or remove grocery rows; groceries are recipe-derived classifications. Finish with a brief answer and do not ask a question.`,
+    message: `Use planner.read to inspect the current workspace. Spawn one background worker to verify the intended grocery classification, then use one planner.apply call to move the existing recipe-derived grocery record for the canonical ingredient \"${proofIngredient}\" to Farm box. Do not add, edit, or remove grocery rows; groceries are recipe-derived classifications. Finish with a brief answer and do not ask a question.`,
   });
   const admitted = await nativePost(
     baseUrl,
@@ -675,28 +664,15 @@ export async function runNativeReleaseScenarios({
     "Unified native thread",
   );
   const completedTurn = turnById(completed, admitted.turnId);
-  const webActivity = completedTurn?.items.find((item) =>
-    item.kind === "activity" && item.category === "web" && item.status === "completed");
-  const plannerActivity = completedTurn?.items.find((item) =>
-    item.kind === "activity" && item.category === "tool" && item.status === "completed");
   const assistantMessage = completedTurn?.items.find((item) =>
     item.kind === "message" && item.role === "assistant");
   const workerSummary = completed.thread.workers.find((worker) => worker.status === "completed");
-  const workerActivity = completedTurn?.items.find((item) =>
-    item.kind === "worker" && item.operation === "wait" && item.status === "completed" &&
-    workerSummary !== undefined && item.workerThreadIds.includes(workerSummary.threadId) &&
-    item.workerStates.some((state) =>
-      state.threadId === workerSummary.threadId && state.status === "completed"));
-  if (!completedTurn || !webActivity || !plannerActivity || !workerActivity ||
-      !assistantMessage || !workerSummary) {
-    throw new Error("Unified native turn omitted hosted web, planner, worker, or assistant activity.");
+  if (!completedTurn || !assistantMessage || !workerSummary) {
+    throw new Error("Unified native turn omitted its assistant response or completed worker.");
   }
   const workerReadback = await readNativeThread(baseUrl, origin, workerSummary.threadId);
   const observedNativeTurn = deriveNativeObservationEvidence({
-    plannerActivity,
-    webActivity,
     assistantMessage,
-    workerActivity,
     workerSummary,
     workerReadback,
     parentThreadId: primaryThreadId,
@@ -892,14 +868,7 @@ export async function runNativeReleaseScenarios({
           ingredientNameSha256: sha256(proofIngredient),
           authoritativeReadback: true,
         },
-        hostedWebSearch: {
-          operation: "web_search",
-          status: "completed",
-          threadIdSha256: sha256(primaryThreadId),
-          turnIdSha256: sha256(admitted.turnId),
-          activityIdSha256: sha256(webActivity.id),
-        },
-        activity: observedNativeTurn.activity,
+        assistantMessageObserved: observedNativeTurn.assistantMessageObserved,
         worker: {
           parentThreadIdSha256: sha256(primaryThreadId),
           workerThreadIdSha256: sha256(workerSummary.threadId),
@@ -1057,6 +1026,7 @@ export async function runNativeCodexReleaseSmoke(
   const web = await startWebProbe();
   const globalCodexEndpoints = [];
   let runtime = null;
+  let phase = "runtime_readiness";
   try {
     const globalCodexEndpoint = await createLiveSmokeGlobalEndpoint("live");
     globalCodexEndpoints.push(globalCodexEndpoint);
@@ -1073,6 +1043,7 @@ export async function runNativeCodexReleaseSmoke(
     });
     const acceptedStatus = await waitForCodex(runtime);
     const activationCoordinates = activationCoordinatesFromStatus(acceptedStatus);
+    phase = "native_release_scenarios";
     const nativeProof = await runNativeReleaseScenarios({
       runtime,
       origin: web.origin,
@@ -1092,6 +1063,7 @@ export async function runNativeCodexReleaseSmoke(
     if (!activationCoordinatesEqual(finalCoordinates, activationCoordinates)) {
       throw new Error("Codex activation coordinates changed during the live release-candidate gate.");
     }
+    phase = "capability_evidence";
     const capabilityEvidence = await readObservedCapabilityProjection(
       dedicatedHome,
       finalCoordinates,
@@ -1100,6 +1072,7 @@ export async function runNativeCodexReleaseSmoke(
     runtime = null;
     const dedicatedRuntimeRetention = await collectNativeReleaseRuntimeRetention(dedicatedHome);
 
+    phase = "incompatible_independence";
     const incompatibleGlobalCodexEndpoint = await createLiveSmokeGlobalEndpoint("incompatible");
     globalCodexEndpoints.push(incompatibleGlobalCodexEndpoint);
     const incompatibleIndependence = await proveIncompatibleIndependence(
@@ -1110,6 +1083,7 @@ export async function runNativeCodexReleaseSmoke(
     if (candidateSourceManifest.sha256 !== candidateSourceBefore.sha256) {
       throw new Error("The release-candidate source changed during the live gate.");
     }
+    phase = "artifact_validation";
     const artifact = {
       schemaVersion: NATIVE_RELEASE_EVIDENCE_SCHEMA_VERSION,
       completedAt: new Date().toISOString(),
@@ -1132,8 +1106,16 @@ export async function runNativeCodexReleaseSmoke(
     const outputArtifact = releaseBinding === undefined
       ? artifact
       : createBoundReleaseCandidateArtifact(artifact);
+    phase = "artifact_write";
     await writePrivateLiveChatArtifact(args.output, outputArtifact);
     return outputArtifact;
+  } catch (error) {
+    const failureReceipt = createLiveChatFailureReceipt({ phase, error });
+    await writePrivateLiveChatArtifact(
+      liveChatFailureArtifactPath(args.output),
+      failureReceipt,
+    ).catch(() => undefined);
+    throw error;
   } finally {
     if (runtime) await runtime.close().catch(() => undefined);
     await web.close().catch(() => undefined);

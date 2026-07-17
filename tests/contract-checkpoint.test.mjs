@@ -5,7 +5,6 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   PREP_DAYS_AFTER_WEEK_START,
-  PREP_DAYS_BEFORE_WEEK_START,
   isIsoDate,
   isWeekId,
 } from "../lib/household-contract.ts";
@@ -23,7 +22,6 @@ import {
 } from "../lib/planner-chat-contract.ts";
 
 test("contract checkpoint freezes bounded workspace and prep semantics", () => {
-  assert.equal(PREP_DAYS_BEFORE_WEEK_START, 1);
   assert.equal(PREP_DAYS_AFTER_WEEK_START, 6);
   assert.equal(WORKSPACE_EVENT_TAIL_LIMIT, 50);
   assert.equal(WORKSPACE_TRANSCRIPT_TAIL_LIMIT, 50);

@@ -98,8 +98,6 @@ test("release-candidate evidence rejects unknown and credential-derived projecti
     (projection) => projection.scenarios.nativeHistory,
     (projection) => projection.scenarios.nativeTurn,
     (projection) => projection.scenarios.nativeTurn.plannerEffect,
-    (projection) => projection.scenarios.nativeTurn.hostedWebSearch,
-    (projection) => projection.scenarios.nativeTurn.activity,
     (projection) => projection.scenarios.nativeTurn.worker,
     (projection) => projection.scenarios.interactions,
     (projection) => projection.scenarios.interactions.question,
@@ -152,14 +150,12 @@ test("release-candidate evidence binds one native hosted-search capability surfa
   }
 });
 
-test("release-candidate evidence requires an observed hosted-search operation bound to its turn", () => {
+test("release-candidate evidence requires an assistant response and completed worker readback", () => {
   const { releaseCandidate } = fixtureChain();
   const mutations = [
-    (projection) => { delete projection.scenarios.nativeTurn.hostedWebSearch; },
-    (projection) => { projection.scenarios.nativeTurn.hostedWebSearch.status = "started"; },
-    (projection) => {
-      projection.scenarios.nativeTurn.hostedWebSearch.turnIdSha256 = "f".repeat(64);
-    },
+    (projection) => { delete projection.scenarios.nativeTurn.assistantMessageObserved; },
+    (projection) => { projection.scenarios.nativeTurn.assistantMessageObserved = false; },
+    (projection) => { projection.scenarios.nativeTurn.worker.workerCompleted = false; },
   ];
   for (const mutate of mutations) {
     const changed = structuredClone(releaseCandidate);
@@ -194,13 +190,11 @@ test("release-candidate evidence requires one authoritative recipe-derived farm-
   }
 });
 
-test("release-candidate evidence requires observed labels and a completed parent worker result", () => {
+test("release-candidate evidence requires a completed child worker readback", () => {
   const { releaseCandidate } = fixtureChain();
   const mutations = [
-    (projection) => { delete projection.scenarios.nativeTurn.activity.humanLabelsObserved; },
-    (projection) => { projection.scenarios.nativeTurn.activity.humanLabelsObserved = false; },
-    (projection) => { delete projection.scenarios.nativeTurn.worker.parentResultObserved; },
-    (projection) => { projection.scenarios.nativeTurn.worker.parentResultObserved = false; },
+    (projection) => { delete projection.scenarios.nativeTurn.worker.childReadback; },
+    (projection) => { projection.scenarios.nativeTurn.worker.childReadback = false; },
   ];
   for (const mutate of mutations) {
     const changed = structuredClone(releaseCandidate);

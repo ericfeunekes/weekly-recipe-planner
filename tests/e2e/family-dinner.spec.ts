@@ -343,12 +343,14 @@ test.describe.serial("family dinner authority", () => {
     await expect(pageB.getByText("Family dinner planner")).toBeVisible();
     await openView(pageA, "Prep");
     await openView(pageB, "Prep");
-    const prepTabsA = pageA.getByRole("tablist", { name: "Prep sessions" });
-    const prepTabsB = pageB.getByRole("tablist", { name: "Prep sessions" });
-    const firstTabA = prepTabsA.getByRole("tab").first();
-    const firstTabB = prepTabsB.getByRole("tab").first();
-    const secondTabA = prepTabsA.getByRole("tab").nth(1);
-    const secondTabB = prepTabsB.getByRole("tab").nth(1);
+    await pageA.getByLabel("Jump to prep date").fill("2026-07-05");
+    await pageB.getByLabel("Jump to prep date").fill("2026-07-05");
+    const prepTabsA = pageA.getByRole("tablist", { name: "Prep dates" });
+    const prepTabsB = pageB.getByRole("tablist", { name: "Prep dates" });
+    const firstTabA = prepTabsA.getByRole("tab", { name: /Sun, Jul 5/ });
+    const firstTabB = prepTabsB.getByRole("tab", { name: /Sun, Jul 5/ });
+    const secondTabA = prepTabsA.getByRole("tab", { name: /Wed, Jul 8/ });
+    const secondTabB = prepTabsB.getByRole("tab", { name: /Wed, Jul 8/ });
     const firstA = pageA.getByTestId("prep-session-step").first();
     const firstB = pageB.getByTestId("prep-session-step").first();
     await expect(firstA.getByRole("checkbox")).not.toBeChecked();
@@ -494,7 +496,7 @@ test.describe.serial("family dinner authority", () => {
     await pageA.getByRole("button", { name: /Add recipe steps to/ }).click();
     const recipeSteps = pageA.getByRole("dialog", { name: "Recipe instructions" });
     const roastSource = recipeSteps.getByRole("button", {
-      name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through. into a prep session/,
+      name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through. onto a prep date/,
     });
     await roastSource.dragTo(secondTabA);
     await expect(secondTabA).toHaveAttribute("aria-selected", "true");

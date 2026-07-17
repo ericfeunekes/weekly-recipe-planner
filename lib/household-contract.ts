@@ -202,8 +202,7 @@ export function parseWeekId(value: unknown): WeekId {
   return value;
 }
 
-// Prep sessions are ordered worklists. Each can be dated for the active week or left undated.
-// A week's valid prep interval is the Sunday before its Monday start through
-// the Sunday ending that week, inclusive.
-export const PREP_DAYS_BEFORE_WEEK_START = 1;
+// Prep sessions are ordered worklists owned by a meal-planning week. The work
+// itself can happen on any earlier calendar day, or any day through the Sunday
+// that ends its owning meal week.
 export const PREP_DAYS_AFTER_WEEK_START = 6;

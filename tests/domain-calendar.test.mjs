@@ -37,7 +37,8 @@ test("calendar helpers retain ISO semantics across month and DST boundaries", ()
   assert.equal(weekContainsDate(weekId, parseIsoDate("2026-07-12")), true);
   assert.equal(weekContainsDate(weekId, parseIsoDate("2026-07-13")), false);
   assert.equal(weekContainsPrepDate(weekId, parseIsoDate("2026-07-05")), true);
-  assert.equal(weekContainsPrepDate(weekId, parseIsoDate("2026-07-04")), false);
+  assert.equal(weekContainsPrepDate(weekId, parseIsoDate("2026-07-04")), true);
+  assert.equal(weekContainsPrepDate(weekId, parseIsoDate("2026-07-13")), false);
 });
 
 test("meal moves can place multiple meals on the same day", () => {

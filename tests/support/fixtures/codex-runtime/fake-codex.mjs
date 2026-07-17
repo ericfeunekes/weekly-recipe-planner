@@ -195,11 +195,12 @@ function toolsFor(thread) {
   if (plannerNamespace && fixtureVariant === "stripped-planner-command-union") {
     for (const tool of plannerNamespace.tools) {
       if (tool.name !== "preview" && tool.name !== "apply") continue;
-      const command = tool.parameters?.properties?.operations?.items?.properties?.command;
-      if (!Array.isArray(command?.anyOf)) {
+      const commandType = tool.parameters?.properties?.operations?.items?.properties
+        ?.command?.properties?.type;
+      if (!Array.isArray(commandType?.enum)) {
         throw new Error("compatible provider fixture omitted the planner command union");
       }
-      tool.parameters.properties.operations.items.properties.command = {};
+      tool.parameters.properties.operations.items.properties.command.properties.type = {};
     }
   }
   const tools = [

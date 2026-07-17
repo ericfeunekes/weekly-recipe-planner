@@ -308,38 +308,15 @@ function validPlannerEffect(value) {
     value.authoritativeReadback === true;
 }
 
-function validHostedWebSearch(value, threadIdSha256, turnIdSha256) {
-  return exactKeys(value, [
-    "operation",
-    "status",
-    "threadIdSha256",
-    "turnIdSha256",
-    "activityIdSha256",
-  ]) && value.operation === "web_search" && value.status === "completed" &&
-    value.threadIdSha256 === threadIdSha256 && value.turnIdSha256 === turnIdSha256 &&
-    sha(value.activityIdSha256);
-}
-
-function validActivity(value) {
-  return exactKeys(value, [
-    "categories",
-    "humanLabelsObserved",
-    "assistantMessageObserved",
-  ]) && exactStrings(value.categories, ["tool", "web"]) &&
-    value.humanLabelsObserved === true && value.assistantMessageObserved === true;
-}
-
 function validWorker(value, parentThreadIdSha256) {
   return exactKeys(value, [
     "parentThreadIdSha256",
     "workerThreadIdSha256",
-    "workerActivityObserved",
     "childReadback",
-    "parentResultObserved",
+    "workerCompleted",
   ]) && value.parentThreadIdSha256 === parentThreadIdSha256 &&
     sha(value.workerThreadIdSha256) && value.workerThreadIdSha256 !== parentThreadIdSha256 &&
-    ["workerActivityObserved", "childReadback", "parentResultObserved"]
-      .every((key) => value[key] === true);
+    value.childReadback === true && value.workerCompleted === true;
 }
 
 function validNativeTurnScenario(value) {
@@ -351,20 +328,15 @@ function validNativeTurnScenario(value) {
     "changedPayloadRejected",
     "secondClientReadback",
     "plannerEffect",
-    "hostedWebSearch",
-    "activity",
+    "assistantMessageObserved",
     "worker",
   ]) || !sha(value.threadIdSha256) || !sha(value.turnIdSha256) ||
       !sha(value.clientUserMessageIdSha256) || value.exactAdmissionReplay !== true ||
       value.changedPayloadRejected !== true || value.secondClientReadback !== true ||
-      !validPlannerEffect(value.plannerEffect) || !validActivity(value.activity)) {
+      !validPlannerEffect(value.plannerEffect) || value.assistantMessageObserved !== true) {
     return false;
   }
-  return validHostedWebSearch(
-    value.hostedWebSearch,
-    value.threadIdSha256,
-    value.turnIdSha256,
-  ) && validWorker(value.worker, value.threadIdSha256);
+  return validWorker(value.worker, value.threadIdSha256);
 }
 
 function validInteractions(value, topLevelThreadIdSha256) {

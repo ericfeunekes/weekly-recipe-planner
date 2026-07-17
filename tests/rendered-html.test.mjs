@@ -69,8 +69,10 @@ test("keeps the locked product requirements represented in source", async () => 
     "updatePrepSession",
     "addPrepSessionStep",
     "addPrepSessionSteps",
+    "addPrepStepsToDate",
     "movePrepSessionStep",
     "movePrepSessionSteps",
+    "movePrepStepsToDate",
     "removePrepSessionStep",
     "captureFeedback",
     "archiveWeek",
@@ -100,8 +102,10 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /function RecipeSummaryLink/);
   assert.match(planner, /function MealEditorTrigger/);
   assert.match(planner, /Add recipe steps to/);
-  assert.match(planner, /scrollSessionTabs/);
-  assert.match(planner, /aria-label="Prep sessions"/);
+  assert.match(planner, /aria-label="Prep dates"/);
+  assert.match(planner, /Show earlier prep dates/);
+  assert.match(planner, /Jump to prep date/);
+  assert.doesNotMatch(planner, /Batch prep planned days|Prep sessions/);
   assert.match(planner, /role="tabpanel"/);
   assert.match(planner, /onDragEnter/);
   assert.match(planner, /receivePrepDrop/);

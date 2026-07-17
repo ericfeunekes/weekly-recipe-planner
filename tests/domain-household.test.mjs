@@ -489,6 +489,43 @@ test("household domain executes every week-local command through one pure bounda
     "a multi-step move accepts the end boundary used by the visible insertion indicator",
   );
 
+  const earlierPrepDate = addIsoDateDays(weekId, -14);
+  const entriesToMoveEarlier = activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps.map((entry) => entry.id);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "movePrepStepsToDate",
+        weekId,
+        sourceSessionId: mondaySessionId,
+        prepDate: earlierPrepDate,
+        entryIds: entriesToMoveEarlier,
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const earlierSession = activeWeek(state).data.prepSessions.find((session) => session.prepDate === earlierPrepDate);
+  assert.ok(earlierSession, "moving to an earlier calendar date creates that date's prep queue");
+  assert.deepEqual(
+    earlierSession.steps.map((entry) => entry.stepId),
+    [secondStep.id, firstStep.id],
+    "earlier-date prep keeps the queue order while recipe instructions remain canonical",
+  );
+  const afterMealWeek = householdDomain.execute(
+    state,
+    {
+      type: "addPrepStepsToDate",
+      weekId,
+      prepDate: addIsoDateDays(weekId, 7),
+      stepIds: [firstStep.id],
+      targetPosition: 0,
+    },
+    context,
+  );
+  assert.equal(afterMealWeek.ok, false, "prep may be earlier, but never after the owning meal week");
+
   const ingredientCount = activeWeek(state).data.meals.reduce((count, meal) => count + meal.ingredients.length, 0);
   assert.equal(activeWeek(state).data.groceries.length, ingredientCount, "every canonical ingredient has one grocery execution row");
   const grocery = activeWeek(state).data.groceries.find((item) => item.mealId === chicken.id);
@@ -1021,8 +1058,6 @@ test("leftover assignment does not displace meals referenced by other leftovers"
         ),
       ).state;
     }
-    const beforeAssignment = structuredClone(scenario);
-
     const blocked = householdDomain.execute(
       scenario,
       {

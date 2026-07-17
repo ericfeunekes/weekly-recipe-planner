@@ -108,10 +108,10 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
     .join("; ");
   for (const toolName of ["preview", "apply"]) {
     const toolSchema = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === toolName);
-    const commandAlternatives = toolSchema.inputSchema.properties.operations.items.properties
-      .command.anyOf;
+    const commandTypes = toolSchema.inputSchema.properties.operations.items.properties
+      .command.properties.type.enum;
     assert.deepEqual(
-      commandAlternatives.map((schema) => schema.properties.type.const).sort(),
+      [...commandTypes].sort(),
       Object.keys(HOUSEHOLD_COMMAND_REGISTRY).sort(),
       `${toolName} exposes every registry command discriminator`,
     );

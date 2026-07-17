@@ -294,23 +294,20 @@ test("observed capability inspection requires exact ordered arrays and dependent
   const [plannerNamespace] = projectDynamicToolSpecsForProvider([
     PLANNER_DYNAMIC_TOOL_NAMESPACE,
   ]);
-  const sourceCommandAlternatives = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools
+  const sourceCommandTypes = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools
     .find((tool) => tool.name === "preview")
-    .inputSchema.properties.operations.items.properties.command.anyOf;
-  const sourceCommandTypes = sourceCommandAlternatives.map(
-    (alternative) => alternative.properties.type.const,
-  );
+    .inputSchema.properties.operations.items.properties.command.properties.type.enum;
   for (const toolName of ["preview", "apply"]) {
     const projectedTool = plannerNamespace.tools.find((tool) => tool.name === toolName);
     assert.ok(
       Buffer.byteLength(JSON.stringify(projectedTool.parameters), "utf8") < 4_000,
       `${toolName} provider schema remains below Codex 0.142.5's 4,000-byte compaction limit`,
     );
-    const commandAlternatives = projectedTool.parameters.properties.operations.items
-      .properties.command.anyOf;
-    assert.equal(commandAlternatives.length, sourceCommandAlternatives.length);
+    const commandTypes = projectedTool.parameters.properties.operations.items
+      .properties.command.properties.type.enum;
+    assert.equal(commandTypes.length, sourceCommandTypes.length);
     assert.deepEqual(
-      commandAlternatives.map((alternative) => alternative.properties.type.enum[0]),
+      commandTypes,
       sourceCommandTypes,
       `${toolName} provider schema preserves every command discriminator`,
     );
@@ -471,7 +468,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
   for (const request of missingCommandAlternative.slice(0, 7)) {
     for (const tool of request.tools.at(-2).tools) {
       if (tool.name === "preview" || tool.name === "apply") {
-        tool.parameters.properties.operations.items.properties.command.anyOf.pop();
+        tool.parameters.properties.operations.items.properties.command.properties.type.enum.pop();
       }
     }
   }

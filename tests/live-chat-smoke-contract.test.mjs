@@ -15,8 +15,10 @@ import test from "node:test";
 
 import {
   createLiveSmokeGlobalEndpoint,
+  createLiveChatFailureReceipt,
   createLiveSmokeRoot,
   deriveNativeObservationEvidence,
+  liveChatFailureArtifactPath,
   parseLiveChatSmokeArguments,
   writePrivateLiveChatArtifact,
 } from "../scripts/smoke-live-chat.mjs";
@@ -150,28 +152,32 @@ test("native Codex smoke evidence is private, bounded, and refuses overwrite", a
   );
 });
 
-test("native release observation evidence fails when a label, worker result, or child readback was not observed", () => {
+test("native Codex smoke failure receipts are private and do not retain exception text", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "planner-live-smoke-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = join(root, "release-candidate.json");
+  const failurePath = liveChatFailureArtifactPath(output);
+  const receipt = createLiveChatFailureReceipt({
+    phase: "native_release_scenarios",
+    error: new Error("token=should-not-be-persisted"),
+  });
+  await writePrivateLiveChatArtifact(failurePath, receipt);
+  assert.equal((await stat(failurePath)).mode & 0o777, 0o600);
+  const payload = await readFile(failurePath, "utf8");
+  assert.doesNotMatch(payload, /should-not-be-persisted/);
+  assert.deepEqual(JSON.parse(payload), {
+    schemaVersion: 1,
+    artifactType: "release-candidate-failure",
+    failedAt: receipt.failedAt,
+    phase: "native_release_scenarios",
+    errorFingerprintSha256: receipt.errorFingerprintSha256,
+  });
+  assert.equal(liveChatFailureArtifactPath(output), failurePath);
+});
+
+test("native release observation evidence requires an assistant response and completed worker readback", () => {
   const observed = {
-    plannerActivity: {
-      kind: "activity",
-      category: "tool",
-      label: "Reading the planner",
-      status: "completed",
-    },
-    webActivity: {
-      kind: "activity",
-      category: "web",
-      label: "Opening a source",
-      status: "completed",
-    },
     assistantMessage: { kind: "message", role: "assistant" },
-    workerActivity: {
-      kind: "worker",
-      operation: "wait",
-      status: "completed",
-      workerThreadIds: ["worker-1"],
-      workerStates: [{ threadId: "worker-1", status: "completed" }],
-    },
     workerSummary: { threadId: "worker-1", status: "completed" },
     workerReadback: {
       thread: {
@@ -183,29 +189,23 @@ test("native release observation evidence fails when a label, worker result, or 
     parentThreadId: "parent-1",
   };
   assert.deepEqual(deriveNativeObservationEvidence(observed), {
-    activity: {
-      categories: ["tool", "web"],
-      humanLabelsObserved: true,
-      assistantMessageObserved: true,
-    },
+    assistantMessageObserved: true,
     worker: {
-      workerActivityObserved: true,
       childReadback: true,
-      parentResultObserved: true,
+      workerCompleted: true,
     },
   });
 
   for (const mutate of [
-    (value) => { value.webActivity.label = ""; },
     (value) => { delete value.assistantMessage; },
-    (value) => { value.workerActivity.workerStates = []; },
+    (value) => { value.workerSummary.status = "failed"; },
     (value) => { value.workerReadback.thread.parentThreadId = "other-parent"; },
   ]) {
     const changed = structuredClone(observed);
     mutate(changed);
     assert.throws(
       () => deriveNativeObservationEvidence(changed),
-      /omitted an observed human label, assistant message, worker result, or child readback/,
+      /omitted its assistant response or completed worker readback/,
     );
   }
 });

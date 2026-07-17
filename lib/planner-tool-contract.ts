@@ -222,9 +222,14 @@ const readQuerySchema = {
 const plannerCommandModelSchema = {
   type: "object",
   required: ["type"],
-  anyOf: Object.values(HOUSEHOLD_COMMAND_REGISTRY).map((entry) => ({
-    properties: { type: entry.schema.properties.type },
-  })),
+  properties: {
+    type: {
+      type: "string",
+      enum: Object.values(HOUSEHOLD_COMMAND_REGISTRY).map(
+        (entry) => entry.schema.properties.type.const,
+      ),
+    },
+  },
 } as const;
 
 const plannerCommandFieldGuide = Object.entries(HOUSEHOLD_COMMAND_REGISTRY)

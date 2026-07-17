@@ -13,26 +13,25 @@ async function resetPlanner(page: Page): Promise<void> {
   await expect(planner).toBeVisible();
 }
 
-test("batch prep shows planned days, moves a multi-selection, and exposes a thick insertion marker", async ({ page }) => {
+test("batch prep uses one bounded date strip, supports full-row drag, and can move selected work to an earlier week", async ({ page }) => {
   await resetPlanner(page);
   await page.getByRole("button", { name: "Prep", exact: true }).click();
 
-  const sessions = page.getByRole("tablist", { name: "Prep sessions" });
-  const sourceSession = sessions.getByRole("tab").first();
-  const destinationSession = sessions.getByRole("tab").nth(1);
-  await expect(sourceSession).toBeVisible();
-  await expect(destinationSession).toBeVisible();
-  const plannedDays = page.getByRole("navigation", { name: "Batch prep planned days" });
-  await expect(plannedDays).toBeVisible();
-  await expect(plannedDays.getByRole("button")).toHaveCount(2);
+  const prepDates = page.getByRole("tablist", { name: "Prep dates" });
+  await expect(prepDates.getByRole("tab")).toHaveCount(7);
+  await expect(page.getByRole("navigation", { name: "Batch prep planned days" })).toHaveCount(0);
+  const wednesday = prepDates.getByRole("tab", { name: "Open empty prep date Wed, Jul 8" });
+  const thursday = prepDates.getByRole("tab", { name: "Open empty prep date Thu, Jul 9" });
+  await expect(wednesday).toBeVisible();
+  await expect(thursday).toBeVisible();
 
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const recipeSteps = page.getByRole("dialog", { name: "Recipe instructions" });
   const firstSourceStep = recipeSteps.getByRole("button", {
-    name: /Drag step 1 for Harissa chicken traybake: Coat the chicken with harissa and refrigerate\. into a prep session/,
+    name: /Drag step 1 for Harissa chicken traybake: Coat the chicken with harissa and refrigerate\. onto a prep date/,
   });
   const secondSourceStep = recipeSteps.getByRole("button", {
-    name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through\. into a prep session/,
+    name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through\. onto a prep date/,
   });
   await expect(firstSourceStep).toBeVisible();
   await expect(secondSourceStep).toBeVisible();
@@ -40,30 +39,15 @@ test("batch prep shows planned days, moves a multi-selection, and exposes a thic
   await secondSourceStep.click({ modifiers: ["Shift"] });
   await expect(recipeSteps.getByText("2 selected", { exact: true })).toBeVisible();
 
-  await secondSourceStep.dragTo(destinationSession);
-  await expect(destinationSession).toHaveAttribute("aria-selected", "true");
+  await secondSourceStep.dragTo(wednesday);
+  await expect(wednesday).toHaveAttribute("aria-selected", "true");
   await recipeSteps.getByRole("button", { name: "Close recipe steps", exact: true }).click();
   await expect(recipeSteps).toHaveCount(0);
   const destinationRows = page.getByTestId("prep-session-step");
-  await expect(destinationRows).toHaveCount(3);
+  await expect(destinationRows).toHaveCount(2);
+  await expect(wednesday).toHaveAccessibleName("Open 2 prep steps on Wed, Jul 8");
 
-  await page.getByRole("button", { name: "Select all 3 prep steps", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("3 selected");
-
-  await page.getByLabel("Prep session name").fill("Transfer check");
-  await page.getByLabel("Prep session date").fill("2026-07-10");
-  await page.getByRole("button", { name: "New session", exact: true }).click();
-  const transferSession = sessions.getByRole("tab", { name: /Transfer check/ });
-  await expect(transferSession).toBeVisible();
-
-  const moveTarget = page.getByLabel("Move selected prep steps to");
-  await moveTarget.selectOption({ label: "Fri, Jul 10" });
-  await page.getByRole("button", { name: "Move selected prep steps", exact: true }).click();
-  await expect(transferSession).toHaveAttribute("aria-selected", "true");
-  const transferredRows = page.getByTestId("prep-session-step");
-  await expect(transferredRows).toHaveCount(3);
-
-  const insertionTarget = transferredRows.nth(1);
+  const insertionTarget = destinationRows.nth(1);
   const targetBounds = await insertionTarget.boundingBox();
   expect(targetBounds).not.toBeNull();
   const dragData = await page.evaluateHandle(() => {
@@ -78,4 +62,17 @@ test("batch prep shows planned days, moves a multi-selection, and exposes a thic
   const insertionMarker = page.locator(".prep-insertion-indicator");
   await expect(insertionMarker).toHaveCount(1);
   await expect(insertionMarker).toHaveCSS("border-top-width", "4px");
+
+  await destinationRows.first().dragTo(thursday);
+  await expect(thursday).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("prep-session-step")).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Select all 1 prep step", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("1 selected");
+  const moveTarget = page.getByLabel("Move selected prep steps to");
+  await moveTarget.fill("2026-06-29");
+  await page.getByRole("button", { name: "Move selected prep steps", exact: true }).click();
+  await expect(prepDates.getByRole("tab").first()).toHaveAccessibleName("Open 1 prep step on Mon, Jun 29");
+  const transferredRows = page.getByTestId("prep-session-step");
+  await expect(transferredRows).toHaveCount(1);
 });

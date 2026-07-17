@@ -1073,78 +1073,6 @@ svg {
   min-width: 0;
 }
 
-.prep-session-day-schedule {
-  align-items: center;
-  background: var(--slate-soft);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-  padding: 7px 8px;
-}
-
-.prep-session-day-schedule-label {
-  align-items: center;
-  color: var(--green-dark);
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 700;
-  gap: 5px;
-  white-space: nowrap;
-}
-
-.prep-session-day-schedule-days {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.prep-session-day {
-  align-items: center;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  color: var(--ink-soft);
-  cursor: pointer;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11px;
-  gap: 5px;
-  min-height: 28px;
-  padding: 4px 6px;
-  white-space: nowrap;
-}
-
-.prep-session-day strong {
-  align-items: center;
-  background: var(--slate-soft);
-  border-radius: 999px;
-  color: var(--ink-soft);
-  display: inline-flex;
-  font-size: 10px;
-  justify-content: center;
-  min-width: 16px;
-  padding: 1px 4px;
-}
-
-.prep-session-day:hover,
-.prep-session-day:focus-visible,
-.prep-session-day.active {
-  background: var(--green-soft);
-  border-color: var(--green);
-  color: var(--green-dark);
-}
-
-.prep-session-day:focus-visible {
-  outline: 2px solid var(--green);
-  outline-offset: 1px;
-}
-
 .prep-session-tabs {
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -1212,6 +1140,25 @@ svg {
   color: var(--ink);
 }
 
+.prep-session-tab.has-prep {
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.prep-session-tab strong {
+  align-items: center;
+  background: var(--green);
+  border-radius: 999px;
+  color: var(--paper);
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  justify-content: center;
+  line-height: 1;
+  min-width: 17px;
+  padding: 3px 5px;
+}
+
 .prep-session-tab.drop-target {
   background: var(--green-soft);
   border-bottom-color: var(--green);
@@ -1223,6 +1170,17 @@ svg {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 4px;
+}
+
+.prep-date-jump input {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  min-height: 28px;
+  padding: 3px 5px;
 }
 
 .prep-session-add-steps {
@@ -1242,7 +1200,7 @@ svg {
 }
 
 .prep-session {
-  min-height: min(360px, 48vh);
+  min-height: 120px;
   padding: 0;
 }
 
@@ -1281,7 +1239,7 @@ svg {
   font: inherit;
   font-size: 11px;
   min-height: 28px;
-  min-width: 110px;
+  min-width: 138px;
   padding: 3px 6px;
 }
 
@@ -1297,6 +1255,14 @@ svg {
 
 .instruction-step.prep-queue-step.dragging {
   opacity: 0.45;
+}
+
+.instruction-step.prep-queue-step[draggable="true"] {
+  cursor: grab;
+}
+
+.instruction-step.prep-queue-step[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 .prep-drag-handle {

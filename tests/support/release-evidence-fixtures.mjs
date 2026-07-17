@@ -161,24 +161,12 @@ export function releaseCandidateProjection({
           ingredientNameSha256: "b".repeat(64),
           authoritativeReadback: true,
         },
-        hostedWebSearch: {
-          operation: "web_search",
-          status: "completed",
-          threadIdSha256: "5".repeat(64),
-          turnIdSha256: "7".repeat(64),
-          activityIdSha256: "a".repeat(64),
-        },
-        activity: {
-          categories: ["tool", "web"],
-          humanLabelsObserved: true,
-          assistantMessageObserved: true,
-        },
+        assistantMessageObserved: true,
         worker: {
           parentThreadIdSha256: "5".repeat(64),
           workerThreadIdSha256: "b".repeat(64),
-          workerActivityObserved: true,
           childReadback: true,
-          parentResultObserved: true,
+          workerCompleted: true,
         },
       },
       interactions: {

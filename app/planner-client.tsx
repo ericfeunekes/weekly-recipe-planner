@@ -293,8 +293,10 @@ const PLANNER_ACTION_LABELS = {
   removePrepSession: "Remove prep session",
   addPrepSessionStep: "Add prep-session step",
   addPrepSessionSteps: "Add prep-session steps",
+  addPrepStepsToDate: "Add prep steps to date",
   movePrepSessionStep: "Reorder prep-session step",
   movePrepSessionSteps: "Move prep-session steps",
+  movePrepStepsToDate: "Move prep steps to date",
   removePrepSessionStep: "Remove prep-session step",
   setPrepPlan: "Save prep plan",
   movePrepReference: "Reorder prep step",
@@ -2204,6 +2206,9 @@ function InstructionStepLine(props: {
   editableTimer?: boolean;
   onSetRemaining?: (remainingSeconds: number) => void;
   onMouseDown?: (event: ReactMouseEvent<HTMLElement>) => void;
+  draggable?: boolean;
+  onDragStart?: (event: ReactDragEvent<HTMLElement>) => void;
+  onDragEnd?: (event: ReactDragEvent<HTMLElement>) => void;
   onDragOver?: (event: ReactDragEvent<HTMLElement>) => void;
   onDrop?: (event: ReactDragEvent<HTMLElement>) => void;
   children?: ReactNode;
@@ -2223,6 +2228,9 @@ function InstructionStepLine(props: {
     editableTimer = false,
     onSetRemaining,
     onMouseDown,
+    draggable = false,
+    onDragStart,
+    onDragEnd,
     onDragOver,
     onDrop,
     children,
@@ -2234,7 +2242,10 @@ function InstructionStepLine(props: {
       className={`instruction-step instruction-step-line ${leading ? "has-leading" : ""} ${className} ${step.complete ? "complete" : ""}`}
       aria-label={controlTarget}
       data-testid={dataTestId}
+      draggable={draggable}
       onMouseDown={onMouseDown}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
@@ -2382,6 +2393,8 @@ type PrepDragState =
   | { kind: "session"; sessionId: string; entryIds: string[] }
   | null;
 
+type PrepPointerDrag = Exclude<PrepDragState, null> & { startX: number; startY: number };
+
 type PrepDropInsertion = { sessionId: string; position: number } | null;
 
 function isPrepRowControlTarget(target: EventTarget | null): boolean {
@@ -2416,6 +2429,7 @@ function PrepSessionStepRow(props: {
   onSelect: (entryId: string, event: ReactMouseEvent<HTMLElement>) => void;
   onDragStarted: (entryIds: string[]) => void;
   onDragEnded: () => void;
+  onPointerDragStart: (entryIds: string[], event: ReactMouseEvent<HTMLElement>) => void;
   onDragOver: (event: ReactDragEvent<HTMLElement>, targetPosition: number) => void;
   onDrop: (event: ReactDragEvent<HTMLElement>, targetPosition: number) => void;
 }) {
@@ -2437,6 +2451,7 @@ function PrepSessionStepRow(props: {
     onSelect,
     onDragStarted,
     onDragEnded,
+    onPointerDragStart,
     onDragOver,
     onDrop,
   } = props;
@@ -2456,7 +2471,8 @@ function PrepSessionStepRow(props: {
     setMenuOpen(false);
   };
   const isDragging = dragState?.kind === "session" && dragState.entryIds.includes(entry.id);
-  const dragLabel = `Drag ${selectedEntryIds.length} selected ${selectedEntryIds.length === 1 ? "instruction" : "instructions"} to another prep session`;
+  const draggedEntryIds = selected ? selectedEntryIds : [entry.id];
+  const dragLabel = `Drag ${draggedEntryIds.length} selected ${draggedEntryIds.length === 1 ? "instruction" : "instructions"} to another prep date`;
   return (
     <InstructionStepLine
       className={`prep-queue-step ${selected ? "selected" : ""} ${isDragging ? "dragging" : ""}`}
@@ -2470,6 +2486,18 @@ function PrepSessionStepRow(props: {
       onTimerAction={(type) => runMutation({ type, weekId: week.id, stepId: step.id })}
       editableTimer
       onSetRemaining={(remainingSeconds) => runMutation({ type: "setInstructionTimerRemaining", weekId: week.id, stepId: step.id, remainingSeconds })}
+      draggable={!rowDisabled}
+      onDragStart={(event) => {
+        if (rowDisabled || isPrepRowControlTarget(event.target)) {
+          event.preventDefault();
+          return;
+        }
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("application/x-prep-session-entries", JSON.stringify(draggedEntryIds));
+        event.dataTransfer.setData("text/plain", "prep-session-selection");
+        onDragStarted(draggedEntryIds);
+      }}
+      onDragEnd={onDragEnded}
       onDragOver={(event) => {
         if (rowDisabled) return;
         const bounds = event.currentTarget.getBoundingClientRect();
@@ -2484,27 +2512,10 @@ function PrepSessionStepRow(props: {
       }}
       onMouseDown={(event) => {
         if (event.button !== 0 || isPrepRowControlTarget(event.target)) return;
+        onPointerDragStart(draggedEntryIds, event);
         onSelect(entry.id, event);
       }}
-      leading={selected ? <button
-        className="prep-drag-handle"
-        type="button"
-        draggable={!rowDisabled}
-        disabled={rowDisabled}
-        aria-label={dragLabel}
-        title="Drag selected instructions to another prep date"
-        data-prep-row-control
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={(event) => event.stopPropagation()}
-        onDragStart={(event) => {
-          if (rowDisabled) return;
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("application/x-prep-session-entries", JSON.stringify(selectedEntryIds));
-          event.dataTransfer.setData("text/plain", "prep-session-selection");
-          onDragStarted(selectedEntryIds);
-        }}
-        onDragEnd={onDragEnded}
-      ><GripVertical size={17} /></button> : <span className="prep-drag-spacer" aria-hidden="true" />}
+      leading={selected ? <span className="prep-drag-handle" aria-hidden="true" title={dragLabel}><GripVertical size={17} /></span> : <span className="prep-drag-spacer" aria-hidden="true" />}
       trailing={<div className="prep-overflow">
         <button
           className="icon-button prep-overflow-trigger"
@@ -2560,6 +2571,7 @@ function PrepRecipeSource({
   onSelectStep,
   onRecipeStepDragStart,
   onRecipeStepDragEnd,
+  onRecipeStepPointerDragStart,
 }: {
   week: WeekPlan;
   disabled: boolean;
@@ -2570,13 +2582,14 @@ function PrepRecipeSource({
   onSelectStep: (stepId: string, event: ReactMouseEvent<HTMLElement>) => void;
   onRecipeStepDragStart: (stepId: string) => string[];
   onRecipeStepDragEnd: () => void;
+  onRecipeStepPointerDragStart: (stepId: string, event: ReactMouseEvent<HTMLElement>) => void;
 }) {
   const selectedMeal = week.data.meals.find((meal) => meal.id === selectedMealId) ?? week.data.meals[0];
   const selectedCount = selectedMeal?.instructions.filter((step) => selectedStepIds.has(step.id)).length ?? 0;
   return (
     <div className="prep-recipe-source" aria-label="Recipe instructions">
       <p className="eyebrow">Recipe instructions</p>
-      <p className="prep-source-help">Choose a recipe, then drag its steps onto a prep date or into {targetSessionLabel ?? "the selected prep session"}.</p>
+      <p className="prep-source-help">Choose a recipe, then drag its steps onto a prep date or into {targetSessionLabel ?? "the selected prep date"}.</p>
       <div className="prep-recipe-picker" role="list" aria-label="Recipes">
         {week.data.meals.map((meal) => <button key={meal.id} type="button" className={meal.id === selectedMeal?.id ? "active" : ""} aria-pressed={meal.id === selectedMeal?.id} onClick={() => onSelectMeal(meal.id)}>{meal.title}</button>)}
       </div>
@@ -2589,8 +2602,12 @@ function PrepRecipeSource({
           type="button"
           draggable={!disabled}
           aria-pressed={selectedStepIds.has(step.id)}
-          aria-label={`Drag ${stepControlTarget(selectedMeal, step, index + 1)} into a prep session`}
+          aria-label={`Drag ${stepControlTarget(selectedMeal, step, index + 1)} onto a prep date`}
           onClick={(event) => onSelectStep(step.id, event)}
+          onMouseDown={(event) => {
+            if (event.button !== 0) return;
+            onRecipeStepPointerDragStart(step.id, event);
+          }}
           onDragStart={(event) => {
             const stepIds = onRecipeStepDragStart(step.id);
             event.dataTransfer.effectAllowed = "copy";
@@ -2613,86 +2630,71 @@ function PrepView(props: {
 }) {
   const { week, disabled, mutate, sendContextMessage, onOpenRecipeSummary } = props;
   const [selectedMealId, setSelectedMealId] = useState(week.data.meals[0]?.id ?? "");
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(week.data.prepSessions[0]?.id ?? null);
-  const [sessionLabel, setSessionLabel] = useState("");
-  const [sessionDate, setSessionDate] = useState("");
+  const [selectedPrepDate, setSelectedPrepDate] = useState<IsoDate>(week.id);
+  const [prepTimelineStart, setPrepTimelineStart] = useState<IsoDate>(week.id);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(() => new Set());
   const [entrySelectionAnchorId, setEntrySelectionAnchorId] = useState<string | null>(null);
   const [selectedSourceStepIds, setSelectedSourceStepIds] = useState<Set<string>>(() => new Set());
   const [sourceSelectionAnchorId, setSourceSelectionAnchorId] = useState<string | null>(null);
-  const [moveTargetSessionId, setMoveTargetSessionId] = useState("");
+  const [moveTargetPrepDate, setMoveTargetPrepDate] = useState("");
   const [dragState, setDragState] = useState<PrepDragState>(null);
-  const [dropTargetSessionId, setDropTargetSessionId] = useState<string | null>(null);
+  const [dropTargetPrepDate, setDropTargetPrepDate] = useState<IsoDate | null>(null);
   const [dropInsertion, setDropInsertion] = useState<PrepDropInsertion>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
   const sourceRestoreRef = useRef<HTMLButtonElement>(null);
-  const sessionTabListRef = useRef<HTMLDivElement>(null);
-  const prepDraft = useVersionedDraft();
-  const selectedSession = week.data.prepSessions.find((session) => session.id === selectedSessionId) ?? week.data.prepSessions[0] ?? null;
+  const pointerDragRef = useRef<PrepPointerDrag | null>(null);
+  const pointerDragActiveRef = useRef(false);
+  const prepWeekEnd = addIsoDateDays(week.id, 6);
+  const prepTimelineDates = Array.from({ length: 7 }, (_, offset) => addIsoDateDays(prepTimelineStart, offset));
   const selectedMeal = week.data.meals.find((meal) => meal.id === selectedMealId) ?? week.data.meals[0] ?? null;
-  const selectedSessionDateLabel = selectedSession
-    ? selectedSession.prepDate
-      ? formatCalendarDate(selectedSession.prepDate, { weekday: "short", month: "short", day: "numeric" })
-      : "Undated"
-    : null;
   const sessionEntries = week.data.prepSessions.flatMap((session) => session.steps);
   const completedEntries = sessionEntries.filter((entry) => findStep(week, entry.stepId)?.step.complete).length;
-  const selectedEntryIdsInOrder = selectedSession?.steps.filter((entry) => selectedEntryIds.has(entry.id)).map((entry) => entry.id) ?? [];
   const selectedSourceStepIdsInOrder = selectedMeal?.instructions.filter((step) => selectedSourceStepIds.has(step.id)).map((step) => step.id) ?? [];
-  const selectedSessionDropPosition = dropInsertion?.sessionId === selectedSession?.id ? dropInsertion.position : null;
   const prepSessionsByDay = new Map<string, typeof week.data.prepSessions>();
   week.data.prepSessions.forEach((session) => {
     const key = session.prepDate ?? "undated";
     prepSessionsByDay.set(key, [...(prepSessionsByDay.get(key) ?? []), session]);
   });
-  const prepSessionDays = [...prepSessionsByDay.entries()].map(([key, sessions]) => ({
-    key,
-    sessions,
-    label: key === "undated" ? "Undated" : formatCalendarDate(key as IsoDate, { weekday: "short", month: "short", day: "numeric" }),
-  }));
-  const moveTargetSessionLabels = new Map(week.data.prepSessions.map((session) => {
-    const sessionsOnDay = prepSessionsByDay.get(session.prepDate ?? "undated") ?? [];
-    const dateLabel = session.prepDate
-      ? formatCalendarDate(session.prepDate, { weekday: "short", month: "short", day: "numeric" })
-      : "Undated";
-    return [session.id, sessionsOnDay.length > 1 ? `${dateLabel} · ${session.label}` : dateLabel];
-  }));
-  const moveTargetSession = week.data.prepSessions.find((session) => session.id === moveTargetSessionId) ?? null;
+  const selectedSessions = prepSessionsByDay.get(selectedPrepDate) ?? [];
+  const selectedSession = selectedSessions[0] ?? null;
+  const selectedSessionDateLabel = formatCalendarDate(selectedPrepDate, { weekday: "short", month: "short", day: "numeric" });
+  const selectedEntryIdsInOrder = selectedSession?.steps.filter((entry) => selectedEntryIds.has(entry.id)).map((entry) => entry.id) ?? [];
+  const selectedSessionDropPosition = dropInsertion && selectedSession && dropInsertion.sessionId === selectedSession.id
+    ? dropInsertion.position
+    : null;
   const canMoveSelectedEntries = Boolean(
     selectedSession &&
-    moveTargetSession &&
-    moveTargetSession.id !== selectedSession.id &&
-    selectedEntryIdsInOrder.some((entryId) => {
-      const entry = selectedSession.steps.find((candidate) => candidate.id === entryId);
-      return entry && !moveTargetSession.steps.some((candidate) => candidate.stepId === entry.stepId);
-    }),
+    moveTargetPrepDate &&
+    moveTargetPrepDate !== selectedPrepDate &&
+    selectedEntryIdsInOrder.length,
   );
   const clearEntrySelection = () => {
     setSelectedEntryIds(new Set());
     setEntrySelectionAnchorId(null);
-    setMoveTargetSessionId("");
+    setMoveTargetPrepDate("");
   };
   const clearSourceSelection = () => {
     setSelectedSourceStepIds(new Set());
     setSourceSelectionAnchorId(null);
   };
+  const showPrepDate = (prepDate: IsoDate) => {
+    const timelineEnd = addIsoDateDays(prepTimelineStart, 6);
+    if (prepDate < prepTimelineStart || prepDate > timelineEnd) {
+      setPrepTimelineStart(prepDate > week.id ? week.id : prepDate);
+    }
+    setSelectedPrepDate(prepDate);
+  };
   const endDrag = () => {
+    pointerDragRef.current = null;
+    pointerDragActiveRef.current = false;
     setDragState(null);
-    setDropTargetSessionId(null);
+    setDropTargetPrepDate(null);
     setDropInsertion(null);
     if (typeof document !== "undefined") document.body.classList.remove("recipe-step-dragging");
   };
   useEffect(() => () => {
     if (typeof document !== "undefined") document.body.classList.remove("recipe-step-dragging");
   }, []);
-  const createSession = () => {
-    const label = sessionLabel.trim();
-    if (!label) return;
-    void mutate(
-      { type: "createPrepSession", weekId: week.id, label, prepDate: sessionDate ? sessionDate as IsoDate : null },
-      prepDraft.mutationOptions(() => { setSessionLabel(""); setSessionDate(""); }),
-    );
-  };
   const selectSessionEntry = (entryId: string, event: ReactMouseEvent<HTMLElement>) => {
     if (disabled || !selectedSession || isPrepRowControlTarget(event.target)) return;
     const visibleIds = selectedSession.steps.map((entry) => entry.id);
@@ -2741,31 +2743,22 @@ function PrepView(props: {
     });
     setSourceSelectionAnchorId(stepId);
   };
-  const addSteps = (sessionId: string, stepIds: string[], targetPosition: number) => {
-    const session = week.data.prepSessions.find((candidate) => candidate.id === sessionId);
-    if (!session) return;
-    const absentStepIds = stepIds.filter((stepId) => findStep(week, stepId) && !session.steps.some((entry) => entry.stepId === stepId));
-    if (!absentStepIds.length) return;
+  const addStepsToDate = (prepDate: IsoDate, stepIds: string[], targetPosition: number) => {
+    if (!stepIds.length) return;
     void mutate(
-      { type: "addPrepSessionSteps", weekId: week.id, sessionId, stepIds: absentStepIds, targetPosition },
-      { onAccepted: clearSourceSelection },
+      { type: "addPrepStepsToDate", weekId: week.id, prepDate, stepIds, targetPosition },
+      { onAccepted: () => { clearSourceSelection(); showPrepDate(prepDate); } },
     );
   };
-  const moveEntries = (sourceSessionId: string, sessionId: string, entryIds: string[], targetPosition: number) => {
+  const moveEntriesToDate = (sourceSessionId: string, prepDate: IsoDate, entryIds: string[], targetPosition: number) => {
     const source = week.data.prepSessions.find((candidate) => candidate.id === sourceSessionId);
-    const destination = week.data.prepSessions.find((candidate) => candidate.id === sessionId);
-    if (!source || !destination) return;
-    const candidates = source.steps.filter((entry) => entryIds.includes(entry.id));
-    const movableEntryIds = source === destination
-      ? candidates.map((entry) => entry.id)
-      : candidates.filter((entry) => !destination.steps.some((candidate) => candidate.stepId === entry.stepId)).map((entry) => entry.id);
-    if (!movableEntryIds.length) return;
+    if (!source || !entryIds.length) return;
     void mutate(
-      { type: "movePrepSessionSteps", weekId: week.id, sourceSessionId, sessionId, entryIds: movableEntryIds, targetPosition },
+      { type: "movePrepStepsToDate", weekId: week.id, sourceSessionId, prepDate, entryIds, targetPosition },
       {
         onAccepted: () => {
           clearEntrySelection();
-          setSelectedSessionId(sessionId);
+          showPrepDate(prepDate);
         },
       },
     );
@@ -2776,18 +2769,20 @@ function PrepView(props: {
     setEntrySelectionAnchorId(selectedSession.steps[0]?.id ?? null);
   };
   const moveSelectedEntries = () => {
-    if (!selectedSession || !moveTargetSession || !canMoveSelectedEntries) return;
-    moveEntries(selectedSession.id, moveTargetSession.id, selectedEntryIdsInOrder, moveTargetSession.steps.length);
+    if (!selectedSession || !moveTargetPrepDate || !canMoveSelectedEntries) return;
+    const targetSession = prepSessionsByDay.get(moveTargetPrepDate)?.[0];
+    moveEntriesToDate(selectedSession.id, moveTargetPrepDate as IsoDate, selectedEntryIdsInOrder, targetSession?.steps.length ?? 0);
   };
   const removeSelectedSession = () => {
     if (!selectedSession) return;
-    const sessionIndex = week.data.prepSessions.findIndex((session) => session.id === selectedSession.id);
     clearEntrySelection();
-    setSelectedSessionId(week.data.prepSessions[sessionIndex + 1]?.id ?? week.data.prepSessions[sessionIndex - 1]?.id ?? null);
     void mutate({ type: "removePrepSession", weekId: week.id, sessionId: selectedSession.id });
   };
-  const scrollSessionTabs = (distance: number) => {
-    sessionTabListRef.current?.scrollBy({ left: distance, behavior: "smooth" });
+  const shiftPrepTimeline = (offset: number) => {
+    const candidate = addIsoDateDays(prepTimelineStart, offset);
+    const nextStart = offset > 0 && candidate > week.id ? week.id : candidate;
+    setPrepTimelineStart(nextStart);
+    setSelectedPrepDate(nextStart);
   };
   const dragHasRecipeSteps = (event: ReactDragEvent<HTMLElement>) =>
     !disabled && (dragState?.kind === "recipe" || Array.from(event.dataTransfer.types).includes("application/x-prep-recipe-step"));
@@ -2804,29 +2799,24 @@ function PrepView(props: {
     dragState?.kind === "session"
       ? dragState
       : { kind: "session" as const, sessionId: selectedSession?.id ?? "", entryIds: parsePrepDragIds(event.dataTransfer.getData("application/x-prep-session-entries")) };
-  const receivePrepDrop = (event: ReactDragEvent<HTMLElement>, sessionId: string, targetPosition: number) => {
+  const applyPrepDrop = (drag: Exclude<PrepDragState, null>, prepDate: IsoDate, targetPosition: number) => {
+    if (drag.kind === "recipe") addStepsToDate(prepDate, drag.stepIds, targetPosition);
+    else moveEntriesToDate(drag.sessionId, prepDate, drag.entryIds, targetPosition);
+    showPrepDate(prepDate);
+    endDrag();
+  };
+  const receivePrepDrop = (event: ReactDragEvent<HTMLElement>, prepDate: IsoDate, targetPosition: number) => {
     if (!isPrepDrag(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    if (dragHasRecipeSteps(event)) addSteps(sessionId, dragRecipeStepIds(event), targetPosition);
-    else {
-      const sessionDrag = dragSessionEntries(event);
-      if (sessionDrag.sessionId) moveEntries(sessionDrag.sessionId, sessionId, sessionDrag.entryIds, targetPosition);
+    const drag = dragHasRecipeSteps(event)
+      ? { kind: "recipe" as const, stepIds: dragRecipeStepIds(event) }
+      : dragSessionEntries(event);
+    if (drag.kind === "recipe" ? drag.stepIds.length : drag.sessionId && drag.entryIds.length) {
+      applyPrepDrop(drag, prepDate, targetPosition);
+    } else {
+      endDrag();
     }
-    setSelectedSessionId(sessionId);
-    endDrag();
-  };
-  const receivePrepDropOnDate = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!isPrepDrag(event)) return;
-    const targetTab = Array.from(sessionTabListRef.current?.querySelectorAll<HTMLButtonElement>(".prep-session-tab") ?? [])
-      .find((tab) => {
-        const bounds = tab.getBoundingClientRect();
-        return event.clientX >= bounds.left && event.clientX <= bounds.right;
-      });
-    const sessionId = targetTab?.dataset.prepSessionId;
-    const session = sessionId ? week.data.prepSessions.find((candidate) => candidate.id === sessionId) : null;
-    if (!session) return;
-    receivePrepDrop(event, session.id, session.steps.length);
   };
   const startRecipeStepDrag = (stepId: string) => {
     const stepIds = selectedSourceStepIds.has(stepId) && selectedSourceStepIdsInOrder.length ? selectedSourceStepIdsInOrder : [stepId];
@@ -2838,116 +2828,141 @@ function PrepView(props: {
     if (!selectedSession) return;
     setDragState({ kind: "session", sessionId: selectedSession.id, entryIds });
   };
-  const changeSession = (sessionId: string) => {
+  const beginPointerDrag = (drag: Exclude<PrepDragState, null>, event: ReactMouseEvent<HTMLElement>) => {
+    pointerDragRef.current = { ...drag, startX: event.clientX, startY: event.clientY };
+    pointerDragActiveRef.current = false;
+  };
+  const pointerDropTarget = (clientX: number, clientY: number) => {
+    const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const dateTarget = target?.closest<HTMLElement>("[data-prep-date]");
+    const prepDate = dateTarget?.dataset.prepDate as IsoDate | undefined;
+    if (!prepDate) return null;
+    const rowTarget = target?.closest<HTMLElement>("[data-prep-queue-position]");
+    if (!rowTarget || rowTarget.dataset.prepSessionId !== selectedSession?.id) {
+      return { prepDate, targetPosition: prepSessionsByDay.get(prepDate)?.[0]?.steps.length ?? 0 };
+    }
+    const bounds = rowTarget.getBoundingClientRect();
+    const position = Number(rowTarget.dataset.prepQueuePosition) + (clientY < bounds.top + bounds.height / 2 ? 0 : 1);
+    return { prepDate, targetPosition: position };
+  };
+  useEffect(() => {
+    const onMouseMove = (event: MouseEvent) => {
+      const pending = pointerDragRef.current;
+      if (!pending) return;
+      if (!pointerDragActiveRef.current) {
+        const distance = Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY);
+        if (distance < 6) return;
+        pointerDragActiveRef.current = true;
+        setDragState(pending.kind === "recipe" ? { kind: "recipe", stepIds: pending.stepIds } : { kind: "session", sessionId: pending.sessionId, entryIds: pending.entryIds });
+        document.body.classList.add("recipe-step-dragging");
+      }
+      const target = pointerDropTarget(event.clientX, event.clientY);
+      setDropTargetPrepDate(target?.prepDate ?? null);
+      if (target && pending.kind === "session" && target.prepDate === selectedPrepDate && selectedSession) {
+        setDropInsertion({ sessionId: selectedSession.id, position: target.targetPosition });
+      } else {
+        setDropInsertion(null);
+      }
+    };
+    const onMouseUp = (event: MouseEvent) => {
+      const pending = pointerDragRef.current;
+      const active = pointerDragActiveRef.current;
+      if (!pending || !active) {
+        pointerDragRef.current = null;
+        return;
+      }
+      const target = pointerDropTarget(event.clientX, event.clientY);
+      if (target) applyPrepDrop(pending, target.prepDate, target.targetPosition);
+      else endDrag();
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  });
+  const changePrepDate = (prepDate: IsoDate) => {
     clearEntrySelection();
-    setSelectedSessionId(sessionId);
+    showPrepDate(prepDate);
   };
   return (
     <div className="list-surface">
       <div className="surface-summary">
-        <div><p className="eyebrow">Active-week batch work</p><h2>Prep sessions</h2></div>
+        <div><p className="eyebrow">Active-week batch work</p><h2>Prep dates</h2></div>
         <div className="surface-summary-actions">
           <span className="summary-chip"><CheckCircle2 size={14} /> {completedEntries}/{sessionEntries.length} done</span>
         </div>
       </div>
-      {week.status !== "archived" ? (
-        <div className="prep-session-create">
-          <input aria-label="Prep session name" maxLength={MAX_COMMAND_TEXT_LENGTH} placeholder="Session name, e.g. Sunday batch" value={sessionLabel} onChange={(event) => { prepDraft.begin(); setSessionLabel(event.target.value); }} />
-          <input aria-label="Prep session date" type="date" value={sessionDate} onChange={(event) => { prepDraft.begin(); setSessionDate(event.target.value); }} />
-          <button className="secondary-button" type="button" disabled={disabled || !sessionLabel.trim()} onClick={createSession}><Plus size={15} /> New session</button>
-        </div>
-      ) : null}
       <div className="prep-session-workspace">
         <div className="prep-session-list">
-          {week.data.prepSessions.length ? <>
-            <nav className="prep-session-day-schedule" aria-label="Batch prep planned days">
-              <span className="prep-session-day-schedule-label"><CalendarDays size={14} /> Prep planned</span>
-              <div className="prep-session-day-schedule-days">
-                {prepSessionDays.map((day) => {
-                  const selected = day.sessions.some((session) => session.id === selectedSession?.id);
-                  const sessionCount = day.sessions.length;
+          <div className="prep-session-tabs">
+            <div className="prep-session-tab-navigation">
+              <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Show earlier prep dates" title="Earlier prep dates" disabled={disabled} onClick={() => shiftPrepTimeline(-7)}><ChevronLeft size={15} /></button>
+              <div className="prep-session-tablist" role="tablist" aria-label="Prep dates">
+                {prepTimelineDates.map((prepDate) => {
+                  const sessions = prepSessionsByDay.get(prepDate) ?? [];
+                  const stepCount = sessions.reduce((count, session) => count + session.steps.length, 0);
+                  const selected = prepDate === selectedPrepDate;
+                  const dateLabel = formatCalendarDate(prepDate, { weekday: "short", month: "short", day: "numeric" });
                   return <button
-                    key={day.key}
-                    className={`prep-session-day${selected ? " active" : ""}`}
+                    key={prepDate}
+                    id={`prep-date-tab-${prepDate}`}
+                    className={`prep-session-tab${selected ? " active" : ""}${stepCount ? " has-prep" : ""}${dropTargetPrepDate === prepDate ? " drop-target" : ""}`}
                     type="button"
-                    aria-label={`Open ${sessionCount} prep ${sessionCount === 1 ? "session" : "sessions"} planned for ${day.label}`}
-                    onClick={() => changeSession(day.sessions[0]!.id)}
-                  ><span>{day.label}</span><strong>{sessionCount}</strong></button>;
+                    role="tab"
+                    data-prep-date={prepDate}
+                    aria-label={stepCount ? `Open ${stepCount} prep ${stepCount === 1 ? "step" : "steps"} on ${dateLabel}` : `Open empty prep date ${dateLabel}`}
+                    aria-selected={selected}
+                    aria-controls={`prep-date-panel-${prepDate}`}
+                    onClick={() => changePrepDate(prepDate)}
+                    onDragEnter={(event) => {
+                      if (isPrepDrag(event)) setDropTargetPrepDate(prepDate);
+                    }}
+                    onDragOver={(event) => {
+                      if (!isPrepDrag(event)) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = dragHasRecipeSteps(event) ? "copy" : "move";
+                      setDropTargetPrepDate(prepDate);
+                    }}
+                    onDrop={(event) => receivePrepDrop(event, prepDate, sessions[0]?.steps.length ?? 0)}
+                  ><span>{dateLabel}</span>{stepCount ? <strong>{stepCount}</strong> : null}</button>;
                 })}
               </div>
-            </nav>
-            <div className="prep-session-tabs">
-              <div className="prep-session-tab-navigation">
-                <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Scroll prep sessions earlier" title="Earlier prep sessions" onClick={() => scrollSessionTabs(-240)}><ChevronLeft size={15} /></button>
-                <div
-                  ref={sessionTabListRef}
-                  className="prep-session-tablist"
-                  role="tablist"
-                  aria-label="Prep sessions"
-                  onDragOver={(event) => {
-                    if (!isPrepDrag(event)) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = dragHasRecipeSteps(event) ? "copy" : "move";
-                  }}
-                  onDrop={receivePrepDropOnDate}
-                >
-                  {week.data.prepSessions.map((session) => {
-                    const selected = session.id === selectedSession?.id;
-                    const dateLabel = session.prepDate ? formatCalendarDate(session.prepDate, { weekday: "short", month: "short", day: "numeric" }) : "Undated";
-                    return <button
-                      key={session.id}
-                      id={`prep-session-tab-${session.id}`}
-                      className={`prep-session-tab${selected ? " active" : ""}${dropTargetSessionId === session.id ? " drop-target" : ""}`}
-                      type="button"
-                      role="tab"
-                      data-prep-session-id={session.id}
-                      aria-label={`${session.label} · ${dateLabel} · ${session.steps.length} ${session.steps.length === 1 ? "step" : "steps"}`}
-                      aria-selected={selected}
-                      aria-controls={`prep-session-panel-${session.id}`}
-                      onClick={() => changeSession(session.id)}
-                      onDragEnter={(event) => {
-                        if (isPrepDrag(event)) setDropTargetSessionId(session.id);
-                      }}
-                      onDragOver={(event) => {
-                        if (!isPrepDrag(event)) return;
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = dragHasRecipeSteps(event) ? "copy" : "move";
-                        setDropTargetSessionId(session.id);
-                      }}
-                      onDrop={(event) => receivePrepDrop(event, session.id, session.steps.length)}
-                    ><span>{dateLabel}</span></button>;
-                  })}
-                </div>
-                <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Scroll prep sessions later" title="Later prep sessions" onClick={() => scrollSessionTabs(240)}><ChevronRight size={15} /></button>
-              </div>
-              <div className="prep-session-actions">
-                <button ref={sourceRestoreRef} className="secondary-button prep-session-add-steps" type="button" disabled={disabled || !week.data.meals.length || !selectedSession} title={selectedSessionDateLabel ? `Add recipe steps to ${selectedSessionDateLabel}` : "Choose a prep session first"} aria-label={selectedSessionDateLabel ? `Add recipe steps to ${selectedSessionDateLabel}` : "Choose a prep session first"} onClick={() => setSourceOpen(true)}><ListChecks size={15} /> Add steps</button>
-                {selectedSession ? <button className="secondary-button prep-session-select-all" type="button" disabled={disabled || !selectedSession.steps.length} aria-label={`Select all ${selectedSession.steps.length} prep ${selectedSession.steps.length === 1 ? "step" : "steps"}`} onClick={selectAllSessionEntries}><ListChecks size={15} /> Select all</button> : null}
-                {!disabled && selectedSession ? <button className="icon-button danger prep-session-tab-delete" type="button" title={`Delete ${selectedSession.label}`} aria-label={`Delete ${selectedSession.label}`} onClick={removeSelectedSession}><Trash2 size={15} /></button> : null}
-              </div>
+              <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Show later prep dates" title="Later prep dates" disabled={disabled || prepTimelineStart >= week.id} onClick={() => shiftPrepTimeline(7)}><ChevronRight size={15} /></button>
             </div>
-            {selectedSession ? <section
-              id={`prep-session-panel-${selectedSession.id}`}
-              className={`prep-session${dropTargetSessionId === selectedSession.id ? " drop-target" : ""}`}
-              role="tabpanel"
-              aria-labelledby={`prep-session-tab-${selectedSession.id}`}
-              onDragOver={(event) => {
-                if (!isPrepDrag(event)) return;
-                event.preventDefault();
-                event.dataTransfer.dropEffect = dragHasRecipeSteps(event) ? "copy" : "move";
-                setDropTargetSessionId(selectedSession.id);
-                setDropInsertion({ sessionId: selectedSession.id, position: selectedSession.steps.length });
-              }}
-              onDrop={(event) => {
-                receivePrepDrop(event, selectedSession.id, selectedSession.steps.length);
-              }}
-            >
-              {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag, or move them together.</span><select className="prep-selection-move-target" aria-label="Move selected prep steps to" value={moveTargetSessionId} onChange={(event) => setMoveTargetSessionId(event.target.value)}><option value="">Move to…</option>{week.data.prepSessions.filter((session) => session.id !== selectedSession.id).map((session) => <option key={session.id} value={session.id}>{moveTargetSessionLabels.get(session.id)}</option>)}</select><button className="secondary-button prep-selection-move" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</button><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
-              <div className="prep-step-list">
-                {selectedSession.steps.map((entry, index) => {
+            <div className="prep-session-actions">
+              <label className="prep-date-jump"><span className="sr-only">Jump to prep date</span><input aria-label="Jump to prep date" type="date" max={prepWeekEnd} value={prepTimelineStart} onChange={(event) => {
+                const nextDate = event.target.value as IsoDate;
+                if (!nextDate || nextDate > prepWeekEnd) return;
+                setPrepTimelineStart(nextDate);
+                setSelectedPrepDate(nextDate);
+              }} /></label>
+              <button ref={sourceRestoreRef} className="secondary-button prep-session-add-steps" type="button" disabled={disabled || !week.data.meals.length} title={`Add recipe steps to ${selectedSessionDateLabel}`} aria-label={`Add recipe steps to ${selectedSessionDateLabel}`} onClick={() => setSourceOpen(true)}><ListChecks size={15} /> Add steps</button>
+              <button className="secondary-button prep-session-select-all" type="button" disabled={disabled || !selectedSession?.steps.length} aria-label={`Select all ${selectedSession?.steps.length ?? 0} prep ${(selectedSession?.steps.length ?? 0) === 1 ? "step" : "steps"}`} onClick={selectAllSessionEntries}><ListChecks size={15} /> Select all</button>
+              {!disabled && selectedSession ? <button className="icon-button danger prep-session-tab-delete" type="button" title={`Delete ${selectedSessionDateLabel} prep`} aria-label={`Delete ${selectedSessionDateLabel} prep`} onClick={removeSelectedSession}><Trash2 size={15} /></button> : null}
+            </div>
+          </div>
+          <section
+            id={`prep-date-panel-${selectedPrepDate}`}
+            className={`prep-session${dropTargetPrepDate === selectedPrepDate ? " drop-target" : ""}`}
+            role="tabpanel"
+            aria-labelledby={`prep-date-tab-${selectedPrepDate}`}
+            onDragOver={(event) => {
+              if (!isPrepDrag(event)) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = dragHasRecipeSteps(event) ? "copy" : "move";
+              setDropTargetPrepDate(selectedPrepDate);
+              if (selectedSession) setDropInsertion({ sessionId: selectedSession.id, position: selectedSession.steps.length });
+            }}
+            onDrop={(event) => receivePrepDrop(event, selectedPrepDate, selectedSession?.steps.length ?? 0)}
+          >
+            {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag, or move them together.</span><input className="prep-selection-move-target" aria-label="Move selected prep steps to" type="date" max={prepWeekEnd} value={moveTargetPrepDate} onChange={(event) => setMoveTargetPrepDate(event.target.value)} /><button className="secondary-button prep-selection-move" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</button><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
+            <div className="prep-step-list">
+              {selectedSession?.steps.map((entry, index) => {
                 const resolved = findStep(week, entry.stepId);
                 if (!resolved) return null;
-                return <div key={entry.id} className="prep-queue-row-wrap">
+                return <div key={entry.id} className="prep-queue-row-wrap" data-prep-session-id={selectedSession.id} data-prep-queue-position={index}>
                   {selectedSessionDropPosition === index ? <div className="prep-insertion-indicator" role="presentation" /> : null}
                   <PrepSessionStepRow
                     entry={entry}
@@ -2967,24 +2982,23 @@ function PrepView(props: {
                     onSelect={selectSessionEntry}
                     onDragStarted={startSessionDrag}
                     onDragEnded={endDrag}
+                    onPointerDragStart={(entryIds, event) => beginPointerDrag({ kind: "session", sessionId: selectedSession.id, entryIds }, event)}
                     onDragOver={(event, targetPosition) => {
                       if (!isPrepDrag(event)) return;
                       event.preventDefault();
                       event.stopPropagation();
                       event.dataTransfer.dropEffect = dragHasRecipeSteps(event) ? "copy" : "move";
-                      setDropTargetSessionId(selectedSession.id);
+                      setDropTargetPrepDate(selectedPrepDate);
                       setDropInsertion({ sessionId: selectedSession.id, position: targetPosition });
                     }}
-                    onDrop={(event, targetPosition) => receivePrepDrop(event, selectedSession.id, targetPosition)}
+                    onDrop={(event, targetPosition) => receivePrepDrop(event, selectedPrepDate, targetPosition)}
                   />
                 </div>;
               })}
-                {selectedSessionDropPosition === selectedSession.steps.length ? <div className="prep-insertion-indicator" role="presentation" /> : null}
-                {!selectedSession.steps.length ? <p className="empty-copy">Drag recipe instructions here.</p> : null}
-              </div>
-            </section> : null}
-          </> : null}
-          {!week.data.prepSessions.length ? <p className="empty-copy">Create a prep session, then drag recipe instructions into it.</p> : null}
+              {selectedSession && selectedSessionDropPosition === selectedSession.steps.length ? <div className="prep-insertion-indicator" role="presentation" /> : null}
+              {!selectedSession?.steps.length ? <p className="empty-copy">Drag recipe instructions onto {selectedSessionDateLabel}.</p> : null}
+            </div>
+          </section>
         </div>
       </div>
       {sourceOpen && typeof document !== "undefined" ? createPortal(<aside className="prep-source-window" role="dialog" aria-label="Recipe instructions">
@@ -3002,6 +3016,10 @@ function PrepView(props: {
           onSelectStep={selectSourceStep}
           onRecipeStepDragStart={startRecipeStepDrag}
           onRecipeStepDragEnd={endDrag}
+          onRecipeStepPointerDragStart={(stepId, event) => {
+            const stepIds = selectedSourceStepIds.has(stepId) && selectedSourceStepIdsInOrder.length ? selectedSourceStepIdsInOrder : [stepId];
+            beginPointerDrag({ kind: "recipe", stepIds }, event);
+          }}
         />
       </aside>, document.body) : null}
     </div>

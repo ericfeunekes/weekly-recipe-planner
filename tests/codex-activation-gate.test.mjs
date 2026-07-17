@@ -120,24 +120,12 @@ function completeArtifact(value = coordinates) {
           ingredientNameSha256: "6".repeat(64),
           authoritativeReadback: true,
         },
-        hostedWebSearch: {
-          operation: "web_search",
-          status: "completed",
-          threadIdSha256: "1".repeat(64),
-          turnIdSha256: "3".repeat(64),
-          activityIdSha256: "6".repeat(64),
-        },
-        activity: {
-          categories: ["tool", "web"],
-          humanLabelsObserved: true,
-          assistantMessageObserved: true,
-        },
+        assistantMessageObserved: true,
         worker: {
           parentThreadIdSha256: "1".repeat(64),
           workerThreadIdSha256: "7".repeat(64),
-          workerActivityObserved: true,
           childReadback: true,
-          parentResultObserved: true,
+          workerCompleted: true,
         },
       },
       interactions: {
@@ -435,10 +423,8 @@ test("activation eligibility rejects old or malformed native scenario and retent
     (candidate) => { candidate.schemaVersion = 1; },
     (candidate) => { delete candidate.scenarios.nativeHistory; },
     (candidate) => { candidate.scenarios.nativeHistory.createdTopLevelThreadCount = "2"; },
-    (candidate) => { delete candidate.scenarios.nativeTurn.hostedWebSearch; },
-    (candidate) => {
-      candidate.scenarios.nativeTurn.hostedWebSearch.turnIdSha256 = "f".repeat(64);
-    },
+    (candidate) => { candidate.scenarios.nativeTurn.assistantMessageObserved = false; },
+    (candidate) => { candidate.scenarios.nativeTurn.worker.workerCompleted = false; },
     (candidate) => { candidate.dedicatedRuntimeRetention.nativeStateCounts = {}; },
     (candidate) => { delete candidate.dedicatedRuntimeRetention.nativeStateCounts.agent_jobs; },
     (candidate) => { candidate.dedicatedRuntimeRetention.nativeStateCounts.threads = 0; },
