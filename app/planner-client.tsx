@@ -2587,6 +2587,7 @@ function PrepView(props: {
   const [entrySelectionAnchorId, setEntrySelectionAnchorId] = useState<string | null>(null);
   const [selectedSourceStepIds, setSelectedSourceStepIds] = useState<Set<string>>(() => new Set());
   const [sourceSelectionAnchorId, setSourceSelectionAnchorId] = useState<string | null>(null);
+  const [moveTargetSessionId, setMoveTargetSessionId] = useState("");
   const [dragState, setDragState] = useState<PrepDragState>(null);
   const [dropTargetSessionId, setDropTargetSessionId] = useState<string | null>(null);
   const [dropInsertion, setDropInsertion] = useState<PrepDropInsertion>(null);
@@ -2606,9 +2607,30 @@ function PrepView(props: {
   const selectedEntryIdsInOrder = selectedSession?.steps.filter((entry) => selectedEntryIds.has(entry.id)).map((entry) => entry.id) ?? [];
   const selectedSourceStepIdsInOrder = selectedMeal?.instructions.filter((step) => selectedSourceStepIds.has(step.id)).map((step) => step.id) ?? [];
   const selectedSessionDropPosition = dropInsertion?.sessionId === selectedSession?.id ? dropInsertion.position : null;
+  const prepSessionsByDay = new Map<string, typeof week.data.prepSessions>();
+  week.data.prepSessions.forEach((session) => {
+    const key = session.prepDate ?? "undated";
+    prepSessionsByDay.set(key, [...(prepSessionsByDay.get(key) ?? []), session]);
+  });
+  const prepSessionDays = [...prepSessionsByDay.entries()].map(([key, sessions]) => ({
+    key,
+    sessions,
+    label: key === "undated" ? "Undated" : formatCalendarDate(key as IsoDate, { weekday: "short", month: "short", day: "numeric" }),
+  }));
+  const moveTargetSession = week.data.prepSessions.find((session) => session.id === moveTargetSessionId) ?? null;
+  const canMoveSelectedEntries = Boolean(
+    selectedSession &&
+    moveTargetSession &&
+    moveTargetSession.id !== selectedSession.id &&
+    selectedEntryIdsInOrder.some((entryId) => {
+      const entry = selectedSession.steps.find((candidate) => candidate.id === entryId);
+      return entry && !moveTargetSession.steps.some((candidate) => candidate.stepId === entry.stepId);
+    }),
+  );
   const clearEntrySelection = () => {
     setSelectedEntryIds(new Set());
     setEntrySelectionAnchorId(null);
+    setMoveTargetSessionId("");
   };
   const clearSourceSelection = () => {
     setSelectedSourceStepIds(new Set());
@@ -2708,6 +2730,15 @@ function PrepView(props: {
       },
     );
   };
+  const selectAllSessionEntries = () => {
+    if (!selectedSession?.steps.length) return;
+    setSelectedEntryIds(new Set(selectedSession.steps.map((entry) => entry.id)));
+    setEntrySelectionAnchorId(selectedSession.steps[0]?.id ?? null);
+  };
+  const moveSelectedEntries = () => {
+    if (!selectedSession || !moveTargetSession || !canMoveSelectedEntries) return;
+    moveEntries(selectedSession.id, moveTargetSession.id, selectedEntryIdsInOrder, moveTargetSession.steps.length);
+  };
   const removeSelectedSession = () => {
     if (!selectedSession) return;
     const sessionIndex = week.data.prepSessions.findIndex((session) => session.id === selectedSession.id);
@@ -2789,6 +2820,22 @@ function PrepView(props: {
       <div className="prep-session-workspace">
         <div className="prep-session-list">
           {week.data.prepSessions.length ? <>
+            <nav className="prep-session-day-schedule" aria-label="Batch prep planned days">
+              <span className="prep-session-day-schedule-label"><CalendarDays size={14} /> Prep planned</span>
+              <div className="prep-session-day-schedule-days">
+                {prepSessionDays.map((day) => {
+                  const selected = day.sessions.some((session) => session.id === selectedSession?.id);
+                  const sessionCount = day.sessions.length;
+                  return <button
+                    key={day.key}
+                    className={`prep-session-day${selected ? " active" : ""}`}
+                    type="button"
+                    aria-label={`Open ${sessionCount} prep ${sessionCount === 1 ? "session" : "sessions"} planned for ${day.label}`}
+                    onClick={() => changeSession(day.sessions[0]!.id)}
+                  ><span>{day.label}</span><strong>{sessionCount}</strong></button>;
+                })}
+              </div>
+            </nav>
             <div className="prep-session-tabs">
               <div className="prep-session-tab-navigation">
                 <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Scroll prep sessions earlier" title="Earlier prep sessions" onClick={() => scrollSessionTabs(-240)}><ChevronLeft size={15} /></button>
@@ -2835,6 +2882,7 @@ function PrepView(props: {
               </div>
               <div className="prep-session-actions">
                 <button ref={sourceRestoreRef} className="secondary-button prep-session-add-steps" type="button" disabled={disabled || !week.data.meals.length || !selectedSession} title={selectedSessionDateLabel ? `Add recipe steps to ${selectedSessionDateLabel}` : "Choose a prep session first"} aria-label={selectedSessionDateLabel ? `Add recipe steps to ${selectedSessionDateLabel}` : "Choose a prep session first"} onClick={() => setSourceOpen(true)}><ListChecks size={15} /> Add steps</button>
+                {selectedSession ? <button className="secondary-button prep-session-select-all" type="button" disabled={disabled || !selectedSession.steps.length} aria-label={`Select all ${selectedSession.steps.length} prep ${selectedSession.steps.length === 1 ? "step" : "steps"}`} onClick={selectAllSessionEntries}><ListChecks size={15} /> Select all</button> : null}
                 {!disabled && selectedSession ? <button className="icon-button danger prep-session-tab-delete" type="button" title={`Delete ${selectedSession.label}`} aria-label={`Delete ${selectedSession.label}`} onClick={removeSelectedSession}><Trash2 size={15} /></button> : null}
               </div>
             </div>
@@ -2854,7 +2902,7 @@ function PrepView(props: {
                 receivePrepDrop(event, selectedSession.id, selectedSession.steps.length);
               }}
             >
-              {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag the handle to another prep date, or between instructions to reorder.</span><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
+              {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag, or move them together.</span><select className="prep-selection-move-target" aria-label="Move selected prep steps to" value={moveTargetSessionId} onChange={(event) => setMoveTargetSessionId(event.target.value)}><option value="">Move to…</option>{week.data.prepSessions.filter((session) => session.id !== selectedSession.id).map((session) => <option key={session.id} value={session.id}>{session.prepDate ? formatCalendarDate(session.prepDate, { weekday: "short", month: "short", day: "numeric" }) : "Undated"}</option>)}</select><button className="secondary-button prep-selection-move" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</button><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
               <div className="prep-step-list">
                 {selectedSession.steps.map((entry, index) => {
                 const resolved = findStep(week, entry.stepId);

@@ -13,7 +13,7 @@ async function resetPlanner(page: Page): Promise<void> {
   await expect(planner).toBeVisible();
 }
 
-test("batch prep moves a multi-selection and exposes a thick insertion marker", async ({ page }) => {
+test("batch prep shows planned days, moves a multi-selection, and exposes a thick insertion marker", async ({ page }) => {
   await resetPlanner(page);
   await page.getByRole("button", { name: "Prep", exact: true }).click();
 
@@ -22,6 +22,9 @@ test("batch prep moves a multi-selection and exposes a thick insertion marker", 
   const destinationSession = sessions.getByRole("tab").nth(1);
   await expect(sourceSession).toBeVisible();
   await expect(destinationSession).toBeVisible();
+  const plannedDays = page.getByRole("navigation", { name: "Batch prep planned days" });
+  await expect(plannedDays).toBeVisible();
+  await expect(plannedDays.getByRole("button")).toHaveCount(2);
 
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const recipeSteps = page.getByRole("dialog", { name: "Recipe instructions" });
@@ -44,8 +47,7 @@ test("batch prep moves a multi-selection and exposes a thick insertion marker", 
   const destinationRows = page.getByTestId("prep-session-step");
   await expect(destinationRows).toHaveCount(3);
 
-  await destinationRows.nth(0).click();
-  await destinationRows.nth(2).click({ modifiers: ["Shift"] });
+  await page.getByRole("button", { name: "Select all 3 prep steps", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("3 selected");
 
   await page.getByLabel("Prep session name").fill("Transfer check");
@@ -54,8 +56,9 @@ test("batch prep moves a multi-selection and exposes a thick insertion marker", 
   const transferSession = sessions.getByRole("tab", { name: /Transfer check/ });
   await expect(transferSession).toBeVisible();
 
-  const dragHandle = destinationRows.nth(0).getByRole("button", { name: "Drag 3 selected instructions to another prep session" });
-  await dragHandle.dragTo(transferSession);
+  const moveTarget = page.getByLabel("Move selected prep steps to");
+  await moveTarget.selectOption({ label: "Fri, Jul 10" });
+  await page.getByRole("button", { name: "Move selected prep steps", exact: true }).click();
   await expect(transferSession).toHaveAttribute("aria-selected", "true");
   const transferredRows = page.getByTestId("prep-session-step");
   await expect(transferredRows).toHaveCount(3);
