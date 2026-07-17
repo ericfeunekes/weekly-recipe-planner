@@ -8,7 +8,7 @@ The functional spine is locked when a designer or coding agent can trace one mea
 
 1. Codex imports or creates one or more future week plans.
 2. The user opens the app, navigates the multi-week calendar, and opens the current or upcoming week.
-3. The selected week shows meals, prep, groceries, leftovers, and status clearly enough to execute or revise.
+3. The selected week shows dinners, leftovers, and status clearly enough to execute or revise; Prep remains a separate execution destination rather than Week content.
 4. Either the user or Codex can mutate the same data through the UI or app-server commands.
 5. The active week closes into an archive summary with feedback and promotable lessons.
 6. The household can use a thin native Codex thread wrapper: see prior threads, keep exactly one selected across planner views/new tabs, start or select a conversation, and observe native background workers while every planner effect still crosses the shared mutation service.

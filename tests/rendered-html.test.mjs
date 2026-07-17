@@ -133,7 +133,12 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(layout, /requestHeaders\.get\("x-forwarded-host"\)/);
   assert.doesNotMatch(layout, /next\/font|Geist|antialiased/);
   assert.match(styles, /--muted: #52605d/);
-  assert.doesNotMatch(styles, /@import "tailwindcss"|font-geist/);
+  assert.match(styles, /@import "tailwindcss\/theme\.css" layer\(theme\)/);
+  assert.match(styles, /@import "tailwindcss\/utilities\.css" layer\(utilities\)/);
+  assert.match(styles, /--color-primary: var\(--primary\)/);
+  assert.doesNotMatch(styles, /font-geist/);
+  assert.match(packageJson, /"@tailwindcss\/vite"/);
+  assert.match(packageJson, /"tailwindcss"/);
   assert.match(packageJson, /"lucide-react"/);
   assert.match(packageJson, /--experimental-strip-types/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);

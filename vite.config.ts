@@ -1,4 +1,5 @@
 import vinext from "vinext";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
@@ -77,6 +78,7 @@ export default defineConfig(async () => {
         : undefined,
     },
     plugins: [
+      tailwindcss(),
       vinext(),
       sites(),
       cloudflare({

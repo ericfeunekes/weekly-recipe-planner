@@ -1,3 +1,34 @@
+@layer theme, base, components, utilities;
+
+/* Tailwind utilities are additive during the migration. Keep the existing
+   planner reset authoritative until each surface has been explicitly moved. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted-background);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
 :root {
   --canvas: #e9eeeb;
   --paper: #f8f9f7;
@@ -23,6 +54,24 @@
   --codex-rail-width: clamp(19rem, 34vw, 24rem);
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Avenir Next", "Segoe UI", sans-serif;
   --font-mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+  --radius: 0.6rem;
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--green);
+  --primary-foreground: var(--surface);
+  --secondary: var(--green-soft);
+  --secondary-foreground: var(--green-dark);
+  --muted-background: var(--surface-muted);
+  --accent: var(--amber-soft);
+  --accent-foreground: var(--ink);
+  --destructive: var(--danger);
+  --border: var(--line);
+  --input: var(--line-strong);
+  --ring: var(--green-dark);
 }
 
 *,

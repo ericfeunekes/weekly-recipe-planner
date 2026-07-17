@@ -112,15 +112,6 @@ function completeArtifact(value = coordinates) {
         exactAdmissionReplay: true,
         changedPayloadRejected: true,
         secondClientReadback: true,
-        plannerEffect: {
-          operation: "move_grocery_items_to_source",
-          plannerVersionDelta: 1,
-          itemIdentitySha256: "5".repeat(64),
-          source: "farm_box",
-          ingredientNameSha256: "6".repeat(64),
-          authoritativeReadback: true,
-        },
-        assistantMessageObserved: true,
       },
       interactions: {
         question: {

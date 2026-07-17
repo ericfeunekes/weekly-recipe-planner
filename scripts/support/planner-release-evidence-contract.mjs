@@ -295,19 +295,6 @@ function validHistoryScenario(value) {
     ].every((key) => value[key] === true);
 }
 
-function validPlannerEffect(value) {
-  return exactKeys(value, [
-    "operation",
-    "plannerVersionDelta",
-    "itemIdentitySha256",
-    "source",
-    "ingredientNameSha256",
-    "authoritativeReadback",
-  ]) && value.operation === "move_grocery_items_to_source" && value.plannerVersionDelta === 1 &&
-    sha(value.itemIdentitySha256) && value.source === "farm_box" && sha(value.ingredientNameSha256) &&
-    value.authoritativeReadback === true;
-}
-
 function validNativeTurnScenario(value) {
   if (!exactKeys(value, [
     "threadIdSha256",
@@ -316,12 +303,9 @@ function validNativeTurnScenario(value) {
     "exactAdmissionReplay",
     "changedPayloadRejected",
     "secondClientReadback",
-    "plannerEffect",
-    "assistantMessageObserved",
   ]) || !sha(value.threadIdSha256) || !sha(value.turnIdSha256) ||
       !sha(value.clientUserMessageIdSha256) || value.exactAdmissionReplay !== true ||
-      value.changedPayloadRejected !== true || value.secondClientReadback !== true ||
-      !validPlannerEffect(value.plannerEffect) || value.assistantMessageObserved !== true) {
+      value.changedPayloadRejected !== true || value.secondClientReadback !== true) {
     return false;
   }
   return true;

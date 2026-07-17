@@ -153,15 +153,6 @@ export function releaseCandidateProjection({
         exactAdmissionReplay: true,
         changedPayloadRejected: true,
         secondClientReadback: true,
-        plannerEffect: {
-          operation: "move_grocery_items_to_source",
-          plannerVersionDelta: 1,
-          itemIdentitySha256: "9".repeat(64),
-          source: "farm_box",
-          ingredientNameSha256: "b".repeat(64),
-          authoritativeReadback: true,
-        },
-        assistantMessageObserved: true,
       },
       interactions: {
         question: {

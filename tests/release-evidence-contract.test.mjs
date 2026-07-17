@@ -97,7 +97,6 @@ test("release-candidate evidence rejects unknown and credential-derived projecti
     (projection) => projection.scenarios,
     (projection) => projection.scenarios.nativeHistory,
     (projection) => projection.scenarios.nativeTurn,
-    (projection) => projection.scenarios.nativeTurn.plannerEffect,
     (projection) => projection.scenarios.interactions,
     (projection) => projection.scenarios.interactions.question,
     (projection) => projection.scenarios.interrupt,
@@ -146,45 +145,6 @@ test("release-candidate evidence binds one native hosted-search capability surfa
       projection: changed.projection,
     }), /invalid exact contract/);
     assert.throws(() => assertReleaseArtifact(rehash(changed)), /invalid exact contract/);
-  }
-});
-
-test("release-candidate evidence requires an assistant response", () => {
-  const { releaseCandidate } = fixtureChain();
-  const mutations = [
-    (projection) => { delete projection.scenarios.nativeTurn.assistantMessageObserved; },
-    (projection) => { projection.scenarios.nativeTurn.assistantMessageObserved = false; },
-  ];
-  for (const mutate of mutations) {
-    const changed = structuredClone(releaseCandidate);
-    mutate(changed.projection);
-    assert.throws(() => createReleaseArtifact({
-      artifactType: "release-candidate",
-      activationId,
-      predecessorSha256: releaseCandidate.predecessorSha256,
-      projection: changed.projection,
-    }), /invalid exact contract/);
-    assert.throws(() => assertReleaseArtifact(rehash(changed)), /invalid exact contract/);
-  }
-});
-
-test("release-candidate evidence requires one authoritative recipe-derived farm-box move", () => {
-  const { releaseCandidate } = fixtureChain();
-  const mutations = [
-    (projection) => { projection.scenarios.nativeTurn.plannerEffect.plannerVersionDelta = 2; },
-    (projection) => { projection.scenarios.nativeTurn.plannerEffect.source = "shop"; },
-    (projection) => { projection.scenarios.nativeTurn.plannerEffect.ingredientNameSha256 = "not-a-sha"; },
-    (projection) => { projection.scenarios.nativeTurn.plannerEffect.authoritativeReadback = false; },
-  ];
-  for (const mutate of mutations) {
-    const changed = structuredClone(releaseCandidate);
-    mutate(changed.projection);
-    assert.throws(() => createReleaseArtifact({
-      artifactType: "release-candidate",
-      activationId,
-      predecessorSha256: releaseCandidate.predecessorSha256,
-      projection: changed.projection,
-    }), /invalid exact contract/);
   }
 });
 

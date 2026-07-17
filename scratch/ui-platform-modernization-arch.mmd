@@ -1,0 +1,25 @@
+flowchart LR
+  classDef changed fill:#E2F0EA,stroke:#2F6F5E,color:#202826
+  classDef reused fill:#F0F2EF,stroke:#52605D,color:#202826
+  classDef protected fill:#FAE8E2,stroke:#C86448,color:#202826
+
+  subgraph Planner[Planner application]
+    Foundation[Shared visual foundation]:::changed
+    Week[Prep-free Week agenda]:::changed
+    Day[Day cooking ticket]:::changed
+    Prep[Standalone Prep workspace]:::reused
+    Store[Typed planner authority]:::protected
+  end
+  subgraph Codex[Native Codex boundary]
+    Rail[Native rail presentation]:::changed
+    Source[Thread source and transport]:::protected
+    Native[Codex history and workers]:::protected
+  end
+  Foundation --> Week
+  Foundation --> Day
+  Foundation --> Rail
+  Week --> Store
+  Day --> Store
+  Prep --> Store
+  Rail --> Source
+  Source --> Native

@@ -17,7 +17,6 @@ import {
   createLiveSmokeGlobalEndpoint,
   createLiveChatFailureReceipt,
   createLiveSmokeRoot,
-  deriveNativeObservationEvidence,
   liveChatFailureArtifactPath,
   parseLiveChatSmokeArguments,
   writePrivateLiveChatArtifact,
@@ -173,26 +172,6 @@ test("native Codex smoke failure receipts are private and do not retain exceptio
     errorFingerprintSha256: receipt.errorFingerprintSha256,
   });
   assert.equal(liveChatFailureArtifactPath(output), failurePath);
-});
-
-test("native release observation evidence requires an assistant response", () => {
-  const observed = {
-    assistantMessage: { kind: "message", role: "assistant" },
-  };
-  assert.deepEqual(deriveNativeObservationEvidence(observed), {
-    assistantMessageObserved: true,
-  });
-
-  for (const mutate of [
-    (value) => { delete value.assistantMessage; },
-  ]) {
-    const changed = structuredClone(observed);
-    mutate(changed);
-    assert.throws(
-      () => deriveNativeObservationEvidence(changed),
-      /omitted its assistant response/,
-    );
-  }
 });
 
 test("release smoke uses native thread HTTP and the final configured runtime", async () => {

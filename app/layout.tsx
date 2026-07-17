@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -50,7 +52,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <TooltipProvider>
+          {children}
+          <Toaster />
+        </TooltipProvider>
+      </body>
     </html>
   );
 }
