@@ -135,6 +135,23 @@ test.describe("native Codex thread rail", () => {
     await expect.poll(() => page.evaluate(() => (window as Window & { __codexConversationScrollCalls?: unknown[] }).__codexConversationScrollCalls)).toEqual([]);
   });
 
+  test("a completed Codex planner apply forces an authoritative workspace readback", async ({ page }) => {
+    await openNative(page);
+    const freshWorkspaceReads: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname !== "/api/workspace") return;
+      const etag = request.headers()["if-none-match"];
+      if (!etag) freshWorkspaceReads.push(request.url());
+    });
+
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await rail.getByRole("textbox", { name: "Message Codex" }).fill("Please complete this shared step.");
+    await rail.getByRole("button", { name: "Send to Codex" }).click();
+    await expect(rail.getByRole("log", { name: "Codex conversation" }))
+      .toContainText("I marked that shared recipe step complete.");
+    await expect.poll(() => freshWorkspaceReads.length).toBeGreaterThan(0);
+  });
+
   test("task history exposes an enabled retry and recovers after a list failure", async ({ page }) => {
     await openNative(page);
     let injected = false;

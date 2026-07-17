@@ -36,6 +36,7 @@ import type {
 import { ACTIVITY_LABEL_DEBOUNCE_MS, selectVisibleCodexActivityLabel, shouldFlushCodexActivityLabel } from "./codex-thread-activity.ts";
 import { mergeThreadPages } from "./codex-thread-history.ts";
 import { CodexMarkdown } from "./codex-markdown.tsx";
+import { completedPlannerApplyActivityKeys, hasNewCompletedPlannerApply } from "./codex-thread-planner-sync.ts";
 import { nextCodexMessageScrollTop, shouldScrollToLatestCodexMessage } from "./codex-thread-scroll.ts";
 import { createCodexThreadSource, type CodexThreadSnapshot, type CodexThreadSource } from "./codex-thread-source.ts";
 import { selectInterruptibleTurnId } from "./codex-thread-turns.ts";
@@ -145,6 +146,8 @@ type CodexThreadRailProps = {
   onCollapsedChange: (collapsed: boolean) => void;
   offline?: boolean;
   onReconnect?: () => void;
+  /** Re-read the planner after Codex durably completes planner.apply. */
+  onPlannerApplied?: () => void;
   modal?: boolean;
   onClose?: () => void;
 };
@@ -370,6 +373,7 @@ export function CodexThreadRail({
   onCollapsedChange,
   offline = false,
   onReconnect,
+  onPlannerApplied,
   modal = false,
   onClose,
 }: CodexThreadRailProps) {
@@ -386,6 +390,7 @@ export function CodexThreadRail({
   });
   const [workerReturnFocusId, setWorkerReturnFocusId] = useState<string | null>(null);
   const workerRequestVersion = useRef(0);
+  const seenCompletedPlannerApplyKeys = useRef<{ threadId: string; keys: Set<string> } | null>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const activity = useDebouncedCodexActivityLabel(snapshot);
   const isPreview = snapshot.mode === "preview";
@@ -408,6 +413,23 @@ export function CodexThreadRail({
   useEffect(() => {
     if (focusKey > 0 && !collapsed) composerRef.current?.focus();
   }, [collapsed, focusKey]);
+
+  useEffect(() => {
+    if (!snapshot.thread) {
+      seenCompletedPlannerApplyKeys.current = null;
+      return;
+    }
+    const currentKeys = completedPlannerApplyActivityKeys(snapshot.thread);
+    const previous = seenCompletedPlannerApplyKeys.current;
+    const previousKeys = previous?.threadId === snapshot.thread.id ? previous.keys : null;
+    seenCompletedPlannerApplyKeys.current = { threadId: snapshot.thread.id, keys: new Set(currentKeys) };
+    // The first read of a task is historical state. Subsequent source updates
+    // can only add a completed planner.apply after the native host has written
+    // the authoritative workspace, so force a workspace readback then.
+    if (previousKeys !== null && hasNewCompletedPlannerApply(previousKeys, currentKeys)) {
+      onPlannerApplied?.();
+    }
+  }, [onPlannerApplied, snapshot.thread]);
 
   const chooseThread = async (threadId: string) => {
     const next = await run("select", () => source.select(threadId));

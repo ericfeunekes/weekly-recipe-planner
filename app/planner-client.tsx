@@ -1615,6 +1615,7 @@ export default function PlannerApp() {
                 onCollapsedChange={setCodexCollapsed}
                 offline={connection !== "online"}
                 onReconnect={() => void refresh(true)}
+                onPlannerApplied={() => void refresh(true)}
                 onClose={() => setCodexCollapsed(true)}
               />
             ) : null}
@@ -1684,6 +1685,7 @@ export default function PlannerApp() {
             onCollapsedChange={() => setChatOpen(false)}
             offline={connection !== "online"}
             onReconnect={() => void refresh(true)}
+            onPlannerApplied={() => void refresh(true)}
             modal
             onClose={() => setChatOpen(false)}
           />
@@ -2617,6 +2619,13 @@ function PrepView(props: {
     sessions,
     label: key === "undated" ? "Undated" : formatCalendarDate(key as IsoDate, { weekday: "short", month: "short", day: "numeric" }),
   }));
+  const moveTargetSessionLabels = new Map(week.data.prepSessions.map((session) => {
+    const sessionsOnDay = prepSessionsByDay.get(session.prepDate ?? "undated") ?? [];
+    const dateLabel = session.prepDate
+      ? formatCalendarDate(session.prepDate, { weekday: "short", month: "short", day: "numeric" })
+      : "Undated";
+    return [session.id, sessionsOnDay.length > 1 ? `${dateLabel} · ${session.label}` : dateLabel];
+  }));
   const moveTargetSession = week.data.prepSessions.find((session) => session.id === moveTargetSessionId) ?? null;
   const canMoveSelectedEntries = Boolean(
     selectedSession &&
@@ -2902,7 +2911,7 @@ function PrepView(props: {
                 receivePrepDrop(event, selectedSession.id, selectedSession.steps.length);
               }}
             >
-              {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag, or move them together.</span><select className="prep-selection-move-target" aria-label="Move selected prep steps to" value={moveTargetSessionId} onChange={(event) => setMoveTargetSessionId(event.target.value)}><option value="">Move to…</option>{week.data.prepSessions.filter((session) => session.id !== selectedSession.id).map((session) => <option key={session.id} value={session.id}>{session.prepDate ? formatCalendarDate(session.prepDate, { weekday: "short", month: "short", day: "numeric" }) : "Undated"}</option>)}</select><button className="secondary-button prep-selection-move" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</button><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
+              {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag, or move them together.</span><select className="prep-selection-move-target" aria-label="Move selected prep steps to" value={moveTargetSessionId} onChange={(event) => setMoveTargetSessionId(event.target.value)}><option value="">Move to…</option>{week.data.prepSessions.filter((session) => session.id !== selectedSession.id).map((session) => <option key={session.id} value={session.id}>{moveTargetSessionLabels.get(session.id)}</option>)}</select><button className="secondary-button prep-selection-move" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</button><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
               <div className="prep-step-list">
                 {selectedSession.steps.map((entry, index) => {
                 const resolved = findStep(week, entry.stepId);
