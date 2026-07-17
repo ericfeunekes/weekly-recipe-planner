@@ -1,4 +1,5 @@
 export const RELEASE_SOURCE_EXCLUDED_ROOTS = Object.freeze([
+  "AGENTS.md",
   ".git",
   ".next",
   ".planner-data",
