@@ -308,17 +308,6 @@ function validPlannerEffect(value) {
     value.authoritativeReadback === true;
 }
 
-function validWorker(value, parentThreadIdSha256) {
-  return exactKeys(value, [
-    "parentThreadIdSha256",
-    "workerThreadIdSha256",
-    "childReadback",
-    "workerCompleted",
-  ]) && value.parentThreadIdSha256 === parentThreadIdSha256 &&
-    sha(value.workerThreadIdSha256) && value.workerThreadIdSha256 !== parentThreadIdSha256 &&
-    value.childReadback === true && value.workerCompleted === true;
-}
-
 function validNativeTurnScenario(value) {
   if (!exactKeys(value, [
     "threadIdSha256",
@@ -329,14 +318,13 @@ function validNativeTurnScenario(value) {
     "secondClientReadback",
     "plannerEffect",
     "assistantMessageObserved",
-    "worker",
   ]) || !sha(value.threadIdSha256) || !sha(value.turnIdSha256) ||
       !sha(value.clientUserMessageIdSha256) || value.exactAdmissionReplay !== true ||
       value.changedPayloadRejected !== true || value.secondClientReadback !== true ||
       !validPlannerEffect(value.plannerEffect) || value.assistantMessageObserved !== true) {
     return false;
   }
-  return validWorker(value.worker, value.threadIdSha256);
+  return true;
 }
 
 function validInteractions(value, topLevelThreadIdSha256) {

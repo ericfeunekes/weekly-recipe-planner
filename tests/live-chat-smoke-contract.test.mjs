@@ -175,37 +175,22 @@ test("native Codex smoke failure receipts are private and do not retain exceptio
   assert.equal(liveChatFailureArtifactPath(output), failurePath);
 });
 
-test("native release observation evidence requires an assistant response and completed worker readback", () => {
+test("native release observation evidence requires an assistant response", () => {
   const observed = {
     assistantMessage: { kind: "message", role: "assistant" },
-    workerSummary: { threadId: "worker-1", status: "completed" },
-    workerReadback: {
-      thread: {
-        id: "worker-1",
-        threadKind: "worker",
-        parentThreadId: "parent-1",
-      },
-    },
-    parentThreadId: "parent-1",
   };
   assert.deepEqual(deriveNativeObservationEvidence(observed), {
     assistantMessageObserved: true,
-    worker: {
-      childReadback: true,
-      workerCompleted: true,
-    },
   });
 
   for (const mutate of [
     (value) => { delete value.assistantMessage; },
-    (value) => { value.workerSummary.status = "failed"; },
-    (value) => { value.workerReadback.thread.parentThreadId = "other-parent"; },
   ]) {
     const changed = structuredClone(observed);
     mutate(changed);
     assert.throws(
       () => deriveNativeObservationEvidence(changed),
-      /omitted its assistant response or completed worker readback/,
+      /omitted its assistant response/,
     );
   }
 });

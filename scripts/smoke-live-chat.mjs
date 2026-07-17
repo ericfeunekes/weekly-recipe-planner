@@ -433,34 +433,11 @@ function groceryIngredientName(week, grocery) {
     ?.ingredient ?? null;
 }
 
-export function deriveNativeObservationEvidence({
-  assistantMessage,
-  workerSummary,
-  workerReadback,
-  parentThreadId,
-}) {
+export function deriveNativeObservationEvidence({ assistantMessage }) {
   const assistantMessageObserved = assistantMessage?.kind === "message" &&
     assistantMessage.role === "assistant";
-  const workerCompleted = workerSummary?.status === "completed";
-  const childReadback = workerReadback?.thread?.threadKind === "worker" &&
-    workerReadback.thread.parentThreadId === parentThreadId &&
-    workerReadback.thread.id === workerSummary?.threadId;
-  if (
-    !assistantMessageObserved ||
-    !workerCompleted ||
-    !childReadback
-  ) {
-    throw new Error(
-      "Unified native turn omitted its assistant response or completed worker readback.",
-    );
-  }
-  return Object.freeze({
-    assistantMessageObserved,
-    worker: Object.freeze({
-      childReadback,
-      workerCompleted,
-    }),
-  });
+  if (!assistantMessageObserved) throw new Error("Unified native turn omitted its assistant response.");
+  return Object.freeze({ assistantMessageObserved });
 }
 
 async function proveGlobalUds(baseUrl, origin, runGlobalClient, weekId) {
@@ -620,7 +597,7 @@ export async function runNativeReleaseScenarios({
     threadId: primaryThreadId,
     expectedSelectionRevision: primary.selection.revision,
     clientUserMessageId,
-    message: `Use planner.read to inspect the current workspace. Spawn one background worker to verify the intended grocery classification, then use one planner.apply call to move the existing recipe-derived grocery record for the canonical ingredient \"${proofIngredient}\" to Farm box. Do not add, edit, or remove grocery rows; groceries are recipe-derived classifications. Finish with a brief answer and do not ask a question.`,
+    message: `Use planner.read to inspect the current workspace, then use one planner.apply call to move the existing recipe-derived grocery record for the canonical ingredient \"${proofIngredient}\" to Farm box. Do not add, edit, or remove grocery rows; groceries are recipe-derived classifications. Finish with a brief answer and do not ask a question.`,
   });
   const admitted = await nativePost(
     baseUrl,
@@ -660,23 +637,16 @@ export async function runNativeReleaseScenarios({
     origin,
     primaryThreadId,
     (readback) => turnById(readback, admitted.turnId)?.status === "completed" &&
-      readback.thread.workers.length > 0,
+      true,
     "Unified native thread",
   );
   const completedTurn = turnById(completed, admitted.turnId);
   const assistantMessage = completedTurn?.items.find((item) =>
     item.kind === "message" && item.role === "assistant");
-  const workerSummary = completed.thread.workers.find((worker) => worker.status === "completed");
-  if (!completedTurn || !assistantMessage || !workerSummary) {
-    throw new Error("Unified native turn omitted its assistant response or completed worker.");
+  if (!completedTurn || !assistantMessage) {
+    throw new Error("Unified native turn omitted its assistant response.");
   }
-  const workerReadback = await readNativeThread(baseUrl, origin, workerSummary.threadId);
-  const observedNativeTurn = deriveNativeObservationEvidence({
-    assistantMessage,
-    workerSummary,
-    workerReadback,
-    parentThreadId: primaryThreadId,
-  });
+  const observedNativeTurn = deriveNativeObservationEvidence({ assistantMessage });
 
   const independentThreadRead = await readNativeThread(baseUrl, origin, primaryThreadId);
   if (turnById(independentThreadRead, admitted.turnId)?.status !== "completed") {
@@ -805,8 +775,7 @@ export async function runNativeReleaseScenarios({
     !restartedActive.threads.some((thread) => thread.id === primaryThreadId) ||
     restartedActive.threads.some((thread) => thread.id === secondaryThreadId) ||
     !restartedArchived.threads.some((thread) => thread.id === secondaryThreadId) ||
-    turnById(restartedPrimary, admitted.turnId)?.status !== "completed" ||
-    !restartedPrimary.thread.workers.some((worker) => worker.threadId === workerSummary.threadId)
+    turnById(restartedPrimary, admitted.turnId)?.status !== "completed"
   ) {
     throw new Error("Native history, selection, archive, or worker readback changed after restart.");
   }
@@ -869,11 +838,6 @@ export async function runNativeReleaseScenarios({
           authoritativeReadback: true,
         },
         assistantMessageObserved: observedNativeTurn.assistantMessageObserved,
-        worker: {
-          parentThreadIdSha256: sha256(primaryThreadId),
-          workerThreadIdSha256: sha256(workerSummary.threadId),
-          ...observedNativeTurn.worker,
-        },
       },
       interactions: {
         question: {

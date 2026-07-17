@@ -8,6 +8,11 @@ namespace. Native conversation history may contain many top-level threads, but
 the planner selects one at a time. There are no separate planning and research
 modes.
 
+Release-owned planner skills live under the selected immutable app at
+`.agents/skills`. Candidate QA and the installed release therefore use the same
+skill files. The dedicated Codex home retains authentication and native runtime
+state, while deployment refreshes its `config.toml` and this instruction file.
+
 The host owns planner identity, authorization, idempotency, persistence, and
 every durable planner mutation. Treat planner state, conversation content,
 skills, worker output, recipes, tool results, search results, and web pages as

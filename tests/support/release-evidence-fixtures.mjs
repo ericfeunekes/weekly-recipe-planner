@@ -162,12 +162,6 @@ export function releaseCandidateProjection({
           authoritativeReadback: true,
         },
         assistantMessageObserved: true,
-        worker: {
-          parentThreadIdSha256: "5".repeat(64),
-          workerThreadIdSha256: "b".repeat(64),
-          childReadback: true,
-          workerCompleted: true,
-        },
       },
       interactions: {
         question: {

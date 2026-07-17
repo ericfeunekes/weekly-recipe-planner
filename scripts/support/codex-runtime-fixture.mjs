@@ -81,6 +81,11 @@ export async function createCodexRuntimeFixture({
     await mkdir(skillDirectory, { recursive: true });
     await writeFile(join(skillDirectory, "SKILL.md"), "# Fixture skill\n", { mode: 0o600 });
   }
+  if (variant === "repo-skill-readback") {
+    const skillDirectory = join(appCwd, ".agents", "skills", "release-fixture-skill");
+    await mkdir(skillDirectory, { recursive: true });
+    await writeFile(join(skillDirectory, "SKILL.md"), "# Release fixture skill\n", { mode: 0o600 });
+  }
   const fakeSource = await readFile(fakeCodexSource, "utf8");
   await Promise.all([
     cp(schemaFixtureSource, schemaFixtureTarget),

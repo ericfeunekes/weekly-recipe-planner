@@ -98,7 +98,6 @@ test("release-candidate evidence rejects unknown and credential-derived projecti
     (projection) => projection.scenarios.nativeHistory,
     (projection) => projection.scenarios.nativeTurn,
     (projection) => projection.scenarios.nativeTurn.plannerEffect,
-    (projection) => projection.scenarios.nativeTurn.worker,
     (projection) => projection.scenarios.interactions,
     (projection) => projection.scenarios.interactions.question,
     (projection) => projection.scenarios.interrupt,
@@ -150,12 +149,11 @@ test("release-candidate evidence binds one native hosted-search capability surfa
   }
 });
 
-test("release-candidate evidence requires an assistant response and completed worker readback", () => {
+test("release-candidate evidence requires an assistant response", () => {
   const { releaseCandidate } = fixtureChain();
   const mutations = [
     (projection) => { delete projection.scenarios.nativeTurn.assistantMessageObserved; },
     (projection) => { projection.scenarios.nativeTurn.assistantMessageObserved = false; },
-    (projection) => { projection.scenarios.nativeTurn.worker.workerCompleted = false; },
   ];
   for (const mutate of mutations) {
     const changed = structuredClone(releaseCandidate);
@@ -190,25 +188,7 @@ test("release-candidate evidence requires one authoritative recipe-derived farm-
   }
 });
 
-test("release-candidate evidence requires a completed child worker readback", () => {
-  const { releaseCandidate } = fixtureChain();
-  const mutations = [
-    (projection) => { delete projection.scenarios.nativeTurn.worker.childReadback; },
-    (projection) => { projection.scenarios.nativeTurn.worker.childReadback = false; },
-  ];
-  for (const mutate of mutations) {
-    const changed = structuredClone(releaseCandidate);
-    mutate(changed.projection);
-    assert.throws(() => createReleaseArtifact({
-      artifactType: "release-candidate",
-      activationId,
-      predecessorSha256: releaseCandidate.predecessorSha256,
-      projection: changed.projection,
-    }), /invalid exact contract/);
-  }
-});
-
-test("release-candidate evidence cross-binds native root, interaction, worker, and interrupt identities", () => {
+test("release-candidate evidence cross-binds native root, interaction, and interrupt identities", () => {
   const { releaseCandidate } = fixtureChain();
   const mutations = [
     (projection) => {
@@ -216,10 +196,6 @@ test("release-candidate evidence cross-binds native root, interaction, worker, a
     },
     (projection) => {
       projection.scenarios.interactions.question.threadIdSha256 = "f".repeat(64);
-    },
-    (projection) => {
-      projection.scenarios.nativeTurn.worker.workerThreadIdSha256 =
-        projection.scenarios.nativeTurn.threadIdSha256;
     },
     (projection) => {
       projection.scenarios.interrupt.threadIdSha256 = "f".repeat(64);

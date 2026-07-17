@@ -136,13 +136,19 @@ Chat with Codex is a first-class mutation surface alongside direct UI editing, d
 ## Key Views For Design Overview
 
 - **Calendar / Week Picker**: navigate draft, active, and archived weeks.
-- **Week Overview**: primary opening surface after selecting/current week; shows all dinners/slots, today, statuses, leftovers/flex days, prep indicators, and grocery/prep pressure.
-- **Tonight**: focused execution view for the current meal, showing its canonical instruction steps in recipe order with ingredient amounts, completion checkboxes, optional timers and notes, serving/packing instructions, components, and leftover handling. Steps completed from prep are already checked here.
+- **Week Overview**: primary opening surface after selecting/current week; a prep-free agenda of the week’s dinners/slots, today, statuses, and leftovers/flex days. It may make the current/selected day actionable, but it contains no Prep counts, indicators, pressure summary, or Week-to-Prep shortcut on any viewport. Prep remains available only through its own destination.
+- **Tonight / Day**: focused execution view for the current or selected day’s meal, presented as a compact cooking ticket: day and meal identity, ingredient context, one clear cooking action, canonical instruction steps in recipe order with completion checkboxes, optional timers and notes, serving/packing instructions, components, and leftover handling. Steps completed from Prep are already checked here.
 - **Prep / Batch Cook**: an active-week workspace of dated and undated prep sessions. A recipe sidebar supplies canonical instructions to drag into session order; checking a session reference checks the canonical step without changing recipe order.
 - **Meal Detail**: editable active-week meal and recipe snapshot: title, recipe details, independently referenceable instruction steps, source links, venue, and leftover path.
 - **Groceries**: editable weekly food shopping list with section grouping, source filters, and dinner provenance links.
 - **Feedback / Closeout**: archive summary, repeat/modify/drop, leftover quality, prep friction, planning lessons, and promotion candidates.
 - **Chat component (cross-view)**: always-available Codex side panel on desktop/iPad and drawer on mobile, with native history/select/new, one app-wide selected top-level thread, one composer, selected-object context, and nested worker activity; not a standalone destination view.
+
+## Interface Direction
+
+The planner should feel like a calm household operations tool: paper-like canvas, compact agenda and cooking-document layouts, and color reserved for state and attention rather than decoration. The visual platform may adopt maintained Tailwind and shadcn-style primitives for layout and accessible controls, but these are implementation enablers rather than new product authority. Existing planner and native Codex runtime contracts remain authoritative.
+
+The Codex rail may be rebuilt visually with maintained primitives, but it remains a thin native-history wrapper: it preserves the existing selected-thread, worker, question, approval, interruption, and planner-effect semantics and does not become a generic chat product or a second conversation store.
 
 ## Boundaries
 

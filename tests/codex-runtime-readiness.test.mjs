@@ -569,6 +569,23 @@ test("actual-home readback accepts only canonical normal-home standalone skills"
   await runtime.close();
 });
 
+test("actual-home readback accepts release-owned skills from the immutable app", async (t) => {
+  const fixture = await createCodexRuntimeFixture({ variant: "repo-skill-readback" });
+  t.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
+    sourceEnvironment: fixture.environment,
+    evaluationTimeoutMs: 10_000,
+  });
+  const status = await runtime.evaluate();
+  assert.equal(status.state, "compatible");
+  const evidence = JSON.parse(await readFile(
+    `${fixture.codexHome}/.planner-runtime/evidence/compatibility-v1.json`,
+    "utf8",
+  ));
+  assert.deepEqual(evidence.deploymentReadback.skillNames, ["release-fixture-skill"]);
+  await runtime.close();
+});
+
 test("required schema drift marks only the managed Codex runtime incompatible", async (t) => {
   const fixture = await createCodexRuntimeFixture({ variant: "incompatible-required" });
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
@@ -649,8 +666,7 @@ for (const [variant, expectedState, pattern] of [
   ["missing-account-field", "unavailable", /malformed response/],
   ["malformed-account-readback", "unavailable", /malformed response/],
   ["skill-loader-error", "unavailable", /loader errors/],
-  ["repo-skill-readback", "unavailable", /malformed skill/],
-  ["noncanonical-skill-path", "unavailable", /outside the normal standalone-skill root/],
+  ["noncanonical-skill-path", "unavailable", /outside its declared user or release-owned root/],
   ["skill-directory-readback", "unavailable", /non-file or non-canonical skill/],
   ["pagination-malformed-cursor", "unavailable", /malformed cursor/],
   ["pagination-empty-cursor", "unavailable", /malformed cursor/],

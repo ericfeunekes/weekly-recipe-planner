@@ -2274,12 +2274,14 @@ async function skillNames(result: unknown, deployment: ValidatedCodexFollowUpDep
         typeof skill.name !== "string" ||
         skill.name.length === 0 ||
         typeof skill.path !== "string" ||
-        skill.scope !== "user" ||
+        (skill.scope !== "user" && skill.scope !== "repo") ||
         typeof skill.enabled !== "boolean"
       ) {
         throw new CodexCapabilityProbeError("READBACK_PROVENANCE", "skills/list returned a malformed skill.");
       }
-      const root = await realpath(join(deployment.normalHome, ".agents", "skills"));
+      const root = await realpath(skill.scope === "repo"
+        ? join(deployment.appCwd, ".agents", "skills")
+        : join(deployment.normalHome, ".agents", "skills"));
       const path = await realpath(skill.path);
       const pathStats = await stat(path);
       if (
@@ -2290,7 +2292,7 @@ async function skillNames(result: unknown, deployment: ValidatedCodexFollowUpDep
       ) {
         throw new CodexCapabilityProbeError(
           "READBACK_PROVENANCE",
-          "skills/list exposed a non-file or non-canonical skill outside the normal standalone-skill root.",
+          "skills/list exposed a non-file or non-canonical skill outside its declared user or release-owned root.",
         );
       }
       const name = stringProperty(skill, "name");

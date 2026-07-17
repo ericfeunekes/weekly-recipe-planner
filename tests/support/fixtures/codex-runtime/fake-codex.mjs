@@ -641,7 +641,12 @@ async function handleRequest(message) {
       ? [{ path: join(codexHome, "bad"), message: "bad skill" }]
       : [],
     skills: fixtureVariant === "repo-skill-readback"
-      ? [{ name: "repo-skill", path: join(codexHome, "config.toml"), scope: "repo", enabled: true }]
+      ? [{
+          name: "release-fixture-skill",
+          path: join(params.cwds?.[0] ?? process.cwd(), ".agents", "skills", "release-fixture-skill", "SKILL.md"),
+          scope: "repo",
+          enabled: true,
+        }]
       : fixtureVariant === "user-skill-readback"
         ? [{
             name: "fixture-skill",
