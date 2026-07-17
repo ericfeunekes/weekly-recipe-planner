@@ -120,7 +120,7 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /timerStartedAt/);
   assert.match(planner, /function Timer/);
   assert.match(planner, /className="week-select"/);
-  assert.match(planner, /setInterval\([^]*2_000/);
+  assert.match(planner, /refetchInterval:\s*2_000/);
   assert.match(planner, /Offline . read-only/);
   assert.match(planner, /leftover\.state === "assigned"/);
   assert.match(planner, /Save recipe details/);

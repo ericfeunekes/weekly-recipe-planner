@@ -446,8 +446,8 @@ test("client authority source has no browser writes or legacy reducers", async (
   const source = await readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /localStorage\.setItem/);
   assert.doesNotMatch(source, /planner-domain|planner-history|planner-persistence|buildChatPlannerState/);
-  assert.match(source, /setInterval\([^]*2_000/);
-  assert.match(source, /document\.visibilityState === "visible"/);
+  assert.match(source, /refetchInterval:\s*2_000/);
+  assert.match(source, /refetchIntervalInBackground:\s*false/);
   assert.match(source, /removeItem\(LEGACY_V2_STORAGE_KEY\)/);
   assert.match(source, /aria-modal="true"/);
   const readOnlyLine = source.match(/const isReadOnly = [^;]+;/)?.[0] ?? "";

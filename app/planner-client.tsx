@@ -48,6 +48,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   MAX_COMMAND_TEXT_LENGTH,
@@ -128,6 +129,11 @@ import type { PlannerView } from "./planner-view";
 
 type ConnectionState = "loading" | "online" | "offline";
 type Notice = { tone: "info" | "warning" | "error"; message: string } | null;
+type WorkspaceQueryData = {
+  workspace: WorkspaceResponse;
+  serverDate: number | null;
+};
+const WORKSPACE_QUERY_KEY = ["planner", "workspace"] as const;
 type MutateOptions = {
   basePlannerVersion?: number;
   conflictStrategy?: "recompose";
@@ -689,7 +695,19 @@ function InitialLoading({ error, onRetry }: { error: string | null; onRetry: () 
 }
 
 export default function PlannerApp() {
-  const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        refetchOnWindowFocus: "always",
+      },
+    },
+  }));
+  return <QueryClientProvider client={queryClient}><PlannerAppContent /></QueryClientProvider>;
+}
+
+function PlannerAppContent() {
+  const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("loading");
   const [initialError, setInitialError] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
@@ -718,7 +736,6 @@ export default function PlannerApp() {
   const etagRef = useRef<string | null>(null);
   const serverOffsetRef = useRef(0);
   const workspaceRef = useRef<WorkspaceResponse | null>(null);
-  const refreshInFlight = useRef<Promise<boolean> | null>(null);
   const plannerMutationInFlight = useRef(false);
   const pendingRetryRef = useRef<PendingAuthorityRetry[]>([]);
   const pendingRetryVolatileRef = useRef(new Map<string, PendingRetryVolatile>());
@@ -728,6 +745,45 @@ export default function PlannerApp() {
   const mealTriggerRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const primaryWorkspaceRef = useRef<HTMLElement>(null);
+
+  const workspaceQuery = useQuery({
+    queryKey: WORKSPACE_QUERY_KEY,
+    queryFn: async (): Promise<WorkspaceQueryData> => {
+      try {
+        const result = await readWorkspace({ etag: etagRef.current });
+        if (result.etag) etagRef.current = result.etag;
+        if (result.serverDate !== null) {
+          const offset = result.serverDate - Date.now();
+          serverOffsetRef.current = offset;
+          setServerOffset(offset);
+        }
+        const current = queryClient.getQueryData<WorkspaceQueryData>(WORKSPACE_QUERY_KEY);
+        const data = result.kind === "workspace"
+          ? {
+              workspace: !current || shouldAcceptWorkspace(current.workspace, result.workspace)
+                ? result.workspace
+                : current.workspace,
+              serverDate: result.serverDate,
+            }
+          : current
+            ? { ...current, serverDate: result.serverDate ?? current.serverDate }
+            : null;
+        if (!data) throw new Error("The planner returned no initial workspace.");
+        setConnection("online");
+        setInitialError(null);
+        return data;
+      } catch (error) {
+        if (!isAbortError(error)) {
+          setConnection("offline");
+          if (!workspaceRef.current) setInitialError(errorMessage(error));
+        }
+        throw error;
+      }
+    },
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false,
+  });
+  const workspace = workspaceQuery.data?.workspace ?? null;
 
   const syncPendingRetries = useCallback(() => {
     try {
@@ -871,54 +927,49 @@ export default function PlannerApp() {
     const current = workspaceRef.current;
     if (!shouldAcceptWorkspace(current, incoming)) return;
     workspaceRef.current = incoming;
-    setWorkspace(incoming);
-    if (incoming.initialized) {
-      setSelectedWeekId((selected) => {
-        if (selected && incoming.state.weeks.some((week) => week.id === selected)) return selected;
-        const now = Date.now() + serverOffsetRef.current;
-        const today = isoDateForTimeZone(now, incoming.state.householdTimeZone);
-        return (
-          incoming.state.activeWeekId ??
-          incoming.state.weeks.find((week) => weekContainsDate(week.id, today))?.id ??
-          incoming.state.weeks.at(-1)?.id ??
-          null
-        );
-      });
-    }
-  }, []);
+    queryClient.setQueryData<WorkspaceQueryData>(WORKSPACE_QUERY_KEY, (cached) => ({
+      workspace: incoming,
+      serverDate: cached?.serverDate ?? null,
+    }));
+  }, [queryClient]);
 
   const refresh = useCallback(async (force = false): Promise<boolean> => {
-    if (refreshInFlight.current) {
-      const succeeded = await refreshInFlight.current;
-      if (!force) return succeeded;
+    // React Query invalidation has one safe path for both ordinary and forced
+    // refreshes; keep the flag for the many command callers' stable contract.
+    void force;
+    try {
+      await queryClient.invalidateQueries(
+        { queryKey: WORKSPACE_QUERY_KEY, refetchType: "active" },
+        { throwOnError: true },
+      );
+      return true;
+    } catch (error) {
+      if (isAbortError(error)) return false;
+      setConnection("offline");
+      if (!workspaceRef.current) setInitialError(errorMessage(error));
+      return false;
     }
-    const task = (async () => {
-      try {
-        const result = await readWorkspace({ etag: force ? null : etagRef.current });
-        if (result.etag) {
-          etagRef.current = result.etag;
-        }
-        if (result.serverDate !== null) {
-          const offset = result.serverDate - Date.now();
-          serverOffsetRef.current = offset;
-          setServerOffset(offset);
-        }
-        if (result.kind === "workspace") acceptWorkspace(result.workspace);
-        setConnection("online");
-        setInitialError(null);
-        return true;
-      } catch (error) {
-        if (isAbortError(error)) return false;
-        setConnection("offline");
-        if (!workspaceRef.current) setInitialError(errorMessage(error));
-        return false;
-      }
-    })().finally(() => {
-      refreshInFlight.current = null;
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (!workspaceQuery.data) return;
+    workspaceRef.current = workspaceQuery.data.workspace;
+  }, [workspaceQuery.data]);
+
+  useEffect(() => {
+    if (!workspace?.initialized) return;
+    setSelectedWeekId((selected) => {
+      if (selected && workspace.state.weeks.some((week) => week.id === selected)) return selected;
+      const now = Date.now() + serverOffsetRef.current;
+      const today = isoDateForTimeZone(now, workspace.state.householdTimeZone);
+      return (
+        workspace.state.activeWeekId ??
+        workspace.state.weeks.find((week) => weekContainsDate(week.id, today))?.id ??
+        workspace.state.weeks.at(-1)?.id ??
+        null
+      );
     });
-    refreshInFlight.current = task;
-    return task;
-  }, [acceptWorkspace]);
+  }, [workspace]);
 
   const clearLocalRecoveryAfterReadback = useCallback(async () => {
     if (!journalError || journalRecoveryPending) return;
@@ -948,33 +999,13 @@ export default function PlannerApp() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => setLegacyCandidate(readLegacyImport(window.localStorage)), 0);
-    void refresh(true);
     return () => window.clearTimeout(timer);
-  }, [refresh]);
+  }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => setClockNow(Date.now()), 60_000);
     return () => window.clearInterval(interval);
   }, []);
-
-  useEffect(() => {
-    const onFocus = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibility);
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, 2_000);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.clearInterval(interval);
-    };
-  }, [refresh]);
 
   useEffect(() => {
     const element = appContentRef.current as (HTMLDivElement & { inert: boolean }) | null;
