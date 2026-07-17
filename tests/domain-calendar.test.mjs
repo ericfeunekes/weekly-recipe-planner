@@ -199,7 +199,7 @@ test("week creation, handoff, archive, and activation preserve zero-or-one activ
   assert.deepEqual(householdDomain.validateState(state), { ok: true });
 });
 
-test("aggregate validation rejects duplicate slots, duplicate session references, and active-week drift", () => {
+test("aggregate validation rejects duplicate slots, duplicate prep-date references, and active-week drift", () => {
   const state = createCanonicalSeed(context());
   const invalid = structuredClone(state);
   const week = invalid.weeks[0];
@@ -215,21 +215,23 @@ test("aggregate validation rejects duplicate slots, duplicate session references
 
   const validation = householdDomain.validateState(invalid);
   assert.equal(validation.ok, false);
-  assert.ok(validation.issues.some((issue) => /only once in one session/i.test(issue.message)));
+  assert.ok(validation.issues.some((issue) => /only once for a prep date/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /identify the active week/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /completed step/i.test(issue.message)));
 });
 
-test("aggregate validation scopes prep reference uniqueness to each session", () => {
+test("aggregate validation requires one dated prep queue and canonical references", () => {
   const state = createCanonicalSeed(context());
-  const sameStepInAnotherSession = structuredClone(state);
-  const firstSession = sameStepInAnotherSession.weeks[0].data.prepSessions[0];
-  sameStepInAnotherSession.weeks[0].data.prepSessions.push({
+  const duplicateDateQueue = structuredClone(state);
+  const firstSession = duplicateDateQueue.weeks[0].data.prepSessions[0];
+  duplicateDateQueue.weeks[0].data.prepSessions.push({
     id: "second-prep-session",
-    label: "Finish later",
+    prepDate: firstSession.prepDate,
     steps: [{ id: "second-session-entry", stepId: firstSession.steps[0].stepId }],
   });
-  assert.deepEqual(householdDomain.validateState(sameStepInAnotherSession), { ok: true });
+  const duplicateValidation = householdDomain.validateState(duplicateDateQueue);
+  assert.equal(duplicateValidation.ok, false);
+  assert.ok(duplicateValidation.issues.some((issue) => /prepDate.*unique/i.test(`${issue.path}: ${issue.message}`)));
 
   const copiedInstructionFields = {
     complete: true,

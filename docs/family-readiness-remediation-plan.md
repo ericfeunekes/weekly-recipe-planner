@@ -307,7 +307,7 @@ Enforce these after legacy import and after every accepted command:
 
 **Root pattern:** Hardcoded day arrays, one fixed `TODAY_INDEX`, literal Tonight copy, and free-form prep `due` values let presentation text act as domain identity.
 
-**Sibling extent:** Today highlighting, Tonight meal selection, ChatGPT Tonight context, week/closeout labels, prep options, prep reschedule commands, and Codex `setPrepPlan` output all depend on fixed or free-form strings.
+**Sibling extent:** Today highlighting, Tonight meal selection, ChatGPT Tonight context, week/closeout labels, prep options, date-first prep commands, and Codex planner output all depend on fixed or free-form strings.
 
 **Disposition:** Today/Tonight is a release blocker; invalid prep date is an accepted medium integrity finding.
 

@@ -79,8 +79,8 @@ export type PrepSessionStep = {
 
 export type PrepSession = {
   id: string;
-  label: string;
-  prepDate?: IsoDate;
+  /** A date-owned prep queue. Session labels and undated queues were legacy-only. */
+  prepDate: IsoDate;
   steps: PrepSessionStep[];
 };
 

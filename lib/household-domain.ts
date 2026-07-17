@@ -26,7 +26,7 @@ import {
   MAX_INGREDIENT_LINES,
   MAX_MEALS_PER_WEEK,
   MAX_PREP_ENTRIES,
-  MAX_PREP_SESSIONS,
+  MAX_PREP_DATES,
   MAX_STEP_INPUTS,
   MAX_STEPS_PER_MEAL,
   MAX_TIMER_DURATION_SECONDS,
@@ -434,29 +434,29 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   }
 
   const prepSessionIds = new Set<string>();
+  const prepDates = new Set<string>();
   const prepEntryIds = new Set<string>();
   let prepEntryCount = 0;
-  if (!Array.isArray(data.prepSessions) || data.prepSessions.length > MAX_PREP_SESSIONS) {
-    addIssue(issues, `${path}.data.prepSessions`, `Must contain at most ${MAX_PREP_SESSIONS} sessions.`);
+  if (!Array.isArray(data.prepSessions) || data.prepSessions.length > MAX_PREP_DATES) {
+    addIssue(issues, `${path}.data.prepSessions`, `Must contain at most ${MAX_PREP_DATES} prep-date queues.`);
   } else {
     data.prepSessions.forEach((session, index) => {
       const sessionPath = `${path}.data.prepSessions[${index}]`;
       if (!isRecord(session)) {
-        addIssue(issues, sessionPath, "Must be a prep session object.");
+        addIssue(issues, sessionPath, "Must be a prep-date queue object.");
         return;
       }
-      requireExactShape(issues, session, sessionPath, ["id", "label", "steps"], ["prepDate"]);
+      requireExactShape(issues, session, sessionPath, ["id", "prepDate", "steps"]);
       if (!isId(session.id)) addIssue(issues, `${sessionPath}.id`, "Must be a nonempty bounded ID.");
       else if (prepSessionIds.has(session.id)) addIssue(issues, `${sessionPath}.id`, "Must be unique within the week.");
       else prepSessionIds.add(session.id);
-      if (!isText(session.label, MAX_COMMAND_TEXT_LENGTH, { nonempty: true })) {
-        addIssue(issues, `${sessionPath}.label`, "Must be a nonempty bounded label.");
-      }
-      if (session.prepDate !== undefined && (!isIsoDate(session.prepDate) || (weekId && !weekContainsPrepDate(weekId, session.prepDate)))) {
-        addIssue(issues, `${sessionPath}.prepDate`, "Must be an ISO date in the week prep interval.");
-      }
+      if (!isIsoDate(session.prepDate) || (weekId && !weekContainsPrepDate(weekId, session.prepDate))) {
+        addIssue(issues, `${sessionPath}.prepDate`, "Must be an ISO date on or before the meal week's Sunday.");
+      } else if (prepDates.has(session.prepDate)) {
+        addIssue(issues, `${sessionPath}.prepDate`, "Must be unique within the week.");
+      } else prepDates.add(session.prepDate);
       if (!Array.isArray(session.steps)) {
-        addIssue(issues, `${sessionPath}.steps`, "Must be an array of session steps.");
+        addIssue(issues, `${sessionPath}.steps`, "Must be an array of prep step references.");
         return;
       }
       prepEntryCount += session.steps.length;
@@ -464,7 +464,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
       session.steps.forEach((entry, entryIndex) => {
         const entryPath = `${sessionPath}.steps[${entryIndex}]`;
         if (!isRecord(entry)) {
-          addIssue(issues, entryPath, "Must be a prep-session step reference.");
+          addIssue(issues, entryPath, "Must be a prep step reference.");
           return;
         }
         requireExactShape(issues, entry, entryPath, ["id", "stepId"]);
@@ -472,13 +472,13 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
         else if (prepEntryIds.has(entry.id)) addIssue(issues, `${entryPath}.id`, "Must be unique within the week.");
         else prepEntryIds.add(entry.id);
         if (!isId(entry.stepId) || !stepIds.has(entry.stepId)) addIssue(issues, `${entryPath}.stepId`, "Must reference an instruction step in this week.");
-        else if (sessionStepIds.has(entry.stepId)) addIssue(issues, `${entryPath}.stepId`, "May reference an instruction only once in one session.");
+        else if (sessionStepIds.has(entry.stepId)) addIssue(issues, `${entryPath}.stepId`, "May reference an instruction only once for a prep date.");
         else sessionStepIds.add(entry.stepId);
       });
     });
   }
   if (prepEntryCount > MAX_PREP_ENTRIES) {
-    addIssue(issues, `${path}.data.prepSessions`, `Must contain at most ${MAX_PREP_ENTRIES} session references.`);
+    addIssue(issues, `${path}.data.prepSessions`, `Must contain at most ${MAX_PREP_ENTRIES} prep references.`);
   }
 
   const groceryIds = new Set<string>();
@@ -681,17 +681,6 @@ function prepSessionEntryCount(sessions: PrepSession[]): number {
   return sessions.reduce((count, session) => count + session.steps.length, 0);
 }
 
-function findPrepSessionEntry(
-  sessions: PrepSession[],
-  entryId: string,
-): { session: PrepSession; entryIndex: number } | null {
-  for (const session of sessions) {
-    const entryIndex = session.steps.findIndex((entry) => entry.id === entryId);
-    if (entryIndex >= 0) return { session, entryIndex };
-  }
-  return null;
-}
-
 function materializeId(
   context: HouseholdCommandContext,
   prefix: string,
@@ -715,10 +704,10 @@ function findOrCreatePrepSessionForDate(
 ): { session: PrepSession; created: boolean } | { error: string } {
   const existing = week.data.prepSessions.find((session) => session.prepDate === prepDate);
   if (existing) return { session: existing, created: false };
-  if (week.data.prepSessions.length >= MAX_PREP_SESSIONS) return { error: "The prep-session list is full." };
-  const id = materializeId(context, "prep-session", new Set(week.data.prepSessions.map((session) => session.id)));
-  if (!id) return { error: "Could not materialize a unique prep-session ID." };
-  const session: PrepSession = { id, label: `Prep ${prepDate}`, prepDate, steps: [] };
+  if (week.data.prepSessions.length >= MAX_PREP_DATES) return { error: "The prep-date list is full." };
+  const id = materializeId(context, "prep-date", new Set(week.data.prepSessions.map((session) => session.id)));
+  if (!id) return { error: "Could not materialize a unique prep-date ID." };
+  const session: PrepSession = { id, prepDate, steps: [] };
   week.data.prepSessions.push(session);
   return { session, created: true };
 }
@@ -1271,7 +1260,7 @@ export function executeHouseholdCommand(
       const resolved = findStep(week, command.stepId);
       if (!resolved) return failure(state, "Instruction step not found.", { stepId: "Choose a step in the selected week." });
       if (week.data.prepSessions.some((session) => session.steps.some((entry) => entry.stepId === command.stepId))) {
-        return failure(state, "Remove this step from prep sessions before deleting it.", { stepId: "The step still has a prep-session reference." });
+        return failure(state, "Remove this step from its prep dates before deleting it.", { stepId: "The step still has a prep-date reference." });
       }
       resolved.meal.instructions.splice(resolved.stepIndex, 1);
       return success(state, next, "Removed instruction step", resolved.step.id, ["Recipe order was compacted"]);
@@ -1369,101 +1358,13 @@ export function executeHouseholdCommand(
       );
     }
 
-    case "createPrepSession": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      if (week.data.prepSessions.length >= MAX_PREP_SESSIONS) return failure(state, "The prep-session list is full.");
-      if (command.prepDate !== null && !weekContainsPrepDate(week.id, command.prepDate)) {
-        return failure(state, "Prep date is outside the allowed interval.", { prepDate: "Choose a date in this prep week." });
-      }
-      const id = materializeId(context, "prep-session", new Set(week.data.prepSessions.map((session) => session.id)));
-      if (!id) return failure(state, "Could not materialize a unique prep-session ID.");
-      const session: PrepSession = { id, label: command.label, steps: [] };
-      if (command.prepDate !== null) session.prepDate = command.prepDate;
-      week.data.prepSessions.push(session);
-      return success(state, next, `Created prep session ${session.label}`, session.id, [session.prepDate ? `Prep date: ${session.prepDate}` : "Undated prep session"], { prepSessionId: session.id });
-    }
-
-    case "updatePrepSession": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
-      if (!session) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      if (command.prepDate !== null && !weekContainsPrepDate(week.id, command.prepDate)) {
-        return failure(state, "Prep date is outside the allowed interval.", { prepDate: "Choose a date in this prep week." });
-      }
-      if (session.label === command.label && (session.prepDate ?? null) === command.prepDate) return failure(state, "Prep session is unchanged.");
-      session.label = command.label;
-      if (command.prepDate === null) delete session.prepDate;
-      else session.prepDate = command.prepDate;
-      return success(state, next, `Updated prep session ${session.label}`, session.id, [session.prepDate ? `Prep date: ${session.prepDate}` : "Prep date cleared"]);
-    }
-
-    case "movePrepSession": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const currentPosition = week.data.prepSessions.findIndex((session) => session.id === command.sessionId);
-      if (currentPosition < 0) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      if (command.targetPosition >= week.data.prepSessions.length) return failure(state, "Prep-session position is outside the list.", { targetPosition: "Choose a current prep-session position." });
-      if (currentPosition === command.targetPosition) return failure(state, "Prep session is already in that position.");
-      const [session] = week.data.prepSessions.splice(currentPosition, 1);
-      week.data.prepSessions.splice(command.targetPosition, 0, session);
-      return success(state, next, "Reordered prep session", session.id, [`Session position: ${currentPosition} to ${command.targetPosition}`]);
-    }
-
-    case "removePrepSession": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const sessionIndex = week.data.prepSessions.findIndex((session) => session.id === command.sessionId);
-      if (sessionIndex < 0) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      const [session] = week.data.prepSessions.splice(sessionIndex, 1);
-      return success(state, next, `Removed prep session ${session.label}`, session.id, [`Removed ${session.steps.length} session references; recipe steps were unchanged`]);
-    }
-
-    case "addPrepSessionStep": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
-      if (!session) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      if (!findStep(week, command.stepId)) return failure(state, "Instruction step not found.", { stepId: "Choose an instruction in the selected week." });
-      if (session.steps.some((entry) => entry.stepId === command.stepId)) return failure(state, "This instruction is already in the prep session.");
-      if (prepSessionEntryCount(week.data.prepSessions) >= MAX_PREP_ENTRIES) return failure(state, "The prep-session list is full.");
-      if (command.targetPosition > session.steps.length) return failure(state, "Prep-session position is outside this session.", { targetPosition: "Choose a position in the prep session." });
-      const existingEntryIds = new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id)));
-      const id = materializeId(context, "prep-session-step", existingEntryIds);
-      if (!id) return failure(state, "Could not materialize a unique prep-session step ID.");
-      session.steps.splice(command.targetPosition, 0, { id, stepId: command.stepId });
-      return success(state, next, "Added instruction to prep session", id, [`Session: ${session.label}`, `Position: ${command.targetPosition}`], { prepSessionStepId: id });
-    }
-
-    case "addPrepSessionSteps": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
-      if (!session) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      if (command.targetPosition > session.steps.length) return failure(state, "Prep-session position is outside this session.", { targetPosition: "Choose a position in the prep session." });
-      if (command.stepIds.some((stepId) => !findStep(week, stepId))) return failure(state, "One or more instruction steps could not be found.", { stepIds: "Choose instructions in the selected week." });
-      if (command.stepIds.some((stepId) => session.steps.some((entry) => entry.stepId === stepId))) {
-        return failure(state, "One or more instructions are already in this prep session.");
-      }
-      if (prepSessionEntryCount(week.data.prepSessions) + command.stepIds.length > MAX_PREP_ENTRIES) return failure(state, "The prep-session list is full.");
-      const existingEntryIds = new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id)));
-      const entries: PrepSessionStep[] = [];
-      for (const stepId of command.stepIds) {
-        const id = materializeId(context, "prep-session-step", existingEntryIds);
-        if (!id) return failure(state, "Could not materialize a unique prep-session step ID.");
-        existingEntryIds.add(id);
-        entries.push({ id, stepId });
-      }
-      session.steps.splice(command.targetPosition, 0, ...entries);
-      return success(
-        state,
-        next,
-        `Added ${entries.length} instructions to prep session`,
-        session.id,
-        [`Session: ${session.label}`, `Position: ${command.targetPosition}`],
-        Object.fromEntries(entries.map((entry, index) => [`prepSessionStep.${index}`, entry.id])),
-      );
-    }
-
     case "addPrepStepsToDate": {
       if (!week) return rejectMissingWeek(state, command.weekId);
       if (!weekContainsPrepDate(week.id, command.prepDate)) {
         return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
+      }
+      if (new Set(command.stepIds).size !== command.stepIds.length) {
+        return failure(state, "Choose each instruction once for this prep date.", { stepIds: "Remove duplicate instruction selections." });
       }
       if (command.stepIds.some((stepId) => !findStep(week, stepId))) {
         return failure(state, "One or more instruction steps could not be found.", { stepIds: "Choose instructions in the selected week." });
@@ -1472,19 +1373,19 @@ export function executeHouseholdCommand(
       if ("error" in target) return failure(state, target.error);
       const session = target.session;
       if (command.targetPosition > session.steps.length) {
-        return failure(state, "Prep-session position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
+        return failure(state, "Prep position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
       }
       if (command.stepIds.some((stepId) => session.steps.some((entry) => entry.stepId === stepId))) {
         return failure(state, "One or more instructions are already planned for this date.");
       }
       if (prepSessionEntryCount(week.data.prepSessions) + command.stepIds.length > MAX_PREP_ENTRIES) {
-        return failure(state, "The prep-session list is full.");
+        return failure(state, "The prep-date list is full.");
       }
       const existingEntryIds = new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id)));
       const entries: PrepSessionStep[] = [];
       for (const stepId of command.stepIds) {
-        const id = materializeId(context, "prep-session-step", existingEntryIds);
-        if (!id) return failure(state, "Could not materialize a unique prep-session step ID.");
+        const id = materializeId(context, "prep-date-step", existingEntryIds);
+        if (!id) return failure(state, "Could not materialize a unique prep-date step ID.");
         entries.push({ id, stepId });
       }
       session.steps.splice(command.targetPosition, 0, ...entries);
@@ -1495,50 +1396,10 @@ export function executeHouseholdCommand(
         session.id,
         [`Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`],
         {
-          ...(target.created ? { prepSessionId: session.id } : {}),
-          ...Object.fromEntries(entries.map((entry, index) => [`prepSessionStep.${index}`, entry.id])),
+          ...(target.created ? { prepDateQueueId: session.id } : {}),
+          ...Object.fromEntries(entries.map((entry, index) => [`prepDateStep.${index}`, entry.id])),
         },
       );
-    }
-
-    case "movePrepSessionStep": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
-      if (!session) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      const currentPosition = session.steps.findIndex((entry) => entry.id === command.entryId);
-      if (currentPosition < 0) return failure(state, "Prep-session step not found.", { entryId: "Choose a step in this prep session." });
-      if (command.targetPosition >= session.steps.length) return failure(state, "Prep-session position is outside this session.", { targetPosition: "Choose a position in the prep session." });
-      if (currentPosition === command.targetPosition) return failure(state, "Prep-session step is already in that position.");
-      const [entry] = session.steps.splice(currentPosition, 1);
-      session.steps.splice(command.targetPosition, 0, entry);
-      return success(state, next, "Reordered prep-session step", entry.id, [`Session: ${session.label}`, `Position: ${currentPosition} to ${command.targetPosition}`]);
-    }
-
-    case "movePrepSessionSteps": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const source = week.data.prepSessions.find((candidate) => candidate.id === command.sourceSessionId);
-      const destination = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
-      if (!source) return failure(state, "Source prep session not found.", { sourceSessionId: "Choose the prep session that contains these instructions." });
-      if (!destination) return failure(state, "Prep session not found.", { sessionId: "Choose a destination prep session." });
-      if (command.targetPosition > destination.steps.length) return failure(state, "Prep-session position is outside this session.", { targetPosition: "Choose a position in the prep session." });
-      const selectedIds = new Set(command.entryIds);
-      const selectedEntries = source.steps.filter((entry) => selectedIds.has(entry.id));
-      if (selectedEntries.length !== command.entryIds.length) {
-        return failure(state, "One or more prep-session steps could not be found.", { entryIds: "Choose steps from the source prep session." });
-      }
-      if (source === destination) {
-        const selectedBeforeTarget = source.steps.slice(0, command.targetPosition).filter((entry) => selectedIds.has(entry.id)).length;
-        const remaining = source.steps.filter((entry) => !selectedIds.has(entry.id));
-        const insertionPosition = Math.max(0, Math.min(command.targetPosition - selectedBeforeTarget, remaining.length));
-        source.steps.splice(0, source.steps.length, ...remaining.slice(0, insertionPosition), ...selectedEntries, ...remaining.slice(insertionPosition));
-        return success(state, next, `Reordered ${selectedEntries.length} prep-session steps`, source.id, [`Session: ${source.label}`, `Position: ${command.targetPosition}`]);
-      }
-      if (selectedEntries.some((entry) => destination.steps.some((candidate) => candidate.stepId === entry.stepId))) {
-        return failure(state, "One or more instructions are already in the destination prep session.");
-      }
-      source.steps.splice(0, source.steps.length, ...source.steps.filter((entry) => !selectedIds.has(entry.id)));
-      destination.steps.splice(command.targetPosition, 0, ...selectedEntries);
-      return success(state, next, `Moved ${selectedEntries.length} prep-session steps`, destination.id, [`From: ${source.label}`, `To: ${destination.label}`, `Position: ${command.targetPosition}`]);
     }
 
     case "movePrepStepsToDate": {
@@ -1546,116 +1407,84 @@ export function executeHouseholdCommand(
       if (!weekContainsPrepDate(week.id, command.prepDate)) {
         return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
       }
-      const source = week.data.prepSessions.find((candidate) => candidate.id === command.sourceSessionId);
-      if (!source) return failure(state, "Source prep session not found.", { sourceSessionId: "Choose the prep date that contains these instructions." });
+      if (!weekContainsPrepDate(week.id, command.sourcePrepDate)) {
+        return failure(state, "Source prep date must be on or before the active meal week's Sunday.", { sourcePrepDate: "Choose a date in or before this meal week." });
+      }
+      const source = week.data.prepSessions.find((candidate) => candidate.prepDate === command.sourcePrepDate);
+      if (!source) return failure(state, "Prep date not found.", { sourcePrepDate: "Choose the prep date that contains these instructions." });
       const selectedIds = new Set(command.entryIds);
       const selectedEntries = source.steps.filter((entry) => selectedIds.has(entry.id));
       if (selectedEntries.length !== command.entryIds.length) {
-        return failure(state, "One or more prep-session steps could not be found.", { entryIds: "Choose steps from the source prep date." });
+        return failure(state, "One or more prep steps could not be found.", { entryIds: "Choose steps from the source prep date." });
       }
       const target = findOrCreatePrepSessionForDate(week, command.prepDate, context);
       if ("error" in target) return failure(state, target.error);
       const destination = target.session;
       if (command.targetPosition > destination.steps.length) {
-        return failure(state, "Prep-session position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
+        return failure(state, "Prep position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
       }
       if (source === destination) {
         const selectedBeforeTarget = source.steps.slice(0, command.targetPosition).filter((entry) => selectedIds.has(entry.id)).length;
         const remaining = source.steps.filter((entry) => !selectedIds.has(entry.id));
         const insertionPosition = Math.max(0, Math.min(command.targetPosition - selectedBeforeTarget, remaining.length));
         source.steps.splice(0, source.steps.length, ...remaining.slice(0, insertionPosition), ...selectedEntries, ...remaining.slice(insertionPosition));
-        return success(state, next, `Reordered ${selectedEntries.length} prep-session steps`, source.id, [`Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`]);
+        return success(state, next, `Reordered ${selectedEntries.length} prep steps`, source.id, [`Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`]);
       }
       if (selectedEntries.some((entry) => destination.steps.some((candidate) => candidate.stepId === entry.stepId))) {
         return failure(state, "One or more instructions are already planned for this date.");
       }
       source.steps.splice(0, source.steps.length, ...source.steps.filter((entry) => !selectedIds.has(entry.id)));
       destination.steps.splice(command.targetPosition, 0, ...selectedEntries);
+      if (!source.steps.length) week.data.prepSessions.splice(week.data.prepSessions.indexOf(source), 1);
       return success(
         state,
         next,
-        `Moved ${selectedEntries.length} prep-session steps to ${command.prepDate}`,
+        `Moved ${selectedEntries.length} prep steps to ${command.prepDate}`,
         destination.id,
-        [`From: ${source.prepDate ?? source.label}`, `Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`],
-        target.created ? { prepSessionId: destination.id } : {},
+        [`From: ${command.sourcePrepDate}`, `Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`],
+        target.created ? { prepDateQueueId: destination.id } : {},
       );
     }
 
-    case "removePrepSessionStep": {
+    case "removePrepStepsFromDate": {
       if (!week) return rejectMissingWeek(state, command.weekId);
-      const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
-      if (!session) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
-      const entryIndex = session.steps.findIndex((entry) => entry.id === command.entryId);
-      if (entryIndex < 0) return failure(state, "Prep-session step not found.", { entryId: "Choose a step in this prep session." });
-      const [entry] = session.steps.splice(entryIndex, 1);
-      return success(state, next, "Removed instruction from prep session", entry.id, ["The canonical instruction and recipe order were preserved"]);
-    }
-
-    case "setPrepPlan": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const plannedStepIds = new Set<string>();
-      for (const entry of command.entries) {
-        if (plannedStepIds.has(entry.stepId) || !findStep(week, entry.stepId)) {
-          return failure(state, "Legacy prep plan must contain each known instruction once.");
-        }
-        if (!weekContainsPrepDate(week.id, entry.prepDate)) return failure(state, "Prep date is outside the allowed interval.");
-        plannedStepIds.add(entry.stepId);
+      if (!weekContainsPrepDate(week.id, command.prepDate)) {
+        return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
       }
-      const sessionIds = new Set(week.data.prepSessions.map((session) => session.id));
-      const entryIds = new Set(week.data.prepSessions.flatMap((session) => session.steps.map((entry) => entry.id)));
-      const sessionsByDate = new Map<IsoDate, PrepSession>();
-      const sessions: PrepSession[] = [];
-      for (const entry of command.entries) {
-        let session = sessionsByDate.get(entry.prepDate);
-        if (!session) {
-          const id = materializeId(context, "prep-session", sessionIds);
-          if (!id) return failure(state, "Could not materialize a legacy prep-session ID.");
-          session = { id, label: `Prep ${entry.prepDate}`, prepDate: entry.prepDate, steps: [] };
-          sessionsByDate.set(entry.prepDate, session);
-          sessions.push(session);
-        }
-        const id = materializeId(context, "prep-session-step", entryIds);
-        if (!id) return failure(state, "Could not materialize a legacy prep-session step ID.");
-        session.steps.push({ id, stepId: entry.stepId });
+      const sessionIndex = week.data.prepSessions.findIndex((candidate) => candidate.prepDate === command.prepDate);
+      if (sessionIndex < 0) return failure(state, "Prep date not found.", { prepDate: "Choose a prep date in the selected week." });
+      const session = week.data.prepSessions[sessionIndex];
+      const selectedIds = new Set(command.entryIds);
+      const removed = session.steps.filter((entry) => selectedIds.has(entry.id));
+      if (removed.length !== command.entryIds.length) {
+        return failure(state, "One or more prep steps could not be found.", { entryIds: "Choose steps from the selected prep date." });
       }
-      if (equalJson(week.data.prepSessions, sessions)) return failure(state, "Prep plan is unchanged.");
-      week.data.prepSessions = sessions;
-      return success(state, next, `Migrated legacy prep plan into ${sessions.length} sessions`, `${week.id}:prep-sessions`, ["Recipe instruction order was unchanged"]);
+      session.steps.splice(0, session.steps.length, ...session.steps.filter((entry) => !selectedIds.has(entry.id)));
+      if (!session.steps.length) week.data.prepSessions.splice(sessionIndex, 1);
+      return success(
+        state,
+        next,
+        `Removed ${removed.length} ${removed.length === 1 ? "instruction" : "instructions"} from prep date ${command.prepDate}`,
+        command.prepDate,
+        ["The canonical instructions and recipe order were preserved"],
+      );
     }
 
-    case "movePrepReference": {
+    case "clearPrepDate": {
       if (!week) return rejectMissingWeek(state, command.weekId);
-      const located = findPrepSessionEntry(week.data.prepSessions, command.referenceId);
-      if (!located) return failure(state, "Prep-session step not found.", { referenceId: "Choose a prep-session step in the selected week." });
-      if (command.targetPosition >= located.session.steps.length) return failure(state, "Prep position is outside the session.");
-      const [entry] = located.session.steps.splice(located.entryIndex, 1);
-      located.session.steps.splice(command.targetPosition, 0, entry);
-      return success(state, next, "Reordered legacy prep reference", entry.id, [`Session: ${located.session.label}`]);
-    }
-
-    case "reschedulePrepReference": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      if (!weekContainsPrepDate(week.id, command.prepDate)) return failure(state, "Prep date is outside the allowed interval.");
-      const located = findPrepSessionEntry(week.data.prepSessions, command.referenceId);
-      if (!located) return failure(state, "Prep-session step not found.", { referenceId: "Choose a prep-session step in the selected week." });
-      let destination = week.data.prepSessions.find((session) => session.prepDate === command.prepDate);
-      if (!destination) {
-        const id = materializeId(context, "prep-session", new Set(week.data.prepSessions.map((session) => session.id)));
-        if (!id) return failure(state, "Could not materialize a prep-session ID.");
-        destination = { id, label: `Prep ${command.prepDate}`, prepDate: command.prepDate, steps: [] };
-        week.data.prepSessions.push(destination);
+      if (!weekContainsPrepDate(week.id, command.prepDate)) {
+        return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
       }
-      const [entry] = located.session.steps.splice(located.entryIndex, 1);
-      destination.steps.push(entry);
-      return success(state, next, "Rescheduled legacy prep reference", entry.id, [`Prep session: ${destination.label}`]);
-    }
-
-    case "removePrepReference": {
-      if (!week) return rejectMissingWeek(state, command.weekId);
-      const located = findPrepSessionEntry(week.data.prepSessions, command.referenceId);
-      if (!located) return failure(state, "Prep-session step not found.", { referenceId: "Choose a prep-session step in the selected week." });
-      const [entry] = located.session.steps.splice(located.entryIndex, 1);
-      return success(state, next, "Removed legacy prep reference", entry.id, ["The canonical instruction and recipe order were preserved"]);
+      const sessionIndex = week.data.prepSessions.findIndex((candidate) => candidate.prepDate === command.prepDate);
+      if (sessionIndex < 0) return failure(state, "Prep date not found.", { prepDate: "Choose a prep date in the selected week." });
+      const [session] = week.data.prepSessions.splice(sessionIndex, 1);
+      return success(
+        state,
+        next,
+        `Cleared prep date ${command.prepDate}`,
+        command.prepDate,
+        [`Removed ${session.steps.length} prep references; canonical recipe steps were unchanged`],
+      );
     }
 
     case "moveGroceryItemsToSource": {

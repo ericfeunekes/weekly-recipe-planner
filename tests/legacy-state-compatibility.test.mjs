@@ -232,7 +232,6 @@ test("legacy leftover sources normalize atomically and idempotently before start
   assert.equal(migratedMeal.instructions[0].inputs[0].ingredientId, migratedMeal.ingredients[0].id);
   assert.deepEqual(firstRead.state.weeks[0].data.prepSessions, [{
     id: "legacy-prep-session-2026-07-05",
-    label: "Prep 2026-07-05",
     prepDate: "2026-07-05",
     steps: [{ id: "legacy-prep-1", stepId: "legacy-step-1" }],
   }]);

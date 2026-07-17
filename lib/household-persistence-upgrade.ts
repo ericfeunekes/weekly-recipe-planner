@@ -101,26 +101,72 @@ function normalizeLegacyRecipeIngredients(meal: Record<string, unknown>): boolea
   return changed;
 }
 
+function fallbackPrepDate(data: Record<string, unknown>): string | null {
+  const dates = Array.isArray(data.meals)
+    ? data.meals
+      .filter(isRecord)
+      .map((meal) => meal.date)
+      .filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(date))
+      .sort()
+    : [];
+  return dates[0] ?? null;
+}
+
+/**
+ * The old session model allowed labels, undated buckets, and more than one
+ * session for a date. Current prep is a single queue per date. Retain every
+ * usable step reference while collapsing those presentation-era distinctions.
+ */
 function normalizeLegacyPrepSessions(data: Record<string, unknown>): boolean {
-  if (Array.isArray(data.prepSessions)) {
-    if (!Object.hasOwn(data, "prep")) return false;
-    delete data.prep;
-    return true;
-  }
-  const references = Array.isArray(data.prep) ? data.prep.filter(isRecord) : [];
-  const sessions: Array<{ id: string; label: string; prepDate: string; steps: Array<{ id: string; stepId: string }> }> = [];
-  for (const reference of [...references].sort((left, right) => Number(left.position ?? 0) - Number(right.position ?? 0))) {
-    if (typeof reference.id !== "string" || typeof reference.stepId !== "string" || typeof reference.prepDate !== "string") continue;
-    let session = sessions.find((candidate) => candidate.prepDate === reference.prepDate);
-    if (!session) {
-      session = { id: `legacy-prep-session-${reference.prepDate}`, label: `Prep ${reference.prepDate}`, prepDate: reference.prepDate, steps: [] };
-      sessions.push(session);
+  if (!Array.isArray(data.prepSessions) && !Object.hasOwn(data, "prep")) return false;
+  const fallbackDate = fallbackPrepDate(data);
+  const candidates = Array.isArray(data.prepSessions)
+    ? data.prepSessions.filter(isRecord)
+    : [];
+  const legacyReferences = Array.isArray(data.prep) ? data.prep.filter(isRecord) : [];
+  const queues: Array<{ id: string; prepDate: string; steps: Array<{ id: string; stepId: string }> }> = [];
+  const queuesByDate = new Map<string, (typeof queues)[number]>();
+  const usedQueueIds = new Set<string>();
+  const usedEntryIds = new Set<string>();
+
+  const queueForDate = (prepDate: string, preferredId: unknown) => {
+    const existing = queuesByDate.get(prepDate);
+    if (existing) return existing;
+    const baseId = typeof preferredId === "string" && preferredId ? preferredId : `prep-session-${prepDate}`;
+    let id = baseId;
+    let suffix = 2;
+    while (usedQueueIds.has(id)) id = `${baseId}-${suffix++}`;
+    usedQueueIds.add(id);
+    const queue = { id, prepDate, steps: [] };
+    queuesByDate.set(prepDate, queue);
+    queues.push(queue);
+    return queue;
+  };
+  const append = (queue: (typeof queues)[number], entry: Record<string, unknown>) => {
+    if (typeof entry.id !== "string" || !entry.id || typeof entry.stepId !== "string" || !entry.stepId) return;
+    if (usedEntryIds.has(entry.id) || queue.steps.some((candidate) => candidate.stepId === entry.stepId)) return;
+    usedEntryIds.add(entry.id);
+    queue.steps.push({ id: entry.id, stepId: entry.stepId });
+  };
+
+  for (const session of candidates) {
+    const prepDate = typeof session.prepDate === "string" ? session.prepDate : fallbackDate;
+    if (!prepDate) continue;
+    const queue = queueForDate(prepDate, session.id);
+    if (Array.isArray(session.steps)) {
+      for (const entry of session.steps) if (isRecord(entry)) append(queue, entry);
     }
-    session.steps.push({ id: reference.id, stepId: reference.stepId });
   }
-  data.prepSessions = sessions;
-  delete data.prep;
-  return true;
+  for (const reference of [...legacyReferences].sort((left, right) => Number(left.position ?? 0) - Number(right.position ?? 0))) {
+    if (typeof reference.prepDate !== "string") continue;
+    append(queueForDate(reference.prepDate, `legacy-prep-session-${reference.prepDate}`), reference);
+  }
+
+  const nextQueues = queues.filter((queue) => queue.steps.length > 0);
+  const changed = JSON.stringify(data.prepSessions) !== JSON.stringify(nextQueues) || Object.hasOwn(data, "prep");
+  if (changed) data.prepSessions = nextQueues;
+  if (Object.hasOwn(data, "prep")) delete data.prep;
+  return changed;
 }
 
 function normalizeLegacyWeekData(data: Record<string, unknown>): boolean {

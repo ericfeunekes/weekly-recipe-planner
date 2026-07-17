@@ -108,10 +108,12 @@ test("contract checkpoint freezes bounded workspace and prep semantics", () => {
   assert.equal(normalizePageRequest({ limit: 101 }), null);
   assert.equal(
     isHouseholdCommand({
-      type: "reschedulePrepReference",
+      type: "movePrepStepsToDate",
       weekId: "2026-07-06",
-      referenceId: "prep-1",
+      sourcePrepDate: "2026-07-05",
       prepDate: "Sun, Jul 5",
+      entryIds: ["prep-1"],
+      targetPosition: 0,
     }),
     false,
   );

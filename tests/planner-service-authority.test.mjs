@@ -71,7 +71,6 @@ function seedState(lesson = "Initial lesson") {
           ],
           prepSessions: [{
             id: "prep-session-rice",
-            label: "Sunday prep",
             prepDate: "2026-07-05",
             steps: [{ id: "prep-rice", stepId: "step-rice" }],
           }],
@@ -957,10 +956,11 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
       },
       {
         command: {
-          type: "createPrepSession",
+          type: "addPrepStepsToDate",
           weekId: "2026-07-06",
-          label: "Preview session",
-          prepDate: "2026-07-05",
+          prepDate: "2026-07-04",
+          stepIds: ["step-rice"],
+          targetPosition: 0,
         },
       },
       {
@@ -1102,10 +1102,10 @@ test("canonical pre-batch guard blocks cleanup laundering with the earliest repl
   const operations = [
     {
       command: {
-        type: "removePrepSessionStep",
+        type: "removePrepStepsFromDate",
         weekId: "2026-07-06",
-        sessionId: "prep-session-rice",
-        entryId: "prep-rice",
+        prepDate: "2026-07-05",
+        entryIds: ["prep-rice"],
       },
     },
     { command: replacementCommand() },
@@ -1251,19 +1251,18 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
       message: /running instruction timers/i,
     },
     {
-      name: "prep-session reference cleanup",
+      name: "prep-date reference cleanup",
       state: (() => {
         const state = cleanState();
         state.weeks[0].data.prepSessions = [{
           id: "prep-session-rice",
-          label: "Sunday prep",
           prepDate: "2026-07-05",
           steps: [{ id: "prep-rice", stepId: "step-rice" }],
         }];
         return state;
       })(),
       operations: [
-        { command: { type: "removePrepSessionStep", weekId: "2026-07-06", sessionId: "prep-session-rice", entryId: "prep-rice" } },
+        { command: { type: "removePrepStepsFromDate", weekId: "2026-07-06", prepDate: "2026-07-05", entryIds: ["prep-rice"] } },
         { command: replacementCommand() },
       ],
       message: /prep.*references/i,
@@ -1333,10 +1332,10 @@ test("a separately committed cleanup and refreshed replacement use the same shar
     requestId: "source-cleanup",
     basePlannerVersion: 0,
     operations: [{ command: {
-      type: "removePrepSessionStep",
+      type: "removePrepStepsFromDate",
       weekId: "2026-07-06",
-      sessionId: "prep-session-rice",
-      entryId: "prep-rice",
+      prepDate: "2026-07-05",
+      entryIds: ["prep-rice"],
     } }],
   }, globalContext);
   assert.equal(cleaned.decision.status, "accepted");

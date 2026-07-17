@@ -299,26 +299,27 @@ test("ambiguous planner retries cannot drift with canonical add-step or prep sta
       },
     },
     {
-      name: "prep plan append",
+      name: "prep date append",
       first: {
         requestId: "prep-plan-stable",
         basePlannerVersion: 8,
         command: {
-          type: "setPrepPlan",
+          type: "addPrepStepsToDate",
           weekId: "2026-07-06",
-          entries: [{ stepId: "step-1", prepDate: "2026-07-05" }],
+          prepDate: "2026-07-05",
+          stepIds: ["step-1"],
+          targetPosition: 0,
         },
       },
       reconstructed: {
         requestId: "prep-plan-stable",
         basePlannerVersion: 9,
         command: {
-          type: "setPrepPlan",
+          type: "addPrepStepsToDate",
           weekId: "2026-07-06",
-          entries: [
-            { stepId: "step-1", prepDate: "2026-07-05" },
-            { stepId: "step-1", prepDate: "2026-07-05" },
-          ],
+          prepDate: "2026-07-05",
+          stepIds: ["step-1", "step-1"],
+          targetPosition: 0,
         },
       },
     },

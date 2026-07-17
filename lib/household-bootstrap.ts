@@ -560,7 +560,6 @@ export function transformLegacyV2(
     if (!session) {
       session = {
         id: `legacy-prep-session-${reference.prepDate}`,
-        label: `Prep ${reference.prepDate}`,
         prepDate: reference.prepDate,
         steps: [],
       };
@@ -777,16 +776,29 @@ export function createCanonicalSeed(
     ),
   );
   state = requireExecutionState(
-    "Could not create the canonical seed prep plan",
+    "Could not add the first canonical seed prep step",
     householdDomain.execute(
       state,
       {
-        type: "setPrepPlan",
+        type: "addPrepStepsToDate",
         weekId,
-        entries: [
-          { stepId: firstStepId, prepDate: addIsoDateDays(weekId, -1) },
-          { stepId: riceStepId, prepDate: addIsoDateDays(weekId, 2) },
-        ],
+        prepDate: addIsoDateDays(weekId, -1),
+        stepIds: [firstStepId],
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = requireExecutionState(
+    "Could not add the second canonical seed prep step",
+    householdDomain.execute(
+      state,
+      {
+        type: "addPrepStepsToDate",
+        weekId,
+        prepDate: addIsoDateDays(weekId, 2),
+        stepIds: [riceStepId],
+        targetPosition: 0,
       },
       context,
     ),

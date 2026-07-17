@@ -33,7 +33,6 @@ test("calendar projection keeps every weekday, prep, and dinner aligned", () => 
     week.data.leftovers = [];
     week.data.prepSessions = [{
       id: `prep-session-${dayOffset}`,
-      label: "Daily prep",
       prepDate: today,
       steps: [{ id: `prep-${dayOffset}`, stepId: meal.instructions[0].id }],
     }];

@@ -35,13 +35,13 @@ function activeWeek(state) {
   return state.weeks.find((week) => week.id === state.activeWeekId);
 }
 
-test("legacy setPrepPlan rejects duplicate step IDs before materializing session references", () => {
+test("date-first prep commands reject duplicate instruction selections before materializing references", () => {
   let createIdCalls = 0;
   const seedContext = createContext();
   const state = createCanonicalSeed(seedContext);
   const week = activeWeek(state);
   const stepId = week.data.meals[0].instructions[0].id;
-  const prepDate = addIsoDateDays(week.id, -1);
+  const prepDate = addIsoDateDays(week.id, -2);
   const context = {
     now: NOW,
     createId(prefix) {
@@ -53,19 +53,18 @@ test("legacy setPrepPlan rejects duplicate step IDs before materializing session
   const result = householdDomain.execute(
     state,
     {
-      type: "setPrepPlan",
+      type: "addPrepStepsToDate",
       weekId: week.id,
-      entries: [
-        { stepId, prepDate },
-        { stepId, prepDate },
-      ],
+      prepDate,
+      stepIds: [stepId, stepId],
+      targetPosition: 0,
     },
     context,
   );
 
   assert.equal(result.ok, false);
   assert.equal(result.state, state);
-  assert.match(result.message, /legacy prep plan/i);
+  assert.match(result.message, /each instruction once/i);
   assert.equal(createIdCalls, 0);
 });
 
@@ -285,243 +284,127 @@ test("household domain executes every week-local command through one pure bounda
   );
   state = result.state;
 
-  const sundayBefore = addIsoDateDays(weekId, -1);
+  const sundayBefore = addIsoDateDays(weekId, -2);
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "createPrepSession",
-        weekId,
-        label: "Sunday batch",
-        prepDate: sundayBefore,
-      },
+      { type: "addPrepStepsToDate", weekId, prepDate: sundayBefore, stepIds: [firstStep.id], targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
-  const sundaySessionId = result.createdIds.prepSessionId;
-  assert.ok(sundaySessionId);
-  result = accepted(
-    householdDomain.execute(
-      state,
-      {
-        type: "createPrepSession",
-        weekId,
-        label: "Finish on Monday",
-        prepDate: weekId,
-      },
-      context,
-    ),
-  );
-  state = result.state;
-  const mondaySessionId = result.createdIds.prepSessionId;
-  assert.ok(mondaySessionId);
-  result = accepted(
-    householdDomain.execute(
-      state,
-      {
-        type: "addPrepSessionStep",
-        weekId,
-        sessionId: sundaySessionId,
-        stepId: firstStep.id,
-        targetPosition: 0,
-      },
-      context,
-    ),
-  );
-  state = result.state;
-  const firstEntryId = result.createdIds.prepSessionStepId;
+  const firstEntryId = result.createdIds["prepDateStep.0"];
   assert.ok(firstEntryId);
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "addPrepSessionStep",
-        weekId,
-        sessionId: mondaySessionId,
-        stepId: secondStep.id,
-        targetPosition: 0,
-      },
+      { type: "addPrepStepsToDate", weekId, prepDate: weekId, stepIds: [secondStep.id], targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
-  const secondEntryId = result.createdIds.prepSessionStepId;
+  const secondEntryId = result.createdIds["prepDateStep.0"];
   assert.ok(secondEntryId);
-  week = activeWeek(state);
-  assert.deepEqual(
-    week.data.prepSessions
-      .filter((session) => session.id === sundaySessionId || session.id === mondaySessionId)
-      .map(({ label, prepDate, steps }) => ({ label, prepDate, steps: steps.map((entry) => entry.stepId) })),
-    [
-      { label: "Sunday batch", prepDate: sundayBefore, steps: [firstStep.id] },
-      { label: "Finish on Monday", prepDate: weekId, steps: [secondStep.id] },
-    ],
-  );
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "addPrepSessionStep",
-        weekId,
-        sessionId: sundaySessionId,
-        stepId: secondStep.id,
-        targetPosition: 0,
-      },
+      { type: "addPrepStepsToDate", weekId, prepDate: sundayBefore, stepIds: [secondStep.id], targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
   assert.deepEqual(
-    activeWeek(state).data.prepSessions.find((session) => session.id === sundaySessionId).steps.map((entry) => entry.stepId),
-    [
-      secondStep.id,
-      firstStep.id,
-    ],
-    "a session can project the same canonical step used by another session",
+    activeWeek(state).data.prepSessions.find((session) => session.prepDate === sundayBefore).steps.map((entry) => entry.stepId),
+    [secondStep.id, firstStep.id],
+    "a prep date can schedule distinct canonical steps in an explicit queue order",
   );
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "movePrepSessionStep",
-        weekId,
-        sessionId: sundaySessionId,
-        entryId: firstEntryId,
-        targetPosition: 0,
-      },
+      { type: "movePrepStepsToDate", weekId, sourcePrepDate: sundayBefore, prepDate: sundayBefore, entryIds: [firstEntryId], targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
   assert.deepEqual(
-    activeWeek(state).data.prepSessions.find((session) => session.id === sundaySessionId).steps.map((entry) => entry.stepId),
-    [
-      firstStep.id,
-      secondStep.id,
-    ],
-    "session references can be reordered without changing recipe order",
+    activeWeek(state).data.prepSessions.find((session) => session.prepDate === sundayBefore).steps.map((entry) => entry.stepId),
+    [firstStep.id, secondStep.id],
+    "a prep date's queue can be reordered without changing recipe order",
   );
   result = accepted(
     householdDomain.execute(
       state,
-      { type: "removePrepSessionStep", weekId, sessionId: mondaySessionId, entryId: secondEntryId },
+      { type: "removePrepStepsFromDate", weekId, prepDate: weekId, entryIds: [secondEntryId] },
       context,
     ),
   );
   state = result.state;
   assert.ok(activeWeek(state).data.meals[0].instructions.some((step) => step.id === firstStep.id));
-  assert.deepEqual(
-    activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps,
-    [],
-    "removing a session reference never removes the canonical instruction",
+  assert.equal(
+    activeWeek(state).data.prepSessions.some((session) => session.prepDate === weekId),
+    false,
+    "removing a final prep reference clears its date queue but preserves the canonical instruction",
   );
 
+  const tuesday = addIsoDateDays(weekId, 1);
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "createPrepSession",
-        weekId,
-        label: "Tuesday batch",
-        prepDate: addIsoDateDays(weekId, 1),
-      },
+      { type: "addPrepStepsToDate", weekId, prepDate: tuesday, stepIds: [firstStep.id, secondStep.id], targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
-  const tuesdaySessionId = result.createdIds.prepSessionId;
+  const tuesdayEntries = activeWeek(state).data.prepSessions.find((session) => session.prepDate === tuesday).steps;
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "addPrepSessionSteps",
-        weekId,
-        sessionId: tuesdaySessionId,
-        stepIds: [firstStep.id, secondStep.id],
-        targetPosition: 0,
-      },
-      context,
-    ),
-  );
-  state = result.state;
-  const tuesdayEntries = activeWeek(state).data.prepSessions.find((session) => session.id === tuesdaySessionId).steps;
-  assert.deepEqual(tuesdayEntries.map((entry) => entry.stepId), [firstStep.id, secondStep.id]);
-  result = accepted(
-    householdDomain.execute(
-      state,
-      {
-        type: "movePrepSessionSteps",
-        weekId,
-        sourceSessionId: tuesdaySessionId,
-        sessionId: mondaySessionId,
-        entryIds: [tuesdayEntries[1].id, tuesdayEntries[0].id],
-        targetPosition: 0,
-      },
+      { type: "movePrepStepsToDate", weekId, sourcePrepDate: tuesday, prepDate: weekId, entryIds: [tuesdayEntries[1].id, tuesdayEntries[0].id], targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
   assert.deepEqual(
-    activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps.map((entry) => entry.stepId),
+    activeWeek(state).data.prepSessions.find((session) => session.prepDate === weekId).steps.map((entry) => entry.stepId),
     [firstStep.id, secondStep.id],
-    "a multi-step move preserves recipe order even if its selection arrived out of order",
+    "a multi-step date move preserves source queue order even if its selection arrives out of order",
   );
-  const mondayEntries = activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps;
+  const mondayEntries = activeWeek(state).data.prepSessions.find((session) => session.prepDate === weekId).steps;
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "movePrepSessionSteps",
-        weekId,
-        sourceSessionId: mondaySessionId,
-        sessionId: mondaySessionId,
-        entryIds: [mondayEntries[0].id],
-        targetPosition: 2,
-      },
+      { type: "movePrepStepsToDate", weekId, sourcePrepDate: weekId, prepDate: weekId, entryIds: [mondayEntries[0].id], targetPosition: 2 },
       context,
     ),
   );
   state = result.state;
   assert.deepEqual(
-    activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps.map((entry) => entry.stepId),
+    activeWeek(state).data.prepSessions.find((session) => session.prepDate === weekId).steps.map((entry) => entry.stepId),
     [secondStep.id, firstStep.id],
-    "a multi-step move accepts the end boundary used by the visible insertion indicator",
+    "a date queue accepts the end boundary used by the visible insertion indicator",
   );
 
   const earlierPrepDate = addIsoDateDays(weekId, -14);
-  const entriesToMoveEarlier = activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps.map((entry) => entry.id);
+  const entriesToMoveEarlier = activeWeek(state).data.prepSessions.find((session) => session.prepDate === weekId).steps.map((entry) => entry.id);
   result = accepted(
     householdDomain.execute(
       state,
-      {
-        type: "movePrepStepsToDate",
-        weekId,
-        sourceSessionId: mondaySessionId,
-        prepDate: earlierPrepDate,
-        entryIds: entriesToMoveEarlier,
-        targetPosition: 0,
-      },
+      { type: "movePrepStepsToDate", weekId, sourcePrepDate: weekId, prepDate: earlierPrepDate, entryIds: entriesToMoveEarlier, targetPosition: 0 },
       context,
     ),
   );
   state = result.state;
   const earlierSession = activeWeek(state).data.prepSessions.find((session) => session.prepDate === earlierPrepDate);
   assert.ok(earlierSession, "moving to an earlier calendar date creates that date's prep queue");
-  assert.deepEqual(
-    earlierSession.steps.map((entry) => entry.stepId),
-    [secondStep.id, firstStep.id],
-    "earlier-date prep keeps the queue order while recipe instructions remain canonical",
+  assert.deepEqual(earlierSession.steps.map((entry) => entry.stepId), [secondStep.id, firstStep.id]);
+  result = accepted(
+    householdDomain.execute(state, { type: "clearPrepDate", weekId, prepDate: earlierPrepDate }, context),
   );
+  state = result.state;
+  assert.equal(activeWeek(state).data.prepSessions.some((session) => session.prepDate === earlierPrepDate), false);
   const afterMealWeek = householdDomain.execute(
     state,
-    {
-      type: "addPrepStepsToDate",
-      weekId,
-      prepDate: addIsoDateDays(weekId, 7),
-      stepIds: [firstStep.id],
-      targetPosition: 0,
-    },
+    { type: "addPrepStepsToDate", weekId, prepDate: addIsoDateDays(weekId, 7), stepIds: [firstStep.id], targetPosition: 0 },
     context,
   );
   assert.equal(afterMealWeek.ok, false, "prep may be earlier, but never after the owning meal week");
@@ -1262,7 +1145,6 @@ test("each protected canonical state class and immutable target lifecycle reject
     ["prep", ({ week, meal }) => {
       week.data.prepSessions.push({
         id: "prep-protected",
-        label: "Protected prep",
         prepDate: addIsoDateDays(week.id, -1),
         steps: [{ id: "prep-protected-step", stepId: meal.instructions[0].id }],
       });

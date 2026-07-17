@@ -52,7 +52,7 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   expect(targetBounds).not.toBeNull();
   const dragData = await page.evaluateHandle(() => {
     const dataTransfer = new DataTransfer();
-    dataTransfer.setData("application/x-prep-session-entries", '["test-entry"]');
+    dataTransfer.setData("application/x-prep-date-entries", '["test-entry"]');
     return dataTransfer;
   });
   await insertionTarget.dispatchEvent("dragover", {

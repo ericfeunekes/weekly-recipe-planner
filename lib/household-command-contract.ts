@@ -54,24 +54,10 @@ export type HouseholdCommand =
   | ({ type: "pauseInstructionTimer"; stepId: string } & WeekScoped)
   | ({ type: "resetInstructionTimer"; stepId: string } & WeekScoped)
   | ({ type: "setInstructionTimerRemaining"; stepId: string; remainingSeconds: number } & WeekScoped)
-  | ({ type: "createPrepSession"; label: string; prepDate: IsoDate | null } & WeekScoped)
-  | ({ type: "updatePrepSession"; sessionId: string; label: string; prepDate: IsoDate | null } & WeekScoped)
-  | ({ type: "movePrepSession"; sessionId: string; targetPosition: number } & WeekScoped)
-  | ({ type: "removePrepSession"; sessionId: string } & WeekScoped)
-  | ({ type: "addPrepSessionStep"; sessionId: string; stepId: string; targetPosition: number } & WeekScoped)
-  | ({ type: "addPrepSessionSteps"; sessionId: string; stepIds: string[]; targetPosition: number } & WeekScoped)
   | ({ type: "addPrepStepsToDate"; prepDate: IsoDate; stepIds: string[]; targetPosition: number } & WeekScoped)
-  | ({ type: "movePrepSessionStep"; sessionId: string; entryId: string; targetPosition: number } & WeekScoped)
-  | ({ type: "movePrepSessionSteps"; sourceSessionId: string; sessionId: string; entryIds: string[]; targetPosition: number } & WeekScoped)
-  | ({ type: "movePrepStepsToDate"; sourceSessionId: string; prepDate: IsoDate; entryIds: string[]; targetPosition: number } & WeekScoped)
-  | ({ type: "removePrepSessionStep"; sessionId: string; entryId: string } & WeekScoped)
-  | ({
-      type: "setPrepPlan";
-      entries: Array<{ stepId: string; prepDate: IsoDate }>;
-    } & WeekScoped)
-  | ({ type: "movePrepReference"; referenceId: string; targetPosition: number } & WeekScoped)
-  | ({ type: "reschedulePrepReference"; referenceId: string; prepDate: IsoDate } & WeekScoped)
-  | ({ type: "removePrepReference"; referenceId: string } & WeekScoped)
+  | ({ type: "movePrepStepsToDate"; sourcePrepDate: IsoDate; prepDate: IsoDate; entryIds: string[]; targetPosition: number } & WeekScoped)
+  | ({ type: "removePrepStepsFromDate"; prepDate: IsoDate; entryIds: string[] } & WeekScoped)
+  | ({ type: "clearPrepDate"; prepDate: IsoDate } & WeekScoped)
   | ({
       type: "moveGroceryItemsToSource";
       itemIds: string[];
@@ -117,7 +103,7 @@ export type HistoricalGroceryReconciliationCommand = {
 export const MAX_COMMAND_TEXT_LENGTH = 4_000;
 export const MAX_ID_LENGTH = 200;
 export const MAX_PREP_ENTRIES = 64;
-export const MAX_PREP_SESSIONS = 32;
+export const MAX_PREP_DATES = 32;
 // Every day can contain one meal in each supported slot.
 // This is an input-safety ceiling, not a meal-per-day product rule.
 export const MAX_MEALS_PER_WEEK = 256;
@@ -156,9 +142,6 @@ const timerDurationSchema = {
 };
 const nullableTimerDurationSchema = {
   anyOf: [timerDurationSchema, { type: "null" }],
-};
-const nullablePrepDateSchema = {
-  anyOf: [isoDateSchema, { type: "null" }],
 };
 const stepInputSchema = {
   type: "object",
@@ -301,50 +284,22 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
   pauseInstructionTimer: weekCommandSchema("pauseInstructionTimer", { stepId: idSchema }),
   resetInstructionTimer: weekCommandSchema("resetInstructionTimer", { stepId: idSchema }),
   setInstructionTimerRemaining: weekCommandSchema("setInstructionTimerRemaining", { stepId: idSchema, remainingSeconds: timerDurationSchema }),
-  createPrepSession: weekCommandSchema("createPrepSession", { label: nonemptyTextSchema, prepDate: nullablePrepDateSchema }),
-  updatePrepSession: weekCommandSchema("updatePrepSession", { sessionId: idSchema, label: nonemptyTextSchema, prepDate: nullablePrepDateSchema }),
-  movePrepSession: weekCommandSchema("movePrepSession", { sessionId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_SESSIONS - 1 } }),
-  removePrepSession: weekCommandSchema("removePrepSession", { sessionId: idSchema }),
-  addPrepSessionStep: weekCommandSchema("addPrepSessionStep", { sessionId: idSchema, stepId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
-  addPrepSessionSteps: weekCommandSchema("addPrepSessionSteps", {
-    sessionId: idSchema,
-    stepIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
-    targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 },
-  }),
   addPrepStepsToDate: weekCommandSchema("addPrepStepsToDate", {
     prepDate: isoDateSchema,
     stepIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
     targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 },
   }),
-  movePrepSessionStep: weekCommandSchema("movePrepSessionStep", { sessionId: idSchema, entryId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
-  movePrepSessionSteps: weekCommandSchema("movePrepSessionSteps", {
-    sourceSessionId: idSchema,
-    sessionId: idSchema,
-    entryIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
-    targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES },
-  }),
   movePrepStepsToDate: weekCommandSchema("movePrepStepsToDate", {
-    sourceSessionId: idSchema,
+    sourcePrepDate: isoDateSchema,
     prepDate: isoDateSchema,
     entryIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
     targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES },
   }),
-  removePrepSessionStep: weekCommandSchema("removePrepSessionStep", { sessionId: idSchema, entryId: idSchema }),
-  setPrepPlan: weekCommandSchema("setPrepPlan", {
-      entries: {
-        type: "array",
-        maxItems: MAX_PREP_ENTRIES,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["stepId", "prepDate"],
-          properties: { stepId: idSchema, prepDate: isoDateSchema },
-        },
-      },
-    }),
-  movePrepReference: weekCommandSchema("movePrepReference", { referenceId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
-  reschedulePrepReference: weekCommandSchema("reschedulePrepReference", { referenceId: idSchema, prepDate: isoDateSchema }),
-  removePrepReference: weekCommandSchema("removePrepReference", { referenceId: idSchema }),
+  removePrepStepsFromDate: weekCommandSchema("removePrepStepsFromDate", {
+    prepDate: isoDateSchema,
+    entryIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
+  }),
+  clearPrepDate: weekCommandSchema("clearPrepDate", { prepDate: isoDateSchema }),
   moveGroceryItemsToSource: weekCommandSchema("moveGroceryItemsToSource", {
     itemIds: groceryItemIdsSchema,
     source: { type: "string", enum: [...GROCERY_SOURCES] },
@@ -471,16 +426,6 @@ type HouseholdCommandRegistryEntry = {
   validate(value: Record<string, unknown>): boolean;
 };
 
-function validatePrepPlan(value: Record<string, unknown>): boolean {
-  if (!isWeekCommand(value, ["entries"]) || !Array.isArray(value.entries) || value.entries.length > MAX_PREP_ENTRIES) return false;
-  const stepIds = new Set<string>();
-  return value.entries.every((entry) => {
-    if (!hasKeys(entry, ["stepId", "prepDate"]) || !isId(entry.stepId) || !isIsoDate(entry.prepDate) || stepIds.has(entry.stepId)) return false;
-    stepIds.add(entry.stepId);
-    return true;
-  });
-}
-
 export const HOUSEHOLD_COMMAND_REGISTRY = {
   moveMeal: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveMeal, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "targetDate"]) && isId(value.mealId) && isIsoDate(value.targetDate) },
   reorderMeals: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reorderMeals, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["date", "mealIds"]) && isIsoDate(value.date) && Array.isArray(value.mealIds) && value.mealIds.length >= 1 && value.mealIds.length <= MAX_MEALS_PER_WEEK && value.mealIds.every(isId) && new Set(value.mealIds).size === value.mealIds.length },
@@ -498,21 +443,10 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   pauseInstructionTimer: { schema: HOUSEHOLD_COMMAND_SCHEMAS.pauseInstructionTimer, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
   resetInstructionTimer: { schema: HOUSEHOLD_COMMAND_SCHEMAS.resetInstructionTimer, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
   setInstructionTimerRemaining: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setInstructionTimerRemaining, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "remainingSeconds"]) && isId(value.stepId) && isIntegerInRange(value.remainingSeconds, 1, MAX_TIMER_DURATION_SECONDS) },
-  createPrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.createPrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["label", "prepDate"]) && isText(value.label, MAX_COMMAND_TEXT_LENGTH, false) && (value.prepDate === null || isIsoDate(value.prepDate)) },
-  updatePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updatePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "label", "prepDate"]) && isId(value.sessionId) && isText(value.label, MAX_COMMAND_TEXT_LENGTH, false) && (value.prepDate === null || isIsoDate(value.prepDate)) },
-  movePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "targetPosition"]) && isId(value.sessionId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_SESSIONS - 1) },
-  removePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId"]) && isId(value.sessionId) },
-  addPrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "stepId", "targetPosition"]) && isId(value.sessionId) && isId(value.stepId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
-  addPrepSessionSteps: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepSessionSteps, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "stepIds", "targetPosition"]) && isId(value.sessionId) && Array.isArray(value.stepIds) && value.stepIds.length >= 1 && value.stepIds.length <= MAX_PREP_ENTRIES && value.stepIds.every(isId) && new Set(value.stepIds).size === value.stepIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
   addPrepStepsToDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepStepsToDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate", "stepIds", "targetPosition"]) && isIsoDate(value.prepDate) && Array.isArray(value.stepIds) && value.stepIds.length >= 1 && value.stepIds.length <= MAX_PREP_ENTRIES && value.stepIds.every(isId) && new Set(value.stepIds).size === value.stepIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
-  movePrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "entryId", "targetPosition"]) && isId(value.sessionId) && isId(value.entryId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
-  movePrepSessionSteps: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSessionSteps, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sourceSessionId", "sessionId", "entryIds", "targetPosition"]) && isId(value.sourceSessionId) && isId(value.sessionId) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
-  movePrepStepsToDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepStepsToDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sourceSessionId", "prepDate", "entryIds", "targetPosition"]) && isId(value.sourceSessionId) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
-  removePrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "entryId"]) && isId(value.sessionId) && isId(value.entryId) },
-  setPrepPlan: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setPrepPlan, scope: "week", exposure: "ordinary", validate: validatePrepPlan },
-  movePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId", "targetPosition"]) && isId(value.referenceId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
-  reschedulePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reschedulePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId", "prepDate"]) && isId(value.referenceId) && isIsoDate(value.prepDate) },
-  removePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId"]) && isId(value.referenceId) },
+  movePrepStepsToDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepStepsToDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sourcePrepDate", "prepDate", "entryIds", "targetPosition"]) && isIsoDate(value.sourcePrepDate) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
+  removePrepStepsFromDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepStepsFromDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate", "entryIds"]) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length },
+  clearPrepDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.clearPrepDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate"]) && isIsoDate(value.prepDate) },
   moveGroceryItemsToSource: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveGroceryItemsToSource, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "source"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && GROCERY_SOURCES.includes(value.source as GrocerySource) },
   setGroceryItemChecked: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemChecked, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId", "checked"]) && isId(value.itemId) && typeof value.checked === "boolean" },
   captureFeedback: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureFeedback, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "value"]) && isId(value.mealId) && FEEDBACK_VALUES.includes(value.value as FeedbackValue) },
