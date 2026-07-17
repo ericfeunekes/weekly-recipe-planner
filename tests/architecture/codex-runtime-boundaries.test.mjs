@@ -89,7 +89,7 @@ test("release evidence records dedicated credentials as metadata only", async ()
     "utf8",
   );
   const retention = source.slice(
-    source.indexOf("export async function collectDedicatedRuntimeRetention"),
+    source.indexOf("async function collectRuntimeRetention"),
     source.indexOf("export async function collectCandidateSourceManifest"),
   );
   assert.match(retention, /category !== "auth"/);
