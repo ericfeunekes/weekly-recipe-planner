@@ -259,13 +259,6 @@ const readQueryModelSchema = {
   },
 } as const;
 
-const plannerOperationSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["command"],
-  properties: { command: plannerCommandModelSchema },
-} as const;
-
 // The model needs the complete command discriminator union intact.  Retaining
 // array bounds and the per-item closed-object marker causes `apply` to exceed
 // Codex's provider-schema compaction budget once its readback schema is added;
