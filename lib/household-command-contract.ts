@@ -2,7 +2,6 @@ import {
   FEEDBACK_VALUES,
   GROCERY_SOURCES,
   LEFTOVER_QUALITIES,
-  MEAL_SLOTS,
   MEAL_STATUSES,
   isIsoDate,
   isWeekId,
@@ -12,7 +11,6 @@ import {
   type InstructionStepPlanInput,
   type IsoDate,
   type LeftoverQuality,
-  type MealSlot,
   type MealSnapshotInput,
   type MealStatus,
   type WeekId,
@@ -27,7 +25,9 @@ import {
 type WeekScoped = { weekId: WeekId };
 
 export type HouseholdCommand =
-  | ({ type: "moveMeal"; mealId: string; targetDate: IsoDate; slot: MealSlot } & WeekScoped)
+  | ({ type: "moveMeal"; mealId: string; targetDate: IsoDate } & WeekScoped)
+  | ({ type: "reorderMeals"; date: IsoDate; mealIds: string[] } & WeekScoped)
+  | ({ type: "swapMealDays"; firstDate: IsoDate; secondDate: IsoDate } & WeekScoped)
   | ({ type: "updateMealStatus"; mealId: string; status: MealStatus } & WeekScoped)
   | ({ type: "updateMealSnapshot"; mealId: string; changes: MealSnapshotInput } & WeekScoped)
   | ({
@@ -59,7 +59,9 @@ export type HouseholdCommand =
   | ({ type: "movePrepSession"; sessionId: string; targetPosition: number } & WeekScoped)
   | ({ type: "removePrepSession"; sessionId: string } & WeekScoped)
   | ({ type: "addPrepSessionStep"; sessionId: string; stepId: string; targetPosition: number } & WeekScoped)
+  | ({ type: "addPrepSessionSteps"; sessionId: string; stepIds: string[]; targetPosition: number } & WeekScoped)
   | ({ type: "movePrepSessionStep"; sessionId: string; entryId: string; targetPosition: number } & WeekScoped)
+  | ({ type: "movePrepSessionSteps"; sourceSessionId: string; sessionId: string; entryIds: string[]; targetPosition: number } & WeekScoped)
   | ({ type: "removePrepSessionStep"; sessionId: string; entryId: string } & WeekScoped)
   | ({
       type: "setPrepPlan";
@@ -85,7 +87,6 @@ export type HouseholdCommand =
       type: "assignLeftover";
       leftoverId: string;
       targetDate: IsoDate;
-      slot: MealSlot;
     } & WeekScoped)
   | ({ type: "consumeLeftover"; leftoverId: string } & WeekScoped)
   | ({ type: "archiveWeek" } & WeekScoped)
@@ -115,9 +116,9 @@ export const MAX_COMMAND_TEXT_LENGTH = 4_000;
 export const MAX_ID_LENGTH = 200;
 export const MAX_PREP_ENTRIES = 64;
 export const MAX_PREP_SESSIONS = 32;
-// A weekly plan currently has one supported slot (dinner) across seven days.
-// Keep the public command limit aligned with the states the domain can accept.
-export const MAX_MEALS_PER_WEEK = 7;
+// Every day can contain one meal in each supported slot.
+// This is an input-safety ceiling, not a meal-per-day product rule.
+export const MAX_MEALS_PER_WEEK = 256;
 export const MAX_STEPS_PER_MEAL = 64;
 export const MAX_STEP_INPUTS = 32;
 export const MAX_INGREDIENT_LINES = 128;
@@ -232,7 +233,6 @@ const mealPlanSchema = {
   additionalProperties: false,
   required: [
     "date",
-    "slot",
     "title",
     "subtitle",
     "venue",
@@ -246,7 +246,6 @@ const mealPlanSchema = {
   properties: {
     ...mealSnapshotSchema.properties,
     date: isoDateSchema,
-    slot: { type: "string", enum: [...MEAL_SLOTS] },
     status: { type: "string", enum: [...MEAL_STATUSES] },
     protein: { type: "string", enum: ["chicken", "salmon", "none"] },
     instructions: {
@@ -281,7 +280,9 @@ function weekCommandSchema(type: string, properties: Record<string, unknown> = {
 }
 
 const HOUSEHOLD_COMMAND_SCHEMAS = {
-  moveMeal: weekCommandSchema("moveMeal", { mealId: idSchema, targetDate: isoDateSchema, slot: { type: "string", enum: [...MEAL_SLOTS] } }),
+  moveMeal: weekCommandSchema("moveMeal", { mealId: idSchema, targetDate: isoDateSchema }),
+  reorderMeals: weekCommandSchema("reorderMeals", { date: isoDateSchema, mealIds: { type: "array", minItems: 1, maxItems: MAX_MEALS_PER_WEEK, items: idSchema } }),
+  swapMealDays: weekCommandSchema("swapMealDays", { firstDate: isoDateSchema, secondDate: isoDateSchema }),
   updateMealStatus: weekCommandSchema("updateMealStatus", { mealId: idSchema, status: { type: "string", enum: [...MEAL_STATUSES] } }),
   updateMealSnapshot: weekCommandSchema("updateMealSnapshot", { mealId: idSchema, changes: mealSnapshotSchema }),
   replaceMealRecipeFromSource: weekCommandSchema("replaceMealRecipeFromSource", {
@@ -303,7 +304,18 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
   movePrepSession: weekCommandSchema("movePrepSession", { sessionId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_SESSIONS - 1 } }),
   removePrepSession: weekCommandSchema("removePrepSession", { sessionId: idSchema }),
   addPrepSessionStep: weekCommandSchema("addPrepSessionStep", { sessionId: idSchema, stepId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
+  addPrepSessionSteps: weekCommandSchema("addPrepSessionSteps", {
+    sessionId: idSchema,
+    stepIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
+    targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 },
+  }),
   movePrepSessionStep: weekCommandSchema("movePrepSessionStep", { sessionId: idSchema, entryId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 } }),
+  movePrepSessionSteps: weekCommandSchema("movePrepSessionSteps", {
+    sourceSessionId: idSchema,
+    sessionId: idSchema,
+    entryIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
+    targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES },
+  }),
   removePrepSessionStep: weekCommandSchema("removePrepSessionStep", { sessionId: idSchema, entryId: idSchema }),
   setPrepPlan: weekCommandSchema("setPrepPlan", {
       entries: {
@@ -328,7 +340,7 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
   captureFeedback: weekCommandSchema("captureFeedback", { mealId: idSchema, value: { type: "string", enum: [...FEEDBACK_VALUES] } }),
   captureWeekLesson: weekCommandSchema("captureWeekLesson", { weekLesson: textSchema }),
   captureLeftoverQuality: weekCommandSchema("captureLeftoverQuality", { leftoverId: idSchema, quality: { type: "string", enum: [...LEFTOVER_QUALITIES] } }),
-  assignLeftover: weekCommandSchema("assignLeftover", { leftoverId: idSchema, targetDate: isoDateSchema, slot: { type: "string", enum: [...MEAL_SLOTS] } }),
+  assignLeftover: weekCommandSchema("assignLeftover", { leftoverId: idSchema, targetDate: isoDateSchema }),
   consumeLeftover: weekCommandSchema("consumeLeftover", { leftoverId: idSchema }),
   archiveWeek: weekCommandSchema("archiveWeek"),
   createWeekPlan: commandSchema("createWeekPlan", { weekStartDate: weekIdSchema, plan: weekPlanSchema }),
@@ -413,8 +425,8 @@ function hasMealSnapshotFields(value: Record<string, unknown>) {
 }
 
 function isMealPlan(value: unknown) {
-  if (!hasKeys(value, ["date", "slot", "title", "subtitle", "venue", "protein", "prepNote", "leftoverNote", "notes", "ingredients", "instructions"], ["status", "yieldText"])) return false;
-  if (!isIsoDate(value.date) || !MEAL_SLOTS.includes(value.slot as MealSlot)) return false;
+  if (!hasKeys(value, ["date", "title", "subtitle", "venue", "protein", "prepNote", "leftoverNote", "notes", "ingredients", "instructions"], ["status", "yieldText"])) return false;
+  if (!isIsoDate(value.date)) return false;
   if (value.status !== undefined && !MEAL_STATUSES.includes(value.status as MealStatus)) return false;
   if (!["chicken", "salmon", "none"].includes(value.protein as string)) return false;
   if (!hasMealSnapshotFields(value)) return false;
@@ -457,7 +469,9 @@ function validatePrepPlan(value: Record<string, unknown>): boolean {
 }
 
 export const HOUSEHOLD_COMMAND_REGISTRY = {
-  moveMeal: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveMeal, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "targetDate", "slot"]) && isId(value.mealId) && isIsoDate(value.targetDate) && MEAL_SLOTS.includes(value.slot as MealSlot) },
+  moveMeal: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveMeal, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "targetDate"]) && isId(value.mealId) && isIsoDate(value.targetDate) },
+  reorderMeals: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reorderMeals, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["date", "mealIds"]) && isIsoDate(value.date) && Array.isArray(value.mealIds) && value.mealIds.length >= 1 && value.mealIds.length <= MAX_MEALS_PER_WEEK && value.mealIds.every(isId) && new Set(value.mealIds).size === value.mealIds.length },
+  swapMealDays: { schema: HOUSEHOLD_COMMAND_SCHEMAS.swapMealDays, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["firstDate", "secondDate"]) && isIsoDate(value.firstDate) && isIsoDate(value.secondDate) && value.firstDate !== value.secondDate },
   updateMealStatus: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateMealStatus, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "status"]) && isId(value.mealId) && MEAL_STATUSES.includes(value.status as MealStatus) },
   updateMealSnapshot: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateMealSnapshot, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "changes"]) && isId(value.mealId) && isMealSnapshot(value.changes) },
   replaceMealRecipeFromSource: { schema: HOUSEHOLD_COMMAND_SCHEMAS.replaceMealRecipeFromSource, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "recipe"]) && isId(value.mealId) && isSourcedRecipeReplacement(value.recipe) },
@@ -476,7 +490,9 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   movePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "targetPosition"]) && isId(value.sessionId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_SESSIONS - 1) },
   removePrepSession: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepSession, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId"]) && isId(value.sessionId) },
   addPrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "stepId", "targetPosition"]) && isId(value.sessionId) && isId(value.stepId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
+  addPrepSessionSteps: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepSessionSteps, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "stepIds", "targetPosition"]) && isId(value.sessionId) && Array.isArray(value.stepIds) && value.stepIds.length >= 1 && value.stepIds.length <= MAX_PREP_ENTRIES && value.stepIds.every(isId) && new Set(value.stepIds).size === value.stepIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
   movePrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "entryId", "targetPosition"]) && isId(value.sessionId) && isId(value.entryId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
+  movePrepSessionSteps: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepSessionSteps, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sourceSessionId", "sessionId", "entryIds", "targetPosition"]) && isId(value.sourceSessionId) && isId(value.sessionId) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
   removePrepSessionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepSessionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sessionId", "entryId"]) && isId(value.sessionId) && isId(value.entryId) },
   setPrepPlan: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setPrepPlan, scope: "week", exposure: "ordinary", validate: validatePrepPlan },
   movePrepReference: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepReference, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["referenceId", "targetPosition"]) && isId(value.referenceId) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
@@ -487,7 +503,7 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   captureFeedback: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureFeedback, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "value"]) && isId(value.mealId) && FEEDBACK_VALUES.includes(value.value as FeedbackValue) },
   captureWeekLesson: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureWeekLesson, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["weekLesson"]) && isText(value.weekLesson) },
   captureLeftoverQuality: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureLeftoverQuality, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId", "quality"]) && isId(value.leftoverId) && LEFTOVER_QUALITIES.includes(value.quality as LeftoverQuality) },
-  assignLeftover: { schema: HOUSEHOLD_COMMAND_SCHEMAS.assignLeftover, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId", "targetDate", "slot"]) && isId(value.leftoverId) && isIsoDate(value.targetDate) && MEAL_SLOTS.includes(value.slot as MealSlot) },
+  assignLeftover: { schema: HOUSEHOLD_COMMAND_SCHEMAS.assignLeftover, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId", "targetDate"]) && isId(value.leftoverId) && isIsoDate(value.targetDate) },
   consumeLeftover: { schema: HOUSEHOLD_COMMAND_SCHEMAS.consumeLeftover, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId"]) && isId(value.leftoverId) },
   archiveWeek: { schema: HOUSEHOLD_COMMAND_SCHEMAS.archiveWeek, scope: "week", exposure: "explicit_foreground", validate: (value) => isWeekCommand(value, []) },
   createWeekPlan: { schema: HOUSEHOLD_COMMAND_SCHEMAS.createWeekPlan, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "weekStartDate", "plan"]) && isWeekId(value.weekStartDate) && isWeekPlan(value.plan) },

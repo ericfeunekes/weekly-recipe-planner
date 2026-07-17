@@ -104,6 +104,28 @@ public port, `PLANNER_HOST` may select `127.0.0.1` or `::1`, and
 `PLANNER_DATA_DIR` changes the default `.planner-data` directory. All listeners
 remain loopback-only.
 
+### Snapshot-backed QA deployment
+
+Use Portless to run a browser QA copy at a stable local URL without competing
+for a numbered port or writing to the household database:
+
+```bash
+make qa-deploy
+```
+
+The command snapshots the built runtime and a verified SQLite copy of
+`.planner-data/planner.sqlite` into a private temporary directory, then starts
+a detached front-controller/runtime pair against that immutable QA copy. It is
+reachable at `http://weekly-recipe-planner-qa.localhost:1355` even after the
+shell that started it exits. `make qa-deploy` replaces the prior managed QA
+copy only after its new build succeeds; use `make qa-status` to check it and
+`make qa-stop` to terminate its tracked process group and remove the snapshot.
+The single Portless proxy is a shared local daemon, so stopping this QA target
+does not disrupt other Portless routes. Supply `QA_NAME`, `QA_PORTLESS_PORT`,
+or `QA_DATA_SOURCE=/absolute/planner.sqlite` when a separate QA deployment or
+data source is required. QA uses the configured native Codex runtime against
+its isolated planner snapshot; only the shared global Codex socket is disabled.
+
 `npm run dev:web` and `npm run start:web` start only their respective web
 processes; they are useful for web debugging but do not provide a ready planner
 authority.

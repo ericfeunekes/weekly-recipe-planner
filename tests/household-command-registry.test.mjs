@@ -23,7 +23,9 @@ const step = {
 };
 
 const fixtures = {
-  moveMeal: { type: "moveMeal", weekId, mealId: id, targetDate: "2026-07-07", slot: "dinner" },
+  moveMeal: { type: "moveMeal", weekId, mealId: id, targetDate: "2026-07-07" },
+  reorderMeals: { type: "reorderMeals", weekId, date: "2026-07-07", mealIds: [id, "id-2"] },
+  swapMealDays: { type: "swapMealDays", weekId, firstDate: "2026-07-06", secondDate: "2026-07-07" },
   updateMealStatus: { type: "updateMealStatus", weekId, mealId: id, status: "cooking" },
   updateMealSnapshot: { type: "updateMealSnapshot", weekId, mealId: id, changes: { title: "Rice", subtitle: "", venue: "Home", prepNote: "", leftoverNote: "", notes: "", ingredients: [], yieldText: null } },
   replaceMealRecipeFromSource: {
@@ -56,7 +58,9 @@ const fixtures = {
   movePrepSession: { type: "movePrepSession", weekId, sessionId: id, targetPosition: 0 },
   removePrepSession: { type: "removePrepSession", weekId, sessionId: id },
   addPrepSessionStep: { type: "addPrepSessionStep", weekId, sessionId: id, stepId: "step-1", targetPosition: 0 },
+  addPrepSessionSteps: { type: "addPrepSessionSteps", weekId, sessionId: id, stepIds: ["step-1", "step-2"], targetPosition: 0 },
   movePrepSessionStep: { type: "movePrepSessionStep", weekId, sessionId: id, entryId: "entry-1", targetPosition: 0 },
+  movePrepSessionSteps: { type: "movePrepSessionSteps", weekId, sourceSessionId: id, sessionId: "id-2", entryIds: ["entry-1", "entry-2"], targetPosition: 0 },
   removePrepSessionStep: { type: "removePrepSessionStep", weekId, sessionId: id, entryId: "entry-1" },
   setPrepPlan: { type: "setPrepPlan", weekId, entries: [{ stepId: id, prepDate: "2026-07-05" }] },
   movePrepReference: { type: "movePrepReference", weekId, referenceId: id, targetPosition: 0 },
@@ -67,7 +71,7 @@ const fixtures = {
   captureFeedback: { type: "captureFeedback", weekId, mealId: id, value: "repeat" },
   captureWeekLesson: { type: "captureWeekLesson", weekId, weekLesson: "Prep earlier." },
   captureLeftoverQuality: { type: "captureLeftoverQuality", weekId, leftoverId: id, quality: "good" },
-  assignLeftover: { type: "assignLeftover", weekId, leftoverId: id, targetDate: "2026-07-08", slot: "dinner" },
+  assignLeftover: { type: "assignLeftover", weekId, leftoverId: id, targetDate: "2026-07-08" },
   consumeLeftover: { type: "consumeLeftover", weekId, leftoverId: id },
   archiveWeek: { type: "archiveWeek", weekId },
   createWeekPlan: { type: "createWeekPlan", weekStartDate: "2026-07-13", plan: { meals: [] } },
@@ -109,7 +113,6 @@ test("source provenance can enter only through sourced replacement, never create
     plan: {
       meals: [{
         date: "2026-07-13",
-        slot: "dinner",
         title: "Injected recipe",
         subtitle: "",
         venue: "Home",
@@ -204,8 +207,7 @@ test("grocery capacity derives from the published maximum plan cardinality", () 
     weekStartDate: "2026-07-13",
     plan: {
       meals: Array.from({ length: MAX_MEALS_PER_WEEK }, (_, mealIndex) => ({
-        date: `2026-07-${String(13 + mealIndex).padStart(2, "0")}`,
-        slot: "dinner",
+        date: `2026-07-${String(13 + (mealIndex % 7)).padStart(2, "0")}`,
         title: `Capacity meal ${mealIndex + 1}`,
         subtitle: "",
         venue: "Home",

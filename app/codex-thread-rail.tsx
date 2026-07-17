@@ -13,8 +13,10 @@ import {
   Square,
 } from "lucide-react";
 import {
+  Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type Dispatch,
@@ -31,8 +33,10 @@ import type {
   CodexThreadView,
 } from "../lib/codex-thread-contract.ts";
 
-import { ACTIVITY_LABEL_DEBOUNCE_MS, selectCodexActivityLabel, shouldFlushCodexActivityLabel } from "./codex-thread-activity.ts";
+import { ACTIVITY_LABEL_DEBOUNCE_MS, selectVisibleCodexActivityLabel, shouldFlushCodexActivityLabel } from "./codex-thread-activity.ts";
 import { mergeThreadPages } from "./codex-thread-history.ts";
+import { CodexMarkdown } from "./codex-markdown.tsx";
+import { nextCodexMessageScrollTop, shouldScrollToLatestCodexMessage } from "./codex-thread-scroll.ts";
 import { createCodexThreadSource, type CodexThreadSnapshot, type CodexThreadSource } from "./codex-thread-source.ts";
 import { selectInterruptibleTurnId } from "./codex-thread-turns.ts";
 import { OfflineAuthorityNotice } from "./offline-authority-notice.tsx";
@@ -46,7 +50,7 @@ function flushActivityUpdate(snapshot: CodexThreadSnapshot): boolean {
 }
 
 export function useDebouncedCodexActivityLabel(snapshot: CodexThreadSnapshot): string | null {
-  const candidate = selectCodexActivityLabel(snapshot.thread);
+  const candidate = selectVisibleCodexActivityLabel(snapshot.thread);
   const [visible, setVisible] = useState<string | null>(candidate);
   const previous = useRef(candidate);
   const timer = useRef<number | null>(null);
@@ -392,6 +396,7 @@ export function CodexThreadRail({
   const canSend = !offline && !isPreview && !pending && !hasUserInput &&
     (snapshot.status === "ready" || snapshot.status === "empty" || snapshot.status === "selected_unmaterialized") && Boolean(draft.trim());
   const canInterrupt = !offline && !isPreview && !pending && interruptibleTurnId !== null;
+  const visibleActivity = activity;
   const activeWorkerPanel = snapshot.status === "ready" &&
     snapshot.thread?.id === workerPanel.parentThreadId &&
     workerPanel.parentThreadId === snapshot.selection.threadId &&
@@ -563,12 +568,12 @@ export function CodexThreadRail({
             {activeWorkerPanel?.detail ? <WorkerDetail response={activeWorkerPanel.detail} onClose={closeWorker} /> : <>
               {snapshot.thread ? <ThreadItems
                 thread={snapshot.thread}
+                activity={visibleActivity}
                 workerError={activeWorkerPanel?.error ?? null}
                 workerLoadingId={activeWorkerPanel?.loadingId ?? null}
                 focusWorkerId={workerReturnFocusId}
                 onOpenWorker={openWorker}
               /> : null}
-              {activity ? <p className={styles.activity} role="status" aria-label="Codex activity"><LoaderCircle className="spin" size={14} /> {activity}</p> : null}
               <Interactions
                 interactions={snapshot.interactions}
                 answers={answers}
@@ -598,6 +603,7 @@ export function CodexThreadRail({
 
 function ThreadItems(props: {
   thread: CodexThreadView;
+  activity: string | null;
   workerError: string | null;
   workerLoadingId: string | null;
   focusWorkerId: string | null;
@@ -605,6 +611,34 @@ function ThreadItems(props: {
 }) {
   const { thread } = props;
   const items = thread.turns.flatMap((turn) => turn.items);
+  const latestMessage = items.reduce<Extract<CodexThreadItemView, { kind: "message" }> | null>((latest, item) => item.kind === "message" ? item : latest, null);
+  const lastUserMessageId = items.reduce<string | null>((latest, item) => item.kind === "message" && item.role === "user" ? item.id : latest, null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const scrollCursor = useRef<{ threadId: string; latestMessageId: string | null } | null>(null);
+
+  useLayoutEffect(() => {
+    const nextCursor = { threadId: thread.id, latestMessageId: latestMessage?.id ?? null };
+    const shouldScroll = shouldScrollToLatestCodexMessage(scrollCursor.current, nextCursor);
+    scrollCursor.current = nextCursor;
+    if (!shouldScroll) return;
+    const viewport = messagesRef.current;
+    const messages = viewport?.querySelectorAll<HTMLElement>("[data-codex-message]");
+    const message = messages?.[messages.length - 1] ?? null;
+    if (!viewport || !message) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const messageRect = message.getBoundingClientRect();
+    viewport.scrollTo({
+      top: nextCodexMessageScrollTop({
+        currentScrollTop: viewport.scrollTop,
+        scrollHeight: viewport.scrollHeight,
+        viewportHeight: viewport.clientHeight,
+        viewportTop: viewportRect.top,
+        messageTop: messageRect.top,
+      }),
+      behavior: "auto",
+    });
+  }, [latestMessage?.id, thread.id]);
+
   const workers = new Map(thread.workers.map((worker) => [worker.threadId, worker]));
   for (const item of items) {
     if (item.kind !== "worker") continue;
@@ -630,11 +664,19 @@ function ThreadItems(props: {
         </div>
       </section> : null}
       {props.workerError ? <p className={`${styles.banner} ${styles.workerBanner} ${styles.error}`} role="alert">{props.workerError}</p> : null}
-      <div className={styles.messages} role="log" aria-live="polite" aria-label="Codex conversation">
-        {items.map((item) => <ThreadItem key={item.id} item={item} />)}
+      <div ref={messagesRef} className={styles.messages} role="log" aria-live="polite" aria-label="Codex conversation">
+        {items.map((item) => <Fragment key={item.id}>
+          <ThreadItem item={item} />
+          {props.activity && item.id === lastUserMessageId ? <ActivityLine label={props.activity} /> : null}
+        </Fragment>)}
+        {props.activity && lastUserMessageId === null ? <ActivityLine label={props.activity} /> : null}
       </div>
     </div>
   );
+}
+
+function ActivityLine({ label }: { label: string }) {
+  return <p className={styles.activity} role="status" aria-label="Codex activity"><LoaderCircle className="spin" size={14} /> {label}</p>;
 }
 
 function WorkerDetail({ response, onClose }: { response: CodexThreadReadResponse; onClose: () => void }) {
@@ -659,7 +701,9 @@ function ThreadItem(props: {
   showActivity?: boolean;
 }) {
   const { item } = props;
-  if (item.kind === "message") return <p className={`${styles.message} ${item.role === "user" ? styles.user : styles.assistant}`}>{item.text}</p>;
+  if (item.kind === "message") return item.role === "user"
+    ? <p data-codex-message className={`${styles.message} ${styles.user}`}>{item.text}</p>
+    : <div data-codex-message className={`${styles.message} ${styles.assistant}`}><CodexMarkdown text={item.text} /></div>;
   if (item.kind === "reasoning") return <details className={styles.reasoning}><summary>Thinking</summary>{item.summaries.map((summary, index) => <p key={`${item.id}-${index}`}>{summary}</p>)}</details>;
   if (item.kind === "activity") return props.showActivity ? <p className={styles.workerActivity}>{item.label}<span>{item.status}</span></p> : null;
   if (item.kind === "worker") return <article className={styles.workerEvent} aria-label="Worker activity">

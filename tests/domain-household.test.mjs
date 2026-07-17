@@ -9,6 +9,7 @@ import {
 import {
   MAX_GROCERY_ITEMS,
   MAX_INGREDIENT_LINES,
+  MAX_MEALS_PER_WEEK,
 } from "../lib/household-command-contract.ts";
 
 const NOW = Date.parse("2026-07-10T12:00:00-03:00");
@@ -416,6 +417,78 @@ test("household domain executes every week-local command through one pure bounda
     "removing a session reference never removes the canonical instruction",
   );
 
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "createPrepSession",
+        weekId,
+        label: "Tuesday batch",
+        prepDate: addIsoDateDays(weekId, 1),
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const tuesdaySessionId = result.createdIds.prepSessionId;
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "addPrepSessionSteps",
+        weekId,
+        sessionId: tuesdaySessionId,
+        stepIds: [firstStep.id, secondStep.id],
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  const tuesdayEntries = activeWeek(state).data.prepSessions.find((session) => session.id === tuesdaySessionId).steps;
+  assert.deepEqual(tuesdayEntries.map((entry) => entry.stepId), [firstStep.id, secondStep.id]);
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "movePrepSessionSteps",
+        weekId,
+        sourceSessionId: tuesdaySessionId,
+        sessionId: mondaySessionId,
+        entryIds: [tuesdayEntries[1].id, tuesdayEntries[0].id],
+        targetPosition: 0,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  assert.deepEqual(
+    activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps.map((entry) => entry.stepId),
+    [firstStep.id, secondStep.id],
+    "a multi-step move preserves recipe order even if its selection arrived out of order",
+  );
+  const mondayEntries = activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps;
+  result = accepted(
+    householdDomain.execute(
+      state,
+      {
+        type: "movePrepSessionSteps",
+        weekId,
+        sourceSessionId: mondaySessionId,
+        sessionId: mondaySessionId,
+        entryIds: [mondayEntries[0].id],
+        targetPosition: 2,
+      },
+      context,
+    ),
+  );
+  state = result.state;
+  assert.deepEqual(
+    activeWeek(state).data.prepSessions.find((session) => session.id === mondaySessionId).steps.map((entry) => entry.stepId),
+    [secondStep.id, firstStep.id],
+    "a multi-step move accepts the end boundary used by the visible insertion indicator",
+  );
+
   const ingredientCount = activeWeek(state).data.meals.reduce((count, meal) => count + meal.ingredients.length, 0);
   assert.equal(activeWeek(state).data.groceries.length, ingredientCount, "every canonical ingredient has one grocery execution row");
   const grocery = activeWeek(state).data.groceries.find((item) => item.mealId === chicken.id);
@@ -541,9 +614,8 @@ test("a fully populated scheduled week projects every canonical ingredient", () 
   const context = createContext();
   const state = createCanonicalSeed(context);
   const weekStartDate = "2026-07-13";
-  const meals = Array.from({ length: 7 }, (_, mealIndex) => ({
-    date: addIsoDateDays(weekStartDate, mealIndex),
-    slot: "dinner",
+  const meals = Array.from({ length: MAX_MEALS_PER_WEEK }, (_, mealIndex) => ({
+    date: addIsoDateDays(weekStartDate, mealIndex % 7),
     title: `Maximum grocery meal ${mealIndex + 1}`,
     subtitle: "",
     venue: "Home",
@@ -658,7 +730,7 @@ test("step deletion is reference-safe and archived weeks reject week-local mutat
   assert.match(archivedEdit.message, /read-only/i);
 });
 
-test("occupied leftover assignment replaces the destination recipe through consumption", () => {
+test("leftover assignment adds another meal on an occupied day", () => {
   const context = createContext();
   let state = createCanonicalSeed(context);
   let week = activeWeek(state);
@@ -671,7 +743,6 @@ test("occupied leftover assignment replaces the destination recipe through consu
     true,
     "the displaced dinner starts with grocery provenance",
   );
-  const displacedStepIds = new Set(destination.instructions.map((step) => step.id));
 
   let result = accepted(
     householdDomain.execute(
@@ -705,20 +776,11 @@ test("occupied leftover assignment replaces the destination recipe through consu
   state = result.state;
   week = activeWeek(state);
   let replaced = week.data.meals.find((meal) => meal.id === destination.id);
-  assert.equal(replaced.title, source.title);
+  assert.equal(replaced.title, destination.title);
+  assert.equal(week.data.groceries.some((grocery) => grocery.mealId === destination.id), true);
+  const leftoverMealId = result.createdIds.mealId;
+  replaced = week.data.meals.find((meal) => meal.id === leftoverMealId);
   assert.equal(replaced.status, "leftover");
-  assert.equal(replaced.protein, "none");
-  assert.deepEqual(replaced.ingredients, []);
-  assert.deepEqual(replaced.instructions, []);
-  assert.equal(
-    week.data.prepSessions.some((session) => session.steps.some((entry) => displacedStepIds.has(entry.stepId))),
-    false,
-  );
-  assert.equal(
-    week.data.groceries.some((grocery) => grocery.mealId === destination.id),
-    false,
-    "replacing a dinner with leftovers removes stale grocery provenance",
-  );
   assert.deepEqual(householdDomain.validateState(state), { ok: true });
 
   result = accepted(
@@ -730,7 +792,7 @@ test("occupied leftover assignment replaces the destination recipe through consu
   );
   state = result.state;
   week = activeWeek(state);
-  replaced = week.data.meals.find((meal) => meal.id === destination.id);
+  replaced = week.data.meals.find((meal) => meal.id === leftoverMealId);
   assert.equal(replaced.title, source.title);
   assert.equal(replaced.status, "cooked");
   assert.match(replaced.subtitle, /portions from Harissa chicken traybake/);
@@ -840,7 +902,7 @@ test("leftover portion parsing ignores calendar dates without a serving label", 
   assert.equal(leftover.portions, 2);
 });
 
-test("occupied leftover assignment preserves meals referenced by other leftovers", () => {
+test("leftover assignment does not displace meals referenced by other leftovers", () => {
   const context = createContext();
   let state = createCanonicalSeed(context);
   let week = activeWeek(state);
@@ -972,9 +1034,7 @@ test("occupied leftover assignment preserves meals referenced by other leftovers
       },
       context,
     );
-    assert.equal(blocked.ok, false, dependentState);
-    assert.match(blocked.message, /tracked leftovers/i, dependentState);
-    assert.deepEqual(blocked.state, beforeAssignment, dependentState);
+    assert.equal(blocked.ok, true, dependentState);
     week = activeWeek(blocked.state);
     const dependentLeftover = week.data.leftovers.find(
       (leftover) => leftover.id === destinationLeftoverId,

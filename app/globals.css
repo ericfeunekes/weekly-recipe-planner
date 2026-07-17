@@ -622,6 +622,34 @@ svg {
   font-weight: 560;
 }
 
+.day-prep-indicator {
+  align-items: center;
+  background: var(--green-soft);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--green-dark);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 10px;
+  gap: 4px;
+  justify-content: flex-start;
+  margin: 0 0 7px;
+  min-height: 27px;
+  padding: 5px 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.day-prep-indicator:hover,
+.day-prep-indicator:focus-visible {
+  border-color: var(--green);
+}
+
+.day-prep-indicator strong {
+  margin-left: auto;
+}
+
 .meal-card {
   align-items: flex-start;
   background: var(--surface);
@@ -1007,6 +1035,38 @@ svg {
   color: var(--ink-soft);
 }
 
+.prep-source-step.selected {
+  background: var(--green-soft);
+  border-color: var(--green);
+  color: var(--ink);
+}
+
+.prep-source-selection-summary,
+.prep-selection-summary {
+  align-items: center;
+  background: var(--green-soft);
+  border-bottom: 1px solid #b7d5ca;
+  color: var(--green-dark);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 7px;
+  margin: 0;
+  padding: 7px 8px;
+}
+
+.prep-source-selection-summary {
+  border: 1px solid #b7d5ca;
+  border-radius: 5px;
+}
+
+.prep-selection-summary .text-button {
+  color: var(--green-dark);
+  margin-left: auto;
+  min-height: auto;
+  padding: 2px 3px;
+}
+
 .prep-session-list {
   display: grid;
   gap: 10px;
@@ -1038,10 +1098,6 @@ svg {
   overflow-x: auto;
   scroll-behavior: smooth;
   scrollbar-width: thin;
-}
-
-body.recipe-step-dragging .prep-session-tablist .prep-session-tab {
-  pointer-events: none;
 }
 
 .prep-session-tab-scroll {
@@ -1128,6 +1184,22 @@ body.recipe-step-dragging .prep-session-tablist .prep-session-tab {
   gap: 0;
 }
 
+.prep-queue-row-wrap {
+  display: grid;
+}
+
+.prep-insertion-indicator {
+  border-top: 4px solid var(--green);
+  height: 8px;
+  margin: 0;
+  pointer-events: none;
+}
+
+.instruction-step.prep-queue-step.selected {
+  background: var(--green-soft);
+  box-shadow: inset 3px 0 0 var(--green);
+}
+
 .instruction-step.prep-queue-step.dragging {
   opacity: 0.45;
 }
@@ -1151,6 +1223,12 @@ body.recipe-step-dragging .prep-session-tablist .prep-session-tab {
 
 .prep-drag-handle:active {
   cursor: grabbing;
+}
+
+.prep-drag-spacer {
+  display: block;
+  height: 28px;
+  width: 28px;
 }
 
 .prep-drag-handle:focus-visible,

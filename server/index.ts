@@ -81,6 +81,7 @@ export async function startConfiguredPlannerRuntime(
     runtimeOwnershipSocketPathForDataDirectory(config.dataDirectory);
   const inheritedOwnershipLease = overrides.runtimeOwnershipLease;
   const globalCodexParentDirectory = overrides.globalCodexParentDirectory;
+  const globalCodexDisabled = environment.PLANNER_DISABLE_GLOBAL_CODEX === "1";
   if (
     globalCodexParentDirectory !== undefined &&
     (!isAbsolute(globalCodexParentDirectory) || globalCodexParentDirectory.includes("\u0000"))
@@ -116,15 +117,19 @@ export async function startConfiguredPlannerRuntime(
         : null,
       // This path has acquired or revalidated the host-only runtime owner lease.
       recoverCodexAdmissionsAfterOwnership: true,
-      globalCodexIngressFactory: async (planner) =>
-        globalCodexParentDirectory === undefined
-          ? createGlobalCodexIngress(
-              createGlobalCodexRouter(createGlobalCodexPlannerPort(planner)),
-            )
-          : createGlobalCodexIngressForTests(
-              createGlobalCodexRouter(createGlobalCodexPlannerPort(planner)),
-              globalCodexParentDirectory,
-            ),
+      ...(globalCodexDisabled
+        ? {}
+        : {
+            globalCodexIngressFactory: async (planner) =>
+              globalCodexParentDirectory === undefined
+                ? createGlobalCodexIngress(
+                    createGlobalCodexRouter(createGlobalCodexPlannerPort(planner)),
+                  )
+                : createGlobalCodexIngressForTests(
+                    createGlobalCodexRouter(createGlobalCodexPlannerPort(planner)),
+                    globalCodexParentDirectory,
+                  ),
+          }),
       ...runtimeOverrides,
     });
     // SQLite establishes PLANNER_DATA_DIR before deployment validation

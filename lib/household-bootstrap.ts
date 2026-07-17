@@ -1,6 +1,5 @@
 import {
   DEFAULT_HOUSEHOLD_TIME_ZONE,
-  MEAL_SLOTS,
   MEAL_STATUSES,
   parseWeekId,
   type GroceryItem,
@@ -448,7 +447,7 @@ function decodeLegacyLeftover(
     }
     const dayIndex = decoder.integer(record.assignedDayIndex, `${path}.assignedDayIndex`, 0, 6);
     leftover.assignedDate = addIsoDateDays(weekId, dayIndex);
-    leftover.assignedSlot = MEAL_SLOTS[0];
+    leftover.assignedSlot = "legacy";
   } else if (record.assignedDayIndex !== undefined) {
     decoder.error(`${path}.assignedDayIndex`, "Only assigned browser-v2 leftovers may have a target day.");
   }

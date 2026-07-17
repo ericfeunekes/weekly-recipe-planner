@@ -21,6 +21,7 @@ import {
   type PlannerToolName,
   type PlannerToolResult,
 } from "../../lib/planner-tool-contract.ts";
+import { HOUSEHOLD_COMMAND_REGISTRY } from "../../lib/household-command-contract.ts";
 import type {
   PlannerApplicationService,
   PlannerMutationKernel,
@@ -62,6 +63,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isIdentifier(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 &&
     value.length <= IDENTIFIER_LIMIT && value.trim().length > 0 && !value.includes("\0");
+}
+
+function argumentShape(value: unknown): string {
+  if (!isRecord(value)) return "received a non-object argument value";
+  const keys = Object.keys(value).sort().join(", ") || "none";
+  const operations = value.operations;
+  if (!Array.isArray(operations) || operations.length === 0 || !isRecord(operations[0])) {
+    return `received outer keys [${keys}]`;
+  }
+  const operationKeys = Object.keys(operations[0]).sort().join(", ") || "none";
+  const command = operations[0].command;
+  const commandType = isRecord(command) && typeof command.type === "string"
+    ? command.type
+    : null;
+  const commandKeys = isRecord(command)
+    ? Object.keys(command).sort().join(", ") || "none"
+    : "not an object";
+  const expected = commandType !== null && commandType in HOUSEHOLD_COMMAND_REGISTRY
+    ? Object.keys(HOUSEHOLD_COMMAND_REGISTRY[commandType as keyof typeof HOUSEHOLD_COMMAND_REGISTRY].schema.properties).sort().join(", ")
+    : null;
+  return `received outer keys [${keys}]; first operation keys [${operationKeys}]; first command keys [${commandKeys}]` +
+    (expected === null ? "" : `; ${commandType} requires command keys [${expected}]`);
 }
 
 function canonicalJson(value: unknown): string {
@@ -308,7 +331,9 @@ export class NativePlannerEffectHost {
           workspace,
           now,
           "INVALID_ARGUMENTS",
-          "planner.preview arguments did not match the ordered operation contract.",
+          "planner.preview arguments did not match the ordered operation contract; " +
+            argumentShape(call.arguments) +
+            ". Expected exactly outer keys [basePlannerVersion, operations] and each operation as {command:{type,...}}.",
           "revise_new_call",
         );
       } else {

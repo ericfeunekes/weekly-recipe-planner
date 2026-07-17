@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ACTIVITY_LABEL_DEBOUNCE_MS,
   selectCodexActivityLabel,
+  selectVisibleCodexActivityLabel,
   shouldFlushCodexActivityLabel,
 } from "../app/codex-thread-activity.ts";
 import { mergeThreadPages } from "../app/codex-thread-history.ts";
@@ -79,6 +80,13 @@ test("activity presentation ignores worker labels and flushes user-input or term
     { kind: "activity", id: "done", category: "plan", label: "Done", detail: null, status: "completed" },
   ]);
   assert.equal(shouldFlushCodexActivityLabel({ waitingForUserInput: false, thread: terminal }), true);
+});
+
+test("activity presentation truthfully falls back to Thinking during an active turn", () => {
+  assert.equal(selectVisibleCodexActivityLabel({
+    id: "thread", title: "Task", parentThreadId: null, status: { state: "active", detail: null }, historyTruncated: false,
+    workers: [], turns: [{ id: "turn", status: "in_progress", items: [] }],
+  }), "Thinking");
 });
 
 test("interrupt presentation targets only the newest in-progress conversation turn", () => {

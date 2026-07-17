@@ -11,6 +11,14 @@ function origin(host, port) {
   return `http://${host}:${port}`;
 }
 
+function configuredPort(value, fallback, name) {
+  const port = Number(value ?? fallback);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new TypeError(`${name} must be an integer from 1 to 65535.`);
+  }
+  return port;
+}
+
 function processOptions(environment, workingDirectory) {
   return {
     env: environment,
@@ -79,15 +87,22 @@ export function createProductionProcessSpecifications(
   environment = process.env,
   { workingDirectory } = {},
 ) {
-  const publicPort = environment.PLANNER_PORT ?? String(PRODUCTION_PUBLIC_PORT);
+  // Portless assigns PORT to its child. Explicit planner configuration keeps
+  // precedence so installed releases retain their fixed public listener.
+  const publicPort = environment.PLANNER_PORT ?? environment.PORT ?? String(PRODUCTION_PUBLIC_PORT);
   const publicHost = environment.PLANNER_HOST ?? LOOPBACK_HOST;
-  const webOrigin = origin(LOOPBACK_HOST, PRODUCTION_WEB_PORT);
+  const privateWebPort = configuredPort(
+    environment.PLANNER_PRIVATE_WEB_PORT,
+    PRODUCTION_WEB_PORT,
+    "PLANNER_PRIVATE_WEB_PORT",
+  );
+  const webOrigin = origin(LOOPBACK_HOST, privateWebPort);
 
   return [
     vinextProcess(
       environment,
       "start",
-      PRODUCTION_WEB_PORT,
+      privateWebPort,
       workingDirectory,
     ),
     authorityProcess(environment, {

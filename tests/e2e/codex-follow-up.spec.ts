@@ -7,8 +7,8 @@ async function resetPlanner(request: APIRequestContext) {
   expect(response.ok()).toBe(true);
 }
 
-async function openPreview(page: Page) {
-  await page.goto("/?codexPreview=1");
+async function openPreview(page: Page, path = "/?codexPreview=1") {
+  await page.goto(path);
   const setup = page.getByRole("heading", { name: "Set up this planner once" });
   const planner = page.getByText("Family dinner planner");
   await expect(setup.or(planner)).toBeVisible();
@@ -59,6 +59,7 @@ test.describe("native Codex thread rail", () => {
     const conversation = rail.getByRole("log", { name: "Codex conversation" });
     await expect(conversation).toContainText("Can you help with Friday dinner?");
     await expect(rail.getByText("Checking Friday options", { exact: true })).toBeVisible();
+    await expect(rail.getByRole("status", { name: "Codex activity" })).toHaveText("Checking Friday options");
     await expect(rail.getByText("Approval rejected", { exact: true })).toBeVisible();
     await expect(rail.getByText("Codex requested to run a command while checking the plan.", { exact: true })).toBeVisible();
     const workerActivity = conversation.getByRole("article", { name: "Worker activity" });
@@ -116,6 +117,22 @@ test.describe("native Codex thread rail", () => {
     const blankTask = history.getByRole("button", { name: "Open task: New preview task" });
     await expect(blankTask).toBeVisible();
     await expect(blankTask).toHaveAttribute("aria-current", "true");
+  });
+
+  test("activity updates do not re-scroll an already hydrated conversation", async ({ page }) => {
+    await page.addInitScript(() => {
+      const calls: unknown[] = [];
+      const scope = window as Window & { __codexConversationScrollCalls?: unknown[] };
+      Object.defineProperty(scope, "__codexConversationScrollCalls", { value: calls });
+      const original = HTMLElement.prototype.scrollTo;
+      HTMLElement.prototype.scrollTo = function scrollTo(this: HTMLElement, ...arguments_: unknown[]) {
+        if (this.getAttribute("aria-label") === "Codex conversation") calls.push(arguments_[0]);
+        return (original as (...values: unknown[]) => void).apply(this, arguments_);
+      } as unknown as typeof HTMLElement.prototype.scrollTo;
+    });
+    await openPreview(page, "/?codexPreview=activity-burst");
+    await expect(page.getByRole("status", { name: "Codex activity" })).toHaveText("Reviewing Friday dinner");
+    await expect.poll(() => page.evaluate(() => (window as Window & { __codexConversationScrollCalls?: unknown[] }).__codexConversationScrollCalls)).toEqual([]);
   });
 
   test("task history exposes an enabled retry and recovers after a list failure", async ({ page }) => {

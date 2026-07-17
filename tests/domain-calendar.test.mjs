@@ -40,7 +40,7 @@ test("calendar helpers retain ISO semantics across month and DST boundaries", ()
   assert.equal(weekContainsPrepDate(weekId, parseIsoDate("2026-07-04")), false);
 });
 
-test("meal moves support empty targets and occupied-slot swaps", () => {
+test("meal moves can place multiple meals on the same day", () => {
   const commandContext = context();
   let state = createCanonicalSeed(commandContext);
   const weekId = state.activeWeekId;
@@ -53,7 +53,7 @@ test("meal moves support empty targets and occupied-slot swaps", () => {
   let result = accepted(
     householdDomain.execute(
       state,
-      { type: "moveMeal", weekId, mealId: chickenId, targetDate: emptyTuesday, slot: "dinner" },
+      { type: "moveMeal", weekId, mealId: chickenId, targetDate: emptyTuesday },
       commandContext,
     ),
   );
@@ -69,7 +69,6 @@ test("meal moves support empty targets and occupied-slot swaps", () => {
         weekId,
         mealId: chickenId,
         targetDate: occupiedDinnerDate,
-        slot: "dinner",
       },
       commandContext,
     ),
@@ -77,7 +76,53 @@ test("meal moves support empty targets and occupied-slot swaps", () => {
   state = result.state;
   const meals = state.weeks[0].data.meals;
   assert.equal(meals.find((meal) => meal.id === chickenId).date, occupiedDinnerDate);
-  assert.equal(meals.find((meal) => meal.id === salmonId).date, emptyTuesday);
+  assert.equal(meals.find((meal) => meal.id === salmonId).date, occupiedDinnerDate);
+});
+
+test("a day supports multiple meals and AI can swap entire days explicitly", () => {
+  const commandContext = context();
+  let state = createCanonicalSeed(commandContext);
+  const weekId = state.activeWeekId;
+  const [first, second] = state.weeks[0].data.meals;
+  const secondDate = second.date;
+  const thirdDate = addIsoDateDays(weekId, 2);
+
+  state = accepted(householdDomain.execute(
+    state,
+    { type: "moveMeal", weekId, mealId: first.id, targetDate: secondDate },
+    commandContext,
+  )).state;
+  assert.equal(state.weeks[0].data.meals.filter((meal) => meal.date === secondDate).length, 2);
+  assert.deepEqual(householdDomain.validateState(state), { ok: true });
+
+  state = accepted(householdDomain.execute(
+    state,
+    { type: "swapMealDays", weekId, firstDate: secondDate, secondDate: thirdDate },
+    commandContext,
+  )).state;
+  const meals = state.weeks[0].data.meals;
+  assert.deepEqual(
+    meals.filter((meal) => meal.id === first.id || meal.id === second.id).map((meal) => [meal.id, meal.date]).sort(),
+    [[first.id, thirdDate], [second.id, thirdDate]].sort(),
+  );
+});
+
+test("Codex can reorder every meal on a day without changing their dates", () => {
+  const commandContext = context();
+  let state = createCanonicalSeed(commandContext);
+  const weekId = state.activeWeekId;
+  const [first, second] = state.weeks[0].data.meals;
+  state = accepted(householdDomain.execute(
+    state,
+    { type: "moveMeal", weekId, mealId: first.id, targetDate: second.date },
+    commandContext,
+  )).state;
+  state = accepted(householdDomain.execute(
+    state,
+    { type: "reorderMeals", weekId, date: second.date, mealIds: [second.id, first.id] },
+    commandContext,
+  )).state;
+  assert.deepEqual(state.weeks[0].data.meals.filter((meal) => meal.date === second.date).map((meal) => meal.id), [second.id, first.id]);
 });
 
 test("week creation, handoff, archive, and activation preserve zero-or-one active week", () => {
@@ -169,7 +214,6 @@ test("aggregate validation rejects duplicate slots, duplicate session references
 
   const validation = householdDomain.validateState(invalid);
   assert.equal(validation.ok, false);
-  assert.ok(validation.issues.some((issue) => /already occupied/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /only once in one session/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /identify the active week/i.test(issue.message)));
   assert.ok(validation.issues.some((issue) => /completed step/i.test(issue.message)));

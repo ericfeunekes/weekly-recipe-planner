@@ -1,6 +1,7 @@
 export const HOUSEHOLD_ID = "household" as const;
 export const DEFAULT_HOUSEHOLD_TIME_ZONE = "America/Halifax" as const;
-export const MEAL_SLOTS = ["dinner"] as const;
+// A date can hold one meal in each named slot. Keeping slots explicit lets the
+// planner distinguish a full day from an accidental duplicate.
 export const WEEK_STATUSES = ["planned", "active", "archived"] as const;
 export const MEAL_STATUSES = [
   "planned",
@@ -21,7 +22,6 @@ declare const WEEK_ID_BRAND: unique symbol;
 
 export type IsoDate = string & { readonly [ISO_DATE_BRAND]: true };
 export type WeekId = IsoDate & { readonly [WEEK_ID_BRAND]: true };
-export type MealSlot = (typeof MEAL_SLOTS)[number];
 export type WeekStatus = (typeof WEEK_STATUSES)[number];
 export type MealStatus = (typeof MEAL_STATUSES)[number];
 export type FeedbackValue = (typeof FEEDBACK_VALUES)[number];
@@ -56,7 +56,8 @@ export type InstructionStep = {
 export type Meal = {
   id: string;
   date: IsoDate;
-  slot: MealSlot;
+  /** @deprecated Legacy display-only field. New meals have no named slot. */
+  slot?: string;
   title: string;
   yieldText?: string;
   sourceRecipe?: SourceRecipe;
@@ -104,7 +105,9 @@ export type Leftover = {
   portions: number;
   state: "available" | "assigned" | "consumed";
   assignedDate?: IsoDate;
-  assignedSlot?: MealSlot;
+  /** @deprecated Legacy display-only field. */
+  assignedSlot?: string;
+  assignedMealId?: string;
   quality?: LeftoverQuality;
 };
 

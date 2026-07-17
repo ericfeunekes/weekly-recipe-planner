@@ -66,6 +66,10 @@ function loopbackOrigins(port: number) {
   ];
 }
 
+function isPortlessLoopbackOrigin(origin: URL) {
+  return origin.protocol === "http:" && origin.hostname.endsWith(".localhost");
+}
+
 function parseAllowedOrigins(
   value: string | undefined,
   mode: RuntimeMode,
@@ -85,11 +89,11 @@ function parseAllowedOrigins(
     const tailnetHttps =
       origin.protocol === "https:" && origin.hostname.endsWith(".ts.net");
     if (
-      (!loopbackHttp && !tailnetHttps) ||
+      (!loopbackHttp && !isPortlessLoopbackOrigin(origin) && !tailnetHttps) ||
       origin.origin !== entry
     ) {
       throw new TypeError(
-        "PLANNER_ALLOWED_ORIGINS must contain loopback HTTP or exact Tailnet HTTPS origins.",
+        "PLANNER_ALLOWED_ORIGINS must contain loopback HTTP, exact Portless .localhost HTTP, or exact Tailnet HTTPS origins.",
       );
     }
     origins.add(origin.origin);

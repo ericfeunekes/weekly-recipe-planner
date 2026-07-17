@@ -80,6 +80,28 @@ test("production launch defaults to one public loopback origin", () => {
   assert.ok(config.allowedOrigins.has("http://127.0.0.1:3000"));
 });
 
+test("production launch uses Portless's assigned port when no planner port is explicit", () => {
+  const [, authority] = createProductionProcessSpecifications({
+    PORT: "4123",
+    PLANNER_ALLOWED_ORIGINS: "http://weekly-recipe-planner-qa.localhost:1355",
+  });
+  const config = readRuntimeConfig(authority.options.env);
+
+  assert.equal(config.port, 4123);
+  assert.ok(config.allowedOrigins.has("http://weekly-recipe-planner-qa.localhost:1355"));
+});
+
+test("production launch allows an isolated private web port", () => {
+  const [web, authority] = createProductionProcessSpecifications({
+    PLANNER_PORT: "4123",
+    PLANNER_PRIVATE_WEB_PORT: "4124",
+  });
+  const config = readRuntimeConfig(authority.options.env);
+
+  assert.equal(web.options.env.PLANNER_WEB_PORT, "4124");
+  assert.equal(config.webOrigin.href, "http://127.0.0.1:4124/");
+});
+
 test("installed launch fixes both children to the selected app and materializes disjoint roots", () => {
   const [web, authority] = createInstalledProcessSpecifications(
     {

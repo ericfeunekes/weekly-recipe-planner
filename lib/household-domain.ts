@@ -3,7 +3,6 @@ import {
   FEEDBACK_VALUES,
   GROCERY_SOURCES,
   LEFTOVER_QUALITIES,
-  MEAL_SLOTS,
   MEAL_STATUSES,
   PREP_DAYS_AFTER_WEEK_START,
   PREP_DAYS_BEFORE_WEEK_START,
@@ -16,6 +15,7 @@ import {
   type IsoDate,
   type Meal,
   type PrepSession,
+  type PrepSessionStep,
   type WeekId,
   type WeekPlan,
   type WeekPlannerData,
@@ -267,10 +267,10 @@ function validateMeal(
   weekId: WeekId | null,
   issues: ValidationIssue[],
   stepIds: Set<string>,
-): { id: string | null; date: IsoDate | null; slot: string | null } {
+): { id: string | null; date: IsoDate | null } {
   if (!isRecord(value)) {
     addIssue(issues, path, "Must be a meal object.");
-    return { id: null, date: null, slot: null };
+    return { id: null, date: null };
   }
   requireExactShape(
     issues,
@@ -279,7 +279,6 @@ function validateMeal(
     [
       "id",
       "date",
-      "slot",
       "title",
       "subtitle",
       "venue",
@@ -291,16 +290,13 @@ function validateMeal(
       "ingredients",
       "instructions",
     ],
-    ["yieldText", "sourceRecipe"],
+    ["yieldText", "sourceRecipe", "slot"],
   );
   if (!isId(value.id)) addIssue(issues, `${path}.id`, "Must be a nonempty bounded ID.");
   if (!isIsoDate(value.date)) {
     addIssue(issues, `${path}.date`, "Must be an ISO calendar date.");
   } else if (weekId && !weekContainsDate(weekId, value.date)) {
     addIssue(issues, `${path}.date`, "Must fall inside its Monday-start week.");
-  }
-  if (!MEAL_SLOTS.includes(value.slot as (typeof MEAL_SLOTS)[number])) {
-    addIssue(issues, `${path}.slot`, "Must be a supported meal slot.");
   }
   if (!isText(value.title, 300, { nonempty: true })) addIssue(issues, `${path}.title`, "Must be a nonempty title up to 300 characters.");
   if (value.yieldText !== undefined && !isText(value.yieldText, 80, { nonempty: true })) {
@@ -347,7 +343,6 @@ function validateMeal(
   return {
     id: typeof value.id === "string" ? value.id : null,
     date: isIsoDate(value.date) ? value.date : null,
-    slot: typeof value.slot === "string" ? value.slot : null,
   };
 }
 
@@ -412,7 +407,6 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   const mealDates = new Map<string, IsoDate>();
   const mealStatuses = new Map<string, string>();
   const ingredientsByMeal = new Map<string, Set<string>>();
-  const mealSlots = new Set<string>();
   const stepIds = new Set<string>();
   if (!Array.isArray(data.meals) || data.meals.length > MAX_MEALS_PER_WEEK) {
     addIssue(issues, `${path}.data.meals`, `Must contain at most ${MAX_MEALS_PER_WEEK} meals.`);
@@ -436,11 +430,6 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
             ),
           );
         }
-      }
-      if (validated.date && validated.slot) {
-        const key = `${validated.date}:${validated.slot}`;
-        if (mealSlots.has(key)) addIssue(issues, `${mealPath}.slot`, "That date and slot is already occupied.");
-        mealSlots.add(key);
       }
     });
   }
@@ -520,7 +509,6 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   }
 
   const leftoverIds = new Set<string>();
-  const assignedSlots = new Set<string>();
   if (!Array.isArray(data.leftovers)) {
     addIssue(issues, `${path}.data.leftovers`, "Must be an array.");
   } else {
@@ -530,7 +518,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
         addIssue(issues, leftoverPath, "Must be a leftover object.");
         return;
       }
-      requireExactShape(issues, leftover, leftoverPath, ["id", "sourceMealId", "label", "portions", "state"], ["assignedDate", "assignedSlot", "quality"]);
+      requireExactShape(issues, leftover, leftoverPath, ["id", "sourceMealId", "label", "portions", "state"], ["assignedDate", "assignedSlot", "assignedMealId", "quality"]);
       if (!isId(leftover.id)) addIssue(issues, `${leftoverPath}.id`, "Must be a nonempty bounded ID.");
       else if (leftoverIds.has(leftover.id)) addIssue(issues, `${leftoverPath}.id`, "Must be unique within the week.");
       else leftoverIds.add(leftover.id);
@@ -545,7 +533,6 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
       if (leftover.quality !== undefined && !LEFTOVER_QUALITIES.includes(leftover.quality as (typeof LEFTOVER_QUALITIES)[number])) addIssue(issues, `${leftoverPath}.quality`, "Must be a supported quality.");
       if (leftover.state === "assigned") {
         if (!isIsoDate(leftover.assignedDate) || (weekId && !weekContainsDate(weekId, leftover.assignedDate))) addIssue(issues, `${leftoverPath}.assignedDate`, "Assigned leftovers require a date inside the week.");
-        if (!MEAL_SLOTS.includes(leftover.assignedSlot as (typeof MEAL_SLOTS)[number])) addIssue(issues, `${leftoverPath}.assignedSlot`, "Assigned leftovers require a supported slot.");
         const sourceDate =
           typeof leftover.sourceMealId === "string"
             ? mealDates.get(leftover.sourceMealId)
@@ -561,12 +548,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
             "Assigned leftovers must be used after their source meal.",
           );
         }
-        if (isIsoDate(leftover.assignedDate) && typeof leftover.assignedSlot === "string") {
-          const key = `${leftover.assignedDate}:${leftover.assignedSlot}`;
-          if (assignedSlots.has(key)) addIssue(issues, leftoverPath, "Only one leftover may be assigned to a date and slot.");
-          assignedSlots.add(key);
-        }
-      } else if (leftover.assignedDate !== undefined || leftover.assignedSlot !== undefined) {
+      } else if (leftover.assignedDate !== undefined || leftover.assignedSlot !== undefined || leftover.assignedMealId !== undefined) {
         addIssue(issues, leftoverPath, "Only assigned leftovers may retain an assignment.");
       }
     });
@@ -986,13 +968,11 @@ export function executeHouseholdCommand(
       if (!weekContainsDate(week.id, command.targetDate)) return failure(state, "Target date is outside the week.", { targetDate: "Choose a date inside the selected week." });
       const moving = week.data.meals.find((meal) => meal.id === command.mealId);
       if (!moving) return failure(state, "Meal not found.", { mealId: "Choose a meal in the selected week." });
-      if (moving.date === command.targetDate && moving.slot === command.slot) return failure(state, "The meal is already in that slot.");
+      if (moving.date === command.targetDate) return failure(state, "The meal is already on that day.");
       const originalDate = moving.date;
-      const originalSlot = moving.slot;
-      const target = week.data.meals.find((meal) => meal.date === command.targetDate && meal.slot === command.slot);
       if (
         week.data.leftovers.some(
-          (leftover) => leftover.sourceMealId === moving.id || leftover.sourceMealId === target?.id,
+          (leftover) => leftover.sourceMealId === moving.id,
         )
       ) {
         return failure(state, "A meal with tracked leftovers cannot be moved or swapped.", {
@@ -1000,31 +980,62 @@ export function executeHouseholdCommand(
         });
       }
       moving.date = command.targetDate;
-      moving.slot = command.slot;
       moving.status = "moved";
-      if (target) {
-        target.date = originalDate;
-        target.slot = originalSlot;
-        if (target.status !== "flex") target.status = "moved";
-      }
       for (const leftover of week.data.leftovers) {
         if (leftover.state !== "assigned") continue;
-        if (leftover.assignedDate === originalDate && leftover.assignedSlot === originalSlot) {
+        if (leftover.assignedDate === originalDate) {
           leftover.assignedDate = command.targetDate;
-          leftover.assignedSlot = command.slot;
-        } else if (leftover.assignedDate === command.targetDate && leftover.assignedSlot === command.slot) {
-          leftover.assignedDate = originalDate;
-          leftover.assignedSlot = originalSlot;
         }
       }
       return success(
         state,
         next,
-        target ? `Swapped ${moving.title} with ${target.title}` : `Moved ${moving.title}`,
+        `Moved ${moving.title}`,
         moving.id,
-        target
-          ? [`${originalDate}/${originalSlot} to ${command.targetDate}/${command.slot}`, `${target.id} moved to ${originalDate}/${originalSlot}`]
-          : [`${originalDate}/${originalSlot} to ${command.targetDate}/${command.slot}`, "The source slot is now empty"],
+        [`${originalDate} to ${command.targetDate}`, "The source day remains available for other meals"],
+      );
+    }
+
+    case "reorderMeals": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      if (!weekContainsDate(week.id, command.date)) return failure(state, "Reorder date is outside the week.", { date: "Choose a date inside the selected week." });
+      const dayMeals = week.data.meals.filter((meal) => meal.date === command.date);
+      const expectedIds = new Set(dayMeals.map((meal) => meal.id));
+      if (command.mealIds.length !== dayMeals.length || command.mealIds.some((id) => !expectedIds.has(id))) {
+        return failure(state, "Meal order must name every meal on that day exactly once.", { mealIds: "Read the day first, then submit its complete ordered meal IDs." });
+      }
+      const ordered = command.mealIds.map((id) => dayMeals.find((meal) => meal.id === id)!);
+      let dayIndex = 0;
+      week.data.meals = week.data.meals.map((meal) => meal.date === command.date ? ordered[dayIndex++] : meal);
+      return success(state, next, `Reordered meals on ${command.date}`, command.date, ordered.map((meal, index) => `${index + 1}. ${meal.title}`));
+    }
+
+    case "swapMealDays": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      if (!weekContainsDate(week.id, command.firstDate) || !weekContainsDate(week.id, command.secondDate)) {
+        return failure(state, "Both swap dates must be inside the selected week.", { firstDate: "Choose dates inside the selected week." });
+      }
+      const affected = week.data.meals.filter((meal) => meal.date === command.firstDate || meal.date === command.secondDate);
+      if (week.data.leftovers.some((leftover) => affected.some((meal) => meal.id === leftover.sourceMealId))) {
+        return failure(state, "A day containing a meal with tracked leftovers cannot be swapped.", {
+          firstDate: "Keep cooked source meals on their recorded dates.",
+        });
+      }
+      for (const meal of affected) {
+        meal.date = meal.date === command.firstDate ? command.secondDate : command.firstDate;
+        if (meal.status !== "flex") meal.status = "moved";
+      }
+      for (const leftover of week.data.leftovers) {
+        if (leftover.state !== "assigned") continue;
+        if (leftover.assignedDate === command.firstDate) leftover.assignedDate = command.secondDate;
+        else if (leftover.assignedDate === command.secondDate) leftover.assignedDate = command.firstDate;
+      }
+      return success(
+        state,
+        next,
+        `Swapped ${command.firstDate} with ${command.secondDate}`,
+        `${command.firstDate},${command.secondDate}`,
+        [`Moved ${affected.filter((meal) => meal.date === command.secondDate).length} meals to ${command.secondDate}`, `Moved ${affected.filter((meal) => meal.date === command.firstDate).length} meals to ${command.firstDate}`],
       );
     }
 
@@ -1406,6 +1417,35 @@ export function executeHouseholdCommand(
       return success(state, next, "Added instruction to prep session", id, [`Session: ${session.label}`, `Position: ${command.targetPosition}`], { prepSessionStepId: id });
     }
 
+    case "addPrepSessionSteps": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
+      if (!session) return failure(state, "Prep session not found.", { sessionId: "Choose a prep session in the selected week." });
+      if (command.targetPosition > session.steps.length) return failure(state, "Prep-session position is outside this session.", { targetPosition: "Choose a position in the prep session." });
+      if (command.stepIds.some((stepId) => !findStep(week, stepId))) return failure(state, "One or more instruction steps could not be found.", { stepIds: "Choose instructions in the selected week." });
+      if (command.stepIds.some((stepId) => session.steps.some((entry) => entry.stepId === stepId))) {
+        return failure(state, "One or more instructions are already in this prep session.");
+      }
+      if (prepSessionEntryCount(week.data.prepSessions) + command.stepIds.length > MAX_PREP_ENTRIES) return failure(state, "The prep-session list is full.");
+      const existingEntryIds = new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id)));
+      const entries: PrepSessionStep[] = [];
+      for (const stepId of command.stepIds) {
+        const id = materializeId(context, "prep-session-step", existingEntryIds);
+        if (!id) return failure(state, "Could not materialize a unique prep-session step ID.");
+        existingEntryIds.add(id);
+        entries.push({ id, stepId });
+      }
+      session.steps.splice(command.targetPosition, 0, ...entries);
+      return success(
+        state,
+        next,
+        `Added ${entries.length} instructions to prep session`,
+        session.id,
+        [`Session: ${session.label}`, `Position: ${command.targetPosition}`],
+        Object.fromEntries(entries.map((entry, index) => [`prepSessionStep.${index}`, entry.id])),
+      );
+    }
+
     case "movePrepSessionStep": {
       if (!week) return rejectMissingWeek(state, command.weekId);
       const session = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
@@ -1417,6 +1457,33 @@ export function executeHouseholdCommand(
       const [entry] = session.steps.splice(currentPosition, 1);
       session.steps.splice(command.targetPosition, 0, entry);
       return success(state, next, "Reordered prep-session step", entry.id, [`Session: ${session.label}`, `Position: ${currentPosition} to ${command.targetPosition}`]);
+    }
+
+    case "movePrepSessionSteps": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const source = week.data.prepSessions.find((candidate) => candidate.id === command.sourceSessionId);
+      const destination = week.data.prepSessions.find((candidate) => candidate.id === command.sessionId);
+      if (!source) return failure(state, "Source prep session not found.", { sourceSessionId: "Choose the prep session that contains these instructions." });
+      if (!destination) return failure(state, "Prep session not found.", { sessionId: "Choose a destination prep session." });
+      if (command.targetPosition > destination.steps.length) return failure(state, "Prep-session position is outside this session.", { targetPosition: "Choose a position in the prep session." });
+      const selectedIds = new Set(command.entryIds);
+      const selectedEntries = source.steps.filter((entry) => selectedIds.has(entry.id));
+      if (selectedEntries.length !== command.entryIds.length) {
+        return failure(state, "One or more prep-session steps could not be found.", { entryIds: "Choose steps from the source prep session." });
+      }
+      if (source === destination) {
+        const selectedBeforeTarget = source.steps.slice(0, command.targetPosition).filter((entry) => selectedIds.has(entry.id)).length;
+        const remaining = source.steps.filter((entry) => !selectedIds.has(entry.id));
+        const insertionPosition = Math.max(0, Math.min(command.targetPosition - selectedBeforeTarget, remaining.length));
+        source.steps.splice(0, source.steps.length, ...remaining.slice(0, insertionPosition), ...selectedEntries, ...remaining.slice(insertionPosition));
+        return success(state, next, `Reordered ${selectedEntries.length} prep-session steps`, source.id, [`Session: ${source.label}`, `Position: ${command.targetPosition}`]);
+      }
+      if (selectedEntries.some((entry) => destination.steps.some((candidate) => candidate.stepId === entry.stepId))) {
+        return failure(state, "One or more instructions are already in the destination prep session.");
+      }
+      source.steps.splice(0, source.steps.length, ...source.steps.filter((entry) => !selectedIds.has(entry.id)));
+      destination.steps.splice(command.targetPosition, 0, ...selectedEntries);
+      return success(state, next, `Moved ${selectedEntries.length} prep-session steps`, destination.id, [`From: ${source.label}`, `To: ${destination.label}`, `Position: ${command.targetPosition}`]);
     }
 
     case "removePrepSessionStep": {
@@ -1568,63 +1635,18 @@ export function executeHouseholdCommand(
       const sourceMeal = week.data.meals.find((meal) => meal.id === leftover.sourceMealId);
       if (!sourceMeal) return failure(state, "Leftover source meal not found.");
       if (dateOrdinal(command.targetDate) <= dateOrdinal(sourceMeal.date)) return failure(state, "Leftovers must be assigned after their source meal.", { targetDate: "Choose a later date in the week." });
-      if (week.data.leftovers.some((item) => item.state === "assigned" && item.assignedDate === command.targetDate && item.assignedSlot === command.slot)) return failure(state, "That date and slot already has assigned leftovers.");
-      const destination = week.data.meals.find((meal) => meal.date === command.targetDate && meal.slot === command.slot);
-      if (
-        destination &&
-        week.data.leftovers.some((item) => item.sourceMealId === destination.id)
-      ) {
-        return failure(state, "A dinner with tracked leftovers cannot be replaced.", {
-          targetDate: "Choose a dinner that is not the source of another leftover record.",
-        });
-      }
-      if (destination && ["cooking", "cooked", "leftover"].includes(destination.status)) {
-        return failure(state, "A started or completed dinner cannot be replaced with leftovers.", {
-          targetDate: "Choose an open or not-yet-started dinner slot.",
-        });
-      }
       leftover.state = "assigned";
       leftover.assignedDate = command.targetDate;
-      leftover.assignedSlot = command.slot;
-      let displacedMealTitle: string | null = null;
-      let removedPrepCount = 0;
       const createdIds: Record<string, string> = {};
-      let destinationMeal: Meal;
-      if (destination) {
-        destinationMeal = destination;
-        displacedMealTitle = destination.title;
-        const displacedStepIds = new Set(destination.instructions.map((step) => step.id));
-        for (const session of week.data.prepSessions) {
-          const retained = session.steps.filter((entry) => !displacedStepIds.has(entry.stepId));
-          removedPrepCount += session.steps.length - retained.length;
-          session.steps = retained;
-        }
-        delete week.data.feedback[destination.id];
-      } else {
-        const id = materializeId(
-          context,
-          "meal",
-          new Set(week.data.meals.map((meal) => meal.id)),
-        );
-        if (!id) return failure(state, "Could not materialize a unique leftover-meal ID.");
-        destinationMeal = {
-          id,
-          date: command.targetDate,
-          slot: command.slot,
-          title: leftover.label,
-          subtitle: "",
-          venue: sourceMeal.venue,
-          status: "leftover",
-          protein: "none",
-          prepNote: "",
-          leftoverNote: "",
-          notes: "",
-          ingredients: [],
-          instructions: [],
-        };
-        week.data.meals.push(destinationMeal);
-        createdIds.mealId = id;
-      }
+      const id = materializeId(context, "meal", new Set(week.data.meals.map((meal) => meal.id)));
+      if (!id) return failure(state, "Could not materialize a unique leftover-meal ID.");
+      const destinationMeal: Meal = {
+        id, date: command.targetDate, title: leftover.label, subtitle: "", venue: sourceMeal.venue,
+        status: "leftover", protein: "none", prepNote: "", leftoverNote: "", notes: "", ingredients: [], instructions: [],
+      };
+      week.data.meals.push(destinationMeal);
+      leftover.assignedMealId = id;
+      createdIds.mealId = id;
       destinationMeal.title = leftover.label;
       destinationMeal.subtitle = `${leftover.portions} portions from ${sourceMeal.title}`;
       destinationMeal.venue = sourceMeal.venue;
@@ -1632,19 +1654,15 @@ export function executeHouseholdCommand(
       destinationMeal.protein = "none";
       destinationMeal.prepNote = "";
       destinationMeal.leftoverNote = `Leftovers from ${sourceMeal.date}`;
-      destinationMeal.notes = `This dinner uses leftovers from ${sourceMeal.title}.`;
+      destinationMeal.notes = `This meal uses leftovers from ${sourceMeal.title}.`;
       destinationMeal.ingredients = [];
       destinationMeal.instructions = [];
       const groceryProjection = reconcileGroceryProjection(context, week);
       if (!groceryProjection) return failure(state, "Could not project groceries for the leftover assignment.");
       return success(state, next, `Assigned ${leftover.label} leftovers`, leftover.id, [
         "State: available to assigned",
-        `Assigned slot: ${command.targetDate}/${command.slot}`,
-        destination
-          ? `${displacedMealTitle} was replaced with ${leftover.label} leftovers`
-          : `Created a leftover dinner for ${command.targetDate}/${command.slot}`,
-        ...(removedPrepCount > 0 ? [`Removed ${removedPrepCount} displaced prep reference${removedPrepCount === 1 ? "" : "s"}`] : []),
-        ...(groceryProjection.removed > 0 ? [`Removed ${groceryProjection.removed} displaced grocery ingredient${groceryProjection.removed === 1 ? "" : "s"}`] : []),
+        `Assigned day: ${command.targetDate}`,
+        `Created a leftover meal for ${command.targetDate}`,
       ], createdIds);
     }
 
@@ -1652,13 +1670,12 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const leftover = week.data.leftovers.find((item) => item.id === command.leftoverId);
       if (!leftover) return failure(state, "Leftover record not found.", { leftoverId: "Choose leftovers in the selected week." });
-      if (leftover.state !== "assigned" || !leftover.assignedDate || !leftover.assignedSlot) return failure(state, "Only assigned leftovers can be consumed.");
-      const assignedDate = leftover.assignedDate;
-      const assignedSlot = leftover.assignedSlot;
+      if (leftover.state !== "assigned" || !leftover.assignedDate) return failure(state, "Only assigned leftovers can be consumed.");
       leftover.state = "consumed";
       delete leftover.assignedDate;
       delete leftover.assignedSlot;
-      const destination = week.data.meals.find((meal) => meal.date === assignedDate && meal.slot === assignedSlot);
+      const destination = week.data.meals.find((meal) => meal.id === leftover.assignedMealId);
+      delete leftover.assignedMealId;
       if (destination?.status === "leftover") destination.status = "cooked";
       return success(state, next, `Marked ${leftover.label} leftovers consumed`, leftover.id, ["State: assigned to consumed", destination ? "Destination meal marked cooked" : "Assignment cleared"]);
     }
@@ -1688,7 +1705,6 @@ export function executeHouseholdCommand(
         const meal: Meal = {
           id: mealId,
           date: input.date,
-          slot: input.slot,
           title: input.title,
           ...(input.yieldText === undefined ? {} : { yieldText: input.yieldText }),
           subtitle: input.subtitle,

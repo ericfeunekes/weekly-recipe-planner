@@ -301,6 +301,9 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
       name: "preview",
       description:
         "Validate one ordered operation batch without effects. Groceries are derived from canonical recipe ingredients; " +
+        "For an atomic day swap, call exactly " +
+        "{basePlannerVersion:<read version>,operations:[{command:{type:'swapMealDays',weekId:'...',firstDate:'YYYY-MM-DD',secondDate:'YYYY-MM-DD'}}]}; " +
+        "operations entries must always contain the command wrapper. " +
         "to classify existing ingredient rows, use moveGroceryItemsToSource, for example " +
         "{command:{type:'moveGroceryItemsToSource',weekId:'...',itemIds:['...'],source:'farm_box'}}. Required fields by type: " +
         plannerCommandFieldGuide,
@@ -320,7 +323,9 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
       description:
         "Atomically apply one ordered operation batch and return one readback. Grocery item names, amounts, and recipe links " +
         "come from meal ingredients; use moveGroceryItemsToSource or setGroceryItemChecked for their execution state. Required fields by type: " +
-        plannerCommandFieldGuide + ". Readback fields by kind: " + readQueryFieldGuide + ".",
+        plannerCommandFieldGuide + ". For an atomic day swap, operations must be " +
+        "[{command:{type:'swapMealDays',weekId:'...',firstDate:'YYYY-MM-DD',secondDate:'YYYY-MM-DD'}}]. " +
+        "Readback fields by kind: " + readQueryFieldGuide + ".",
       inputSchema: {
         type: "object",
         additionalProperties: false,

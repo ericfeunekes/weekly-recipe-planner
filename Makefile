@@ -13,6 +13,10 @@ TX ?=
 ACTIVATION_ID ?= $(TX)
 DATA_LOSS_AUTHORIZATION ?=
 SUPERSEDE_PENDING ?=
+QA_NAME ?= weekly-recipe-planner-qa
+QA_PORTLESS_PORT ?= 1355
+QA_DATA_SOURCE ?= $(ROOT_DIR)/.planner-data/planner.sqlite
+QA_STATE_DIR ?= $(ROOT_DIR)/.planner-qa
 
 .PHONY: \
 	help \
@@ -30,6 +34,9 @@ SUPERSEDE_PENDING ?=
 	deploy-service-stop \
 	deploy-service-uninstall \
 	qa-local \
+	qa-deploy \
+	qa-status \
+	qa-stop \
 	deploy-start
 
 help:
@@ -49,6 +56,10 @@ help:
 		'      Roll back one committed release.' \
 		'  make qa-local' \
 		'      Run browser QA against this mutable checkout; produces no release evidence.' \
+		'  make qa-deploy [QA_NAME=weekly-recipe-planner-qa] [QA_PORTLESS_PORT=1355] [QA_DATA_SOURCE=/absolute/planner.sqlite]' \
+		'      Build, then replace the managed snapshot-backed QA deployment at http://<QA_NAME>.localhost:<QA_PORTLESS_PORT>.' \
+		'  make qa-status | qa-stop' \
+		'      Check or stop the managed QA deployment and remove its private snapshot.' \
 		'  make deploy-start' \
 		'      Start the selected installed app in the foreground.' \
 		'  make deploy-service-install' \
@@ -157,6 +168,46 @@ deploy-rollback:
 
 qa-local:
 	@cd "$(ROOT_DIR)" && $(NPM) run test:e2e:installed
+
+qa-deploy:
+	@case "$(QA_NAME)" in \
+		*[!a-z0-9-]*|'') printf '%s\n' 'error: QA_NAME must contain only lowercase letters, digits, and hyphens.' >&2; exit 2 ;; \
+		*) ;; \
+	esac
+	@case "$(QA_PORTLESS_PORT)" in \
+		*[!0-9]*|'') printf '%s\n' 'error: QA_PORTLESS_PORT must be an integer.' >&2; exit 2 ;; \
+		*) ;; \
+	esac
+	@case "$(QA_DATA_SOURCE)" in \
+		/*) ;; \
+		*) printf '%s\n' 'error: QA_DATA_SOURCE must be an absolute SQLite path.' >&2; exit 2 ;; \
+	esac
+	@case "$(QA_STATE_DIR)" in \
+		/*) ;; \
+		*) printf '%s\n' 'error: QA_STATE_DIR must be an absolute path.' >&2; exit 2 ;; \
+	esac
+	@cd "$(ROOT_DIR)" && $(NPM) run build
+	@cd "$(ROOT_DIR)" && \
+		QA_DATA_SOURCE="$(QA_DATA_SOURCE)" \
+		QA_NAME="$(QA_NAME)" \
+		QA_NPM_COMMAND="$(NPM)" \
+		QA_PORTLESS_PORT="$(QA_PORTLESS_PORT)" \
+		QA_STATE_DIR="$(QA_STATE_DIR)" \
+		$(NODE) --disable-warning=ExperimentalWarning scripts/qa-deployment-manager.mjs start
+
+qa-status:
+	@cd "$(ROOT_DIR)" && \
+		QA_NAME="$(QA_NAME)" \
+		QA_PORTLESS_PORT="$(QA_PORTLESS_PORT)" \
+		QA_STATE_DIR="$(QA_STATE_DIR)" \
+		$(NODE) --disable-warning=ExperimentalWarning scripts/qa-deployment-manager.mjs status
+
+qa-stop:
+	@cd "$(ROOT_DIR)" && \
+		QA_NAME="$(QA_NAME)" \
+		QA_PORTLESS_PORT="$(QA_PORTLESS_PORT)" \
+		QA_STATE_DIR="$(QA_STATE_DIR)" \
+		$(NODE) --disable-warning=ExperimentalWarning scripts/qa-deployment-manager.mjs stop
 
 deploy-start:
 	@cd "$(ROOT_DIR)" && $(NPM) run start:installed

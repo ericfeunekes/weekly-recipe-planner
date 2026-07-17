@@ -57,6 +57,7 @@ test("keeps the locked product requirements represented in source", async () => 
 
   for (const command of [
     "moveMeal",
+    "swapMealDays",
     "updateMealSnapshot",
     "setInstructionStepComplete",
     "updateInstructionStepNote",
@@ -67,7 +68,9 @@ test("keeps the locked product requirements represented in source", async () => 
     "createPrepSession",
     "updatePrepSession",
     "addPrepSessionStep",
+    "addPrepSessionSteps",
     "movePrepSessionStep",
+    "movePrepSessionSteps",
     "removePrepSessionStep",
     "captureFeedback",
     "archiveWeek",
@@ -101,10 +104,11 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /aria-label="Prep sessions"/);
   assert.match(planner, /role="tabpanel"/);
   assert.match(planner, /onDragEnter/);
-  assert.match(planner, /receiveRecipeStep/);
+  assert.match(planner, /receivePrepDrop/);
   assert.match(styles, /instruction-step-line/);
   assert.match(styles, /prep-session-tab/);
   assert.match(styles, /prep-session-drop-hint/);
+  assert.match(styles, /prep-insertion-indicator/);
   assert.match(rail, /Task history/);
   assert.doesNotMatch(rail, /Blocked capability/);
   assert.match(rail, /Message Codex/);

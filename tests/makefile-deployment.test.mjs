@@ -32,6 +32,11 @@ function runMake(args, environment = {}) {
     "TX",
     "PLANNER_ALLOWED_ORIGINS",
     "PLANNER_PORT",
+    "QA_DATA_SOURCE",
+    "QA_NAME",
+    "QA_NPM_COMMAND",
+    "QA_PORTLESS_PORT",
+    "QA_STATE_DIR",
   ]) {
     delete childEnvironment[key];
   }
@@ -70,6 +75,9 @@ test("deployment make help exposes the guarded release workflow", () => {
   assert.match(result.stdout, /deploy-service-install/);
   assert.match(result.stdout, /deploy-service-uninstall/);
   assert.match(result.stdout, /qa-local/);
+  assert.match(result.stdout, /qa-deploy/);
+  assert.match(result.stdout, /qa-status/);
+  assert.match(result.stdout, /qa-stop/);
   assert.match(result.stdout, /produces no release evidence/);
   assert.doesNotMatch(result.stdout, /deploy-qa/);
 });
@@ -114,6 +122,50 @@ test("qa-local is explicitly the mutable-checkout installed harness", async (con
     "run",
     "test:e2e:installed",
   ]);
+});
+
+test("qa-deploy builds before handing off to the managed Portless lifecycle", async (context) => {
+  const recorder = await makeNpmRecorder();
+  context.after(() => rm(recorder.directory, { recursive: true, force: true }));
+  const dataSource = join(recorder.directory, "planner.sqlite");
+  await writeFile(dataSource, "fixture");
+
+  const result = runMake([
+    "qa-deploy",
+    "QA_NAME=planner-qa",
+    "QA_PORTLESS_PORT=1357",
+    `QA_DATA_SOURCE=${dataSource}`,
+  ], {
+    ...recorder.environment,
+    NODE: recorder.environment.NPM,
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual((await readFile(recorder.capture, "utf8")).trim().split("\n"), [
+    "--disable-warning=ExperimentalWarning",
+    "scripts/qa-deployment-manager.mjs",
+    "start",
+  ]);
+  const manager = await readFile(join(root, "scripts", "qa-deployment-manager.mjs"), "utf8");
+  assert.match(manager, /portless[\s\S]*"run"[\s\S]*"--name"/);
+  assert.match(manager, /QA_ORIGIN: paths\.url/);
+});
+
+test("QA status and stop targets use the managed lifecycle", async (context) => {
+  const recorder = await makeNpmRecorder();
+  context.after(() => rm(recorder.directory, { recursive: true, force: true }));
+  for (const command of ["status", "stop"]) {
+    const result = runMake([`qa-${command}`], {
+      ...recorder.environment,
+      NODE: recorder.environment.NPM,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual((await readFile(recorder.capture, "utf8")).trim().split("\n"), [
+      "--disable-warning=ExperimentalWarning",
+      "scripts/qa-deployment-manager.mjs",
+      command,
+    ]);
+  }
 });
 
 test("deployment make targets fail before invoking npm when required inputs are absent", () => {

@@ -307,7 +307,7 @@ test("meal, history, and Codex share one short-viewport modal owner", async ({ p
   await expect.poll(() => page.locator("body").evaluate((body) => body.style.overflow)).toBe("hidden");
   expect(await mealDialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   await expectDialogFocusCycle(page, mealDialog);
-  await expect(mealDialog.getByLabel(/Dinner date for /)).toBeVisible();
+  await expect(mealDialog.getByLabel(/Meal date for /)).toBeVisible();
   await assertAccessible(page, `${fixtureId}-meal-dialog`, "short-375x400");
   await page.keyboard.press("Escape");
   await expect(mealDialog).toHaveCount(0);
@@ -361,7 +361,7 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   expect(await recipeDrafts.evaluateAll((controls) =>
     controls.every((control) => (control as HTMLInputElement | HTMLTextAreaElement).disabled),
   )).toBe(true);
-  await expect(mealDialog.getByLabel(/Dinner date for /)).toBeDisabled();
+  await expect(mealDialog.getByLabel(/Meal date for /)).toBeDisabled();
   await expect(mealDialog.getByText("Add note or ask Codex")).toHaveCount(0);
   await expect(mealDialog.getByRole("button", { name: "Add instruction" })).toHaveCount(0);
   await assertAccessible(page, `${fixtureId}-archived-meal`, "desktop-1280x900");

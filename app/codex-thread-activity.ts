@@ -12,6 +12,12 @@ export function selectCodexActivityLabel(thread: CodexThreadView | null): string
   return null;
 }
 
+/** A turn is active even when Codex has not emitted a more specific activity yet. */
+export function selectVisibleCodexActivityLabel(thread: CodexThreadView | null): string | null {
+  return selectCodexActivityLabel(thread) ??
+    (thread?.turns.some((turn) => turn.status === "in_progress") ? "Thinking" : null);
+}
+
 export function shouldFlushCodexActivityLabel(options: {
   waitingForUserInput: boolean;
   thread: CodexThreadView | null;

@@ -43,6 +43,7 @@ next-env.d.ts
 
 # local planner authority data
 /.planner-data/
+/.planner-qa/
 /planner-data/
 *.sqlite
 *.sqlite-journal
