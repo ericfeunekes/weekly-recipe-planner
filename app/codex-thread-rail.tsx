@@ -423,10 +423,15 @@ export function CodexThreadRail({
     const previous = seenCompletedPlannerApplyKeys.current;
     const previousKeys = previous?.threadId === snapshot.thread.id ? previous.keys : null;
     seenCompletedPlannerApplyKeys.current = { threadId: snapshot.thread.id, keys: new Set(currentKeys) };
-    // The first read of a task is historical state. Subsequent source updates
-    // can only add a completed planner.apply after the native host has written
-    // the authoritative workspace, so force a workspace readback then.
-    if (previousKeys !== null && hasNewCompletedPlannerApply(previousKeys, currentKeys)) {
+    // A thread can materialize with its whole completed turn in one source
+    // read, so do not require an earlier "running" snapshot. The host only
+    // exposes this completed planner.apply activity after its durable write;
+    // one unconditional workspace read per observed activity makes the canvas
+    // authoritative even when the rail was closed or a turn converged quickly.
+    if (
+      (previousKeys === null && currentKeys.length > 0) ||
+      (previousKeys !== null && hasNewCompletedPlannerApply(previousKeys, currentKeys))
+    ) {
       onPlannerApplied?.();
     }
   }, [onPlannerApplied, snapshot.thread]);
