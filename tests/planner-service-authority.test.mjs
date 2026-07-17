@@ -43,7 +43,6 @@ function seedState(lesson = "Initial lesson") {
             {
               id: "meal-1",
               date: "2026-07-07",
-              slot: "dinner",
               title: "Rice bowls",
               subtitle: "Vegetables and sauce",
               venue: "Home",
@@ -979,7 +978,6 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
           plan: {
             meals: [{
               date: "2026-07-13",
-              slot: "dinner",
               title: "Soup",
               subtitle: "",
               venue: "Home",
@@ -1148,7 +1146,6 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
   };
   const createdMeal = {
     date: "2026-07-13",
-    slot: "dinner",
     title: "Future rice",
     subtitle: "",
     venue: "Home",
@@ -1209,7 +1206,7 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
         return state;
       })(),
       operations: [
-        { command: { type: "moveMeal", weekId: "2026-07-06", mealId: "meal-1", targetDate: "2026-07-08", slot: "dinner" } },
+        { command: { type: "moveMeal", weekId: "2026-07-06", mealId: "meal-1", targetDate: "2026-07-08" } },
         { command: replacementCommand() },
       ],
       message: /planned or moved meals/i,

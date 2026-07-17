@@ -142,7 +142,7 @@ test(
       command: {
         type: "createWeekPlan",
         weekStartDate: nextWeekId,
-        plan: { meals: [], groceries: [] },
+        plan: { meals: [] },
       },
     });
     assert.equal(planned.status, 200);
