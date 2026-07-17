@@ -8,6 +8,9 @@ import {
   HOUSEHOLD_COMMAND_PROVIDER_SCHEMA,
   HOUSEHOLD_COMMAND_REGISTRY,
   HOUSEHOLD_COMMAND_SCHEMA,
+  MAX_GROCERY_ITEMS,
+  MAX_INGREDIENT_LINES,
+  MAX_MEALS_PER_WEEK,
   isHouseholdCommand,
   normalizeHouseholdCommand,
 } from "../lib/household-command-contract.ts";
@@ -187,9 +190,42 @@ test("bulk grocery source moves require a bounded, unique selection and supporte
   for (const command of [
     { ...baseline, itemIds: [] },
     { ...baseline, itemIds: [id, id] },
-    { ...baseline, itemIds: Array.from({ length: 257 }, (_, index) => `id-${index}`) },
+    { ...baseline, itemIds: Array.from({ length: MAX_GROCERY_ITEMS + 1 }, (_, index) => `id-${index}`) },
     { ...baseline, source: "delivery" },
   ]) {
     assert.equal(isHouseholdCommand(command), false);
   }
+});
+
+test("grocery capacity derives from the published maximum plan cardinality", () => {
+  assert.equal(MAX_GROCERY_ITEMS, MAX_MEALS_PER_WEEK * MAX_INGREDIENT_LINES);
+  const command = {
+    type: "createWeekPlan",
+    weekStartDate: "2026-07-13",
+    plan: {
+      meals: Array.from({ length: MAX_MEALS_PER_WEEK }, (_, mealIndex) => ({
+        date: `2026-07-${String(13 + mealIndex).padStart(2, "0")}`,
+        slot: "dinner",
+        title: `Capacity meal ${mealIndex + 1}`,
+        subtitle: "",
+        venue: "Home",
+        protein: "none",
+        prepNote: "",
+        leftoverNote: "",
+        notes: "",
+        ingredients: Array.from(
+          { length: MAX_INGREDIENT_LINES },
+          (_, ingredientIndex) => `${ingredientIndex + 1} g ingredient ${mealIndex + 1}-${ingredientIndex + 1}`,
+        ),
+        instructions: [],
+      })),
+    },
+  };
+  const validate = new Ajv({ allErrors: true, schemaId: "auto" }).compile(HOUSEHOLD_COMMAND_SCHEMA);
+  assert.equal(isHouseholdCommand(command), true);
+  assert.equal(validate(command), true);
+  const overCapacity = structuredClone(command);
+  overCapacity.plan.meals.push(structuredClone(command.plan.meals[0]));
+  assert.equal(isHouseholdCommand(overCapacity), false);
+  assert.equal(validate(overCapacity), false);
 });

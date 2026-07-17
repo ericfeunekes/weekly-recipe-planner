@@ -6,6 +6,10 @@ import {
   addIsoDateDays,
   householdDomain,
 } from "../lib/household-domain.ts";
+import {
+  MAX_GROCERY_ITEMS,
+  MAX_INGREDIENT_LINES,
+} from "../lib/household-command-contract.ts";
 
 const NOW = Date.parse("2026-07-10T12:00:00-03:00");
 
@@ -531,6 +535,43 @@ test("grocery projection rejects missing and duplicate canonical ingredient iden
   const unsupportedSource = structuredClone(state);
   unsupportedSource.weeks[0].data.groceries[0].source = "delivery";
   assert.equal(householdDomain.validateState(unsupportedSource).ok, false);
+});
+
+test("a fully populated scheduled week projects every canonical ingredient", () => {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const weekStartDate = "2026-07-13";
+  const meals = Array.from({ length: 7 }, (_, mealIndex) => ({
+    date: addIsoDateDays(weekStartDate, mealIndex),
+    slot: "dinner",
+    title: `Maximum grocery meal ${mealIndex + 1}`,
+    subtitle: "",
+    venue: "Home",
+    protein: "none",
+    prepNote: "",
+    leftoverNote: "",
+    notes: "",
+    ingredients: Array.from(
+      { length: MAX_INGREDIENT_LINES },
+      (_, ingredientIndex) => `${ingredientIndex + 1} g ingredient ${mealIndex + 1}-${ingredientIndex + 1}`,
+    ),
+    instructions: [],
+  }));
+
+  const result = accepted(householdDomain.execute(state, {
+    type: "createWeekPlan",
+    weekStartDate,
+    plan: { meals },
+  }, context));
+  const createdWeek = result.state.weeks.find((week) => week.id === weekStartDate);
+  assert.ok(createdWeek);
+  assert.equal(createdWeek.data.groceries.length, meals.length * MAX_INGREDIENT_LINES);
+  assert.equal(createdWeek.data.groceries.length, MAX_GROCERY_ITEMS);
+  assert.equal(
+    new Set(createdWeek.data.groceries.map((grocery) => `${grocery.mealId}\u0000${grocery.ingredientId}`)).size,
+    createdWeek.data.groceries.length,
+  );
+  assert.deepEqual(householdDomain.validateState(result.state), { ok: true });
 });
 
 test("bulk grocery source moves are atomic and preserve grocery identities", () => {

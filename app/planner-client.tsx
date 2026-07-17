@@ -2868,7 +2868,11 @@ function GroceryView({
         Math.min(anchorIndex, itemIndex),
         Math.max(anchorIndex, itemIndex) + 1,
       );
-      setSelectedIds(new Set(rangeIds));
+      setSelectedIds((current) => {
+        const next = additive ? new Set(current) : new Set<string>();
+        rangeIds.forEach((rangeId) => next.add(rangeId));
+        return next;
+      });
       return;
     }
     setSelectedIds((current) => {

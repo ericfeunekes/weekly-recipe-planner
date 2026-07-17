@@ -244,9 +244,18 @@ function normalizeLegacyGroceryProjection(data: Record<string, unknown>): boolea
 
   const groceries = Array.isArray(data.groceries) ? data.groceries.filter(isRecord) : [];
   const classifications = new Map<string, LegacyGroceryClassification>();
+  const ambiguousKeys = new Set<string>();
   for (const grocery of groceries) {
     const matched = legacyGroceryClassification(grocery, occurrences);
-    if (matched && !classifications.has(matched.key)) classifications.set(matched.key, matched.classification);
+    if (!matched || ambiguousKeys.has(matched.key)) continue;
+    if (classifications.has(matched.key)) {
+      // Multiple legacy rows claiming the same canonical ingredient have no
+      // authoritative execution state. Preserve neither row's classification.
+      classifications.delete(matched.key);
+      ambiguousKeys.add(matched.key);
+      continue;
+    }
+    classifications.set(matched.key, matched.classification);
   }
 
   const usedIds = new Set<string>();

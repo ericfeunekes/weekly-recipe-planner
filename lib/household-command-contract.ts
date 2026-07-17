@@ -115,11 +115,16 @@ export const MAX_COMMAND_TEXT_LENGTH = 4_000;
 export const MAX_ID_LENGTH = 200;
 export const MAX_PREP_ENTRIES = 64;
 export const MAX_PREP_SESSIONS = 32;
-export const MAX_MEALS_PER_WEEK = 14;
+// A weekly plan currently has one supported slot (dinner) across seven days.
+// Keep the public command limit aligned with the states the domain can accept.
+export const MAX_MEALS_PER_WEEK = 7;
 export const MAX_STEPS_PER_MEAL = 64;
 export const MAX_STEP_INPUTS = 32;
 export const MAX_INGREDIENT_LINES = 128;
-export const MAX_GROCERY_ITEMS = 256;
+// Groceries are a 1:1 execution projection of canonical meal ingredients.
+// Keep this derived from the command-plan ceilings so no valid plan can fail
+// merely because its projected grocery rows outnumber an unrelated cap.
+export const MAX_GROCERY_ITEMS = MAX_MEALS_PER_WEEK * MAX_INGREDIENT_LINES;
 export const MAX_TIMER_DURATION_SECONDS = 86_400;
 export const MAX_MEAL_TITLE_LENGTH = 300;
 export const MAX_MEAL_SUBTITLE_LENGTH = 1_000;
