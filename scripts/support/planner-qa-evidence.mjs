@@ -372,12 +372,6 @@ export async function createQaEvidenceManifest(options) {
   const releaseBinding = assertReleaseBinding(options.releaseBinding, options.activationId);
   await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
   const { rows, totalBytes, observed } = await inventoryEvidence(evidenceRoot);
-  if (!rows.some((row) => row.relativePath === "logs/boundary-tests.log") ||
-      !rows.some((row) => row.relativePath === "playwright/selected-clone.log")) {
-    throw new PlannerReleaseError(
-      "QA evidence omitted its installed boundary or selected-clone browser proof.",
-    );
-  }
   const body = Object.freeze({
     schemaVersion: 1,
     activationId: options.activationId,

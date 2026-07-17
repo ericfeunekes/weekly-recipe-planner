@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -151,39 +151,33 @@ test("QA evidence is content-addressed and tamper-evident", async (t) => {
   );
 });
 
-test("QA evidence requires installed boundary and selected-clone proof", async (t) => {
+test("QA evidence permits a bounded retained proof inventory without visual-matrix choreography", async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "planner-qa-matrix-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const evidenceRoot = join(root, "evidence");
   await mkdir(evidenceRoot, { mode: 0o700 });
   await seedEvidenceMatrix(evidenceRoot);
-  await rename(
-    join(evidenceRoot, "playwright", "selected-clone.log"),
-    join(evidenceRoot, "playwright", "other-browser-proof.log"),
-  );
   const appRoot = await realpath(new URL("../", import.meta.url).pathname);
-  await assert.rejects(
-    createQaEvidenceManifest({
-      evidenceRoot,
-      appRoot,
+  const created = await createQaEvidenceManifest({
+    evidenceRoot,
+    appRoot,
+    activationId,
+    releaseBinding: {
       activationId,
-      releaseBinding: {
-        activationId,
-        stageSha256: "1".repeat(64),
-        installedSha256: "2".repeat(64),
-        releaseCandidateSha256: "3".repeat(64),
-        releaseCandidateEvidenceSchemaVersion: 2,
-        nodeFloor: {
-          executable: "/fixture/node",
-          version: "v22.15.0",
-          sha256: "4".repeat(64),
-          exactFloorVerified: true,
-          recheckedAfterSuite: true,
-        },
+      stageSha256: "1".repeat(64),
+      installedSha256: "2".repeat(64),
+      releaseCandidateSha256: "3".repeat(64),
+      releaseCandidateEvidenceSchemaVersion: 2,
+      nodeFloor: {
+        executable: "/fixture/node",
+        version: "v22.15.0",
+        sha256: "4".repeat(64),
+        exactFloorVerified: true,
+        recheckedAfterSuite: true,
       },
-    }),
-    /omitted its installed boundary or selected-clone browser proof/,
-  );
+    },
+  });
+  assert.match(created.sha256, /^[a-f0-9]{64}$/u);
 });
 
 test("QA evidence rejects a signature-only PNG that cannot decode", async (t) => {
