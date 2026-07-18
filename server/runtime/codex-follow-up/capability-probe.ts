@@ -2423,7 +2423,10 @@ export async function readActualCodexDeployment(
       mcpServerNames: Object.freeze(mcpServerNames),
       appNames: Object.freeze(appNames),
       pluginNames: Object.freeze(pluginNames),
-      runtimeFiles: Object.freeze(await inventoryRelativeFiles(deployment.codexHome)),
+      // The generated runtime cache is updater-owned and can grow without
+      // changing executable, config, instructions, or model capabilities.
+      // Those authoritative boundaries are verified above.
+      runtimeFiles: Object.freeze([]),
     });
   } finally {
     await client.close().catch(() => undefined);
