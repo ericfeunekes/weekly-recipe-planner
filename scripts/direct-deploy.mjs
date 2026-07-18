@@ -129,7 +129,7 @@ function plist(node) {
 </dict></plist>\n`;
 }
 
-if (!(await exists(join(ROOT, "build")))) throw new Error("Build output is missing; run npm run build first.");
+if (!(await exists(join(ROOT, ".vinext")))) throw new Error("Build output is missing; run npm run build first.");
 if (!(await exists(join(DATA_ROOT, "planner.sqlite")))) throw new Error("Production planner data is missing.");
 if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("PLANNER_PORT is invalid.");
 
@@ -154,7 +154,7 @@ try {
     recursive: true,
     filter(source) {
       const name = source.split("/").at(-1);
-      return ![".git", ".next", ".planner-data", "coverage", "node_modules", "outputs"].includes(name);
+      return ![".git", ".planner-data", "coverage", "node_modules", "outputs"].includes(name);
     },
   });
   await run("npm", ["ci"], { cwd: APP_ROOT });
