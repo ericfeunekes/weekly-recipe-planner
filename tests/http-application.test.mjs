@@ -594,8 +594,10 @@ test("service failures retain field errors and authoritative workspace readback"
 
 test("front controller keeps API local, accepts its mounted API alias, and proxies the web surface", async (t) => {
   let upstreamRequestHeaders;
+  let upstreamRequestPath;
   const upstream = createServer((request, response) => {
     upstreamRequestHeaders = request.headers;
+    upstreamRequestPath = request.url;
     response.writeHead(200, {
       "Content-Type": "text/plain",
       Connection: "x-upstream-hop",
@@ -635,6 +637,9 @@ test("front controller keeps API local, accepts its mounted API alias, and proxi
   assert.equal(web.text, "web surface");
   assert.equal(upstreamRequestHeaders["x-client-hop"], undefined);
   assert.equal(web.headers["x-upstream-hop"], undefined);
+  const mountedAsset = await fetch(`${baseUrl}/recipe-planner/assets/app.js`);
+  assert.equal(await mountedAsset.text(), "web surface");
+  assert.equal(upstreamRequestPath, "/assets/app.js");
   assert.deepEqual(await (await fetch(`${baseUrl}/api/health`)).json(), {
     surface: "api", path: "/api/health",
   });

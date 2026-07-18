@@ -54,9 +54,17 @@ export function createFrontController({
   const mountedApiPrefix = publicBasePath === "/"
     ? null
     : `${publicBasePath.slice(0, -1)}/api`;
+  const mountedPathPrefix = publicBasePath === "/"
+    ? null
+    : publicBasePath.slice(0, -1);
 
   return async (request, response) => {
     const url = new URL(request.url ?? "/", "http://planner.local");
+    const mountedRequestPath =
+      mountedPathPrefix !== null &&
+      (url.pathname === mountedPathPrefix || url.pathname.startsWith(`${mountedPathPrefix}/`))
+        ? `${url.pathname.slice(mountedPathPrefix.length) || "/"}${url.search}`
+        : null;
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       await apiHandler(request, response);
       return;
@@ -66,7 +74,7 @@ export function createFrontController({
       (url.pathname === mountedApiPrefix || url.pathname.startsWith(`${mountedApiPrefix}/`))
     ) {
       const originalUrl = request.url;
-      request.url = `${url.pathname.slice(publicBasePath.length - 1)}${url.search}`;
+      request.url = mountedRequestPath!;
       try {
         await apiHandler(request, response);
       } finally {
@@ -81,7 +89,7 @@ export function createFrontController({
         hostname: webOrigin.hostname,
         port: webOrigin.port,
         method: request.method,
-        path: request.url,
+        path: mountedRequestPath ?? request.url,
         headers: { ...forwardedHeaders(request.headers), host: webOrigin.host },
         timeout: proxyTimeoutMs,
       },
