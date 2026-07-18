@@ -17,9 +17,15 @@ QA_NAME ?= weekly-recipe-planner-qa
 QA_PORTLESS_PORT ?= 1355
 QA_DATA_SOURCE ?= $(ROOT_DIR)/.planner-data/planner.sqlite
 QA_STATE_DIR ?= $(ROOT_DIR)/.planner-qa
+DEV_NAME ?= weekly-recipe-planner-dev
+DEV_PORTLESS_PORT ?= 1355
+DEV_DATA_SOURCE ?= $(ROOT_DIR)/.planner-data/planner.sqlite
+DEV_STATE_DIR ?= $(ROOT_DIR)/.planner-dev
+PROD_DATA_SOURCE ?= $(HOME)/meal-planner/data/planner.sqlite
 
 .PHONY: \
 	help \
+	deploy \
 	deploy-setup \
 	deploy-stage \
 	deploy-activate \
@@ -37,11 +43,16 @@ QA_STATE_DIR ?= $(ROOT_DIR)/.planner-qa
 	qa-deploy \
 	qa-status \
 	qa-stop \
+	dev-start \
+	dev-status \
+	dev-stop \
 	deploy-start
 
 help:
 	@printf '%s\n' \
 		'Deployment targets:' \
+		'  make deploy' \
+		'      Normal initialized-production deploy: stop, stage, activate, and restart.' \
 		'  make deploy-setup DATA_SOURCE=/absolute/planner.sqlite [AGENT_SOURCE=/absolute/agent]' \
 		'      Stage the current source; alias for deploy-stage.' \
 		'  make deploy-activate ACTIVATION_ID=<id> [SUPERSEDE_PENDING=<stale-id>]' \
@@ -60,6 +71,10 @@ help:
 		'      Build, then replace the managed snapshot-backed QA deployment at http://<QA_NAME>.localhost:<QA_PORTLESS_PORT>.' \
 		'  make qa-status | qa-stop' \
 		'      Check or stop the managed QA deployment and remove its private snapshot.' \
+		'  make dev-start [DEV_NAME=weekly-recipe-planner-dev] [DEV_PORTLESS_PORT=1355]' \
+		'      Start this worktree through Portless with the shared development Codex home.' \
+		'  make dev-status | dev-stop' \
+		'      Inspect or stop this worktree''s Portless runtime.' \
 		'  make deploy-start' \
 		'      Start the selected installed app in the foreground.' \
 		'  make deploy-service-install' \
@@ -77,7 +92,53 @@ help:
 		'  CANDIDATE_SOURCE      Absolute candidate path; defaults to this repo.' \
 		'  BASELINE_COMMIT       Optional override; defaults to the release manifest.' \
 		'  ACTIVATION_ID or TX   Transaction ID returned by deploy-setup.' \
+		'  DEV_*                 Name, Portless port, data source, and local state for this worktree runtime.' \
+		'  PROD_DATA_SOURCE      Production SQLite source for the normal deploy target.' \
 		'  SUPERSEDE_PENDING     Exact eligible staged pending transaction to retire.'
+
+deploy:
+	@set -eu; \
+	branch="$$(git branch --show-current)"; \
+	head="$$(git rev-parse HEAD)"; \
+	main="$$(git rev-parse refs/heads/main)"; \
+	if { [ "$$branch" != "main" ] && [ "$$head" != "$$main" ]; } || [ -n "$$(git status --porcelain)" ]; then \
+		printf '%s\n' 'error: normal deploy requires a clean main checkout or a clean detached worktree at the exact main commit.' >&2; \
+		exit 2; \
+	fi; \
+	if [ ! -f "$(PROD_DATA_SOURCE)" ]; then \
+		printf '%s\n' 'error: normal deploy requires an initialized production database; use deploy-stage for first install or recovery.' >&2; \
+		exit 2; \
+	fi; \
+	$(NODE) --disable-warning=ExperimentalWarning scripts/planner-service.mjs stop; \
+	baseline_commit="$$( $(NODE) -e 'const { readFileSync } = require("node:fs"); const value = JSON.parse(readFileSync("deployment/release/first-install-baseline.json", "utf8")); process.stdout.write(value.baselineCommit);' )"; \
+	stage="$$( $(NODE) --disable-warning=ExperimentalWarning --experimental-strip-types scripts/planner-release.mjs stage \
+		--candidate-source "$(ROOT_DIR)" \
+		--baseline-commit "$$baseline_commit" \
+		--data-source "$(PROD_DATA_SOURCE)" )"; \
+	tx="$$( printf '%s' "$$stage" | $(NODE) -e 'let value=""; process.stdin.on("data", (chunk) => value += chunk); process.stdin.on("end", () => { const parsed = JSON.parse(value); if (typeof parsed.activationId !== "string") process.exit(2); process.stdout.write(parsed.activationId); });' )"; \
+	$(NODE) --disable-warning=ExperimentalWarning --experimental-strip-types scripts/planner-release.mjs activate \
+		--transaction "$$tx" \
+		--authorized; \
+	$(NODE) --disable-warning=ExperimentalWarning scripts/planner-service.mjs restart
+
+dev-start:
+	@$(MAKE) qa-deploy \
+		QA_NAME="$(DEV_NAME)" \
+		QA_PORTLESS_PORT="$(DEV_PORTLESS_PORT)" \
+		QA_DATA_SOURCE="$(DEV_DATA_SOURCE)" \
+		QA_STATE_DIR="$(DEV_STATE_DIR)"
+
+dev-status:
+	@$(MAKE) qa-status \
+		QA_NAME="$(DEV_NAME)" \
+		QA_PORTLESS_PORT="$(DEV_PORTLESS_PORT)" \
+		QA_STATE_DIR="$(DEV_STATE_DIR)"
+
+dev-stop:
+	@$(MAKE) qa-stop \
+		QA_NAME="$(DEV_NAME)" \
+		QA_PORTLESS_PORT="$(DEV_PORTLESS_PORT)" \
+		QA_STATE_DIR="$(DEV_STATE_DIR)"
 
 deploy-setup: deploy-stage
 

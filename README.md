@@ -130,6 +130,33 @@ its isolated planner snapshot; only the shared global Codex socket is disabled.
 processes; they are useful for web debugging but do not provide a ready planner
 authority.
 
+### Normal production deployment
+
+Production is deployed only from a clean source snapshot. When the primary
+checkout contains in-progress work, create a disposable detached promotion
+worktree at the exact `main` commit, deploy from it, verify the selected
+service, then remove it. This prevents uncommitted UI/QA work from becoming
+production input while preserving it in the primary checkout.
+
+```bash
+promotion_dir="$(mktemp -d /private/tmp/weekly-recipe-planner-promotion.XXXXXX)"
+rmdir "$promotion_dir"
+git worktree add --detach "$promotion_dir" main
+
+(cd "$promotion_dir" && make deploy)
+make deploy-service-status
+
+git worktree remove "$promotion_dir"
+```
+
+`make deploy` accepts either a clean `main` checkout or a clean detached
+worktree whose `HEAD` is exactly `main`. It stops the selected service, stages
+the immutable candidate against `PROD_DATA_SOURCE`, activates it, and restarts
+the service. If stage or activation fails, keep the promotion worktree for
+diagnosis; remove it only after the selected service is healthy. Use the
+lower-level release targets only for first install, recovery, or a specific
+operator intervention.
+
 ### Evidence-bound local release
 
 Any future candidate for the revised Codex requirements must be installed
