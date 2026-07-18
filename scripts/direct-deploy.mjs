@@ -92,6 +92,20 @@ async function waitForHealthy() {
   throw new Error(`Planner did not become healthy (${last}).`);
 }
 
+async function waitForTailnetReady() {
+  const deadline = Date.now() + 60_000;
+  let last = "no response";
+  while (Date.now() < deadline) {
+    try {
+      const workspace = await fetch(`${TAILNET_ORIGIN}/api/workspace`);
+      if (workspace.ok) return;
+      last = `workspace ${workspace.status}`;
+    } catch (error) { last = error instanceof Error ? error.message : String(error); }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error(`Planner is not ready through Tailscale (${last}).`);
+}
+
 async function waitForUnloaded() {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
@@ -173,6 +187,7 @@ try {
   await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
   await waitForHealthy();
+  await waitForTailnetReady();
   process.stdout.write(`${JSON.stringify({ appRoot: APP_ROOT, backup: moved ? backup : null, port: PORT, status: "running" })}\n`);
 } catch (error) {
   await run("launchctl", ["bootout", TARGET]).catch(() => undefined);

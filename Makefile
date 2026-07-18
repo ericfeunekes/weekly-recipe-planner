@@ -13,16 +13,27 @@ DEV_PORTLESS_PORT ?= 1355
 DEV_DATA_SOURCE ?= $(ROOT_DIR)/.planner-data/planner.sqlite
 DEV_STATE_DIR ?= $(ROOT_DIR)/.planner-dev
 
-.PHONY: help deploy qa-local qa-deploy qa-status qa-stop dev-start dev-status dev-stop
+.PHONY: help promote deploy qa-local qa-deploy qa-status qa-stop dev-start dev-status dev-stop
 
 help:
 	@printf '%s\n' \
+		'  make promote' \
+		'      The only production release command: deploy committed main from a disposable worktree.' \
 		'  make deploy' \
-		'      Build this clean main checkout, atomically install it, start production, and read back health/workspace.' \
+		'      Internal primitive used by promote; deploy a clean main snapshot.' \
 		'  make qa-deploy | qa-status | qa-stop' \
 		'      Manage the isolated snapshot-backed QA app.' \
 		'  make dev-start | dev-status | dev-stop' \
 		'      Manage this worktree development app.'
+
+promote:
+	@set -eu; \
+		promotion_dir="$$(mktemp -d /private/tmp/weekly-recipe-planner-promotion.XXXXXX)"; \
+		rmdir "$$promotion_dir"; \
+		cleanup() { git worktree remove --force "$$promotion_dir" >/dev/null 2>&1 || true; }; \
+		trap cleanup EXIT; \
+		git worktree add --detach "$$promotion_dir" refs/heads/main; \
+		$(MAKE) --no-print-directory -C "$$promotion_dir" deploy
 
 deploy:
 	@set -eu; \

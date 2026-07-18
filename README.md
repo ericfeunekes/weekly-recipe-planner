@@ -132,35 +132,32 @@ authority.
 
 ### Normal production deployment
 
-Production is deployed only from a clean source snapshot. When the primary
-checkout contains in-progress work, create a disposable detached promotion
-worktree at the exact `main` commit, deploy from it, verify the selected
-service, then remove it. This prevents uncommitted UI/QA work from becoming
-production input while preserving it in the primary checkout.
+There is one production release path:
 
 ```bash
-promotion_dir="$(mktemp -d /private/tmp/weekly-recipe-planner-promotion.XXXXXX)"
-rmdir "$promotion_dir"
-git worktree add --detach "$promotion_dir" main
-
-(cd "$promotion_dir" && make deploy)
-make deploy-service-status
-
-git worktree remove "$promotion_dir"
+make promote
 ```
 
-`make deploy` accepts either a clean `main` checkout or a clean detached
-worktree whose `HEAD` is exactly `main`. It builds the app, replaces only
-`$HOME/meal-planner/app`, installs one current-user LaunchAgent, and waits for
-both `/api/health` and `/api/workspace`. The prior app directory is retained
-under `$HOME/meal-planner/backups`; if startup fails, it is restored and the
-service remains stopped for inspection.
+Run it from any checkout. It creates a detached temporary worktree at the
+committed local `main` ref, builds there, atomically replaces only
+`$HOME/meal-planner/app`, starts the one current-user LaunchAgent, checks the
+loopback health/workspace routes, checks the real Tailscale
+`/api/workspace` route, and always removes the temporary worktree. Uncommitted
+work in the calling checkout cannot enter production.
 
-There are no release manifests, staging transactions, activation IDs, or
-separate service commands. The household database stays at
-`$HOME/meal-planner/data/planner.sqlite`; deployment replaces application code
-only. The LaunchAgent listens only on loopback port `8642` by default. Stop it
-with `launchctl bootout gui/$(id -u)/com.ericfeunekes.meal-planner`.
+The direct deployer uses `https://robie-imac.tailae8a7b.ts.net:8642` by
+default; set `PLANNER_TAILNET_ORIGIN` only when the machine's Tailscale hostname
+or public planner port differs. The prior app directory is retained under
+`$HOME/meal-planner/backups`; if startup or either readiness check fails, the
+prior app is restored and the service remains stopped for inspection.
+
+`make deploy` is an implementation primitive used by `make promote`; do not use
+it as the operator release command. There are no release manifests, staging
+suites, activation IDs, or separate service commands. The household database
+stays at `$HOME/meal-planner/data/planner.sqlite`; deployment replaces
+application code only. The LaunchAgent listens only on loopback port `8642` by
+default. Stop it with `launchctl bootout gui/$(id -u)/com.ericfeunekes.meal-planner`.
+
 
 ## Hosting Boundary
 
