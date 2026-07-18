@@ -31,7 +31,7 @@ promote:
 		promotion_dir="$$(mktemp -d /private/tmp/weekly-recipe-planner-promotion.XXXXXX)"; \
 		rmdir "$$promotion_dir"; \
 		cleanup() { git worktree remove --force "$$promotion_dir" >/dev/null 2>&1 || true; }; \
-		trap cleanup EXIT; \
+		trap cleanup 0; \
 		git worktree add --detach "$$promotion_dir" refs/heads/main; \
 		$(MAKE) --no-print-directory -C "$$promotion_dir" deploy
 
