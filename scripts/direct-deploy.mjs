@@ -70,18 +70,18 @@ async function waitForHealthy() {
   throw new Error(`Planner did not become healthy (${last}).`);
 }
 
-async function waitForTailnetReady() {
-  const deadline = Date.now() + 60_000;
+async function observeTailnetReadiness() {
+  const deadline = Date.now() + 20_000;
   let last = "no response";
   while (Date.now() < deadline) {
     try {
       const workspace = await fetch(new URL("api/workspace", TAILNET_URL));
-      if (workspace.ok) return;
+      if (workspace.ok) return { ready: true, last: null };
       last = `workspace ${workspace.status}`;
     } catch (error) { last = error instanceof Error ? error.message : String(error); }
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
-  throw new Error(`Planner is not ready through Tailscale (${last}).`);
+  return { ready: false, last };
 }
 
 async function waitForUnloaded() {
@@ -167,9 +167,18 @@ try {
   await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
   await waitForHealthy();
-  await waitForTailnetReady();
+  const tailnetReadiness = await observeTailnetReadiness();
+  if (!tailnetReadiness.ready) {
+    console.warn(`Planner is running; shared Tailscale readiness remains pending (${tailnetReadiness.last}).`);
+  }
   await new Promise((resolveWrite) => process.stdout.write(
-    `${JSON.stringify({ appRoot: APP_ROOT, backup: moved ? backup : null, port: PORT, status: "running" })}\n`,
+    `${JSON.stringify({
+      appRoot: APP_ROOT,
+      backup: moved ? backup : null,
+      port: PORT,
+      status: "running",
+      tailnetReady: tailnetReadiness.ready,
+    })}\n`,
     resolveWrite,
   ));
   process.exit(0);

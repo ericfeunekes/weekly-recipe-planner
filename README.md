@@ -143,16 +143,17 @@ make promote
 Run it from any checkout. It creates a detached temporary worktree at the
 committed local `main` ref, builds there, atomically replaces only
 `$HOME/meal-planner/app`, starts the one current-user LaunchAgent, checks the
-loopback health/workspace routes, checks the real Tailscale
-`/api/workspace` route, and always removes the temporary worktree. Uncommitted
+loopback health/workspace routes, records the real Tailscale `/api/workspace`
+observation without rolling back an otherwise healthy service during proxy
+convergence, and always removes the temporary worktree. Uncommitted
 work in the calling checkout cannot enter production.
 
 The direct deployer uses the shared Tailscale location
 `https://robie-imac.tailae8a7b.ts.net/recipe-planner/` by default. Set
 `PLANNER_TAILNET_ORIGIN` when the machine's Tailscale hostname differs, or set
 `PLANNER_TAILNET_URL` when its public path differs. The prior app directory is retained under
-`$HOME/meal-planner/backups`; if startup or either readiness check fails, the
-prior app is restored and the service remains stopped for inspection.
+`$HOME/meal-planner/backups`; a failed loopback readiness check restores the
+prior app and leaves the service stopped for inspection.
 
 `make deploy` is an implementation primitive used by `make promote`; do not use
 it as the operator release command. There are no release manifests, staging
