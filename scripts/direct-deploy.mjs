@@ -14,6 +14,8 @@ import { dirname, join, resolve } from "node:path";
 
 const LABEL = "com.ericfeunekes.meal-planner";
 const PORT = Number(process.env.PLANNER_PORT ?? 8642);
+const TAILNET_ORIGIN = process.env.PLANNER_TAILNET_ORIGIN
+  ?? "https://robie-imac.tailae8a7b.ts.net:8642";
 const HOME = resolve(process.env.HOME ?? homedir());
 const ROOT = resolve(process.cwd());
 const DEPLOY_ROOT = join(HOME, "meal-planner");
@@ -110,6 +112,9 @@ function plist(node) {
     PATH: `${dirname(node)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     PLANNER_HOST: "127.0.0.1",
     PLANNER_PORT: String(PORT),
+    // Tailscale terminates TLS before forwarding to this loopback-only process.
+    // The application must still recognize that public same-origin host.
+    PLANNER_ALLOWED_ORIGINS: TAILNET_ORIGIN,
     PLANNER_DATA_DIR: DATA_ROOT,
     PLANNER_CODEX_HOME: join(DEPLOY_ROOT, "agent"),
     PLANNER_CODEX_CWD: APP_ROOT,
