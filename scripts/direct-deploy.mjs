@@ -178,17 +178,13 @@ try {
   if (!tailnetReadiness.ready) {
     console.warn(`Planner is running; shared Tailscale readiness remains pending (${tailnetReadiness.last}).`);
   }
-  await new Promise((resolveWrite) => process.stdout.write(
-    `${JSON.stringify({
-      appRoot: APP_ROOT,
-      backup: moved ? backup : null,
-      port: PORT,
-      status: "running",
-      tailnetReady: tailnetReadiness.ready,
-    })}\n`,
-    resolveWrite,
-  ));
-  process.exit(0);
+  console.log(JSON.stringify({
+    appRoot: APP_ROOT,
+    backup: moved ? backup : null,
+    port: PORT,
+    status: "running",
+    tailnetReady: tailnetReadiness.ready,
+  }));
 } catch (error) {
   console.error(
     `Planner deployment failed: ${error instanceof Error ? error.message : String(error)}`,
