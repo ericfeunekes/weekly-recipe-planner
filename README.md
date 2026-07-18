@@ -1,5 +1,7 @@
 # Weekly Recipe Planner
 
+![Weekly Recipe Planner — recipe cards, prep checklist, and mise en place](public/hero.png)
+
 An iPad-first household meal operations app for executing a structured week.
 The active week keeps meals, prep, groceries with source and recipe links,
 leftovers, feedback, and recent changes on one shared surface.
