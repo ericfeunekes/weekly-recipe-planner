@@ -61,6 +61,20 @@ async function waitForHealthy() {
   throw new Error(`Planner did not become healthy (${last}).`);
 }
 
+async function waitForUnloaded() {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const loaded = await new Promise((resolveCheck, rejectCheck) => {
+      const child = spawn("launchctl", ["print", TARGET], { stdio: "ignore" });
+      child.once("error", rejectCheck);
+      child.once("exit", (code) => resolveCheck(code === 0));
+    });
+    if (!loaded) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error("Existing planner LaunchAgent did not unload in time.");
+}
+
 function plist(node) {
   const env = {
     HOME,
@@ -93,6 +107,7 @@ if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("PLA
 await mkdir(BACKUP_ROOT, { recursive: true, mode: 0o700 });
 await mkdir(dirname(PLIST_PATH), { recursive: true, mode: 0o700 });
 await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
+await waitForUnloaded();
 
 const backup = join(BACKUP_ROOT, `${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${randomUUID()}`);
 let moved = false;

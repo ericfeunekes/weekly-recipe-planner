@@ -29,7 +29,10 @@ export const CODEX_FOLLOW_UP_RESOURCE_POLICY = Object.freeze({
   pagination: Object.freeze({ maxPages: 16, maxRows: 1_024 }),
   rpcIngress: Object.freeze({
     maxFrameBytes: 4 * 1024 * 1024,
-    maxTotalBytes: 32 * 1024 * 1024,
+    // Current Codex schema and provenance readback legitimately exceed 32 MiB
+    // over one bounded compatibility session. Per-frame, frame-count, queue,
+    // and stderr limits still bound every individual transport dimension.
+    maxTotalBytes: 128 * 1024 * 1024,
     maxFrames: 2_048,
     maxQueuedMessages: 256,
     maxObservedMethods: 1_024,
