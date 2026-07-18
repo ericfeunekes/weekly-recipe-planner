@@ -66,6 +66,7 @@ test("production launch keeps Vinext private and honors public runtime config", 
   assert.equal(config.host, "::1");
   assert.equal(config.port, 3100);
   assert.equal(config.webOrigin.href, "http://127.0.0.1:3002/");
+  assert.equal(config.publicBasePath, "/");
   assert.equal(config.dataDirectory, "/tmp/planner-production-data");
   assert.deepEqual([...config.allowedOrigins], ["http://[::1]:3100"]);
 });
@@ -100,6 +101,14 @@ test("production launch allows an isolated private web port", () => {
 
   assert.equal(web.options.env.PLANNER_WEB_PORT, "4124");
   assert.equal(config.webOrigin.href, "http://127.0.0.1:4124/");
+});
+
+test("runtime config retains a mounted public base path for direct public access", () => {
+  const config = readRuntimeConfig({
+    PLANNER_MODE: "front",
+    PLANNER_PUBLIC_BASE_PATH: "/recipe-planner/",
+  });
+  assert.equal(config.publicBasePath, "/recipe-planner/");
 });
 
 test("installed launch fixes both children to the selected app and materializes disjoint roots", () => {

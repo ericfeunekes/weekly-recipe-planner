@@ -14,6 +14,7 @@ export type PlannerRuntimeConfig = {
   dataDirectory: string;
   databasePath: string;
   webOrigin: URL;
+  publicBasePath?: string;
   allowedOrigins: ReadonlySet<string>;
   codexFollowUp: FollowUpConfigResult;
 };
@@ -51,6 +52,14 @@ function parseWebOrigin(value: string | undefined, mode: RuntimeMode) {
     throw new TypeError("PLANNER_WEB_ORIGIN must contain only an origin.");
   }
   return origin;
+}
+
+function parsePublicBasePath(value: string | undefined) {
+  const basePath = value ?? "/";
+  if (!basePath.startsWith("/") || !basePath.endsWith("/")) {
+    throw new TypeError("PLANNER_PUBLIC_BASE_PATH must begin and end with '/'.");
+  }
+  return basePath;
 }
 
 function effectivePort(origin: URL) {
@@ -143,6 +152,7 @@ export function readRuntimeConfig(
     dataDirectory,
     databasePath: resolve(dataDirectory, "planner.sqlite"),
     webOrigin,
+    publicBasePath: parsePublicBasePath(environment.PLANNER_PUBLIC_BASE_PATH),
     allowedOrigins: parseAllowedOrigins(
       environment.PLANNER_ALLOWED_ORIGINS,
       mode,

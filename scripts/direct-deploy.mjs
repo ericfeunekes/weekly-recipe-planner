@@ -107,7 +107,7 @@ function plist(node) {
     PLANNER_PUBLIC_BASE_PATH: "/recipe-planner/",
     // Tailscale terminates TLS before forwarding to this loopback-only process.
     // The application must still recognize that public same-origin host.
-    PLANNER_ALLOWED_ORIGINS: TAILNET_ORIGIN,
+    PLANNER_ALLOWED_ORIGINS: `${TAILNET_ORIGIN},${TAILNET_ORIGIN}:${PORT}`,
     PLANNER_DATA_DIR: DATA_ROOT,
     PLANNER_CODEX_HOME: join(DEPLOY_ROOT, "agent"),
     PLANNER_CODEX_CWD: APP_ROOT,

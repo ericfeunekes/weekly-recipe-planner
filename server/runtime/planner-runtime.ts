@@ -290,6 +290,7 @@ export async function startPlannerRuntime(
         ? createFrontController({
             apiHandler,
             webOrigin: options.config.webOrigin,
+            publicBasePath: options.config.publicBasePath,
           })
         : apiHandler;
     const server = await listenHttpServer({

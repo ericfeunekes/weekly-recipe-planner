@@ -37,20 +37,41 @@ export type HttpHandler = (
 export function createFrontController({
   apiHandler,
   webOrigin,
+  publicBasePath = "/",
   proxyTimeoutMs = 30_000,
 }: {
   apiHandler: HttpHandler;
   webOrigin: URL;
+  publicBasePath?: string;
   proxyTimeoutMs?: number;
 }): HttpHandler {
   if (!["http:"].includes(webOrigin.protocol)) {
     throw new TypeError("The internal web origin must use HTTP.");
   }
+  if (!publicBasePath.startsWith("/") || !publicBasePath.endsWith("/")) {
+    throw new TypeError("The public base path must begin and end with '/'.");
+  }
+  const mountedApiPrefix = publicBasePath === "/"
+    ? null
+    : `${publicBasePath.slice(0, -1)}/api`;
 
   return async (request, response) => {
     const url = new URL(request.url ?? "/", "http://planner.local");
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       await apiHandler(request, response);
+      return;
+    }
+    if (
+      mountedApiPrefix !== null &&
+      (url.pathname === mountedApiPrefix || url.pathname.startsWith(`${mountedApiPrefix}/`))
+    ) {
+      const originalUrl = request.url;
+      request.url = `${url.pathname.slice(publicBasePath.length - 1)}${url.search}`;
+      try {
+        await apiHandler(request, response);
+      } finally {
+        request.url = originalUrl;
+      }
       return;
     }
 

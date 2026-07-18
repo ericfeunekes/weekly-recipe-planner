@@ -592,7 +592,7 @@ test("service failures retain field errors and authoritative workspace readback"
   });
 });
 
-test("front controller keeps API local and proxies the web surface", async (t) => {
+test("front controller keeps API local, accepts its mounted API alias, and proxies the web surface", async (t) => {
   let upstreamRequestHeaders;
   const upstream = createServer((request, response) => {
     upstreamRequestHeaders = request.headers;
@@ -611,11 +611,12 @@ test("front controller keeps API local and proxies the web surface", async (t) =
   const upstreamAddress = upstream.address();
 
   const controller = createFrontController({
-    apiHandler: (_request, response) => {
+    apiHandler: (request, response) => {
       response.writeHead(200, { "Content-Type": "application/json" });
-      response.end('{"surface":"api"}');
+      response.end(JSON.stringify({ surface: "api", path: request.url }));
     },
     webOrigin: new URL(`http://127.0.0.1:${upstreamAddress.port}`),
+    publicBasePath: "/recipe-planner/",
   });
   const server = await listenHttpServer({ handler: controller, port: 0 });
   t.after(() => closeHttpServer(server));
@@ -635,6 +636,9 @@ test("front controller keeps API local and proxies the web surface", async (t) =
   assert.equal(upstreamRequestHeaders["x-client-hop"], undefined);
   assert.equal(web.headers["x-upstream-hop"], undefined);
   assert.deepEqual(await (await fetch(`${baseUrl}/api/health`)).json(), {
-    surface: "api",
+    surface: "api", path: "/api/health",
+  });
+  assert.deepEqual(await (await fetch(`${baseUrl}/recipe-planner/api/health?ready=1`)).json(), {
+    surface: "api", path: "/api/health?ready=1",
   });
 });
