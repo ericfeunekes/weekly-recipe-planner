@@ -221,42 +221,9 @@ npm run test:e2e
 
 `npm test` enforces strict TypeScript, builds the Cloudflare Workers-compatible
 Vinext output, and verifies the rendered site and locked command/view surface.
-Playwright runs separately through `npm run test:e2e`. The authenticated native
-Codex check is opt-in and remains outside deterministic tests:
-
-```bash
-npm run smoke:native-codex -- \
-  --authorized \
-  --scenario all \
-  --output outputs/qa/<run-id>/codex-follow-up/release-candidate.json
-```
-
-The historical `smoke:live-chat` command is retained as a compatibility alias;
-both commands execute the same schema-v2 native-thread proof. The probe never
-logs in or copies credentials. It uses an already authenticated dedicated home,
-drives the final configured runtime through public HTTP, and proves native
-thread creation/history/pagination/selection/archive, restart readback, an
-interrupt, typed questions, the approval-policy boundary, activity projection,
-a native child worker, hosted search, one authoritative planner effect, exact
-admission replay, changed-payload rejection, second-client readback, Global UDS
-independence, and incompatible-runtime isolation. Probe threads are archived
-and excluded from the active/default picker. The private mode-`0600` artifact
-contains hashes and bounded counts, never raw thread, credential, planner, or
-provider content.
-
-For a standalone local smoke, the read-only verifier can consume that artifact
-without changing auth or deployment state:
-
-```bash
-npm run verify:codex-activation -- \
-  --artifact outputs/qa/<run-id>/codex-follow-up/release-candidate.json
-```
-
-The verifier requires schema v2 and rechecks the exact stable native top-level
-and worker tool surfaces, hosted-search mode, planner and skills namespaces,
-standalone-skill identity, executable/schema/config/instruction/account
-coordinates, and candidate source immediately before activation. The release
-transaction also binds the evidence schema through the candidate and installed
-QA manifests. A standalone invocation never constitutes release evidence, and
-the binding does not pin Codex: compatible updater-managed versions continue
-through the dynamic gate after activation.
+Playwright runs separately through `npm run test:e2e`. The checked-in
+`probe:codex-follow-up -- --no-auth` command above is the supported compatibility
+probe. There is currently no supported checked-in authenticated smoke or
+activation-verifier command; record that release-candidate cell as `NOT RUN`
+rather than reviving the retired `smoke:native-codex`, `smoke:live-chat`, or
+`verify:codex-activation` entrypoints.

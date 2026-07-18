@@ -140,7 +140,7 @@ function throwFailure(response: Response, value: unknown): never {
 
 async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(resolvePublicPath(path, import.meta.env.BASE_URL), {
+    return await fetch(resolvePublicPath(path, import.meta.env?.BASE_URL ?? "/"), {
       cache: "no-store",
       credentials: "same-origin",
       ...init,

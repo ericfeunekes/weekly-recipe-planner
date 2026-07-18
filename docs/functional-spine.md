@@ -39,6 +39,41 @@ Week lifecycle:
 
 Past weeks do not need to remain fully active editing surfaces. They should preserve enough state to answer what happened and what should be learned.
 
+## Browser Navigation And Shareable Locations
+
+The browser location makes the household's current **Week** and **Day**
+addressable without becoming planner authority. A Week is identified by its
+Monday-start week ID and a Day by its ISO date within that Week. The canonical
+first navigation contract is:
+
+- `/weeks/<weekId>` opens that Week overview.
+- `/weeks/<weekId>/day/<date>` opens that Week's Day cooking ticket.
+- A copied canonical URL loads, reloads, and participates in browser
+  back/forward as that same requested Week or Day after the current household
+  workspace is available.
+
+The location is a request for a planner presentation, never a planner mutation
+or an alternative record of household state. The current workspace remains the
+authority that determines whether the requested Week exists and whether the
+requested Day belongs to it. A direct valid URL takes precedence over any
+remembered browser context. Without a direct Week/Day location, reopening the
+app returns to the last valid Week/Day used on that browser; if none remains
+valid, the app uses the existing authoritative default week.
+
+Malformed, unavailable, deleted, or out-of-week Week/Day locations resolve to
+the canonical valid default after workspace readback rather than silently
+selecting an unrelated Week or allowing raw URL values into planner state.
+Loading, offline, and reconnect behavior remain the shared-workspace behavior:
+the requested location is retained in browser history while the app waits for
+authoritative data; it does not synthesize a household view from URL state.
+
+The initial routing proof deliberately excludes Meal Detail, recipe-summary and
+other modal state, timers, history, Codex thread selection, Prep, Groceries,
+and Closeout. Those remain local presentation state or their existing
+authoritative owner until separately scoped. In particular, the one app-wide
+selected top-level Codex thread is not a URL parameter and does not change when
+a Week/Day URL is opened.
+
 ## Data Model
 
 - **WeekPlan**: a Monday-start week in draft/planned, active, or archived state.
@@ -176,6 +211,52 @@ Not central to the spine:
 - Timer notifications or background alarms.
 - User accounts, identities, roles, private notes, or per-user chat threads.
 - Threaded comments or a separate comment system beyond one optional step note.
+
+## Release Reliability
+
+The planner is a four-person household tool. Release safety favors a small,
+understandable mechanism over a general deployment platform, but a failed
+release may not destroy the last working app or put household data at risk.
+
+The current contract is:
+
+- **RR1 — Preserve the working release.** Candidate preparation happens before
+  the current app or service is disturbed. A failure before the first service
+  or app disturbance leaves both untouched. Once disturbance begins, every
+  failure before candidate-specific readiness restores the verified prior app
+  and a ready prior service.
+- **RR2 — One release at a time.** Promotion is single-owner. A second release
+  attempt fails before it can unload, rename, migrate, or select anything.
+- **RR3 — Prove the selected candidate.** The committed source revision is the
+  candidate's source identity; a digest binds its installed application bundle.
+  The runtime reports both for readiness. Readiness is candidate-specific and
+  requires initialized application/store state, the supported native Codex
+  compatibility state, Global UDS readiness, and the expected production route.
+  A healthy process running unknown code is not release proof.
+- **RR4 — Match household routing.** Release-candidate proof uses the real
+  `/recipe-planner/` mount and front-controller topology. Mounted API, assets,
+  favicon, and social metadata must resolve before release.
+- **RR5 — Keep proof truthful.** The release entrypoint runs the documented
+  deterministic and release-candidate gates. Missing commands, stale fixtures,
+  empty selections, and tests that duplicate a producer's wrong constant do not
+  count as green proof.
+- **RR6 — Protect and bound retained state.** The household SQLite authority is
+  never replaced by application deployment. A small fixed number of verified
+  prior application releases is retained for recovery; older app-only residue
+  may be removed only after the current and rollback releases are identified.
+- **RR7 — Do not overclaim sourced-recipe fidelity.** Direct typed recipe
+  replacement may carry an informational source reference as described above.
+  A release must not advertise source-faithful web import unless the host binds
+  the accepted replacement to the exact observed candidate; otherwise that
+  workflow remains unavailable.
+
+`docs/TESTING.md` defines deterministic and release-candidate proof cells.
+`docs/QA.md` defines visible production-profile and household observation.
+
+Non-goals are a generic deployment framework, zero-downtime service, remote
+release orchestration, long-term release archives, comprehensive telemetry, or
+an operator dashboard. A simple exclusive lock, atomic app-directory selection,
+small text receipt, bounded backups, and clear recovery command are sufficient.
 
 ## Locked Decisions
 

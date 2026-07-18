@@ -40,7 +40,7 @@ deploy:
 	$(NODE) scripts/direct-deploy.mjs
 
 qa-local:
-	@cd "$(ROOT_DIR)" && $(NPM) run test:e2e:installed
+	@cd "$(ROOT_DIR)" && $(NPM) run test:e2e
 
 qa-deploy:
 	@cd "$(ROOT_DIR)" && $(NPM) run build

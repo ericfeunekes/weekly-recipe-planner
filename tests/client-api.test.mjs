@@ -450,7 +450,8 @@ test("client authority source has no browser writes or legacy reducers", async (
   assert.match(source, /refetchInterval:\s*2_000/);
   assert.match(source, /refetchIntervalInBackground:\s*false/);
   assert.match(source, /removeItem\(LEGACY_V2_STORAGE_KEY\)/);
-  assert.match(source, /aria-modal="true"/);
+  assert.match(source, /<Dialog open=/);
+  assert.match(source, /<DialogContent[^>]+aria-label=/);
   const readOnlyLine = source.match(/const isReadOnly = [^;]+;/)?.[0] ?? "";
   assert.match(readOnlyLine, /plannerPending/);
   assert.doesNotMatch(readOnlyLine, /chatPending/);

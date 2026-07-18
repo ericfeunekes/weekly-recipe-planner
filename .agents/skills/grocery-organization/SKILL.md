@@ -10,6 +10,12 @@ organize the grocery projection that comes from those objects; do not rewrite
 ingredient names, amounts, or recipe links into a separate hand-maintained
 shopping model.
 
+Before grouping, verify component completeness upstream: source serving
+suggestions, included planned sides, and sourced subrecipe ingredients must be
+represented intentionally in the meal's one consolidated ingredient list. An
+omission or an opaque subrecipe placeholder is a meal-planning or
+recipe-discovery issue, not something to repair by inventing grocery text.
+
 Use explicit household inventory first. You may infer likely inventory from
 prior plans, feedback, and usage patterns, but label it as an inference and ask
 or leave it unresolved when the uncertainty could change the shop. Group items

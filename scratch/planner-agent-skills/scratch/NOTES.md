@@ -190,3 +190,32 @@
 - Independent re-review approved the corrected files with no remaining
   findings. The initial skill set is ready for the real-week improvement cycle;
   its first durable usage evidence belongs in `reps/`.
+
+## Source-faithful import correction
+
+- Eric requires that import preserve recipes precisely as written. Discovery
+  chooses sources but never adapts them; comments are attributed notes or
+  suggestions, and only `recipe-adjustments` may propose a change after user
+  approval.
+- The host already mechanically rejects every mutation between a research
+  candidate and the applied meal replacement. The skill now adds the missing
+  source-to-candidate gate: deterministic field diff plus an independent worker
+  verdict before any import may apply. A mismatch stops for review.
+- Independent review found that the current host neither stores a trusted source
+  capture nor verifies the worker verdict, and the generic apply path does not
+  consult the candidate-binding helper. The skill now stops before applying any
+  source import until the app server exposes a host-verified source-fidelity
+  capability. This is an explicit product gap, not something skill prose can
+  honestly claim to enforce.
+- Re-review approved the corrected boundary. The discovery skill description was
+  then aligned with the body: it prepares candidates today and imports only
+  after the host exposes verified source-fidelity support.
+
+## Meal feedback and taste-profile expansion
+
+- Eric requested an interview-led `meal-feedback` skill that handles weekly
+  brain dumps and spontaneous meals/photos, with profiles for Family, Eric,
+  Emma, and Ezme.
+- The canonical separation remains: `meal-feedback.md` owns dated raw outcomes;
+  `taste-profiles/` holds current accepted preferences and curated linked
+  examples/candidate signals. Profile pages must not become a shadow ledger.

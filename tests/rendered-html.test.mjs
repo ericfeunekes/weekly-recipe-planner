@@ -42,8 +42,9 @@ test("server-renders the shared planner loading surface", async () => {
 });
 
 test("keeps the locked product requirements represented in source", async () => {
-  const [planner, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
+  const [planner, recipeContent, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex-thread-rail.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex-thread-source.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/planner-api.ts", import.meta.url), "utf8"),
@@ -93,7 +94,8 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.doesNotMatch(planner, /<ChatPanel/);
   assert.match(planner, /Add comment/);
   assert.match(planner, /Ask Codex/);
-  assert.match(planner, /function InstructionStepContent/);
+  assert.match(planner, /RecipeInstructionContent/);
+  assert.match(recipeContent, /export function RecipeInstructionContent/);
   assert.match(planner, /function RecipeSummaryLink/);
   assert.match(planner, /function MealEditorTrigger/);
   assert.match(planner, /Add recipe steps to/);
@@ -114,7 +116,7 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.doesNotMatch(rail, /Research recipe|ChatGPT task|microphone/i);
   assert.match(sourceAdapter, /isDevelopmentCodexPreview/);
   assert.match(sourceAdapter, /runtime_unavailable/);
-  assert.match(planner, /Informational recipe source/);
+  assert.match(planner, /Open \{meal\.sourceRecipe\.identity\}/);
   assert.match(planner, /target="_blank" rel="noopener noreferrer"/);
   assert.match(planner, /timerStartedAt/);
   assert.match(planner, /function Timer/);
@@ -123,8 +125,8 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /Offline . read-only/);
   assert.match(planner, /leftover\.state === "assigned"/);
   assert.match(planner, /Save recipe details/);
-  assert.match(planner, /role="dialog"/);
-  assert.match(planner, /aria-modal="true"/);
+  assert.match(planner, /<Dialog open=/);
+  assert.match(planner, /<DialogContent[^>]+aria-label=/);
   assert.doesNotMatch(planner, /weekPickerOpen|chat-visible/);
   assert.match(page, /<PlannerApp \/>/);
   assert.match(layout, /title: "Weekly Recipe Planner"/);

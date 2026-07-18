@@ -1,9 +1,30 @@
 # Testing And QA Contract
 
-This document is the proof authority for the family-readiness implementation.
-The detailed behavior and proof matrix live in
-`docs/family-readiness-remediation-plan.md`; this file assigns those claims to
-repeatable gates and repository paths.
+This document is the deterministic proof authority for the current planner.
+`docs/functional-spine.md` owns supported behavior and invariants;
+`docs/QA.md` owns real-system exploration. Historical family-readiness and
+Codex follow-up plans remain useful context, but their retired release commands,
+activation journals, and one-time cutover procedures are not current proof
+authority.
+
+## Current Release Safety Cells
+
+Every change to promotion, deployment, startup, mounted routing, or retained
+application data activates these cells in addition to the normal merge gate.
+
+| Gate | Cell | Required boundary |
+|---|---|---|
+| Merge | Non-destructive deployment lifecycle | A disposable installed layout proves failures before the first service/app disturbance leave the current app and service untouched; once disturbance begins, every failure before candidate-specific readiness restores the verified prior app and a ready prior service. The matrix includes dependency/build failure, unload partial-effect/failure, first and second rename failure, readiness failure, interruption, and two concurrent release attempts. |
+| Merge | Candidate identity and readiness | The installed candidate reports the expected source identity and cannot pass readiness unless the application, store, native Codex compatibility boundary, and Global UDS are initialized for that candidate. |
+| Merge | Production-profile routing | The production build and front controller are exercised at `/recipe-planner/`; API, workspace, JavaScript, CSS, favicon, and social-preview metadata resolve under the mounted profile. |
+| Merge | Gate integrity | The documented release entrypoint runs typecheck, production build, lint, deterministic tests, and the release lifecycle matrix. A missing script, empty test selection, or shared wrong constant is a failure. |
+| RC | Disposable installed candidate | The exact committed candidate is installed under a temporary home with disposable SQLite data, started through the production front controller, and passes mounted health/workspace plus the representative browser smoke. |
+| QA | Household route observation | After an authorized production release, the mounted household URL is visibly checked from a real browser and the prior release remains recoverable. See `docs/QA.md`. |
+
+The merge and RC cells must not operate on `$HOME/meal-planner` or the family
+database. Production observation is read-only except for an explicitly chosen,
+reversible household action. Release code changes are incomplete if the
+disposable installed-candidate cell cannot run.
 
 ## Merge Gate
 
@@ -56,10 +77,11 @@ After deterministic proof is current-state:
   and record authentication/transport failures as environment evidence rather
   than weakening the generated-protocol fixture gate. The probe consumes an
   already authenticated dedicated home and never invokes login.
-- The deterministic LaunchAgent tests prove plist binding and lifecycle command
-  behavior with a fake `launchctl`; they do not prove host launchd supervision.
-  For a deployment claim, install the real service, verify health/workspace,
-  terminate its child once to prove `KeepAlive`, and verify it again.
+- The current deterministic suite does not provide a LaunchAgent lifecycle
+  harness. For a deployment claim, add the disposable installed-layout coverage
+  required by the release safety cells, then observe the authorized real service:
+  verify health/workspace, terminate its child once to prove `KeepAlive`, and
+  verify it again.
 - Do not claim Tailscale reachability from local service evidence. Verify Serve,
   Tailnet ACL admission, and a real remote-device load independently.
 
@@ -68,10 +90,13 @@ Exploratory evidence is written to the gitignored directory
 runtime commands, database fixture, viewports, outcomes, failures, and links to
 its captured screenshots, console log, and network log. Authenticated native
 Codex smoke results use a separate subsection and never store credentials, raw
-auth material, or native thread/provider content. The historical entrypoint
-`npm run smoke:native-codex` is the canonical command and
-`npm run smoke:live-chat` is an alias. The smoke always targets disposable
-planner data and remains outside `npm test`.
+auth material, or native thread/provider content. The checked-in
+`npm run probe:codex-follow-up -- --no-auth` command owns unauthenticated
+compatibility proof. There is currently no supported checked-in authenticated
+smoke command; record that cell as `NOT RUN` rather than reviving the retired
+`smoke:native-codex` or `smoke:live-chat` entrypoints or substituting an ad hoc
+driver. Any future authenticated smoke targets disposable planner data and
+remains outside `npm test`.
 Closeout names the exact run directory used for the final claim.
 
 ## Codex Planner Runtime Requirements Gate
@@ -171,7 +196,10 @@ apply replays, confirm changed-payload UUID reuse rejects, and observe the
 accepted state from an independent browser client. Preserve no socket path,
 database path, transcript, credentials, or raw page content in the evidence.
 
-### Follow-Up Release-Candidate Gate
+### Historical Follow-Up Release-Candidate Gate (Non-Authoritative)
+
+The remainder of this subsection records the superseded staged activation
+design. It must not be used as a current command reference or release gate.
 
 Before activating the dynamic embedded path:
 
