@@ -23,6 +23,7 @@ async function openNative(page: Page) {
   await expect(setup.or(planner)).toBeVisible();
   if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
   await expect(planner).toBeVisible();
+  await page.getByRole("button", { name: "Open Codex" }).click();
   await expect(page.getByRole("complementary", { name: "Codex task" }).getByText("Codex", { exact: true })).toBeVisible();
 }
 
@@ -319,7 +320,8 @@ test.describe("native Codex thread rail", () => {
     await expect(dialog.getByRole("radio")).toHaveCount(0);
     await expectComposerActionTargets(dialog);
 
-    await dialog.getByRole("button", { name: "Close Codex" }).click();
+    await expect(dialog.getByRole("button", { name: "Close" })).toHaveCount(1);
+    await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
   });

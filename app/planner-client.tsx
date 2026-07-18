@@ -123,7 +123,13 @@ import {
   type CompositeDraft,
 } from "./versioned-draft";
 import { isoDateForTimeZone } from "./calendar-time";
+import { resolveDayDate } from "./day-selection";
 import { CodexThreadRail } from "./codex-thread-rail";
+import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { OfflineAuthorityNotice } from "./offline-authority-notice";
 import type { PlannerView } from "./planner-view";
 
@@ -134,6 +140,7 @@ type WorkspaceQueryData = {
   serverDate: number | null;
 };
 const WORKSPACE_QUERY_KEY = ["planner", "workspace"] as const;
+
 type MutateOptions = {
   basePlannerVersion?: number;
   conflictStrategy?: "recompose";
@@ -406,7 +413,7 @@ function useVersionedDraft<T extends object = Record<never, never>>() {
 
 const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "week", label: "Week", icon: CalendarDays },
-  { id: "tonight", label: "Tonight", icon: CookingPot },
+  { id: "tonight", label: "Day", icon: CookingPot },
   { id: "prep", label: "Prep", icon: ListChecks },
   { id: "groceries", label: "Groceries", icon: ShoppingBasket },
   { id: "closeout", label: "Close out", icon: ClipboardCheck },
@@ -496,20 +503,20 @@ function AuthorityNotice(props: {
       <span>{notice.message}</span>
       <div className="authority-banner-actions">
         {pendingRetryLabel && onRetryPending ? (
-          <button className="secondary-button" type="button" aria-label={`Retry ${pendingRetryLabel}`} disabled={retryDisabled} onClick={onRetryPending}>
+          <PlannerActionButton tone="secondary" type="button" aria-label={`Retry ${pendingRetryLabel}`} disabled={retryDisabled} onClick={onRetryPending}>
             <RotateCcw size={14} /> Retry action
-          </button>
+          </PlannerActionButton>
         ) : null}
         {pendingRetryLabel && onDiscardPending ? (
-          <button className="text-button" type="button" onClick={onDiscardPending}>Discard retry</button>
+          <PlannerActionButton tone="quiet" type="button" onClick={onDiscardPending}>Discard retry</PlannerActionButton>
         ) : null}
         {!pendingRetryLabel && recoveryActionLabel && onRecoveryAction ? (
-          <button className="secondary-button" type="button" disabled={recoveryActionDisabled} onClick={onRecoveryAction}>
+          <PlannerActionButton tone="secondary" type="button" disabled={recoveryActionDisabled} onClick={onRecoveryAction}>
             <RotateCcw size={14} /> {recoveryActionLabel}
-          </button>
+          </PlannerActionButton>
         ) : null}
         {!pendingRetryLabel && onDismiss ? (
-          <button className="icon-button" type="button" title="Dismiss" onClick={onDismiss}><X size={16} /></button>
+          <PlannerIconButton type="button" title="Dismiss" onClick={onDismiss}><X size={16} /></PlannerIconButton>
         ) : null}
       </div>
     </div>
@@ -538,22 +545,30 @@ function SegmentedControl<T extends string>({
   value: T | undefined;
 }) {
   return (
-    <div className={`segmented-control ${className}`.trim()} role="group" aria-label={ariaLabel}>
+    <ToggleGroup
+      className={`segmented-control ${className}`.trim()}
+      type="single"
+      value={value}
+      onValueChange={(nextValue) => {
+        if (nextValue) onChange(nextValue as T);
+      }}
+      aria-label={ariaLabel}
+      variant="outline"
+      size="sm"
+      spacing={0}
+    >
       {options.map((option) => {
         const optionDisabled = typeof disabled === "function" ? disabled(option.value) : disabled;
         return (
-          <button
+          <ToggleGroupItem
             key={option.value}
-            type="button"
+            value={option.value}
             aria-label={option.ariaLabel}
-            aria-pressed={value === option.value}
-            className={value === option.value ? "active" : ""}
             disabled={optionDisabled}
-            onClick={() => onChange(option.value)}
-          >{option.label}</button>
+          >{option.label}</ToggleGroupItem>
         );
       })}
-    </div>
+    </ToggleGroup>
   );
 }
 
@@ -635,36 +650,36 @@ function BootstrapScreen(props: {
         {candidate.error ? <p className="inline-alert error" role="alert">{candidate.error}</p> : null}
         {notice ? <p className={`inline-alert ${notice.tone}`} role="status">{notice.message}</p> : null}
         <div className="bootstrap-actions">
-          <button
-            className="primary-button"
+          <PlannerActionButton
+            tone="primary"
             type="button"
             disabled={busy || candidate.payload === null}
             onClick={onImport}
           >
             {busy ? <LoaderCircle className="spin" size={17} /> : <PackageCheck size={17} />}
             Import browser planner
-          </button>
-          <button className="secondary-button" type="button" disabled={busy} onClick={onFresh}>
+          </PlannerActionButton>
+          <PlannerActionButton tone="secondary" type="button" disabled={busy} onClick={onFresh}>
             <Plus size={17} /> Start Fresh
-          </button>
+          </PlannerActionButton>
         </div>
         {pendingRetryLabel && onRetryPending ? (
           <div className="bootstrap-recovery-actions">
-            <button className="text-button" type="button" disabled={busy} onClick={onRetryPending}>
+            <PlannerActionButton tone="quiet" type="button" disabled={busy} onClick={onRetryPending}>
               Retry {pendingRetryLabel.toLowerCase()}
-            </button>
+            </PlannerActionButton>
             {onDiscardPending ? (
-              <button className="text-button" type="button" disabled={busy} onClick={onDiscardPending}>
+              <PlannerActionButton tone="quiet" type="button" disabled={busy} onClick={onDiscardPending}>
                 Discard retry
-              </button>
+              </PlannerActionButton>
             ) : null}
           </div>
         ) : onClearLocalRecovery ? (
-          <button className="text-button" type="button" disabled={localRecoveryBusy} onClick={onClearLocalRecovery}>
+          <PlannerActionButton tone="quiet" type="button" disabled={localRecoveryBusy} onClick={onClearLocalRecovery}>
             Review latest plan and clear local recovery
-          </button>
+          </PlannerActionButton>
         ) : notice?.tone === "error" ? (
-          <button className="text-button" type="button" onClick={onRetry}>Retry connection</button>
+          <PlannerActionButton tone="quiet" type="button" onClick={onRetry}>Retry connection</PlannerActionButton>
         ) : null}
         <small>{LEGACY_V2_STORAGE_KEY}</small>
       </section>
@@ -679,7 +694,7 @@ function InitialLoading({ error, onRetry }: { error: string | null; onRetry: () 
         {error ? <Circle size={25} /> : <LoaderCircle className="spin" size={25} />}
         <h1>{error ? "Planner unavailable" : "Opening the shared planner"}</h1>
         <p>{error ?? "Reading the latest household workspace."}</p>
-        {error ? <button className="primary-button" type="button" onClick={onRetry}>Retry</button> : null}
+        {error ? <PlannerActionButton tone="primary" type="button" onClick={onRetry}>Retry</PlannerActionButton> : null}
       </section>
     </main>
   );
@@ -705,12 +720,13 @@ function PlannerAppContent() {
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [view, setView] = useState<PlannerView>("week");
   const [selectedWeekId, setSelectedWeekId] = useState<WeekId | null>(null);
+  const [selectedDayDate, setSelectedDayDate] = useState<IsoDate | null>(null);
   const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
   const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [timersOpen, setTimersOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const [codexCollapsed, setCodexCollapsed] = useState(false);
+  const [codexCollapsed, setCodexCollapsed] = useState(true);
   const [codexDraft, setCodexDraft] = useState("");
   const [codexFocusKey, setCodexFocusKey] = useState(0);
   const [plannerPending, setPlannerPending] = useState(false);
@@ -725,6 +741,7 @@ function PlannerAppContent() {
   });
   const mobile = useMobile();
   const etagRef = useRef<string | null>(null);
+  const browserOfflineRef = useRef(false);
   const serverOffsetRef = useRef(0);
   const workspaceRef = useRef<WorkspaceResponse | null>(null);
   const plannerMutationInFlight = useRef(false);
@@ -760,7 +777,7 @@ function PlannerAppContent() {
             ? { ...current, serverDate: result.serverDate ?? current.serverDate }
             : null;
         if (!data) throw new Error("The planner returned no initial workspace.");
-        setConnection("online");
+        if (!browserOfflineRef.current) setConnection("online");
         setInitialError(null);
         return data;
       } catch (error) {
@@ -914,6 +931,11 @@ function PlannerAppContent() {
     window.requestAnimationFrame(() => headingRef.current?.focus());
   }, []);
 
+  const openDay = useCallback((date: IsoDate) => {
+    setSelectedDayDate(date);
+    navigate("tonight");
+  }, [navigate]);
+
   const acceptWorkspace = useCallback((incoming: WorkspaceResponse) => {
     const current = workspaceRef.current;
     if (!shouldAcceptWorkspace(current, incoming)) return;
@@ -925,9 +947,13 @@ function PlannerAppContent() {
   }, [queryClient]);
 
   const refresh = useCallback(async (force = false): Promise<boolean> => {
-    // React Query invalidation has one safe path for both ordinary and forced
-    // refreshes; keep the flag for the many command callers' stable contract.
-    void force;
+    // A Codex planner.apply has already changed shared state. Drop the
+    // conditional-read validator so its following read is authoritative even
+    // when the browser's local revision is otherwise still current.
+    if (force) {
+      browserOfflineRef.current = false;
+      etagRef.current = null;
+    }
     try {
       await queryClient.invalidateQueries(
         { queryKey: WORKSPACE_QUERY_KEY, refetchType: "active" },
@@ -941,6 +967,18 @@ function PlannerAppContent() {
       return false;
     }
   }, [queryClient]);
+
+  useEffect(() => {
+    const markOffline = () => {
+      browserOfflineRef.current = true;
+      setConnection("offline");
+      void refresh(false);
+    };
+    window.addEventListener("offline", markOffline);
+    return () => {
+      window.removeEventListener("offline", markOffline);
+    };
+  }, [refresh]);
 
   useEffect(() => {
     if (!workspaceQuery.data) return;
@@ -1376,6 +1414,7 @@ function PlannerAppContent() {
     null;
   const now = clockNow + serverOffset;
   const today = isoDateForTimeZone(now, initialized.state.householdTimeZone);
+  const dayDate = resolveDayDate(week?.id ?? null, today, selectedDayDate);
   const activeTimers = week?.data.meals.flatMap((meal) =>
     meal.instructions
       .filter((step) => step.timerDurationSeconds !== undefined && step.timerStartedAt !== undefined)
@@ -1398,7 +1437,7 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const heading = view === "tonight" ? "Tonight" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
+  const heading = view === "tonight" ? "Day" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
     : notice;
@@ -1437,6 +1476,7 @@ function PlannerAppContent() {
                 value={week?.id ?? ""}
                 onChange={(event) => {
                   setSelectedWeekId(event.target.value as WeekId);
+                  setSelectedDayDate(null);
                   setSelectedMealId(null);
                 }}
               >
@@ -1447,17 +1487,16 @@ function PlannerAppContent() {
             </label>
           </div>
           <div className="header-actions">
-            <button ref={historyTriggerRef} className="icon-button" type="button" title="Change history" onClick={() => {
+            <PlannerIconButton ref={historyTriggerRef} type="button" title="Change history" aria-pressed={historyOpen} onClick={() => {
               setSelectedMealId(null);
               setChatOpen(false);
               setTimersOpen(false);
               setHistoryOpen(true);
             }}>
               <List size={19} />
-            </button>
+            </PlannerIconButton>
             <div className="header-timer-control">
-              <button
-                className="icon-button"
+              <PlannerIconButton
                 type="button"
                 title={activeTimers.length ? `${activeTimers.length} active timer${activeTimers.length === 1 ? "" : "s"}` : "Active timers"}
                 aria-label={activeTimers.length ? `Active timers: ${activeTimers.length}` : "Active timers"}
@@ -1472,12 +1511,12 @@ function PlannerAppContent() {
               >
                 <Clock3 size={19} />
                 {activeTimers.length ? <span className="header-timer-count" aria-hidden="true">{activeTimers.length}</span> : null}
-              </button>
+              </PlannerIconButton>
               {timersOpen ? (
                 <div className="header-timer-menu" role="dialog" aria-label="Active timers">
                   <div className="header-timer-menu-heading">
                     <strong>Active timers</strong>
-                    <button className="icon-button" type="button" title="Close active timers" aria-label="Close active timers" onClick={() => setTimersOpen(false)}><X size={15} /></button>
+                    <PlannerIconButton type="button" title="Close active timers" aria-label="Close active timers" onClick={() => setTimersOpen(false)}><X size={15} /></PlannerIconButton>
                   </div>
                   {activeTimers.length ? (
                     <div className="header-timer-list">
@@ -1499,20 +1538,20 @@ function PlannerAppContent() {
                 </div>
               ) : null}
             </div>
-            {mobile ? <button
+            {mobile ? <PlannerIconButton
               ref={chatTriggerRef}
-              className="icon-button mobile-codex-trigger"
+              className="mobile-codex-trigger"
               type="button"
               onClick={() => {
                 setSelectedMealId(null);
                 setHistoryOpen(false);
                 setTimersOpen(false);
-                setChatOpen((open) => !open);
+                setChatOpen(true);
               }}
               aria-expanded={chatOpen}
-              aria-label={chatOpen ? "Close Codex" : "Open Codex"}
-              title={chatOpen ? "Close Codex" : "Open Codex"}
-            ><ChevronLeft size={19} /></button> : null}
+              aria-label="Open Codex"
+              title="Open Codex"
+            ><ChevronLeft size={19} /></PlannerIconButton> : null}
           </div>
         </header>
 
@@ -1567,8 +1606,9 @@ function PlannerAppContent() {
                 <span>{progress.complete} of {progress.total} recipe steps done</span>
                 <span className="mini-progress"><i style={{ width: `${progress.total ? (progress.complete / progress.total) * 100 : 0}%` }} /></span>
                 {week.status === "planned" ? (
-                  <button
-                    className="text-button lifecycle-button"
+                  <PlannerActionButton
+                    tone="quiet"
+                    className="lifecycle-button"
                     type="button"
                     disabled={connection !== "online" || plannerPending}
                     onClick={() => void mutate(
@@ -1576,7 +1616,7 @@ function PlannerAppContent() {
                         ? { type: "handoffWeek", currentWeekId: initialized.state.activeWeekId, nextWeekId: week.id }
                         : { type: "activateWeek", weekId: week.id },
                     )}
-                  >Make active</button>
+                  >Make active</PlannerActionButton>
                 ) : null}
               </div>
             ) : null}
@@ -1594,18 +1634,19 @@ function PlannerAppContent() {
                   <WeekView
                     week={week}
                     today={today}
-                    onOpenMeal={openMeal}
                     onOpenRecipeSummary={openRecipeSummary}
                     onNavigate={navigate}
+                    onOpenDay={openDay}
                   />
                 ) : view === "tonight" ? (
                   <TonightView
                     week={week}
-                    today={today}
+                    selectedDate={dayDate}
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
                     onOpenMeal={openMeal}
+                    onOpenDay={openDay}
                   />
                 ) : view === "prep" ? (
                   <PrepView
@@ -1709,7 +1750,6 @@ function PlannerAppContent() {
             onReconnect={() => void refresh(true)}
             onPlannerApplied={() => void refresh(true)}
             modal
-            onClose={() => setChatOpen(false)}
           />
         </ModalChat>
       ) : null}
@@ -1723,14 +1763,16 @@ function MealEditorTrigger({
   mealId,
   onOpenMeal,
   className,
+  tone = "quiet",
   children,
 }: {
   mealId: string;
   onOpenMeal: (id: string, trigger: HTMLElement) => void;
-  className: string;
+  className?: string;
+  tone?: "primary" | "secondary" | "quiet" | "attention";
   children: ReactNode;
 }) {
-  return <button className={className} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</button>;
+  return <PlannerActionButton className={className} tone={tone} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</PlannerActionButton>;
 }
 
 function IngredientList({ meal, emptyClassName }: { meal: Meal; emptyClassName?: string }) {
@@ -1741,39 +1783,70 @@ function IngredientList({ meal, emptyClassName }: { meal: Meal; emptyClassName?:
   ) : <p className={emptyClassName}>No ingredients listed.</p>;
 }
 
-function WeekView({ week, today, onOpenMeal, onOpenRecipeSummary, onNavigate }: {
+function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
   week: WeekPlan;
   today: IsoDate;
-  onOpenMeal: (id: string, trigger: HTMLElement) => void;
   onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
   onNavigate: (view: PlannerView) => void;
+  onOpenDay: (date: IsoDate) => void;
 }) {
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
+  const [visibleDayCount, setVisibleDayCount] = useState<1 | 3 | 5 | 7>(7);
+  const [windowStart, setWindowStart] = useState(0);
+  const maxWindowStart = dates.length - visibleDayCount;
+  const visibleDates = dates.slice(windowStart, windowStart + visibleDayCount);
+
+  const changeVisibleDayCount = (nextCount: 1 | 3 | 5 | 7) => {
+    setVisibleDayCount(nextCount);
+    setWindowStart((current) => Math.min(current, dates.length - nextCount));
+  };
+
   return (
     <div className="week-view">
-      <div className="week-grid">
-        {dates.map((date) => {
-          const prepSessions = week.data.prepSessions.filter((session) => session.prepDate === date);
-          const prepStepCount = prepSessions.reduce((count, session) => count + session.steps.length, 0);
-          const prepLabel = `${prepStepCount} ${prepStepCount === 1 ? "batch-prep step" : "batch-prep steps"}`;
+      <div className="week-view-toolbar">
+        <span className="week-view-toolbar-label">Show</span>
+        <ToggleGroup
+          type="single"
+          value={String(visibleDayCount)}
+          onValueChange={(value) => {
+            if (value === "1" || value === "3" || value === "5" || value === "7") changeVisibleDayCount(Number(value) as 1 | 3 | 5 | 7);
+          }}
+          variant="outline"
+          size="sm"
+          spacing={0}
+          aria-label="Number of days shown in Week"
+        >
+          {[1, 3, 5, 7].map((count) => <ToggleGroupItem key={count} value={String(count)} aria-label={`Show ${count} ${count === 1 ? "day" : "days"}`}>{count}</ToggleGroupItem>)}
+        </ToggleGroup>
+        {visibleDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={windowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={windowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
+        </div> : null}
+      </div>
+      <div className="week-grid" style={{ "--week-visible-days": visibleDayCount } as React.CSSProperties}>
+        {visibleDates.map((date) => {
           return (
             <div key={date} className={`day-column ${date === today ? "today" : ""}`}>
               <div className="day-heading">
                 <div><span>{dayName(date, "short")}</span>{date === today ? <small>Today</small> : null}</div>
                 <strong>{Number(date.slice(-2))}</strong>
               </div>
-              {prepSessions.length ? <button className="day-prep-indicator" type="button" aria-label={`Open ${prepLabel}`} onClick={() => onNavigate("prep")}><ListChecks size={13} /><span>Batch prep</span><strong>{prepStepCount}</strong></button> : null}
               {week.data.meals.filter((item) => item.date === date).map((meal) => (
                   <article key={meal.id} className="meal-card" aria-label={`${meal.title} on ${dayName(date)}`}>
-                    <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
-                    <strong className="meal-title">{meal.title}</strong>
-                    <span className="meal-subtitle">{meal.subtitle}</span>
-                    <span className="meal-meta"><MapPin size={12} /> {meal.venue}</span>
-                    {meal.prepNote ? <span className="meal-meta"><CheckCircle2 size={12} /> {meal.prepNote}</span> : null}
-                    {meal.leftoverNote ? <span className="meal-leftover"><PackageCheck size={12} /> {meal.leftoverNote}</span> : null}
+                    <button
+                      className="meal-card-primary"
+                      type="button"
+                      aria-label={`Open ${formatCalendarDate(meal.date, { weekday: "long", month: "short", day: "numeric" })} day`}
+                      onClick={() => onOpenDay(meal.date)}
+                    >
+                      <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
+                      <strong className="meal-title">{meal.title}</strong>
+                      <span className="meal-subtitle">{meal.subtitle}</span>
+                      <span className="meal-meta"><MapPin size={12} /> {meal.venue}</span>
+                      {meal.leftoverNote ? <span className="meal-leftover"><PackageCheck size={12} /> {meal.leftoverNote}</span> : null}
+                    </button>
                     <div className="meal-card-actions">
-                      <RecipeSummaryLink className="meal-card-preview" meal={meal} onOpenRecipeSummary={onOpenRecipeSummary}>Open recipe <ChevronRight size={14} /></RecipeSummaryLink>
-                      <MealEditorTrigger className="meal-card-editor" mealId={meal.id} onOpenMeal={onOpenMeal}><PencilLine size={14} /> Edit meal</MealEditorTrigger>
+                      <RecipeSummaryLink className="meal-card-preview" meal={meal} onOpenRecipeSummary={onOpenRecipeSummary}>Peek recipe <ChevronRight size={14} /></RecipeSummaryLink>
                     </div>
                   </article>
               ))}
@@ -1783,7 +1856,6 @@ function WeekView({ week, today, onOpenMeal, onOpenRecipeSummary, onNavigate }: 
         })}
       </div>
       <div className="mobile-pressure-strip">
-        <button type="button" onClick={() => onNavigate("prep")}><ListChecks size={15} /> Prep <strong>{week.data.prepSessions.flatMap((session) => session.steps).filter((entry) => findStep(week, entry.stepId)?.step.complete).length}/{week.data.prepSessions.flatMap((session) => session.steps).length}</strong></button>
         <button type="button" onClick={() => onNavigate("groceries")}><ShoppingBasket size={15} /> Groceries <strong>{week.data.groceries.filter((item) => item.checked).length}/{week.data.groceries.length}</strong></button>
       </div>
     </div>
@@ -1792,37 +1864,49 @@ function WeekView({ week, today, onOpenMeal, onOpenRecipeSummary, onNavigate }: 
 
 function TonightView(props: {
   week: WeekPlan;
-  today: IsoDate;
+  selectedDate: IsoDate;
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
   onOpenMeal: (id: string, trigger: HTMLElement) => void;
+  onOpenDay: (date: IsoDate) => void;
 }) {
-  const { week, today, disabled, mutate, sendContextMessage, onOpenMeal } = props;
-  const meal = week.data.meals.find((item) => item.date === today);
+  const { week, selectedDate, disabled, mutate, sendContextMessage, onOpenMeal, onOpenDay } = props;
+  const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
+  const dayIndex = dates.indexOf(selectedDate);
+  const dayNavigation = dayIndex >= 0 ? (
+    <nav className="day-navigation" aria-label="Day navigation">
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="Open previous day" title="Previous day" disabled={dayIndex === 0} onClick={() => onOpenDay(dates[dayIndex - 1])}><ChevronLeft /></Button>
+      <span>{dayIndex + 1} of {dates.length}</span>
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="Open next day" title="Next day" disabled={dayIndex === dates.length - 1} onClick={() => onOpenDay(dates[dayIndex + 1])}><ChevronRight /></Button>
+    </nav>
+  ) : null;
+  const meal = week.data.meals.find((item) => item.date === selectedDate);
   const assignedLeftover = week.data.leftovers.find(
     (leftover) =>
       leftover.state === "assigned" &&
-      leftover.assignedDate === today,
+      leftover.assignedDate === selectedDate,
   );
-  if (!weekContainsDate(week.id, today)) {
+  if (!weekContainsDate(week.id, selectedDate)) {
     return (
       <div className="finished-state">
+        {dayNavigation}
         <CalendarDays size={34} />
-        <h3>No dinner in this selected week</h3>
-        <p>Select the week containing today or use the week view.</p>
+        <h3>No dinner on this day</h3>
+        <p>Choose a dinner date from Week or select a different week.</p>
       </div>
     );
   }
   if (assignedLeftover) {
     return (
       <div className="finished-state assigned-leftover">
+        {dayNavigation}
         <PackageCheck size={34} />
-        <p className="eyebrow">{dayName(today)} dinner · leftovers</p>
+        <p className="eyebrow">{formatCalendarDate(selectedDate, { weekday: "long", month: "short", day: "numeric" })} dinner · leftovers</p>
         <h3>{assignedLeftover.label}</h3>
-        <p>{assignedLeftover.portions} portions are assigned to tonight.</p>
-        <button
-          className="primary-button"
+        <p>{assignedLeftover.portions} portions are assigned to this day.</p>
+        <PlannerActionButton
+          tone="primary"
           type="button"
           disabled={disabled}
           onClick={() => void mutate({
@@ -1830,16 +1914,17 @@ function TonightView(props: {
             weekId: week.id,
             leftoverId: assignedLeftover.id,
           })}
-        ><Check size={16} /> Mark eaten</button>
+        ><Check size={16} /> Mark eaten</PlannerActionButton>
       </div>
     );
   }
   if (!meal) {
     return (
       <div className="finished-state">
+        {dayNavigation}
         <CalendarDays size={34} />
-        <h3>No dinner in this selected week</h3>
-        <p>Select the week containing today or use the week view.</p>
+        <h3>No dinner on this day</h3>
+        <p>Choose a dinner date from Week or select a different week.</p>
       </div>
     );
   }
@@ -1849,7 +1934,7 @@ function TonightView(props: {
       <div className="tonight-main">
         <div className="tonight-hero">
           <div>
-            <p className="eyebrow">{dayName(today)} dinner · {meal.venue}</p>
+            <p className="eyebrow">{formatCalendarDate(selectedDate, { weekday: "long", month: "short", day: "numeric" })} dinner · {meal.venue}</p>
             <h2>{meal.title}</h2>
             <p className="meal-subtitle">{meal.subtitle}</p>
             {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
@@ -1857,13 +1942,14 @@ function TonightView(props: {
           </div>
           <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
         </div>
+        {dayNavigation}
         <div className="tonight-actions">
-          <MealEditorTrigger className="secondary-button" mealId={meal.id} onOpenMeal={onOpenMeal}><PencilLine size={16} /> Edit meal</MealEditorTrigger>
+          <MealEditorTrigger tone="secondary" mealId={meal.id} onOpenMeal={onOpenMeal}><PencilLine size={16} /> Edit meal</MealEditorTrigger>
           {meal.status !== "cooking" && meal.status !== "cooked" ? (
-            <button className="primary-button" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooking" })}><Play size={16} /> Start cooking</button>
+            <PlannerActionButton tone="primary" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooking" })}><Play size={16} /> Start cooking</PlannerActionButton>
           ) : null}
           {meal.status !== "cooked" ? (
-            <button className="secondary-button" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooked" })}><Check size={16} /> Mark cooked</button>
+            <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooked" })}><Check size={16} /> Mark cooked</PlannerActionButton>
           ) : null}
         </div>
         <div className="section-title"><ListChecks size={17} /><h3>Instructions</h3><span>{complete}/{meal.instructions.length} done</span></div>
@@ -1888,6 +1974,7 @@ function TonightView(props: {
         </div>
         <div className="plain-panel"><div className="section-title"><StickyNote size={16} /><h3>Recipe note</h3></div><p>{meal.notes || "No recipe note."}</p></div>
         <div className="plain-panel leftover-plan"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><strong>{meal.leftoverNote || "No leftover plan."}</strong></div>
+        {meal.status === "cooked" ? <div className="plain-panel meal-feedback-panel"><div className="section-title"><CheckCircle2 size={16} /><h3>How was it?</h3></div><MealFeedbackRow meal={meal} week={week} disabled={disabled} mutate={mutate} /></div> : null}
       </aside>
     </div>
   );
@@ -1946,14 +2033,13 @@ function TimerAction(props: {
   const label = action === "pauseInstructionTimer" ? "Pause" : action === "resetInstructionTimer" ? "Reset" : step.timerPaused ? "Resume" : "Start";
   const Icon = action === "pauseInstructionTimer" ? Pause : action === "resetInstructionTimer" ? RotateCcw : Play;
   return (
-    <button
-      className="icon-button"
+    <PlannerIconButton
       type="button"
       title={`${label} timer`}
       aria-label={`${label} timer for ${controlTarget}`}
       disabled={disabled}
       onClick={() => onAction(action)}
-    ><Icon size={14} /></button>
+    ><Icon size={14} /></PlannerIconButton>
   );
 }
 
@@ -2141,25 +2227,25 @@ function InstructionStepCommentComposer({
     />
     {showLimit ? <small className="field-limit">{comment.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small> : null}
     <div className={actionsClassName}>
-      <button className="secondary-button" type="button" onClick={close}>Cancel</button>
-      {step.note ? <button
-        className="secondary-button"
+      <PlannerActionButton tone="secondary" type="button" onClick={close}>Cancel</PlannerActionButton>
+      {step.note ? <PlannerActionButton
+        tone="secondary"
         type="button"
         disabled={disabled}
         onClick={() => onUpdateStepNote("", noteDraft.mutationOptions(() => {
           setComment("");
           close();
         }))}
-      >Clear comment</button> : null}
-      <button
-        className="secondary-button"
+      >Clear comment</PlannerActionButton> : null}
+      <PlannerActionButton
+        tone="secondary"
         type="button"
         disabled={disabled || !comment.trim()}
         aria-label={`Save comment for ${controlTarget}`}
         onClick={() => onUpdateStepNote(comment.trim(), noteDraft.mutationOptions(close))}
-      ><StickyNote size={14} /> Save comment</button>
-      <button
-        className="primary-button"
+      ><StickyNote size={14} /> Save comment</PlannerActionButton>
+      <PlannerActionButton
+        tone="primary"
         type="button"
         disabled={disabled || !comment.trim()}
         aria-label={`Ask Codex about ${controlTarget}`}
@@ -2175,7 +2261,7 @@ function InstructionStepCommentComposer({
             });
           });
         }}
-      ><Bot size={14} /> Ask Codex</button>
+      ><Bot size={14} /> Ask Codex</PlannerActionButton>
     </div>
   </div>;
 }
@@ -2337,15 +2423,15 @@ function StepCard(props: {
       onTimerAction={(type) => void mutate({ type, weekId: week.id, stepId: step.id })}
       trailing={<div className="instruction-line-actions">
         {actions}
-        {!archived ? <button
-          className={`icon-button instruction-comment-trigger ${step.note ? "has-note" : ""}`}
+        {!archived ? <PlannerIconButton
+          className={`instruction-comment-trigger ${step.note ? "has-note" : ""}`}
           type="button"
           title={step.note ? "Edit step comment" : "Add step comment"}
           aria-label={`${step.note ? "Edit" : "Add"} comment for ${controlTarget}`}
           aria-expanded={commentOpen}
           disabled={disabled}
           onClick={() => setCommentOpen((current) => !current)}
-        ><MessageSquareText size={15} /></button> : null}
+        ><MessageSquareText size={15} /></PlannerIconButton> : null}
       </div>}
     >
       {editable && !archived ? (
@@ -2355,13 +2441,13 @@ function StepCard(props: {
             <label className="full-field"><span>Amounts, one per line: amount | ingredient</span><textarea aria-label={`Amounts for ${controlTarget}`} maxLength={MAX_STEP_INPUT_TEXT_LENGTH} value={draftInputs} aria-invalid={editAttempted && Boolean(editIssues.inputs)} aria-describedby={editAttempted && editIssues.inputs ? inputErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", event.target.value)} />{editAttempted && editIssues.inputs ? <small id={inputErrorId} className="field-error" role="alert">{editIssues.inputs}</small> : null}</label>
             <label className="full-field"><span>Instruction</span><textarea aria-label={`Instruction text for ${controlTarget}`} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftInstruction} aria-invalid={editAttempted && Boolean(editIssues.instruction)} aria-describedby={editAttempted && editIssues.instruction ? instructionErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "instruction", event.target.value)} />{editAttempted && editIssues.instruction ? <small id={instructionErrorId} className="field-error" role="alert">{editIssues.instruction}</small> : null}</label>
             <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input aria-label={`Timer minutes for ${controlTarget}`} type="number" min="0.5" max="1440" step="0.5" value={draftTimerMinutes} aria-invalid={editAttempted && Boolean(editIssues.timer)} aria-describedby={editAttempted && editIssues.timer ? timerErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "timerMinutes", event.target.value)} />{editAttempted && editIssues.timer ? <small id={timerErrorId} className="field-error" role="alert">{editIssues.timer}</small> : null}</label>
-            <button
-              className="secondary-button"
+            <PlannerActionButton
+              tone="secondary"
               type="button"
               disabled={disabled}
               aria-label={`Save ${controlTarget}`}
               onClick={saveInstruction}
-            ><Check size={15} /> Save instruction</button>
+            ><Check size={15} /> Save instruction</PlannerActionButton>
           </div>
         </details>
       ) : null}
@@ -2506,14 +2592,14 @@ function PrepSessionStepRow(props: {
       }}
       leading={selected ? <span className="prep-drag-handle" aria-hidden="true" title={dragLabel}><GripVertical size={17} /></span> : <span className="prep-drag-spacer" aria-hidden="true" />}
       trailing={<div className="prep-overflow">
-        <button
-          className="icon-button prep-overflow-trigger"
+        <PlannerIconButton
+          className="prep-overflow-trigger"
           type="button"
           aria-label={`More options for ${controlTarget}`}
           aria-expanded={menuOpen}
           disabled={rowDisabled}
           onClick={() => setMenuOpen((current) => !current)}
-        ><EllipsisVertical size={17} /></button>
+        ><EllipsisVertical size={17} /></PlannerIconButton>
         {menuOpen ? <div className="prep-overflow-menu" role="menu" aria-label={`Options for ${controlTarget}`}>
           <RecipeSummaryLink
             className="grocery-meal-link prep-menu-recipe"
@@ -2575,23 +2661,29 @@ function PrepRecipeSource({
 }) {
   const selectedMeal = week.data.meals.find((meal) => meal.id === selectedMealId) ?? week.data.meals[0];
   const selectedCount = selectedMeal?.instructions.filter((step) => selectedStepIds.has(step.id)).length ?? 0;
+  const assignedPrepStepIds = new Set(week.data.prepSessions.flatMap((session) => session.steps.map((entry) => entry.stepId)));
   return (
     <div className="prep-recipe-source" aria-label="Recipe instructions">
       <p className="eyebrow">Recipe instructions</p>
-      <p className="prep-source-help">Choose a recipe, then drag its steps onto a prep date or into {targetSessionLabel ?? "the selected prep date"}.</p>
-      <div className="prep-recipe-picker" role="list" aria-label="Recipes">
-        {week.data.meals.map((meal) => <button key={meal.id} type="button" className={meal.id === selectedMeal?.id ? "active" : ""} aria-pressed={meal.id === selectedMeal?.id} onClick={() => onSelectMeal(meal.id)}>{meal.title}</button>)}
-      </div>
+      <p className="prep-source-help">Choose a recipe, then drag its steps onto a prep date or into {targetSessionLabel ?? "the selected prep date"}. Use Other dates to add a date before you drag.</p>
+      <ToggleGroup className="prep-recipe-picker" type="single" value={selectedMeal?.id} onValueChange={(mealId) => { if (mealId) onSelectMeal(mealId); }} aria-label="Recipes">
+        {week.data.meals.map((meal) => {
+          const unassignedCount = meal.instructions.filter((step) => !step.complete && !assignedPrepStepIds.has(step.id)).length;
+          return <ToggleGroupItem key={meal.id} value={meal.id}><span>{meal.title}</span>{unassignedCount ? <small>{unassignedCount} to prep</small> : null}</ToggleGroupItem>;
+        })}
+      </ToggleGroup>
       {selectedMeal ? <div className="prep-recipe-steps">
         <strong>{selectedMeal.title}</strong>
         {selectedCount ? <p className="prep-source-selection-summary"><strong>{selectedCount} selected</strong><span>Drag any selected instruction onto a prep date.</span></p> : null}
-        {selectedMeal.instructions.map((step, index) => <button
+        {selectedMeal.instructions.map((step, index) => {
+          const assigned = assignedPrepStepIds.has(step.id);
+          return <button
           key={step.id}
-          className={`prep-source-step ${step.complete ? "complete" : ""} ${selectedStepIds.has(step.id) ? "selected" : ""}`}
+          className={`prep-source-step ${step.complete ? "complete" : ""} ${assigned ? "assigned" : "unassigned"} ${selectedStepIds.has(step.id) ? "selected" : ""}`}
           type="button"
           draggable={!disabled}
           aria-pressed={selectedStepIds.has(step.id)}
-          aria-label={`Drag ${stepControlTarget(selectedMeal, step, index + 1)} onto a prep date`}
+          aria-label={`Drag ${stepControlTarget(selectedMeal, step, index + 1)} onto a prep date${assigned ? "; already assigned to prep" : "; not assigned to prep"}`}
           onClick={(event) => onSelectStep(step.id, event)}
           onMouseDown={(event) => {
             if (event.button !== 0) return;
@@ -2604,7 +2696,8 @@ function PrepRecipeSource({
             event.dataTransfer.setData("application/x-prep-recipe-steps", JSON.stringify(stepIds));
           }}
           onDragEnd={onRecipeStepDragEnd}
-        ><GripVertical size={14} /><span>{step.instruction}</span>{step.complete ? <Check size={14} /> : null}</button>)}
+        ><GripVertical size={14} /><span>{step.instruction}</span><small>{assigned ? "Assigned" : "To prep"}</small></button>;
+        })}
       </div> : null}
     </div>
   );
@@ -2619,8 +2712,7 @@ function PrepView(props: {
 }) {
   const { week, disabled, mutate, sendContextMessage, onOpenRecipeSummary } = props;
   const [selectedMealId, setSelectedMealId] = useState(week.data.meals[0]?.id ?? "");
-  const [selectedPrepDate, setSelectedPrepDate] = useState<IsoDate>(week.id);
-  const [prepTimelineStart, setPrepTimelineStart] = useState<IsoDate>(week.id);
+  const [selectedPrepDate, setSelectedPrepDate] = useState<IsoDate>(() => [...week.data.prepSessions].map((session) => session.prepDate).sort()[0] ?? week.id);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(() => new Set());
   const [entrySelectionAnchorId, setEntrySelectionAnchorId] = useState<string | null>(null);
   const [selectedSourceStepIds, setSelectedSourceStepIds] = useState<Set<string>>(() => new Set());
@@ -2630,11 +2722,12 @@ function PrepView(props: {
   const [dropTargetPrepDate, setDropTargetPrepDate] = useState<IsoDate | null>(null);
   const [dropInsertion, setDropInsertion] = useState<PrepDropInsertion>(null);
   const [sourceOpen, setSourceOpen] = useState(false);
+  const [prepDeleteDialogOpen, setPrepDeleteDialogOpen] = useState(false);
   const sourceRestoreRef = useRef<HTMLButtonElement>(null);
   const pointerDragRef = useRef<PrepPointerDrag | null>(null);
   const pointerDragActiveRef = useRef(false);
   const prepWeekEnd = addIsoDateDays(week.id, 6);
-  const prepTimelineDates = Array.from({ length: 7 }, (_, offset) => addIsoDateDays(prepTimelineStart, offset));
+  const prepTimelineDates = Array.from(new Set([...week.data.prepSessions.map((session) => session.prepDate), selectedPrepDate])).sort() as IsoDate[];
   const selectedMeal = week.data.meals.find((meal) => meal.id === selectedMealId) ?? week.data.meals[0] ?? null;
   const sessionEntries = week.data.prepSessions.flatMap((session) => session.steps);
   const completedEntries = sessionEntries.filter((entry) => findStep(week, entry.stepId)?.step.complete).length;
@@ -2666,10 +2759,6 @@ function PrepView(props: {
     setSourceSelectionAnchorId(null);
   };
   const showPrepDate = (prepDate: IsoDate) => {
-    const timelineEnd = addIsoDateDays(prepTimelineStart, 6);
-    if (prepDate < prepTimelineStart || prepDate > timelineEnd) {
-      setPrepTimelineStart(prepDate > week.id ? week.id : prepDate);
-    }
     setSelectedPrepDate(prepDate);
   };
   const endDrag = () => {
@@ -2761,16 +2850,11 @@ function PrepView(props: {
     const targetSession = prepSessionsByDay.get(moveTargetPrepDate)?.[0];
     moveEntriesToDate(selectedPrepDate, moveTargetPrepDate as IsoDate, selectedEntryIdsInOrder, targetSession?.steps.length ?? 0);
   };
-  const removeSelectedSession = () => {
+  const confirmRemoveSelectedSession = () => {
     if (!selectedSession) return;
+    setPrepDeleteDialogOpen(false);
     clearEntrySelection();
     void mutate({ type: "clearPrepDate", weekId: week.id, prepDate: selectedPrepDate });
-  };
-  const shiftPrepTimeline = (offset: number) => {
-    const candidate = addIsoDateDays(prepTimelineStart, offset);
-    const nextStart = offset > 0 && candidate > week.id ? week.id : candidate;
-    setPrepTimelineStart(nextStart);
-    setSelectedPrepDate(nextStart);
   };
   const dragHasRecipeSteps = (event: ReactDragEvent<HTMLElement>) =>
     !disabled && (dragState?.kind === "recipe" || Array.from(event.dataTransfer.types).includes("application/x-prep-recipe-step"));
@@ -2886,7 +2970,6 @@ function PrepView(props: {
         <div className="prep-session-list">
           <div className="prep-session-tabs">
             <div className="prep-session-tab-navigation">
-              <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Show earlier prep dates" title="Earlier prep dates" disabled={disabled} onClick={() => shiftPrepTimeline(-7)}><ChevronLeft size={15} /></button>
               <div className="prep-session-tablist" role="tablist" aria-label="Prep dates">
                 {prepTimelineDates.map((prepDate) => {
                   const sessions = prepSessionsByDay.get(prepDate) ?? [];
@@ -2917,19 +3000,25 @@ function PrepView(props: {
                   ><span>{dateLabel}</span>{stepCount ? <strong>{stepCount}</strong> : null}</button>;
                 })}
               </div>
-              <button className="icon-button prep-session-tab-scroll" type="button" aria-label="Show later prep dates" title="Later prep dates" disabled={disabled || prepTimelineStart >= week.id} onClick={() => shiftPrepTimeline(7)}><ChevronRight size={15} /></button>
             </div>
             <div className="prep-session-actions">
-              <label className="prep-date-jump"><span className="sr-only">Jump to prep date</span><input aria-label="Jump to prep date" type="date" max={prepWeekEnd} value={prepTimelineStart} onChange={(event) => {
-                const nextDate = event.target.value as IsoDate;
-                if (!nextDate || nextDate > prepWeekEnd) return;
-                setPrepTimelineStart(nextDate);
-                setSelectedPrepDate(nextDate);
-              }} /></label>
-              <button ref={sourceRestoreRef} className="secondary-button prep-session-add-steps" type="button" disabled={disabled || !week.data.meals.length} title={`Add recipe steps to ${selectedSessionDateLabel}`} aria-label={`Add recipe steps to ${selectedSessionDateLabel}`} onClick={() => setSourceOpen(true)}><ListChecks size={15} /> Add steps</button>
-              <button className="secondary-button prep-session-select-all" type="button" disabled={disabled || !selectedSession?.steps.length} aria-label={`Select all ${selectedSession?.steps.length ?? 0} prep ${(selectedSession?.steps.length ?? 0) === 1 ? "step" : "steps"}`} onClick={selectAllSessionEntries}><ListChecks size={15} /> Select all</button>
-              {!disabled && selectedSession ? <button className="icon-button danger prep-session-tab-delete" type="button" title={`Delete ${selectedSessionDateLabel} prep`} aria-label={`Delete ${selectedSessionDateLabel} prep`} onClick={removeSelectedSession}><Trash2 size={15} /></button> : null}
+              <details className="prep-date-tools">
+                <summary className="prep-session-control">Other dates</summary>
+                <div>
+                  <label className="prep-date-jump"><span className="sr-only">Jump to prep date</span><input aria-label="Jump to prep date" type="date" max={prepWeekEnd} value={selectedPrepDate} onChange={(event) => {
+                    const nextDate = event.target.value as IsoDate;
+                    if (!nextDate || nextDate > prepWeekEnd) return;
+                    showPrepDate(nextDate);
+                  }} /></label>
+                </div>
+              </details>
+              <PlannerActionButton ref={sourceRestoreRef} className="prep-session-control prep-session-add-steps" tone="secondary" type="button" disabled={disabled || !week.data.meals.length} title={`Add recipe steps to ${selectedSessionDateLabel}`} aria-label={`Add recipe steps to ${selectedSessionDateLabel}`} onClick={() => setSourceOpen(true)}><Plus size={15} /> Add steps</PlannerActionButton>
+              {!disabled && selectedSession ? <PlannerIconButton className="prep-session-tab-delete" tone="attention" type="button" title={`Delete ${selectedSessionDateLabel} prep`} aria-label={`Delete ${selectedSessionDateLabel} prep`} onClick={() => setPrepDeleteDialogOpen(true)}><Trash2 size={15} /></PlannerIconButton> : null}
             </div>
+          </div>
+          <div className="prep-list-selection-header">
+            {selectedSession?.steps.length ? <label className="prep-select-all"><input type="checkbox" checked={selectedEntryIdsInOrder.length === selectedSession.steps.length} disabled={disabled} onChange={(event) => event.target.checked ? selectAllSessionEntries() : clearEntrySelection()} /> Select all</label> : null}
+            {selectedEntryIdsInOrder.length ? <div className="prep-selection-toolbar" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><input className="prep-selection-move-target" aria-label="Move selected prep steps to" type="date" max={prepWeekEnd} value={moveTargetPrepDate} onChange={(event) => setMoveTargetPrepDate(event.target.value)} /><PlannerActionButton className="prep-selection-move" tone="secondary" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</PlannerActionButton></div> : null}
           </div>
           <section
             id={`prep-date-panel-${selectedPrepDate}`}
@@ -2945,7 +3034,6 @@ function PrepView(props: {
             }}
             onDrop={(event) => receivePrepDrop(event, selectedPrepDate, selectedSession?.steps.length ?? 0)}
           >
-            {selectedEntryIdsInOrder.length ? <div className="prep-selection-summary" role="status"><strong>{selectedEntryIdsInOrder.length} selected</strong><span>Drag, or move them together.</span><input className="prep-selection-move-target" aria-label="Move selected prep steps to" type="date" max={prepWeekEnd} value={moveTargetPrepDate} onChange={(event) => setMoveTargetPrepDate(event.target.value)} /><button className="secondary-button prep-selection-move" type="button" disabled={disabled || !canMoveSelectedEntries} aria-label="Move selected prep steps" onClick={moveSelectedEntries}>Move</button><button className="text-button" type="button" onClick={clearEntrySelection}>Clear</button></div> : null}
             <div className="prep-step-list">
               {selectedSession?.steps.map((entry, index) => {
                 const resolved = findStep(week, entry.stepId);
@@ -2989,10 +3077,11 @@ function PrepView(props: {
           </section>
         </div>
       </div>
-      {sourceOpen && typeof document !== "undefined" ? createPortal(<aside className="prep-source-window" role="dialog" aria-label="Recipe instructions">
+      {sourceOpen && typeof document !== "undefined" ? createPortal(<div className="prep-source-backdrop" onMouseDown={() => setSourceOpen(false)}>
+        <aside className="prep-source-window" role="dialog" aria-label="Recipe instructions" onMouseDown={(event) => event.stopPropagation()}>
         <header className="prep-source-window-heading">
           <div><p className="eyebrow">Batch prep</p><h3>Recipe instructions</h3></div>
-          <button className="icon-button" type="button" title="Close recipe steps" aria-label="Close recipe steps" onClick={() => setSourceOpen(false)}><X size={16} /></button>
+          <PlannerIconButton type="button" title="Close recipe steps" aria-label="Close recipe steps" onClick={() => setSourceOpen(false)}><X size={16} /></PlannerIconButton>
         </header>
         <PrepRecipeSource
           week={week}
@@ -3009,7 +3098,20 @@ function PrepView(props: {
             beginPointerDrag({ kind: "recipe", stepIds }, event);
           }}
         />
-      </aside>, document.body) : null}
+        </aside>
+      </div>, document.body) : null}
+      <Dialog open={prepDeleteDialogOpen} onOpenChange={setPrepDeleteDialogOpen}>
+        <DialogContent showCloseButton={false} aria-label={`Delete ${selectedSessionDateLabel} prep`}>
+          <DialogHeader>
+            <DialogTitle>Delete prep for {selectedSessionDateLabel}?</DialogTitle>
+            <DialogDescription>This removes the {selectedSession?.steps.length ?? 0} assigned prep {selectedSession?.steps.length === 1 ? "step" : "steps"} from this date. Recipe instructions are not deleted.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <PlannerActionButton tone="secondary" type="button" onClick={() => setPrepDeleteDialogOpen(false)}>Cancel</PlannerActionButton>
+            <PlannerActionButton tone="attention" type="button" onClick={confirmRemoveSelectedSession}>Delete prep date</PlannerActionButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -3082,8 +3184,6 @@ function GroceryView({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [bulkSource, setBulkSource] = useState<GroceryItem["source"] | "">("");
-  const [draggingSelection, setDraggingSelection] = useState(false);
-  const [dragTarget, setDragTarget] = useState<GroceryItem["source"] | null>(null);
   const [moveNotice, setMoveNotice] = useState<{ source: GroceryItem["source"]; count: number } | null>(null);
   const visible = week.data.groceries.filter((entry) => {
     if (filter === "all") return true;
@@ -3096,16 +3196,21 @@ function GroceryView({
   const visibleIdsInDisplayOrder = GROCERY_SECTIONS.flatMap((group) =>
     visible.filter((entry) => entry.section === group).map((entry) => entry.id),
   );
+  const allVisibleSelected = Boolean(visibleIdsInDisplayOrder.length) && visibleIdsInDisplayOrder.every((id) => selectedIds.has(id));
   const clearSelection = () => {
     setSelectedIds(new Set());
     setSelectionAnchorId(null);
     setBulkSource("");
   };
-  const closeSelectionMode = () => {
-    clearSelection();
-    setSelectionMode(false);
-    setDraggingSelection(false);
-    setDragTarget(null);
+  const toggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      clearSelection();
+      setSelectionMode(false);
+      return;
+    }
+    setSelectedIds(new Set(visibleIdsInDisplayOrder));
+    setSelectionAnchorId(visibleIdsInDisplayOrder[0] ?? null);
+    setSelectionMode(true);
   };
   const selectRow = (itemId: string, event: ReactMouseEvent<HTMLElement>, allowControlTarget = false) => {
     if (disabled) return;
@@ -3147,8 +3252,6 @@ function GroceryView({
         onAccepted: () => {
           setMoveNotice({ source: nextSource, count: itemIds.length });
           clearSelection();
-          setDraggingSelection(false);
-          setDragTarget(null);
         },
       },
     );
@@ -3163,7 +3266,7 @@ function GroceryView({
     <div className="grocery-layout">
       <div className={`grocery-list ${selectionMode ? "selection-mode" : ""}`}>
         <div className="surface-summary grocery-summary">
-          <div><p className="eyebrow">This week&apos;s recipes</p><h2>Recipe ingredients</h2><p className="grocery-list-description">Only ingredients connected to this week’s dinners belong here.</p></div>
+          <div><p className="eyebrow">This week&apos;s dinners</p><h2>Shopping list</h2><p className="grocery-list-description">Check off what you have; each item keeps its recipe source for reference.</p></div>
           <div className="grocery-summary-controls">
             <SegmentedControl
               ariaLabel="Grocery filter"
@@ -3171,50 +3274,15 @@ function GroceryView({
               value={filter}
               onChange={(value) => { clearSelection(); setMoveNotice(null); setFilter(value); }}
             />
-            <button className="secondary-button grocery-selection-toggle" type="button" aria-pressed={selectionMode} onClick={() => selectionMode ? closeSelectionMode() : setSelectionMode(true)}>
-              <ListChecks size={15} /> {selectionMode ? "Cancel" : "Move items"}
-            </button>
           </div>
         </div>
-        {selectionMode ? <div className="grocery-bulk-actions" aria-label="Bulk grocery actions" data-testid="grocery-bulk-actions">
-          <div className="grocery-selection-summary"><strong>{selectedGroceries.length} selected</strong><span>Click an ingredient row to select it. Drag a selected item to a source tab, or choose a source below.</span></div>
-          <div className="grocery-source-targets" aria-label="Grocery source tabs">
-            {GROCERY_SOURCES.map((targetSource) => {
-              const canMove = selectedGroceries.some((entry) => entry.source !== targetSource);
-              return <button
-                key={targetSource}
-                className={draggingSelection && dragTarget === targetSource ? "drag-over" : ""}
-                data-testid={`grocery-source-target-${targetSource}`}
-                disabled={disabled || !canMove}
-                type="button"
-                onClick={() => moveSelectedToSource(targetSource)}
-                onDragOver={(event) => {
-                  if (!draggingSelection || disabled || !canMove) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                  setDragTarget(targetSource);
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  if (!disabled && canMove) moveSelectedToSource(targetSource);
-                  setDraggingSelection(false);
-                  setDragTarget(null);
-                }}
-                title={`Move selected groceries to ${GROCERY_SOURCE_LABELS[targetSource]}`}
-              >{GROCERY_SOURCE_LABELS[targetSource]}</button>;
-            })}
-          </div>
-          <div className="grocery-bulk-dropdown">
-            <select value={bulkSource} aria-label="Move selected groceries to source" onChange={(event) => setBulkSource(event.target.value as GroceryItem["source"] | "")}>
-              <option value="">Move to source…</option>
-              {GROCERY_SOURCES.map((targetSource) => <option key={targetSource} value={targetSource}>{GROCERY_SOURCE_LABELS[targetSource]}</option>)}
-            </select>
-            <button className="secondary-button" type="button" disabled={disabled || !bulkSource || !selectedGroceries.some((entry) => entry.source !== bulkSource)} onClick={() => bulkSource && moveSelectedToSource(bulkSource)}>Move</button>
-          </div>
-        </div> : null}
+        <div className="grocery-list-selection-header">
+          <label className="grocery-select-all"><input type="checkbox" checked={allVisibleSelected} disabled={disabled || !visibleIdsInDisplayOrder.length} onChange={toggleSelectAllVisible} /> Select all</label>
+          {selectedGroceries.length ? <div className="grocery-selection-toolbar" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkSource} aria-label="Move selected groceries to source" onChange={(event) => setBulkSource(event.target.value as GroceryItem["source"] | "")}><option value="">Move to…</option>{GROCERY_SOURCES.map((targetSource) => <option key={targetSource} value={targetSource}>{GROCERY_SOURCE_LABELS[targetSource]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkSource || !selectedGroceries.some((entry) => entry.source !== bulkSource)} onClick={() => bulkSource && moveSelectedToSource(bulkSource)}>Move</PlannerActionButton></div> : null}
+        </div>
         {moveNotice ? <div className="grocery-move-notice" role="status" data-testid="grocery-move-notice">
           <span>Moved {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.source]}.</span>
-          <button type="button" className="text-button" onClick={() => { setFilter(moveNotice.source); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.source]}</button>
+          <PlannerActionButton tone="quiet" type="button" onClick={() => { setFilter(moveNotice.source); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.source]}</PlannerActionButton>
         </div> : null}
         {GROCERY_SECTIONS.map((group) => {
           const entries = visible.filter((entry) => entry.section === group);
@@ -3246,41 +3314,10 @@ function GroceryView({
                     <div className="grocery-item-copy">
                       <div className="grocery-primary-line">
                         <div className="grocery-select-target"><strong>{item}</strong><span className="grocery-detail">{detail || "No amount noted"}</span></div>
-                        <select
-                          className="grocery-source-select"
-                          value={entry.source}
-                          disabled={disabled}
-                          aria-label={`Source for ${item}`}
-                          data-grocery-row-control
-                          onMouseDown={(event) => event.stopPropagation()}
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={(event) => moveGroceriesToSource([entry.id], event.target.value as GroceryItem["source"])}
-                      >
-                          {GROCERY_SOURCES.map((value) => <option key={value} value={value}>{GROCERY_SOURCE_LABELS[value]}</option>)}
-                        </select>
+                        <span className="grocery-source-badge" title={`Source: ${GROCERY_SOURCE_LABELS[entry.source]}`}>{GROCERY_SOURCE_LABELS[entry.source]}</span>
                       </div>
                       <div className="grocery-recipe-links"><span>For</span><RecipeSummaryLink meal={linkedMeal} onOpenRecipeSummary={onOpenRecipeSummary} /></div>
                     </div>
-                    {selectionMode ? selectedIds.has(entry.id) ? <button
-                      className="icon-button grocery-drag-handle"
-                      type="button"
-                      draggable={!disabled}
-                      disabled={disabled}
-                      aria-label={`Drag ${selectedGroceries.length} selected ${selectedGroceries.length === 1 ? "grocery" : "groceries"} to a source tab`}
-                      title="Drag selected groceries to Shop, Farm box, or On hand"
-                      data-grocery-row-control
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onClick={(event) => event.stopPropagation()}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", "grocery-selection");
-                        setDraggingSelection(true);
-                      }}
-                      onDragEnd={() => {
-                        setDraggingSelection(false);
-                        setDragTarget(null);
-                      }}
-                    ><GripVertical size={15} /></button> : <span className="grocery-drag-spacer" aria-hidden="true" /> : null}
                   </div>
                 );
               })}
@@ -3294,14 +3331,9 @@ function GroceryView({
 }
 
 function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  const [targets, setTargets] = useState<Record<string, IsoDate>>({});
-  const assignmentDraft = useVersionedDraft();
   return (
     <div className="leftover-feedback">
       {week.data.leftovers.map((leftover) => {
-        const source = week.data.meals.find((meal) => meal.id === leftover.sourceMealId);
-        const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index)).filter((date) => !source || date > source.date);
-        const target = targets[leftover.id] ?? dates[0];
         return (
           <div key={leftover.id}>
             <span><strong>{leftover.label} · {leftover.portions} portions</strong><small>{leftover.state}{leftover.assignedDate ? ` for ${leftover.assignedDate}` : ""}</small></span>
@@ -3312,13 +3344,7 @@ function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled
               value={leftover.quality}
               onChange={(quality) => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}
             />
-            {leftover.state === "available" && dates.length ? (
-              <div className="inline-control-row">
-                <select aria-label={`Dinner date for ${leftover.label} leftovers`} value={target} disabled={disabled} onChange={(event) => { assignmentDraft.begin(); setTargets((current) => ({ ...current, [leftover.id]: event.target.value as IsoDate })); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "short", month: "short", day: "numeric" })}</option>)}</select>
-                <button className="secondary-button" type="button" aria-label={`Assign ${leftover.label} leftovers`} disabled={disabled} onClick={() => void mutate({ type: "assignLeftover", weekId: week.id, leftoverId: leftover.id, targetDate: target }, assignmentDraft.mutationOptions())}>Assign</button>
-              </div>
-            ) : null}
-            {leftover.state === "assigned" ? <button className="secondary-button" type="button" aria-label={`Mark ${leftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</button> : null}
+            {leftover.state === "assigned" ? <PlannerActionButton tone="secondary" type="button" aria-label={`Mark ${leftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</PlannerActionButton> : null}
           </div>
         );
       })}
@@ -3327,19 +3353,28 @@ function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled
   );
 }
 
+function MealFeedbackRow({ meal, week, disabled, mutate }: { meal: Meal; week: WeekPlan; disabled: boolean; mutate: Mutate }) {
+  return <div className="feedback-row">
+    <div><strong>{meal.title}</strong><small>{formatCalendarDate(meal.date, { weekday: "long" })} · {meal.status}</small></div>
+    <SegmentedControl ariaLabel={`Feedback for ${meal.title}`} className="feedback-control" disabled={disabled} options={FEEDBACK_VALUES.map((value) => ({ value, label: value, ariaLabel: `Rate ${meal.title} ${value}` }))} value={week.data.feedback[meal.id]} onChange={(value) => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })} />
+  </div>;
+}
+
 function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
   const [lesson, setLesson] = useState(week.data.weekLesson);
   const lessonDraft = useVersionedDraft();
   const draftLesson = lessonDraft.versionRef.current === null
     ? week.data.weekLesson
     : lesson;
-  const feedbackComplete = week.data.meals.filter((meal) => week.data.feedback[meal.id]).length;
+  const feedbackMeals = week.data.meals.filter((meal) => meal.status === "cooked");
+  const feedbackComplete = feedbackMeals.filter((meal) => week.data.feedback[meal.id]).length;
+  const archivedFeedbackCount = week.data.meals.filter((meal) => week.data.feedback[meal.id]).length;
   if (week.status === "archived") {
     return (
       <div className="lifecycle-surface current-archive">
         <span className="archive-icon"><Archive size={24} /></span>
         <p className="eyebrow">Read-only record</p><h2>Week archived</h2>
-        <div className="archive-stats"><span><strong>{week.data.meals.length}</strong> meals</span><span><strong>{feedbackComplete}</strong> ratings</span><span><strong>{week.data.leftovers.length}</strong> leftovers</span></div>
+        <div className="archive-stats"><span><strong>{week.data.meals.length}</strong> meals</span><span><strong>{archivedFeedbackCount}</strong> ratings</span><span><strong>{week.data.leftovers.length}</strong> leftovers</span></div>
         {week.data.weekLesson ? <div className="lesson-band"><StickyNote size={16} /><span><strong>Planning lesson</strong><p>{week.data.weekLesson}</p></span></div> : null}
       </div>
     );
@@ -3347,28 +3382,21 @@ function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: bo
   return (
     <div className="closeout-layout">
       <div className="feedback-list">
-        <div className="surface-summary"><div><p className="eyebrow">Keep the useful signal</p><h2>Family feedback</h2></div><span className="summary-chip">{feedbackComplete}/{week.data.meals.length} rated</span></div>
-        {week.data.meals.map((meal) => (
-          <div className="feedback-row" key={meal.id}>
-            <div><strong>{meal.title}</strong><small>{formatCalendarDate(meal.date, { weekday: "long" })} · {meal.status}</small></div>
-            <SegmentedControl
-              ariaLabel={`Feedback for ${meal.title}`}
-              className="feedback-control"
-              disabled={disabled}
-              options={FEEDBACK_VALUES.map((value) => ({ value, label: value, ariaLabel: `Rate ${meal.title} ${value}` }))}
-              value={week.data.feedback[meal.id]}
-              onChange={(value) => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })}
-            />
-          </div>
-        ))}
+        <div className="surface-summary"><div><p className="eyebrow">Keep the useful signal</p><h2>Cooked meal feedback</h2></div><span className="summary-chip">{feedbackComplete}/{feedbackMeals.length} rated</span></div>
+        {feedbackMeals.map((meal) => <MealFeedbackRow key={meal.id} meal={meal} week={week} disabled={disabled} mutate={mutate} />)}
+        {!feedbackMeals.length ? <p className="empty-copy">Cook a meal first, then capture the signal worth carrying into the next plan.</p> : null}
       </div>
       <aside className="closeout-notes">
-        <label><span>What should next week remember?</span><textarea maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLesson} onChange={(event) => { lessonDraft.begin(); setLesson(event.target.value); }} placeholder="A short planning lesson" /><small className="field-limit">{draftLesson.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
-        <button className="secondary-button" type="button" disabled={disabled || draftLesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: draftLesson }, lessonDraft.mutationOptions())}><StickyNote size={15} /> Save lesson</button>
-        <span className="field-label">Leftovers</span>
-        <LeftoverControls week={week} disabled={disabled} mutate={mutate} />
+        <section className="closeout-note-section">
+          <span className="field-label">Leftovers</span>
+          <LeftoverControls week={week} disabled={disabled} mutate={mutate} />
+        </section>
+        <section className="closeout-note-section">
+          <label><span>What should next week remember?</span><textarea maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLesson} onChange={(event) => { lessonDraft.begin(); setLesson(event.target.value); }} placeholder="A short planning lesson" /><small className="field-limit">{draftLesson.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
+          <PlannerActionButton tone="secondary" type="button" disabled={disabled || draftLesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: draftLesson }, lessonDraft.mutationOptions())}><StickyNote size={15} /> Save lesson</PlannerActionButton>
+        </section>
         <span className="closeout-check"><CheckCircle2 size={14} /> Archiving freezes this week as a read-only family record.</span>
-        <button className="primary-button" type="button" disabled={disabled || week.status !== "active"} onClick={() => void mutate({ type: "archiveWeek", weekId: week.id })}><Archive size={16} /> Archive active week</button>
+        <PlannerActionButton tone="primary" type="button" disabled={disabled || week.status !== "active"} onClick={() => void mutate({ type: "archiveWeek", weekId: week.id })}><Archive size={16} /> Archive active week</PlannerActionButton>
       </aside>
     </div>
   );
@@ -3378,9 +3406,9 @@ function RecipeSource({ meal }: { meal: Meal }) {
   if (!meal.sourceRecipe) return null;
   return (
     <p className="recipe-source">
-      <span>Informational recipe source</span>
+      <span>Recipe source</span>
       <a href={meal.sourceRecipe.url} target="_blank" rel="noopener noreferrer">
-        {meal.sourceRecipe.identity}
+        Open {meal.sourceRecipe.identity} <ChevronRight size={13} aria-hidden="true" />
       </a>
     </p>
   );
@@ -3430,7 +3458,7 @@ function RecipeSummaryDrawer({
         {meal.prepNote ? <section className="snapshot-section"><div className="section-title"><ListChecks size={16} /><h3>Prep note</h3></div><p className="recipe-summary-copy">{meal.prepNote}</p></section> : null}
         {meal.leftoverNote ? <section className="snapshot-section"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><p className="recipe-summary-copy">{meal.leftoverNote}</p></section> : null}
       </div>
-      <div className="drawer-footer"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
+      <div className="drawer-footer"><PlannerActionButton tone="secondary" type="button" onClick={onClose}>Close</PlannerActionButton></div>
     </ModalDrawer>
   );
 }
@@ -3600,12 +3628,12 @@ function MealDrawer(props: {
           <label><span>Prep note</span><textarea aria-label="Prep note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => editRecipeField("prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>
           <label><span>Leftover note</span><textarea aria-label="Leftover note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLeftoverNote} aria-invalid={saveAttempted && Boolean(mealIssues.leftoverNote)} aria-describedby={saveAttempted && mealIssues.leftoverNote ? "meal-leftover-note-error" : undefined} onChange={(event) => editRecipeField("leftoverNote", event.target.value)} /><FieldError id="meal-leftover-note-error" message={saveAttempted ? mealIssues.leftoverNote : undefined} /></label>
         </div>
-        <button className="primary-button" type="button" disabled={disabled} onClick={save}><Check size={15} /> Save recipe details</button>
+        <PlannerActionButton tone="primary" type="button" disabled={disabled} onClick={save}><Check size={15} /> Save recipe details</PlannerActionButton>
         <div className="snapshot-section">
           <h3>Schedule and status</h3>
           <div className="inline-control-row">
             <select aria-label={`Meal date for ${meal.title}`} value={draftTargetDate} disabled={disabled} onChange={(event) => { moveDraft.begin(); setTargetDate(event.target.value as IsoDate); }}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select>
-            <button className="secondary-button" type="button" disabled={disabled || draftTargetDate === meal.date} onClick={() => void mutate({ type: "moveMeal", weekId: week.id, mealId: meal.id, targetDate: draftTargetDate }, moveDraft.mutationOptions())}>Move meal</button>
+            <PlannerActionButton tone="secondary" type="button" disabled={disabled || draftTargetDate === meal.date} onClick={() => void mutate({ type: "moveMeal", weekId: week.id, mealId: meal.id, targetDate: draftTargetDate }, moveDraft.mutationOptions())}>Move meal</PlannerActionButton>
           </div>
           <SegmentedControl
             ariaLabel={`Status for ${meal.title}`}
@@ -3631,9 +3659,9 @@ function MealDrawer(props: {
                 sendContextMessage={sendContextMessage}
                 editable={!archived}
                 actions={<div className="prep-reference-actions recipe-step-actions">
-                  <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index - 1 })}><ArrowUp size={14} /></button>
-                  <button className="icon-button" type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} down`} disabled={disabled || index === meal.instructions.length - 1} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index + 1 })}><ArrowDown size={14} /></button>
-                  <button className="icon-button danger" type="button" title={`Delete ${stepControlTarget(meal, step, index + 1)}`} disabled={disabled || week.data.prepSessions.some((session) => session.steps.some((entry) => entry.stepId === step.id))} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></button>
+                  <PlannerIconButton type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} up`} disabled={disabled || index === 0} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index - 1 })}><ArrowUp size={14} /></PlannerIconButton>
+                  <PlannerIconButton type="button" title={`Move ${stepControlTarget(meal, step, index + 1)} down`} disabled={disabled || index === meal.instructions.length - 1} onClick={() => void mutate({ type: "moveInstructionStep", weekId: week.id, stepId: step.id, targetPosition: index + 1 })}><ArrowDown size={14} /></PlannerIconButton>
+                  <PlannerIconButton tone="attention" type="button" title={`Delete ${stepControlTarget(meal, step, index + 1)}`} disabled={disabled || week.data.prepSessions.some((session) => session.steps.some((entry) => entry.stepId === step.id))} onClick={() => void mutate({ type: "removeInstructionStep", weekId: week.id, stepId: step.id })}><Trash2 size={14} /></PlannerIconButton>
                 </div>}
               />
             ))}
@@ -3642,11 +3670,11 @@ function MealDrawer(props: {
             <label className="full-field"><span>Amounts: amount | ingredient</span><textarea aria-label="New amounts" maxLength={MAX_STEP_INPUT_TEXT_LENGTH} value={newInputs} aria-invalid={newStepAttempted && Boolean(newStepIssues.inputs)} aria-describedby={newStepAttempted && newStepIssues.inputs ? "new-step-inputs-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewInputs(event.target.value); }} /><FieldError id="new-step-inputs-error" message={newStepAttempted ? newStepIssues.inputs : undefined} /></label>
             <label className="full-field"><span>New instruction</span><textarea aria-label="New instruction" maxLength={MAX_COMMAND_TEXT_LENGTH} value={newInstruction} aria-invalid={newStepAttempted && Boolean(newStepIssues.instruction)} aria-describedby={newStepAttempted && newStepIssues.instruction ? "new-step-instruction-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewInstruction(event.target.value); }} /><FieldError id="new-step-instruction-error" message={newStepAttempted ? newStepIssues.instruction : undefined} /></label>
             <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input aria-label="New timer minutes" type="number" min="0.5" max="1440" step="0.5" value={newTimer} aria-invalid={newStepAttempted && Boolean(newStepIssues.timer)} aria-describedby={newStepAttempted && newStepIssues.timer ? "new-step-timer-error" : undefined} onChange={(event) => { newStepDraft.begin(); setNewTimer(event.target.value); }} /><FieldError id="new-step-timer-error" message={newStepAttempted ? newStepIssues.timer : undefined} /></label>
-            <button className="secondary-button" type="button" disabled={disabled} onClick={addInstruction}><Plus size={15} /> Add instruction</button>
+            <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={addInstruction}><Plus size={15} /> Add instruction</PlannerActionButton>
           </div> : null}
         </div>
       </div>
-      <div className="drawer-footer"><button className="secondary-button" type="button" onClick={onClose}>Close</button></div>
+      <div className="drawer-footer"><PlannerActionButton tone="secondary" type="button" onClick={onClose}>Close</PlannerActionButton></div>
     </ModalDrawer>
   );
 }
@@ -3695,7 +3723,7 @@ function HistoryDrawer(props: {
           <div className="history-entry" key={event.eventId}>
             <span className="actor-mark" data-actor={event.actor.toLowerCase()}>{event.actor === "Codex" ? <Bot size={15} /> : <Home size={15} />}</span>
             <div><strong>{event.summary}</strong><span>{event.changes.join(" · ")}</span><small>{timeLabel(event.occurredAt, workspace.state.householdTimeZone)}</small>
-              {index === 0 && canUndo ? <button type="button" disabled={disabled} onClick={() => onUndo(event)}><RotateCcw size={13} /> Undo latest change</button> : null}
+              {index === 0 && canUndo ? <PlannerActionButton tone="quiet" type="button" disabled={disabled} onClick={() => onUndo(event)}><RotateCcw size={13} /> Undo latest change</PlannerActionButton> : null}
             </div>
           </div>
         ))}
@@ -3717,105 +3745,40 @@ function ModalDrawer({
   restoreFocusRef?: { current: HTMLElement | null };
   children: ReactNode;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDialogFocus(ref, onClose, restoreFocusRef);
   return (
-    <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div ref={ref} className={`drawer ${className}`} role="dialog" aria-modal="true" aria-label={title}>
-        <div className="drawer-header"><div><p className="eyebrow">Shared workspace</p><h2>{title}</h2></div><button className="icon-button" type="button" title="Close" onClick={onClose}><X size={19} /></button></div>
+    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent
+        side="right"
+        showCloseButton={false}
+        className={`drawer ${className}`}
+        aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          restoreFocusRef?.current?.focus();
+        }}
+      >
+        <SheetHeader className="drawer-header"><div><p className="eyebrow">Shared workspace</p><SheetTitle>{title}</SheetTitle></div><PlannerIconButton type="button" title="Close" onClick={onClose}><X size={19} /></PlannerIconButton></SheetHeader>
         {children}
-      </div>
-    </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
 function ModalChat({ onClose, restoreFocusRef, children }: { onClose: () => void; restoreFocusRef: { current: HTMLButtonElement | null }; children: ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useDialogFocus(ref, onClose, restoreFocusRef);
   return (
-    <div className="mobile-chat-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div ref={ref} className="mobile-chat-dialog" role="dialog" aria-modal="true" aria-label="Codex task">{children}</div>
-    </div>
+    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent
+        side="bottom"
+        className="mobile-chat-dialog"
+        aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          restoreFocusRef.current?.focus();
+        }}
+      >
+        <SheetTitle className="sr-only">Codex task</SheetTitle>
+        {children}
+      </SheetContent>
+    </Sheet>
   );
-}
-
-function useDialogFocus(
-  ref: { current: HTMLElement | null },
-  onClose: () => void,
-  restoreFocusRef?: { current: HTMLElement | null },
-) {
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
-  }, [onClose]);
-  useEffect(() => {
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const restoreFocus = restoreFocusRef?.current;
-    const root = ref.current;
-    const focusable = () => root
-      ? Array.from(root.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'))
-        .filter((element) => element.getClientRects().length > 0 && !element.closest("[inert]"))
-      : [];
-    const preferred = root?.querySelector<HTMLElement>("[data-autofocus]");
-    (preferred ?? focusable()[0])?.focus();
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); closeRef.current(); return; }
-      if (event.key !== "Tab") return;
-      const items = focusable();
-      if (!items.length) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    const onFocusIn = (event: FocusEvent) => {
-      if (!root || !(event.target instanceof Node) || root.contains(event.target)) return;
-      focusable()[0]?.focus();
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== "Tab" || !root || root.contains(document.activeElement)) return;
-      const items = focusable();
-      (event.shiftKey ? items.at(-1) : items[0])?.focus();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("keyup", onKeyUp);
-    document.addEventListener("focusin", onFocusIn);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("keyup", onKeyUp);
-      document.removeEventListener("focusin", onFocusIn);
-      const restoreAfterUnmount = (attempt = 0) => {
-        const activeDialog = document.querySelector('[role="dialog"][aria-modal="true"]');
-        if (activeDialog === root) {
-          if (attempt < 8) window.setTimeout(() => restoreAfterUnmount(attempt + 1), 16);
-          return;
-        }
-        if (activeDialog) return;
-        const fallback = Array.from(document.querySelectorAll<HTMLElement>(
-          '[title="Change history"], .mobile-nav button, .view-nav button, .header-actions button',
-        )).find((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
-        const isRestorable = (element: HTMLElement | null | undefined) => Boolean(
-          element?.isConnected &&
-          element !== document.body &&
-          element !== document.documentElement &&
-          element.getClientRects().length > 0 &&
-          !element.closest("[inert]"),
-        );
-        const focusTarget = isRestorable(restoreFocus)
-          ? restoreFocus
-          : isRestorable(previous)
-            ? previous
-            : fallback;
-        if (!focusTarget || focusTarget.closest("[inert]")) {
-          if (attempt < 8) window.setTimeout(() => restoreAfterUnmount(attempt + 1), 16);
-          return;
-        }
-        focusTarget.focus();
-      };
-      window.setTimeout(restoreAfterUnmount, 0);
-    };
-  }, [ref, restoreFocusRef]);
 }

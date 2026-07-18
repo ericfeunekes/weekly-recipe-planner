@@ -1,5 +1,7 @@
 "use client";
 
+import { PlannerActionButton } from "@/components/planner-ui/action-button";
+
 export function OfflineAuthorityNotice({
   message = "Editing is paused until the server reconnects.",
   onReconnect,
@@ -10,7 +12,7 @@ export function OfflineAuthorityNotice({
   return (
     <div className="authority-banner warning" role="status">
       <span>{message}</span>
-      <button className="secondary-button" type="button" onClick={onReconnect}>Reconnect</button>
+      <PlannerActionButton tone="secondary" type="button" onClick={onReconnect}>Reconnect</PlannerActionButton>
     </div>
   );
 }

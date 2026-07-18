@@ -56,4 +56,6 @@ test("the live planner composes the native Codex rail instead of the legacy chat
   assert.match(railStyles, /\.body \{[\s\S]*?flex: 1 1 auto/);
   assert.match(railStyles, /\.composerActions \{[\s\S]*?position: absolute/);
   assert.match(railStyles, /\.composer button \{[\s\S]*?width: 2\.75rem;[\s\S]*?height: 2\.75rem/);
+  assert.match(railStyles, /\.threadChoice \{[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal/);
+  assert.match(railStyles, /\.options button \{[\s\S]*?max-width: 100%;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal/);
 });

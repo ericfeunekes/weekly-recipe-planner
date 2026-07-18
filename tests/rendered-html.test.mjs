@@ -75,7 +75,7 @@ test("keeps the locked product requirements represented in source", async () => 
     assert.match(domain, new RegExp(command));
   }
 
-  for (const view of ["Week", "Tonight", "Prep", "Groceries", "Close out"]) {
+  for (const view of ["Week", "Day", "Prep", "Groceries", "Close out"]) {
     assert.match(planner, new RegExp(`label: "${view}"`));
   }
 
@@ -98,7 +98,7 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /function MealEditorTrigger/);
   assert.match(planner, /Add recipe steps to/);
   assert.match(planner, /aria-label="Prep dates"/);
-  assert.match(planner, /Show earlier prep dates/);
+  assert.match(planner, /Other dates/);
   assert.match(planner, /Jump to prep date/);
   assert.doesNotMatch(planner, /Batch prep planned days|Prep sessions/);
   assert.match(planner, /role="tabpanel"/);

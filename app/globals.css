@@ -61,14 +61,14 @@
   --card-foreground: var(--ink);
   --popover: var(--surface);
   --popover-foreground: var(--ink);
-  --primary: var(--green);
+  --primary: var(--ink);
   --primary-foreground: var(--surface);
   --secondary: var(--green-soft);
   --secondary-foreground: var(--green-dark);
   --muted-background: var(--surface-muted);
   --accent: var(--amber-soft);
   --accent-foreground: var(--ink);
-  --destructive: var(--danger);
+  --destructive: var(--coral);
   --border: var(--line);
   --input: var(--line-strong);
   --ring: var(--green-dark);
@@ -187,9 +187,6 @@ svg {
 .brand-mark,
 .header-actions,
 .week-control,
-.primary-button,
-.secondary-button,
-.text-button,
 .nav-item,
 .sync-note,
 .status-badge,
@@ -309,6 +306,24 @@ svg {
   position: relative;
 }
 
+/* Open icon controls are selections, not a second hover treatment. Keep that
+   state in the same ink language as active navigation and tabs. */
+.planner-icon-button[aria-pressed="true"],
+.planner-icon-button[aria-expanded="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--surface);
+}
+
+.planner-icon-button[aria-pressed="true"]:hover,
+.planner-icon-button[aria-pressed="true"]:focus-visible,
+.planner-icon-button[aria-expanded="true"]:hover,
+.planner-icon-button[aria-expanded="true"]:focus-visible {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--surface);
+}
+
 .header-timer-count {
   align-items: center;
   background: var(--green);
@@ -351,8 +366,8 @@ svg {
   padding: 0 2px 5px 8px;
 }
 
-.header-timer-menu-heading .icon-button,
-.header-timer-controls .icon-button {
+.header-timer-menu-heading .planner-icon-button,
+.header-timer-controls .planner-icon-button {
   height: 28px;
   min-height: 28px;
   width: 28px;
@@ -430,72 +445,6 @@ svg {
   margin: 4px 8px 8px;
 }
 
-.icon-button {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  cursor: pointer;
-  display: inline-flex;
-  height: 44px;
-  justify-content: center;
-  width: 44px;
-}
-
-.icon-button:hover {
-  background: var(--surface-muted);
-  border-color: var(--line);
-}
-
-.primary-button,
-.secondary-button,
-.text-button {
-  border-radius: 7px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 680;
-  gap: 8px;
-  justify-content: center;
-  min-height: 44px;
-  padding: 10px 14px;
-}
-
-.primary-button {
-  background: var(--green);
-  border: 1px solid var(--green);
-  color: #ffffff;
-}
-
-.primary-button:hover,
-.primary-button.active {
-  background: var(--green-dark);
-  border-color: var(--green-dark);
-}
-
-.secondary-button {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  color: var(--ink);
-}
-
-.secondary-button:hover {
-  background: var(--surface-muted);
-}
-
-.text-button {
-  background: transparent;
-  border: 0;
-  color: var(--ink-soft);
-}
-
-.text-button:hover {
-  background: var(--surface-muted);
-}
-
-.text-button.danger {
-  color: var(--danger);
-}
-
 .full {
   width: 100%;
 }
@@ -528,7 +477,8 @@ svg {
 }
 
 .nav-item:hover {
-  background: var(--surface-muted);
+  background: var(--green-soft);
+  color: var(--green-dark);
 }
 
 .nav-item.active {
@@ -621,12 +571,14 @@ svg {
 
 .week-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--week-visible-days, 7), minmax(0, 1fr));
   min-height: 100%;
 }
 
 .day-column {
   border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 0 7px 12px;
 }
@@ -671,34 +623,6 @@ svg {
   font-weight: 560;
 }
 
-.day-prep-indicator {
-  align-items: center;
-  background: var(--green-soft);
-  border: 1px solid transparent;
-  border-radius: 5px;
-  color: var(--green-dark);
-  cursor: pointer;
-  display: flex;
-  font: inherit;
-  font-size: 10px;
-  gap: 4px;
-  justify-content: flex-start;
-  margin: 0 0 7px;
-  min-height: 27px;
-  padding: 5px 6px;
-  text-align: left;
-  width: 100%;
-}
-
-.day-prep-indicator:hover,
-.day-prep-indicator:focus-visible {
-  border-color: var(--green);
-}
-
-.day-prep-indicator strong {
-  margin-left: auto;
-}
-
 .meal-card {
   align-items: flex-start;
   background: var(--surface);
@@ -713,10 +637,35 @@ svg {
   width: 100%;
 }
 
+.day-column > .meal-card {
+  flex: 1 1 auto;
+}
+
+.meal-card:has(.meal-card-primary:focus-visible),
 .meal-card:has(.meal-card-actions :focus-visible),
 .meal-card:hover {
   border-color: var(--green);
   box-shadow: 0 5px 14px rgba(33, 49, 44, 0.08);
+}
+
+.meal-card-primary {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.meal-card-primary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
 }
 
 .status-badge {
@@ -795,8 +744,7 @@ svg {
   width: 100%;
 }
 
-.meal-card-preview,
-.meal-card-editor {
+.meal-card-preview {
   align-items: center;
   background: transparent;
   border: 0;
@@ -812,18 +760,36 @@ svg {
   width: 100%;
 }
 
-.meal-card-editor {
-  color: var(--ink-soft);
-  font-weight: 600;
-  margin-top: 4px;
-}
-
 .meal-card-preview:hover,
-.meal-card-preview:focus-visible,
-.meal-card-editor:hover,
-.meal-card-editor:focus-visible {
+.meal-card-preview:focus-visible {
   color: var(--green);
   outline: none;
+}
+
+.week-view-toolbar {
+  align-items: center;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 7px 10px;
+}
+
+.week-view-toolbar-label {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.week-view-toolbar [data-slot="toggle-group"] {
+  background: var(--surface);
+}
+
+.week-window-shifts {
+  display: flex;
+  gap: 4px;
 }
 
 .mobile-pressure-strip {
@@ -1009,6 +975,13 @@ svg {
   z-index: 28;
 }
 
+.prep-source-backdrop {
+  background: rgb(23 37 31 / 10%);
+  inset: 0;
+  position: fixed;
+  z-index: 27;
+}
+
 .prep-source-window-heading {
   align-items: start;
   border-bottom: 1px solid var(--line);
@@ -1027,7 +1000,7 @@ svg {
   gap: 4px;
 }
 
-.prep-recipe-picker button {
+.prep-recipe-picker [data-slot="toggle-group-item"] {
   background: transparent;
   border: 0;
   border-radius: 5px;
@@ -1040,11 +1013,23 @@ svg {
   text-align: left;
 }
 
-.prep-recipe-picker button:hover,
-.prep-recipe-picker button:focus-visible,
-.prep-recipe-picker button.active {
-  background: var(--green-soft);
-  color: var(--green-dark);
+.prep-recipe-picker button {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.prep-recipe-picker small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.prep-recipe-picker [data-slot="toggle-group-item"][data-state="on"] {
+  background: var(--ink);
+  color: var(--surface);
 }
 
 .prep-recipe-steps {
@@ -1084,6 +1069,22 @@ svg {
   color: var(--ink-soft);
 }
 
+.prep-source-step.assigned {
+  background: var(--green-soft);
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+}
+
+.prep-source-step.unassigned {
+  border-style: dashed;
+}
+
+.prep-source-step small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .prep-source-step.selected {
   background: var(--green-soft);
   border-color: var(--green);
@@ -1109,7 +1110,7 @@ svg {
   border-radius: 5px;
 }
 
-.prep-selection-summary .text-button {
+.prep-selection-summary .planner-action-button {
   color: var(--green-dark);
   margin-left: auto;
   min-height: auto;
@@ -1132,10 +1133,8 @@ svg {
 
 .prep-session-tab-navigation {
   align-items: center;
-  display: grid;
+  display: flex;
   flex: 1 1 auto;
-  gap: 2px;
-  grid-template-columns: 28px minmax(0, 1fr) 28px;
   min-width: 0;
 }
 
@@ -1185,13 +1184,19 @@ svg {
 }
 
 .prep-session-tab.active {
-  border-bottom-color: var(--green);
-  color: var(--ink);
+  background: var(--ink);
+  border-bottom-color: var(--ink);
+  color: var(--surface);
 }
 
 .prep-session-tab.has-prep {
   background: var(--green-soft);
   color: var(--green-dark);
+}
+
+.prep-session-tab.active.has-prep {
+  background: var(--ink);
+  color: var(--surface);
 }
 
 .prep-session-tab strong {
@@ -1204,8 +1209,14 @@ svg {
   font-weight: 700;
   justify-content: center;
   line-height: 1;
-  min-width: 17px;
-  padding: 3px 5px;
+  height: 18px;
+  min-width: 18px;
+  padding: 0;
+}
+
+.prep-session-tab.active strong {
+  background: var(--surface);
+  color: var(--ink);
 }
 
 .prep-session-tab.drop-target {
@@ -1221,6 +1232,101 @@ svg {
   gap: 4px;
 }
 
+.prep-list-selection-header,
+.grocery-list-selection-header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-height: 40px;
+}
+
+.prep-selection-toolbar {
+  align-items: center;
+  background: var(--green-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--green-dark);
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px 4px;
+}
+
+.prep-selection-toolbar strong {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.prep-selection-toolbar .prep-selection-move-target {
+  min-height: 24px;
+}
+
+.prep-date-tools {
+  position: relative;
+}
+
+.prep-session-control {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 10px;
+  min-height: 28px !important;
+  padding: 3px 7px;
+  transition: none;
+}
+
+.prep-session-control:hover,
+.prep-session-control:focus-visible {
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.prep-date-tools[open] summary.prep-session-control {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.prep-date-tools[open] summary.prep-session-control:hover {
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.prep-date-tools > div {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: 0 6px 16px rgb(21 37 31 / 12%);
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  z-index: 4;
+}
+
+.day-navigation {
+  align-items: center;
+  color: var(--ink-soft);
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  gap: 2px;
+  margin: 0 0 14px;
+}
+
+.day-navigation [data-slot="button"] {
+  height: 28px;
+  min-height: 28px;
+  width: 28px;
+}
+
 .prep-date-jump input {
   background: var(--paper);
   border: 1px solid var(--line-strong);
@@ -1233,8 +1339,7 @@ svg {
 }
 
 .prep-session-add-steps {
-  min-height: 24px;
-  padding: 6px 8px;
+  padding: 3px 7px;
   white-space: nowrap;
 }
 
@@ -1507,9 +1612,9 @@ svg {
   min-width: 0;
 }
 
-.prep-reference-actions .icon-button,
-.step-timer .icon-button,
-.step-note .icon-button {
+.prep-reference-actions .planner-icon-button,
+.step-timer .planner-icon-button,
+.step-note .planner-icon-button {
   height: 32px;
   min-height: 32px;
   width: 32px;
@@ -1523,10 +1628,6 @@ svg {
   font-size: 10px;
   min-height: 44px;
   padding: 4px 7px;
-}
-
-.icon-button.danger {
-  color: var(--coral);
 }
 
 .step-meal-link {
@@ -1797,6 +1898,11 @@ svg {
   gap: 5px;
 }
 
+.instruction-comment-trigger {
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .instruction-comment-trigger.has-note {
   color: var(--green-dark);
 }
@@ -1810,7 +1916,7 @@ svg {
   margin-left: 60px;
 }
 
-.instruction-line-timer .icon-button {
+.instruction-line-timer .planner-icon-button {
   height: 28px;
   min-height: 28px;
   width: 28px;
@@ -2140,88 +2246,47 @@ svg {
   justify-content: flex-end;
 }
 
-.grocery-selection-toggle {
+.prep-select-all,
+.grocery-select-all {
+  align-items: center;
+  color: var(--ink-soft);
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
   min-height: 36px;
-  padding: 6px 9px;
+  white-space: nowrap;
 }
 
-.grocery-bulk-actions {
+.prep-select-all input,
+.grocery-select-all input {
+  accent-color: var(--green);
+  height: 16px;
+  width: 16px;
+}
+
+.grocery-selection-toolbar {
   align-items: center;
   background: var(--green-soft);
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(160px, 1fr) auto auto;
-  margin: -8px 0 14px;
-  padding: 8px;
-}
-
-.grocery-selection-summary {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
-
-.grocery-selection-summary strong {
-  font-size: 12px;
-}
-
-.grocery-selection-summary span {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.3;
-}
-
-.grocery-source-targets {
-  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: inline-flex;
   gap: 4px;
+  padding: 2px 4px;
 }
 
-.grocery-source-targets button {
-  background: var(--surface);
-  border: 1px dashed var(--line-strong);
-  border-radius: 6px;
-  color: var(--ink-soft);
-  cursor: pointer;
+.grocery-selection-toolbar strong {
+  color: var(--green-dark);
   font-size: 10px;
-  font-weight: 700;
-  min-height: 34px;
-  padding: 5px 8px;
+  white-space: nowrap;
 }
 
-.grocery-source-targets button:hover,
-.grocery-source-targets button.drag-over {
-  background: var(--green);
-  border-color: var(--green);
-  color: #fff;
-}
-
-.grocery-source-targets button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.grocery-bulk-dropdown {
-  align-items: center;
-  display: flex;
-  gap: 5px;
-}
-
-.grocery-bulk-dropdown select {
+.grocery-selection-toolbar select {
   background: var(--surface);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  color: var(--ink);
-  font-size: 11px;
-  min-height: 34px;
-  min-width: 130px;
-  padding: 5px 8px;
-}
-
-.grocery-bulk-dropdown button {
-  min-height: 34px;
-  padding: 5px 9px;
+  border-radius: 5px;
+  font-size: 10px;
+  min-height: 26px;
+  padding: 2px 4px;
 }
 
 .grocery-move-notice {
@@ -2238,7 +2303,7 @@ svg {
   padding: 8px 10px;
 }
 
-.grocery-move-notice .text-button {
+.grocery-move-notice .planner-action-button {
   flex: 0 0 auto;
 }
 
@@ -2251,7 +2316,7 @@ svg {
   padding: 3px;
 }
 
-.segmented-control button {
+.segmented-control [data-slot="toggle-group-item"] {
   background: transparent;
   border: 0;
   border-radius: 5px;
@@ -2263,11 +2328,14 @@ svg {
   text-transform: capitalize;
 }
 
-.segmented-control button.active {
-  background: var(--surface);
-  box-shadow: 0 1px 4px rgba(33, 49, 44, 0.1);
+.segmented-control [data-slot="toggle-group-item"][data-state="on"] {
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: none;
 }
 
+/* ToggleGroup's outline utility sets a transparent shorthand after its state
+   utility. Keep the selected contract explicit at the component boundary. */
 .grocery-row {
   align-items: center;
   display: grid;
@@ -2287,41 +2355,20 @@ svg {
 
 .selection-mode .grocery-row {
   cursor: pointer;
-  grid-template-columns: 44px minmax(0, 1fr) 32px;
+  grid-template-columns: 44px minmax(0, 1fr);
 }
 
-.grocery-drag-handle,
-.grocery-drag-spacer {
-  align-items: center;
-  display: inline-flex;
-  height: 32px;
-  justify-content: center;
-  min-height: 32px;
-  width: 32px;
-}
-
-.grocery-drag-handle {
-  cursor: grab;
-}
-
-.grocery-drag-handle:active {
-  cursor: grabbing;
-}
-
-.grocery-source-select {
-  appearance: none;
+.grocery-source-badge {
   background: var(--green-soft);
-  border: 0;
   border-radius: 999px;
   color: var(--green-dark);
-  cursor: pointer;
   flex: 0 0 auto;
   font-size: 9px;
   font-weight: 700;
   max-width: 100%;
   min-height: 24px;
   min-width: 0;
-  padding: 4px 18px 4px 8px;
+  padding: 4px 8px;
 }
 
 .finished-state {
@@ -2342,11 +2389,6 @@ svg {
   color: var(--muted);
   font-size: 12px;
   margin: 0;
-}
-
-.grocery-source-select:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 .grocery-meal-link {
@@ -2408,6 +2450,22 @@ svg {
   justify-content: space-between;
   min-height: 76px;
   padding: 10px 0;
+}
+
+.meal-feedback-panel .feedback-row {
+  border-top: 0;
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  padding: 0;
+}
+
+.meal-feedback-panel .feedback-control {
+  width: 100%;
+}
+
+.meal-feedback-panel .feedback-control [data-slot="toggle-group-item"] {
+  flex: 1;
 }
 
 .feedback-row > div:first-child {
@@ -2476,7 +2534,7 @@ svg {
   font-size: 9px;
 }
 
-.leftover-feedback .segmented-control button {
+.leftover-feedback .segmented-control [data-slot="toggle-group-item"] {
   flex: 1;
 }
 
@@ -2530,7 +2588,7 @@ svg {
   color: var(--green);
 }
 
-.closeout-notes .primary-button {
+.closeout-notes .planner-action-primary {
   margin-top: auto;
 }
 
@@ -3095,8 +3153,8 @@ textarea[aria-invalid="true"] {
   margin-bottom: 12px;
 }
 
-.authority-banner .secondary-button,
-.authority-banner .icon-button {
+.authority-banner .planner-action-secondary,
+.authority-banner .planner-icon-button {
   flex: 0 0 auto;
 }
 
@@ -3196,21 +3254,13 @@ textarea[aria-invalid="true"] {
   vertical-align: text-bottom;
 }
 
-.mobile-chat-overlay {
-  background: rgba(22, 31, 28, 0.45);
-  inset: 0;
-  position: fixed;
-  z-index: 95;
-}
-
 .mobile-chat-dialog {
-  inset: auto 0 0;
-  position: absolute;
+  padding: 0;
 }
 
-.prep-reference-actions .icon-button,
-.step-timer .icon-button,
-.step-note .icon-button {
+.prep-reference-actions .planner-icon-button,
+.step-timer .planner-icon-button,
+.step-note .planner-icon-button {
   height: 44px;
   min-height: 44px;
   width: 44px;
@@ -3395,12 +3445,12 @@ textarea[aria-invalid="true"] {
     grid-row: 2;
   }
 
-  .header-actions .primary-button {
+  .header-actions .planner-action-primary {
     min-width: 44px;
     padding: 10px;
   }
 
-  .header-actions .primary-button span {
+  .header-actions .planner-action-primary span {
     display: none;
   }
 
@@ -3439,7 +3489,6 @@ textarea[aria-invalid="true"] {
 
   .mobile-chat-dialog {
     height: 100dvh;
-    inset: 0;
     overflow: hidden;
   }
 
@@ -3497,7 +3546,7 @@ textarea[aria-invalid="true"] {
     border-top: 1px solid var(--line);
     display: grid;
     gap: 8px;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     padding: 10px;
   }
 
@@ -3724,11 +3773,10 @@ textarea[aria-invalid="true"] {
   }
 
   .selection-mode .grocery-row {
-    grid-template-columns: 44px minmax(0, 1fr) 32px;
+    grid-template-columns: 44px minmax(0, 1fr);
   }
 
   .grocery-summary-controls,
-  .grocery-bulk-actions,
   .grocery-move-notice {
     width: 100%;
   }
@@ -3743,29 +3791,13 @@ textarea[aria-invalid="true"] {
     flex-wrap: wrap;
   }
 
-  .segmented-control button {
+  .segmented-control [data-slot="toggle-group-item"] {
     min-height: 36px;
     padding: 5px 8px;
   }
 
-  .grocery-bulk-actions {
-    grid-template-columns: 1fr;
-  }
-
   .grocery-move-notice {
     align-items: flex-start;
-  }
-
-  .grocery-source-targets,
-  .grocery-bulk-dropdown {
-    width: 100%;
-  }
-
-  .grocery-source-targets button,
-  .grocery-bulk-dropdown select,
-  .grocery-bulk-dropdown button {
-    flex: 1;
-    min-width: 0;
   }
 
   .drawer {

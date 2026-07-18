@@ -343,6 +343,8 @@ test.describe.serial("family dinner authority", () => {
     await expect(pageB.getByText("Family dinner planner")).toBeVisible();
     await openView(pageA, "Prep");
     await openView(pageB, "Prep");
+    await pageA.locator(".prep-date-tools summary").click();
+    await pageB.locator(".prep-date-tools summary").click();
     await pageA.getByLabel("Jump to prep date").fill("2026-07-05");
     await pageB.getByLabel("Jump to prep date").fill("2026-07-05");
     const prepTabsA = pageA.getByRole("tablist", { name: "Prep dates" });
@@ -578,7 +580,7 @@ test.describe.serial("family dinner authority", () => {
       [pageA, pageB],
       Date.parse("2026-07-07T18:00:00-03:00"),
     );
-    await openView(pageB, "Tonight");
+    await openView(pageB, "Day");
     await expect(pageB.getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
     const tonightSteps = pageB.locator(".tonight-main .instruction-step");
     await expect(tonightSteps.locator(".step-instruction")).toHaveText([
@@ -610,9 +612,11 @@ test.describe.serial("family dinner authority", () => {
         const status = await pageA.request.get(`${controlOrigin}/status`);
         return (await status.json() as { conflictTurnStarted: boolean }).conflictTurnStarted;
       }).toBe(true);
-      const chickenGrocerySource = pageA.getByRole("combobox", { name: "Source for Boneless chicken thighs" });
-      await chickenGrocerySource.selectOption("Farm box");
-      await expect(chickenGrocerySource).toHaveCount(0);
+      const chickenGrocery = pageA.locator(".grocery-row").filter({ hasText: "Boneless chicken thighs" });
+      await chickenGrocery.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+      await pageA.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
+      await pageA.getByRole("button", { name: "Move", exact: true }).click();
+      await expect(chickenGrocery.locator(".grocery-source-badge")).toHaveText("Farm box");
     } finally {
       const releaseHeldConflictResponse = await pageA.request.post(`${controlOrigin}/release-conflict`);
       expect(releaseHeldConflictResponse.ok()).toBe(true);
@@ -623,20 +627,20 @@ test.describe.serial("family dinner authority", () => {
 
     await openView(pageB, "Groceries");
     await pageB.getByRole("button", { name: "All", exact: true }).click();
-    await expect(pageB.getByRole("combobox", { name: "Source for Boneless chicken thighs" })).toHaveValue("farm_box");
+    await expect(pageB.locator(".grocery-row").filter({ hasText: "Boneless chicken thighs" }).locator(".grocery-source-badge")).toHaveText("Farm box");
 
-    const offlineGrocerySource = pageA.getByRole("combobox", { name: "Source for salmon" });
+    const offlineGrocerySource = pageA.locator(".grocery-row").filter({ hasText: "salmon" }).locator(".grocery-source-badge");
     runtimeA.setExpectedFailurePhase("offline");
     await contextA.setOffline(true);
     await expect(pageA.getByText(/Offline · read-only/)).toBeVisible({ timeout: 8_000 });
-    await expect(offlineGrocerySource).toBeDisabled();
+    await expect(offlineGrocerySource).toBeVisible();
     await contextA.setOffline(false);
     await pageA.getByRole("button", { name: "Reconnect" }).click();
-    await expect(offlineGrocerySource).toBeEnabled();
+    await expect(offlineGrocerySource).toBeVisible();
     runtimeA.setExpectedFailurePhase("normal");
 
-    await openView(pageA, "Tonight");
-    await openView(pageB, "Tonight");
+    await openView(pageA, "Day");
+    await openView(pageB, "Day");
     await pageA.getByRole("button", { name: "Mark cooked" }).click();
     await expect(pageB.locator(".tonight-hero .status-badge")).toHaveText("cooked");
     await openView(pageB, "Close out");
@@ -663,7 +667,7 @@ test.describe.serial("family dinner authority", () => {
       [pageA, pageB],
       Date.parse(`${occupiedDinnerDate}T18:00:00-03:00`),
     );
-    await openView(pageB, "Tonight");
+    await openView(pageB, "Day");
     await expect(pageB.locator(".assigned-leftover").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
     await sendCodexMessage(pageB, "Which dinner is in the Tonight context?");
     await expect(codexConversation(pageB).getByText("Tonight is Harissa chicken traybake leftovers.", { exact: true })).toBeVisible();
@@ -705,8 +709,8 @@ test.describe.serial("family dinner authority", () => {
     await expect(codexConversation(pageB).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible();
     await openView(pageA, "Groceries");
     await pageA.getByRole("button", { name: "All", exact: true }).click();
-    await expect(pageA.getByRole("combobox", { name: "Source for Boneless chicken thighs" })).toHaveValue("farm_box");
-    await openView(pageA, "Tonight");
+    await expect(pageA.locator(".grocery-row").filter({ hasText: "Boneless chicken thighs" }).locator(".grocery-source-badge")).toHaveText("Farm box");
+    await openView(pageA, "Day");
     await expect(pageA.locator(".assigned-leftover").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
     await openView(pageA, "Week");
     await expect(pageA.locator(".leftover-meal").filter({ hasText: "Harissa chicken traybake" })).toBeVisible();
@@ -800,7 +804,6 @@ test.describe.serial("family dinner authority", () => {
     phoneRuntime.setExpectedFailurePhase("normal");
     await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toHaveValue("Keep this family Codex draft.");
     await dialog.getByRole("textbox", { name: "Message Codex" }).fill("");
-    await phonePage.getByRole("banner").getByRole("button", { name: "Close Codex" }).evaluate((element) => element.remove());
     await phonePage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(phonePage.getByTitle("Change history")).toBeFocused();
@@ -817,6 +820,7 @@ test.describe.serial("family dinner authority", () => {
     );
     if (archivedWeekValue) await phoneWeekSelect.selectOption(archivedWeekValue);
     await phonePage.locator(".mobile-nav").getByRole("button", { name: "Prep" }).click();
+    await phonePage.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).click();
     const mobileOverflow = phonePage.getByTestId("prep-session-step").first().getByRole("button", { name: /More options for step / });
     await expect(mobileOverflow).toBeVisible();
     const mobileOverflowBox = await mobileOverflow.boundingBox();
@@ -839,6 +843,7 @@ test.describe.serial("family dinner authority", () => {
     const tabletPage = await tablet.newPage();
     const tabletRuntime = watchRuntime(tabletPage);
     await tabletPage.goto("/");
+    await tabletPage.getByRole("button", { name: "Open Codex" }).click();
     await expect(tabletPage.getByRole("complementary", { name: "Codex task" })).toBeVisible({ timeout: 20_000 });
     await expect(tabletPage.getByRole("dialog", { name: "Codex task" })).toHaveCount(0);
     const tabletCodex = tabletPage.getByRole("complementary", { name: "Codex task" });

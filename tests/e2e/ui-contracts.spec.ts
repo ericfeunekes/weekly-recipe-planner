@@ -16,7 +16,7 @@ const evidenceDirectory = process.env.PLANNER_E2E_EVIDENCE_DIR;
 
 const VIEWS = [
   { id: "week", label: "Week", heading: "Week" },
-  { id: "tonight", label: "Tonight", heading: "Tonight" },
+  { id: "tonight", label: "Day", heading: "Day" },
   { id: "prep", label: "Prep", heading: "Prep" },
   { id: "groceries", label: "Groceries", heading: "Groceries" },
   { id: "closeout", label: "Close out", heading: "Close out" },
@@ -37,9 +37,8 @@ async function resetPlanner(page: Page): Promise<void> {
 }
 
 async function openView(page: Page, label: string): Promise<void> {
-  const mobileNav = page.locator(".mobile-nav");
-  const navigation = await mobileNav.isVisible()
-    ? mobileNav
+  const navigation = (page.viewportSize()?.width ?? 0) <= 840
+    ? page.locator(".mobile-nav")
     : page.locator(".view-nav");
   await navigation.getByRole("button", { name: label, exact: true }).click();
 }
@@ -226,10 +225,7 @@ test("all primary views and chat remain contained and accessible", async ({ page
   for (const viewport of QA_VIEWPORTS) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     const mobile = viewport.width <= 840;
-    await expect(mobile
-      ? page.getByRole("button", { name: "Open Codex" })
-      : page.getByRole("complementary", { name: "Codex task" }))
-      .toBeVisible();
+    await expect(page.getByRole("button", { name: "Open Codex" })).toBeVisible();
     for (const view of VIEWS) {
       await openView(page, view.label);
       await expect(page.getByRole("heading", { level: 1, name: view.heading, exact: true })).toBeVisible();
@@ -242,6 +238,12 @@ test("all primary views and chat remain contained and accessible", async ({ page
           await page.locator(".week-grid").evaluate((element) =>
             window.getComputedStyle(element).display === "block" ? 240 : 110),
         );
+        const weekSurface = page.locator(".week-view");
+        await expect(weekSurface.locator(".day-prep-indicator")).toHaveCount(0);
+        await expect(weekSurface.getByRole("button", { name: /^Prep/ })).toHaveCount(0);
+        if (mobile) {
+          await expect(weekSurface.getByRole("button", { name: /^Groceries/ })).toBeVisible();
+        }
       }
       if (fixture === "D4" && view.id === "prep") {
         await expectActionGroupContained(page, "[data-testid=prep-session-step]");
@@ -253,9 +255,7 @@ test("all primary views and chat remain contained and accessible", async ({ page
       await assertAccessible(page, `${fixtureId}-${view.id}`, viewport.id);
     }
 
-    if (mobile) {
-      await page.getByRole("button", { name: "Open Codex" }).click();
-    }
+    await page.getByRole("button", { name: "Open Codex" }).click();
     const chat = mobile
       ? page.getByRole("dialog", { name: "Codex task" })
       : page.getByRole("complementary", { name: "Codex task" });
@@ -298,7 +298,8 @@ test("meal, history, and Codex share one short-viewport modal owner", async ({ p
   await resetPlanner(page);
   const background = page.locator(".app-shell > div").first();
 
-  const mealTrigger = page.locator(".meal-card-editor").first();
+  await openView(page, "Day");
+  const mealTrigger = page.getByRole("button", { name: "Edit meal" }).first();
   await mealTrigger.click();
   const mealDialog = page.getByRole("dialog").filter({ has: page.getByLabel("Title") });
   await expect(mealDialog).toBeVisible();
@@ -352,8 +353,8 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   await page.getByRole("button", { name: "Archive active week" }).click();
   await expect(page.getByRole("heading", { name: "Week archived" })).toBeVisible();
 
-  await openView(page, "Week");
-  await page.locator(".meal-card-editor").first().click();
+  await openView(page, "Day");
+  await page.getByRole("button", { name: "Edit meal" }).first().click();
   const mealDialog = page.getByRole("dialog").filter({ has: page.getByLabel("Title") });
   await expect(mealDialog).toBeVisible();
   const recipeDrafts = mealDialog.locator("input:not([type=checkbox]), textarea");
@@ -370,6 +371,7 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   await openView(page, "Prep");
   await expect(page.getByRole("button", { name: "Add to prep" })).toHaveCount(0);
   await expect(page.getByText("Add note or ask Codex")).toHaveCount(0);
+  await page.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).click();
   const prepMutations = page.getByTestId("prep-session-step").locator("input, button");
   expect(await prepMutations.count()).toBeGreaterThan(0);
   expect(await prepMutations.evaluateAll((controls) =>
@@ -398,25 +400,29 @@ test("recipe-derived groceries and read-only prep recipe summaries keep their ac
   await expect(groceryRow).toBeVisible();
   await expectNoHorizontalContentEscape(page, groceryRow);
   await expectInsideViewport(page, groceryRow.locator(":scope > .grocery-check"));
-  await expectInsideViewport(page, groceryRow.locator(".grocery-source-select"));
+  await expectInsideViewport(page, groceryRow.locator(".grocery-source-badge"));
   await assertAccessible(page, `${fixtureId}-long-grocery`, "boundary-701x840");
 
   await openView(page, "Prep");
+  await page.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).click();
   const firstPrepStep = page.getByTestId("prep-session-step").first();
   await firstPrepStep.getByRole("button", { name: /More options for step / }).click();
-  await firstPrepStep.getByRole("menuitem").first().click();
-  const recipeSummary = page.getByRole("dialog", { name: "Harissa chicken traybake" });
+  const recipeMenuItem = firstPrepStep.getByRole("menuitem").first();
+  const recipeName = (await recipeMenuItem.textContent())?.trim();
+  expect(recipeName).toBeTruthy();
+  await recipeMenuItem.click();
+  const recipeSummary = page.getByRole("dialog", { name: recipeName! });
   await expect(recipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
   await expect(recipeSummary.getByRole("textbox", { name: "Title", exact: true })).toHaveCount(0);
   await expect(recipeSummary.getByRole("button", { name: "Save recipe details" })).toHaveCount(0);
   await expectNoHorizontalContentEscape(page, recipeSummary);
   await recipeSummary.getByTitle("Close").click();
-  const prepRow = page.getByTestId("prep-session-step").filter({ hasText: "Coat the chicken with harissa" }).first();
+  const prepRow = firstPrepStep;
   await expect(prepRow).toBeVisible();
   await expectNoHorizontalContentEscape(page, prepRow);
   await prepRow.getByRole("button", { name: /More options for step / }).click();
   const prepMenu = prepRow.getByRole("menu");
-  await expect(prepMenu.getByRole("menuitem").first()).toContainText("Harissa chicken traybake");
+  await expect(prepMenu.getByRole("menuitem").first()).toContainText(recipeName!);
   await expectNoHorizontalContentEscape(page, prepMenu);
   await assertAccessible(page, `${fixtureId}-long-prep`, "boundary-701x840");
 });
@@ -437,7 +443,7 @@ test("grocery source filters and dinner links remain compact and actionable on p
   await expect(groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true })).toBeVisible();
   await expectNoHorizontalContentEscape(page, groceryRow);
   await expectInsideViewport(page, groceryRow.locator(".grocery-check"));
-  await expectInsideViewport(page, groceryRow.locator(".grocery-source-select"));
+  await expectInsideViewport(page, groceryRow.locator(".grocery-source-badge"));
   expect(await groceryRow.locator(".grocery-check").boundingBox()).toMatchObject({ width: 44, height: 44 });
 
   await groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true }).click();
@@ -450,15 +456,16 @@ test("grocery source filters and dinner links remain compact and actionable on p
   await recipeSummary.getByTitle("Close").click();
   await expect(groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true })).toBeFocused();
 
-  await groceryRow.getByLabel(/Source for red peppers/i).selectOption("on_hand");
-  await expect(page.getByTestId("grocery-bulk-actions")).toHaveCount(0);
+  await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+  await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
+  await page.getByRole("button", { name: "Move", exact: true }).click();
   await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 1 ingredient to On hand.");
   await page.getByLabel("Grocery filter").getByRole("button", { name: "On hand", exact: true }).click();
   await expect(page.locator(".grocery-row").filter({ hasText: /red peppers/i })).toBeVisible();
   await assertAccessible(page, `${fixtureId}-grocery-source-provenance`, "mobile-390x844");
 });
 
-test("selected groceries move atomically by dropdown and drag target without expanding rows", async ({ page }) => {
+test("selected groceries move atomically without expanding the grocery list", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies populated grocery data.");
   await page.setViewportSize({ width: 390, height: 844 });
   await resetPlanner(page);
@@ -467,16 +474,14 @@ test("selected groceries move atomically by dropdown and drag target without exp
   await expect(page.getByLabel("Recipe for grocery", { exact: true })).toHaveCount(0);
 
   const chicken = page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i });
-  const salmon = page.locator(".grocery-row", {
-    has: page.locator(".grocery-select-target strong", { hasText: /^salmon$/i }),
-  });
+  const salmon = page.locator(".grocery-row").filter({ hasText: /^salmon$/i });
   const whiteMiso = page.locator(".grocery-row").filter({ hasText: /white miso/i });
   const selectedItemIds = await Promise.all([chicken, whiteMiso].map(async (row) => {
     const id = await row.getAttribute("data-grocery-id");
     expect(id).toBeTruthy();
     return id!;
   }));
-  const bulkActions = page.getByTestId("grocery-bulk-actions");
+  const bulkActions = page.getByTestId("grocery-selection-toolbar");
   const clickGroceryCard = (row: typeof chicken, modifiers?: Array<"Control" | "Meta" | "Shift">) =>
     row.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 }, modifiers });
   await chicken.getByLabel("Check Boneless chicken thighs").click();
@@ -485,20 +490,20 @@ test("selected groceries move atomically by dropdown and drag target without exp
   await resetPlanner(page);
   await openView(page, "Groceries");
   await clickGroceryCard(chicken);
-  await expect(bulkActions.getByText("1 selected", { exact: true })).toBeVisible();
+  await expect(bulkActions.getByText("1 item selected", { exact: true })).toBeVisible();
   await expect(chicken.locator("input[type=checkbox]")).toHaveCount(1);
   await clickGroceryCard(whiteMiso);
-  await expect(bulkActions.getByText("1 selected", { exact: true })).toBeVisible();
+  await expect(bulkActions.getByText("1 item selected", { exact: true })).toBeVisible();
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Shift"]);
   expect(await page.locator(".grocery-row.selected").count()).toBeGreaterThan(2);
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
-  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
+  await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
   await clickGroceryCard(salmon, ["Meta"]);
-  await expect(bulkActions.getByText("3 selected", { exact: true })).toBeVisible();
+  await expect(bulkActions.getByText("3 items selected", { exact: true })).toBeVisible();
   await clickGroceryCard(salmon, ["Meta"]);
-  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
+  await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
   await resetPlanner(page);
   await openView(page, "Groceries");
   await clickGroceryCard(chicken);
@@ -519,7 +524,7 @@ test("selected groceries move atomically by dropdown and drag target without exp
   await openView(page, "Groceries");
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
-  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
+  await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
   await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
   const dropdownCommandBodies: Array<{ command?: { itemIds?: string[]; source?: string; type?: string } }> = [];
   const captureDropdownCommand = (request: Request) => {
@@ -550,12 +555,11 @@ test("selected groceries move atomically by dropdown and drag target without exp
   expect(compactLine.height).toBeLessThanOrEqual(24);
   expect(compactLine.whiteSpace).toBe("nowrap");
 
-  await chicken.locator(".grocery-select-target").click();
-  await whiteMiso.locator(".grocery-select-target").click({ modifiers: ["Control"] });
-  await expect(bulkActions.getByText("2 selected", { exact: true })).toBeVisible();
-  const dragHandle = chicken.getByRole("button", { name: "Drag 2 selected groceries to a source tab", exact: true });
-  const farmBoxTarget = bulkActions.getByTestId("grocery-source-target-farm_box");
-  await dragHandle.dragTo(farmBoxTarget);
+  await chicken.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+  await whiteMiso.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 }, modifiers: ["Control"] });
+  await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
+  await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
+  await bulkActions.getByRole("button", { name: "Move", exact: true }).click();
   await page.getByLabel("Grocery filter").getByRole("button", { name: "Farm box", exact: true }).click();
   await expect(page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i })).toBeVisible();
   await expect(page.locator(".grocery-row").filter({ hasText: /white miso/i })).toBeVisible();

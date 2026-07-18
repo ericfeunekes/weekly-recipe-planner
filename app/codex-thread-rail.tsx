@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  Bot,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
@@ -41,6 +42,8 @@ import { nextCodexMessageScrollTop, shouldScrollToLatestCodexMessage } from "./c
 import { createCodexThreadSource, type CodexThreadSnapshot, type CodexThreadSource } from "./codex-thread-source.ts";
 import { selectInterruptibleTurnId } from "./codex-thread-turns.ts";
 import { OfflineAuthorityNotice } from "./offline-authority-notice.tsx";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import styles from "./codex-thread-rail.module.css";
 
 function flushActivityUpdate(snapshot: CodexThreadSnapshot): boolean {
@@ -322,7 +325,7 @@ function TaskHistory(props: {
     <section className={styles.history} aria-label="Task history">
       <div className={styles.historyTitle}>
         <strong>Tasks</strong>
-        <button type="button" className={styles.newThread} onClick={() => void props.onCreateThread()} disabled={controlsDisabled}><Plus size={15} /> New task</button>
+        <Button type="button" className={styles.newThread} onClick={() => void props.onCreateThread()} disabled={controlsDisabled}><Plus size={15} /> New task</Button>
       </div>
       <form className={styles.historySearch} role="search" aria-label="Task history search" onSubmit={searchHistory}>
         <label>
@@ -330,14 +333,14 @@ function TaskHistory(props: {
           <Search size={15} aria-hidden="true" />
           <input aria-label="Search tasks" maxLength={200} value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder="Search task history" disabled={controlsDisabled} />
         </label>
-        <button type="submit" disabled={controlsDisabled}>Search</button>
+        <Button type="submit" size="sm" disabled={controlsDisabled}>Search</Button>
       </form>
       <div className={styles.historyViews} role="group" aria-label="Task history view">
-        <button type="button" aria-label="Open tasks" aria-pressed={!archived} onClick={() => setArchived(false)} disabled={controlsDisabled}>Active</button>
-        <button type="button" aria-label="Archived tasks" aria-pressed={archived} onClick={() => setArchived(true)} disabled={controlsDisabled}>Archived</button>
+        <Button variant="ghost" size="sm" type="button" aria-label="Open tasks" aria-pressed={!archived} onClick={() => setArchived(false)} disabled={controlsDisabled}>Active</Button>
+        <Button variant="ghost" size="sm" type="button" aria-label="Archived tasks" aria-pressed={archived} onClick={() => setArchived(true)} disabled={controlsDisabled}>Archived</Button>
       </div>
       {props.operationError ? <p className={`${styles.banner} ${styles.historyBanner} ${styles.error}`} role="alert">{props.operationError}</p> : null}
-      {visibleHistoryError ? <div className={`${styles.banner} ${styles.historyBanner} ${styles.error}`} role="alert"><span>{visibleHistoryError}</span><button type="button" onClick={() => void loadPage(null, false)} disabled={controlsDisabled}>Retry task history</button></div> : null}
+      {visibleHistoryError ? <div className={`${styles.banner} ${styles.historyBanner} ${styles.error}`} role="alert"><span>{visibleHistoryError}</span><Button variant="outline" size="sm" type="button" onClick={() => void loadPage(null, false)} disabled={controlsDisabled}>Retry task history</Button></div> : null}
       <ul className={styles.threadList} aria-label={archived ? "Archived tasks" : "Open tasks"} aria-busy={viewLoading}>
         {visibleThreads.map((thread) => (
           <li key={thread.id} className={styles.threadRow}>
@@ -347,12 +350,12 @@ function TaskHistory(props: {
               </article>
             ) : (
               <>
-                <button aria-label={`Open task: ${thread.title}`} aria-current={thread.id === props.snapshot.selection.threadId ? "true" : undefined} className={`${styles.threadChoice} ${thread.id === props.snapshot.selection.threadId ? styles.selected : ""}`} type="button" onClick={() => void props.onChooseThread(thread.id)} disabled={mutationDisabled}>
+                <Button variant="ghost" aria-label={`Open task: ${thread.title}`} aria-current={thread.id === props.snapshot.selection.threadId ? "true" : undefined} className={`${styles.threadChoice} ${thread.id === props.snapshot.selection.threadId ? styles.selected : ""}`} type="button" onClick={() => void props.onChooseThread(thread.id)} disabled={mutationDisabled}>
                   <strong>{thread.title}</strong><span>{thread.preview}</span><small>{thread.status.state.replaceAll("_", " ")}</small>
-                </button>
-                <button aria-label={`Archive task: ${thread.title}`} className={styles.archiveThread} type="button" onClick={() => void archiveThread(thread)} disabled={mutationDisabled}>
+                </Button>
+                <Button variant="outline" size="sm" aria-label={`Archive task: ${thread.title}`} className={styles.archiveThread} type="button" onClick={() => void archiveThread(thread)} disabled={mutationDisabled}>
                   {archiveId === thread.id ? <LoaderCircle className="spin" size={14} /> : <Archive size={14} />}<span>Archive</span>
-                </button>
+                </Button>
               </>
             )}
           </li>
@@ -360,7 +363,7 @@ function TaskHistory(props: {
       </ul>
       {!viewLoading && !visibleHistoryError && !visibleThreads.length ? <p className={styles.emptyCopy}>{emptyMessage}</p> : null}
       {viewLoading && !visibleThreads.length ? <p className={styles.historyLoading}><LoaderCircle className="spin" size={14} /> Loading tasks</p> : null}
-      {visibleNextCursor ? <button className={styles.loadMore} type="button" onClick={() => void loadPage(visibleNextCursor, true)} disabled={mutationDisabled}>{loading ? <LoaderCircle className="spin" size={14} /> : null} Load more tasks</button> : null}
+      {visibleNextCursor ? <Button variant="outline" size="sm" className={styles.loadMore} type="button" onClick={() => void loadPage(visibleNextCursor, true)} disabled={mutationDisabled}>{loading ? <LoaderCircle className="spin" size={14} /> : null} Load more tasks</Button> : null}
     </section>
   );
 }
@@ -539,6 +542,11 @@ export function CodexThreadRail({
     });
   };
 
+  const applyStarterPrompt = (prompt: string) => {
+    onDraftChange(prompt);
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  };
+
   const respond = (interactionId: string, questions: Array<{ id: string }>) => {
     const response: CodexInteractionResponse = {
       kind: "answers",
@@ -554,24 +562,26 @@ export function CodexThreadRail({
 
   if (collapsed && !modal) {
     return (
-      <button
+      <Button
         className={styles.edgeHandle}
         type="button"
+        variant="outline"
+        size="icon"
         aria-label="Open Codex"
         title="Open Codex"
         onClick={() => onCollapsedChange(false)}
-      ><ChevronLeft size={19} /></button>
+      ><ChevronLeft size={19} /></Button>
     );
   }
 
   return (
     <aside className={`${styles.rail} ${modal ? styles.modal : ""}`} aria-label="Codex task">
       <div className={styles.header}>
-        <button className={styles.iconButton} type="button" aria-label="Task history" title="Task history" aria-expanded={historyOpen} onClick={() => setHistoryOpen((open) => !open)}><Menu size={19} /></button>
+        <Button className={styles.iconButton} variant="ghost" size="icon" type="button" aria-label="Task history" title="Task history" aria-expanded={historyOpen} onClick={() => setHistoryOpen((open) => !open)}><Menu size={19} /></Button>
         <span className={styles.headerStatus} aria-live="polite">
           {isPreview ? "Preview only" : "Codex"}
         </span>
-        {onClose ? <button className={styles.iconButton} type="button" aria-label="Close Codex" title="Close Codex" onClick={onClose}><ChevronRight size={19} /></button> : null}
+        {onClose ? <Button className={styles.iconButton} variant="ghost" size="icon" type="button" aria-label="Close Codex" title="Close Codex" onClick={onClose}><ChevronRight size={19} /></Button> : null}
       </div>
 
       {historyOpen ? (
@@ -592,6 +602,13 @@ export function CodexThreadRail({
             {modal && offline && onReconnect ? <OfflineAuthorityNotice onReconnect={onReconnect} /> : null}
             {snapshot.status === "runtime_unavailable" ? <p className={styles.emptyCopy}>Codex is unavailable. Your planner is still available.</p> : null}
             {snapshot.status === "selected_unavailable" ? <p className={styles.emptyCopy}>Choose a task from history or start a new one.</p> : null}
+            {snapshot.status === "empty" ? <section className={styles.emptyTask} aria-label="Start a Codex task">
+              <Bot size={21} aria-hidden="true" />
+              <div><strong>What should change in this plan?</strong><p>Ask Codex to reshape meals, make a prep plan, or check the shopping list.</p></div>
+              <div className={styles.starterPrompts}>
+                {["Adjust this week’s meals", "Make a prep plan", "Check the shopping list"].map((prompt) => <Button key={prompt} variant="outline" size="sm" type="button" disabled={offline} onClick={() => applyStarterPrompt(prompt)}>{prompt}</Button>)}
+              </div>
+            </section> : null}
             {activeWorkerPanel?.detail ? <WorkerDetail response={activeWorkerPanel.detail} onClose={closeWorker} /> : <>
               {snapshot.thread ? <ThreadItems
                 thread={snapshot.thread}
@@ -614,11 +631,11 @@ export function CodexThreadRail({
           {!activeWorkerPanel?.detail ? <form className={styles.composer} onSubmit={submit}>
             <div className={`${styles.composerField} ${interruptibleTurnId !== null ? styles.composerFieldInterruptible : ""}`}>
               <span className="sr-only">Message Codex</span>
-              <textarea ref={composerRef} value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={handleComposerKeyDown} maxLength={4_000} aria-label="Message Codex" placeholder="Ask Codex…" data-autofocus={modal || focusKey > 0 ? "true" : undefined} disabled={offline || snapshot.status === "runtime_unavailable" || hasUserInput} />
+              <Textarea ref={composerRef} value={draft} onChange={(event) => onDraftChange(event.target.value)} onKeyDown={handleComposerKeyDown} maxLength={4_000} aria-label="Message Codex" placeholder="Ask Codex…" data-autofocus={modal || focusKey > 0 ? "true" : undefined} disabled={offline || snapshot.status === "runtime_unavailable" || hasUserInput} />
               <small>{hasUserInput ? "Answer the question above to continue." : `${draft.length.toLocaleString("en-CA")}/4,000`}</small>
               <div className={styles.composerActions}>
-                {interruptibleTurnId !== null ? <button className={styles.stopButton} type="button" aria-label="Stop Codex" title={isPreview ? "Preview does not interrupt turns" : "Stop current Codex response"} onClick={interruptTurn} disabled={!canInterrupt}>{pendingOperation === "interrupt" ? <LoaderCircle className="spin" size={17} /> : <Square size={15} fill="currentColor" />}</button> : null}
-                <button type="submit" aria-label="Send to Codex" title={isPreview ? "Preview does not send messages" : "Send to Codex"} disabled={!canSend}>{pendingOperation === "send" ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</button>
+                {interruptibleTurnId !== null ? <Button className={styles.stopButton} variant="destructive" size="icon" type="button" aria-label="Stop Codex" title={isPreview ? "Preview does not interrupt turns" : "Stop current Codex response"} onClick={interruptTurn} disabled={!canInterrupt}>{pendingOperation === "interrupt" ? <LoaderCircle className="spin" size={17} /> : <Square size={15} fill="currentColor" />}</Button> : null}
+                <Button size="icon" type="submit" aria-label="Send to Codex" title={isPreview ? "Preview does not send messages" : "Send to Codex"} disabled={!canSend}>{pendingOperation === "send" ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}</Button>
               </div>
             </div>
           </form> : null}
@@ -684,10 +701,10 @@ function ThreadItems(props: {
       {workerSummaries.length ? <section className={styles.workers} aria-label="Background workers">
         <div className={styles.workersTitle}><strong>Background workers</strong><span>{workerSummaries.length}</span></div>
         <div className={styles.workerSummaries}>
-          {workerSummaries.map((worker, index) => <button key={worker.threadId} type="button" aria-label={`View worker ${index + 1}: ${worker.label}`} autoFocus={props.focusWorkerId === worker.threadId} onClick={() => void props.onOpenWorker(worker.threadId)} disabled={props.workerLoadingId !== null}>
+          {workerSummaries.map((worker, index) => <Button key={worker.threadId} variant="outline" type="button" aria-label={`View worker ${index + 1}: ${worker.label}`} autoFocus={props.focusWorkerId === worker.threadId} onClick={() => void props.onOpenWorker(worker.threadId)} disabled={props.workerLoadingId !== null}>
             <span><strong>{worker.label}</strong><small>{worker.status}</small></span>
             {props.workerLoadingId === worker.threadId ? <LoaderCircle className="spin" size={14} /> : <ChevronRight size={14} />}
-          </button>)}
+          </Button>)}
         </div>
       </section> : null}
       {props.workerError ? <p className={`${styles.banner} ${styles.workerBanner} ${styles.error}`} role="alert">{props.workerError}</p> : null}
@@ -713,7 +730,7 @@ function WorkerDetail({ response, onClose }: { response: CodexThreadReadResponse
     <section className={styles.workerDetail} aria-label={`Worker details: ${thread.title}`}>
       <div className={styles.workerDetailHeader}>
         <span><small>Worker details</small><strong>{thread.title}</strong></span>
-        <button type="button" autoFocus onClick={onClose}><ChevronLeft size={15} /> Back to task</button>
+        <Button variant="ghost" type="button" autoFocus onClick={onClose}><ChevronLeft size={15} /> Back to task</Button>
       </div>
       <p className={styles.workerMeta}>{thread.status.state.replaceAll("_", " ")}{thread.historyTruncated ? " · Earlier activity is not shown" : ""}</p>
       <div className={styles.workerTranscript} role="log" aria-label={`Worker conversation ${thread.title}`}>
@@ -754,10 +771,10 @@ function Interactions(props: {
         <section key={interaction.id} className={styles.question}>
           {interaction.questions.map((question) => (
             <fieldset key={question.id}><legend>{question.header}</legend><p>{question.question}</p>
-              <div className={styles.options}>{question.options.map((option) => <button key={option.label} type="button" className={props.answers[question.id] === option.label ? styles.selectedOption : ""} onClick={() => props.onAnswerChange(question.id, option.label)}>{option.label}</button>)}</div>
+              <div className={styles.options}>{question.options.map((option) => <Button key={option.label} variant={props.answers[question.id] === option.label ? "default" : "outline"} size="sm" type="button" className={props.answers[question.id] === option.label ? styles.selectedOption : ""} onClick={() => props.onAnswerChange(question.id, option.label)}>{option.label}</Button>)}</div>
             </fieldset>
           ))}
-          <button type="button" className={styles.answer} disabled={props.preview || props.pending || !interaction.questions.every((question) => props.answers[question.id]?.trim())} onClick={() => props.onRespond(interaction.id, interaction.questions)}>{props.preview ? "Preview does not submit answers" : "Send answer"}</button>
+          <Button type="button" className={styles.answer} disabled={props.preview || props.pending || !interaction.questions.every((question) => props.answers[question.id]?.trim())} onClick={() => props.onRespond(interaction.id, interaction.questions)}>{props.preview ? "Preview does not submit answers" : "Send answer"}</Button>
         </section>
       ))}
       {props.interactions.filter((interaction) => interaction.kind === "approval").map((interaction) => (

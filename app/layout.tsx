@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -20,8 +18,8 @@ export async function generateMetadata(): Promise<Metadata> {
     description:
       "A shared household planner for meals, prep, groceries, leftovers, and family feedback.",
     icons: {
-      icon: "/og.png",
-      apple: "/og.png",
+      icon: "/favicon.svg",
+      apple: "/favicon.svg",
     },
     openGraph: {
       title: "Weekly Recipe Planner",
@@ -52,12 +50,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>
-        <TooltipProvider>
-          {children}
-          <Toaster />
-        </TooltipProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

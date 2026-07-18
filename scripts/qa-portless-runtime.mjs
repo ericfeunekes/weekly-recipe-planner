@@ -141,7 +141,11 @@ async function main() {
 
   try {
     await snapshotRuntime(sourceRoot, runtimeDirectory);
-    const development = await prepareDevelopmentCodexHome({ appRoot: runtimeDirectory });
+    // QA owns an isolated planner snapshot, but its Codex rail must connect to
+    // the same shared development home and fixed application cwd as `make dev`.
+    // Pointing it at the ephemeral runtime copy creates a second Codex context
+    // and invalidates the shared native session between QA deployments.
+    const development = await prepareDevelopmentCodexHome({ appRoot: sourceRoot });
     const hasSnapshot = await snapshotData(source, databasePath);
     if (!hasSnapshot) {
       console.warn(`QA_DATA_SOURCE was not found; starting an empty QA workspace: ${source}`);

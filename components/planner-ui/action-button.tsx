@@ -13,5 +13,32 @@ export function PlannerActionButton({
   ...props
 }: PlannerActionButtonProps) {
   const choice = plannerActionVariants[tone];
-  return <Button className={cn(choice.className, className)} variant={choice.variant} {...props} />;
+  return (
+    <Button
+      className={cn("planner-action-button", `planner-action-${tone}`, choice.className, className)}
+      variant={choice.variant}
+      {...props}
+    />
+  );
+}
+
+export function PlannerIconButton({
+  className,
+  tone = "quiet",
+  ...props
+}: PlannerActionButtonProps) {
+  const choice = plannerActionVariants[tone];
+  return (
+    <Button
+      className={cn(
+        "planner-icon-button",
+        `planner-action-${tone}`,
+        choice.className,
+        className,
+      )}
+      size="icon-lg"
+      variant={choice.variant}
+      {...props}
+    />
+  );
 }

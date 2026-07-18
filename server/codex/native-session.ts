@@ -1188,8 +1188,21 @@ export class NativeCodexSession {
   #syncActiveRootTurn(value: unknown) {
     if (!isRecord(value) || !isIdentifier(value.id) || !this.isEligibleRoot(value.id)) return;
     const turnId = activeTurnIdFromThread(value);
-    if (turnId === null) this.#activeRootTurns.delete(value.id);
-    else this.#activeRootTurns.set(value.id, turnId);
+    if (turnId !== null) {
+      this.#activeRootTurns.set(value.id, turnId);
+      return;
+    }
+    const boundTurnId = this.#activeRootTurns.get(value.id);
+    if (boundTurnId === undefined || !Array.isArray(value.turns)) return;
+    // A thread/read projection may lag turn/started and omit the new turn
+    // while admission reconciliation is still running. Only an observed,
+    // terminal bound turn can revoke the newer active-turn authority.
+    const boundTurn = value.turns.find((candidate) =>
+      isTurn(candidate) && candidate.id === boundTurnId,
+    );
+    if (boundTurn && boundTurn.status !== "inProgress") {
+      this.#activeRootTurns.delete(value.id);
+    }
   }
 
   #handleNotification(client: AppServerClient, notification: AppServerNotification) {

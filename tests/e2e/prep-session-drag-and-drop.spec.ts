@@ -20,10 +20,10 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   const prepDates = page.getByRole("tablist", { name: "Prep dates" });
   await expect(prepDates.getByRole("tab")).toHaveCount(7);
   await expect(page.getByRole("navigation", { name: "Batch prep planned days" })).toHaveCount(0);
-  const wednesday = prepDates.getByRole("tab", { name: "Open empty prep date Wed, Jul 8" });
-  const thursday = prepDates.getByRole("tab", { name: "Open empty prep date Thu, Jul 9" });
-  await expect(wednesday).toBeVisible();
+  const thursday = prepDates.getByRole("tab", { name: /Thu, Jul 9$/ });
+  const friday = prepDates.getByRole("tab", { name: /Fri, Jul 10$/ });
   await expect(thursday).toBeVisible();
+  await expect(friday).toBeVisible();
 
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const recipeSteps = page.getByRole("dialog", { name: "Recipe instructions" });
@@ -39,13 +39,13 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   await secondSourceStep.click({ modifiers: ["Shift"] });
   await expect(recipeSteps.getByText("2 selected", { exact: true })).toBeVisible();
 
-  await secondSourceStep.dragTo(wednesday);
-  await expect(wednesday).toHaveAttribute("aria-selected", "true");
+  await secondSourceStep.dragTo(thursday);
+  await expect(thursday).toHaveAttribute("aria-selected", "true");
   await recipeSteps.getByRole("button", { name: "Close recipe steps", exact: true }).click();
   await expect(recipeSteps).toHaveCount(0);
   const destinationRows = page.getByTestId("prep-session-step");
   await expect(destinationRows).toHaveCount(2);
-  await expect(wednesday).toHaveAccessibleName("Open 2 prep steps on Wed, Jul 8");
+  await expect(thursday).toHaveAccessibleName("Open 2 prep steps on Thu, Jul 9");
 
   const insertionTarget = destinationRows.nth(1);
   const targetBounds = await insertionTarget.boundingBox();
@@ -63,8 +63,8 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   await expect(insertionMarker).toHaveCount(1);
   await expect(insertionMarker).toHaveCSS("border-top-width", "4px");
 
-  await destinationRows.first().dragTo(thursday);
-  await expect(thursday).toHaveAttribute("aria-selected", "true");
+  await destinationRows.first().dragTo(friday);
+  await expect(friday).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("prep-session-step")).toHaveCount(1);
 
   await page.getByRole("button", { name: "Select all 1 prep step", exact: true }).click();

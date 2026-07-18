@@ -248,7 +248,8 @@ test.describe("reload-safe authority operation journal", () => {
   test("planner recipe edits restore their submitted draft and settle once", async ({ page }) => {
     test.setTimeout(120_000);
     await initializePlanner(page);
-    await page.locator(".meal-card-editor:not(.empty-meal)").first().click();
+    await page.locator(".view-nav").getByRole("button", { name: "Day", exact: true }).click();
+    await page.getByRole("button", { name: "Edit meal" }).first().click();
     const drawer = page.locator(".meal-drawer");
     const title = "Journal recovery traybake";
     const finalTitle = "Journal recovery traybake final";
@@ -332,9 +333,10 @@ test.describe("reload-safe authority operation journal", () => {
           Array.isArray(command.itemIds) && command.itemIds.length === 1;
       },
     );
-    const source = page.getByLabel(`Source for ${ingredient}`);
-    await expect(source).toHaveValue("shop");
-    await source.selectOption("farm_box");
+    const groceryRow = page.locator(".grocery-row").filter({ hasText: ingredient });
+    await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+    await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
+    await page.getByRole("button", { name: "Move", exact: true }).click();
     const operation = await waitForAmbiguity(page, loss, "planner");
     expect(operation.submittedDraft).toMatchObject({
       type: "moveGroceryItemsToSource",
@@ -429,9 +431,10 @@ test.describe("reload-safe authority operation journal", () => {
           Array.isArray(command.itemIds) && command.itemIds.length === 1;
       },
     );
-    const source = page.getByLabel(`Source for ${ingredient}`);
-    await expect(source).toHaveValue("shop");
-    await source.selectOption("farm_box");
+    const groceryRow = page.locator(".grocery-row").filter({ hasText: ingredient });
+    await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+    await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
+    await page.getByRole("button", { name: "Move", exact: true }).click();
     const operation = await waitForAmbiguity(page, loss, "planner");
 
     const popupPromise = page.context().waitForEvent("page");

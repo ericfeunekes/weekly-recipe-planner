@@ -550,11 +550,22 @@ function failE2eTurn(thread, turn, error) {
 }
 
 async function applyE2ePlannerCommand(thread, turn, plannerVersion, command, readback) {
-  return plannerCallForE2e(thread.id, turn.id, "apply", {
+  const result = await plannerCallForE2e(thread.id, turn.id, "apply", {
     basePlannerVersion: plannerVersion,
     operations: [{ command }],
     readback,
   });
+  if (result.ok) {
+    turn.items.push({
+      id: `e2e-planner-apply-${++nextTurn}`,
+      type: "dynamicToolCall",
+      namespace: "planner",
+      tool: "apply",
+      status: "completed",
+      arguments: {},
+    });
+  }
+  return result;
 }
 
 async function executeE2ePlannerTurn(thread, turn) {

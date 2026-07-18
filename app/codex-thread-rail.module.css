@@ -68,7 +68,7 @@
 .iconButton:focus-visible,
 .threadChoice:hover,
 .threadChoice:focus-visible {
-  background: var(--soft, #eff5f1);
+  background: var(--green-soft);
 }
 
 .history {
@@ -135,13 +135,7 @@
 .loadMore,
 .historyViews button,
 .archiveThread {
-  border: 1px solid #b8cec4;
-  border-radius: 7px;
-  background: #fff;
-  color: #245c50;
-  font: inherit;
   font-size: .72rem;
-  font-weight: 700;
 }
 
 .historySearch button {
@@ -164,10 +158,9 @@
 }
 
 .historyViews button[aria-pressed="true"] {
-  border-color: #91b7aa;
-  background: #fff;
-  color: #144b3e;
-  box-shadow: 0 1px 3px rgb(21 37 31 / 8%);
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
 }
 
 .newThread,
@@ -177,12 +170,7 @@
   align-items: center;
   justify-content: center;
   gap: .3rem;
-  border: 1px solid #286b5c;
-  border-radius: 7px;
-  background: #e7f2ed;
-  color: #144b3e;
   font-size: .74rem;
-  font-weight: 700;
 }
 
 .threadChoice {
@@ -193,7 +181,9 @@
   background: transparent;
   padding: .5rem;
   color: inherit;
+  overflow-wrap: anywhere;
   text-align: left;
+  white-space: normal;
 }
 
 .threadList {
@@ -259,9 +249,60 @@
   text-transform: capitalize;
 }
 
+.emptyTask {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: .65rem;
+  flex: 1 1 auto;
+  padding: 1.25rem;
+  color: var(--green-dark, #144b3e);
+}
+
+.emptyTask > svg {
+  color: #286b5c;
+}
+
+.emptyTask strong {
+  display: block;
+  font-size: .84rem;
+}
+
+.emptyTask p {
+  margin: .25rem 0 0;
+  color: var(--muted, #596861);
+  font-size: .74rem;
+  line-height: 1.4;
+}
+
+.starterPrompts {
+  display: grid;
+  width: 100%;
+  gap: .35rem;
+}
+
+.starterPrompts button {
+  min-height: 2.2rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--green-dark);
+  font: inherit;
+  font-size: .72rem;
+  font-weight: 700;
+  text-align: left;
+}
+
+.starterPrompts button:hover,
+.starterPrompts button:focus-visible {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
 .threadChoice.selected {
-  background: #e2f0ea;
-  outline: 1px solid #3d806f;
+  background: var(--ink);
+  color: var(--surface);
+  outline: 1px solid var(--ink);
 }
 
 .loadMore {
@@ -344,11 +385,7 @@
   align-items: center;
   justify-content: space-between;
   gap: .5rem;
-  border: 1px solid #c9d9d1;
-  border-radius: 7px;
-  background: #fff;
   padding: .42rem .5rem;
-  color: inherit;
   text-align: left;
 }
 
@@ -658,11 +695,15 @@
   padding: .35rem .55rem;
   color: inherit;
   font-size: .72rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .options .selectedOption {
-  border-color: #286b5c;
-  background: #dceee6;
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
 }
 
 .question input {
@@ -751,16 +792,10 @@
   width: 2.75rem;
   height: 2.75rem;
   place-items: center;
-  border: 0;
-  border-radius: 8px;
-  background: #286b5c;
-  color: #fff;
 }
 
 .composer .stopButton {
-  border: 1px solid #d29187;
-  background: #fff2ef;
-  color: #8a2d22;
+  border-radius: var(--radius);
 }
 
 .composer button:disabled,

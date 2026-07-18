@@ -43,7 +43,7 @@ surface.
    dropdown menu, textarea, skeleton, and toast feedback. Add a small local
    adapter layer that owns planner visual variants and composes those primitives;
    it accepts presentation props only and does not own planner or Codex state.
-3. Add a non-product, read-only primitive fixture at `/__ui-foundation` that
+3. Add a non-product, read-only primitive fixture at `/ui-foundation` that
    renders the foundation’s token and control states without planner mutations
    or Codex transport. It is not linked from planner navigation. Its independent
    browser proof uses representative phone, tablet, and desktop widths rather
@@ -78,8 +78,15 @@ surface.
 | QA: representative responsive browser evidence | The foundation fixture preserves visual tokens, focus, and geometry at phone/tablet/desktop widths. | Isolated Playwright/browser screenshots, console/network capture, and axe evidence. |
 
 The adapter manifest is an implementation artifact, not a new TESTING.md proof
-cell. It records Button, Badge, Separator, ScrollArea, Tooltip, Dialog/Sheet,
-DropdownMenu, Textarea, Skeleton, and toast feedback as the initial vocabulary.
+cell. It records the bounded starting vocabulary and ownership:
+
+| Primitive | Phase A status | Runtime owner / later consumer |
+| --- | --- | --- |
+| Button, Badge, Separator, ScrollArea, Skeleton | Proven in the isolated fixture; `PlannerActionButton` owns the three planner action tones. | Week, Day, and shared controls. |
+| Tooltip, Dialog, Sheet, DropdownMenu, Textarea, toast feedback | Source installed only; no global provider or mount in Phase A. | Real controls and native rail phases, each with direct interaction proof. |
+
+Legacy CSS stays authoritative for unmigrated surfaces. Later phases consume or
+extend this vocabulary rather than creating a parallel control system.
 
 ## Failure handling and stop rule
 
@@ -96,11 +103,17 @@ DropdownMenu, Textarea, Skeleton, and toast feedback as the initial vocabulary.
 
 ## Cycle record
 
-- Build: pending
-- Targeted proof: pending
-- Browser evidence: pending
-- Implementation review: pending
-- Adapter manifest: pending
+- Build: passed — real Vinext/Vite/Cloudflare production build through `npm test`.
+- Targeted proof: passed — `tests/client-ui-foundation.test.mjs` and
+  `tests/rendered-html.test.mjs` cover variants and semantic tokens.
+- Browser evidence: passed — isolated Playwright axe, containment, disabled,
+  and Tab-order checks at 320×844, 768×1024, and 1280×900; screenshots were
+  captured on 2026-07-17.
+- Implementation review: passed after one remediation loop — global overlay
+  wiring removed, interaction proof strengthened, and focused rereview found
+  no remaining Phase A behavior blocker.
+- Adapter manifest: complete — the bounded vocabulary and deferred overlay
+  ownership are recorded above.
 
 ## Planning-blocking uncertainty disposition
 
@@ -108,7 +121,7 @@ DropdownMenu, Textarea, Skeleton, and toast feedback as the initial vocabulary.
   before Vinext in the real Vite plugin list and importing theme/utilities
   without preflight, completed the actual Vinext/Vite/Cloudflare production
   build on 2026-07-17. This is the selected build path.
-- **Resolved:** the fixture is an unlinked static `/__ui-foundation` route with
+- **Resolved:** the fixture is an unlinked static `/ui-foundation` route with
   no planner/Codex state; it is proven at representative viewports, not by
   fabricated D4/D7 fixture semantics.
 - **Resolved:** the adapter manifest is non-gating plan evidence, not a new
