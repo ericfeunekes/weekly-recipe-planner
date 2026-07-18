@@ -875,7 +875,6 @@ async function materializeCanonicalApp(context, sourceRoot, dependencies = {}) {
     "ci",
     "--cache",
     context.layout.npmCacheRoot,
-    "--no-bin-links",
   ]);
   const typescript = join(context.layout.appRoot, "node_modules", "typescript", "bin", "tsc");
   if (await pathExists(typescript)) {
