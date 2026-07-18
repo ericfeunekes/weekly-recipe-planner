@@ -174,6 +174,9 @@ try {
   ));
   process.exit(0);
 } catch (error) {
+  console.error(
+    `Planner deployment failed: ${error instanceof Error ? error.message : String(error)}`,
+  );
   await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
   await rm(APP_ROOT, { recursive: true, force: true }).catch(() => undefined);
   if (moved) await rename(join(backup, "app"), APP_ROOT).catch(() => undefined);
