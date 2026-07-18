@@ -23,7 +23,9 @@ export const CODEX_FOLLOW_UP_RESOURCE_POLICY = Object.freeze({
   runtimeInventory: Object.freeze({
     maxFiles: 2_048,
     maxEntries: 8_192,
-    maxDepth: 8,
+    // The updater-managed Codex runtime now nests generated schemas and
+    // execution snapshots more deeply than the original layout.
+    maxDepth: 16,
     allowSymlinks: true,
   }),
   pagination: Object.freeze({ maxPages: 16, maxRows: 1_024 }),
