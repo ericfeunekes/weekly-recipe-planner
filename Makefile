@@ -34,7 +34,7 @@ promote:
 		trap 'cleanup; exit 130' HUP INT TERM; \
 		git worktree add --detach "$$promotion_dir" refs/heads/main; \
 		if $(MAKE) --no-print-directory -C "$$promotion_dir" deploy; then \
-			git worktree remove "$$promotion_dir"; \
+			git worktree remove --force "$$promotion_dir"; \
 		else \
 			status=$$?; cleanup; exit $$status; \
 		fi
