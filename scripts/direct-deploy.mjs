@@ -104,6 +104,7 @@ function plist(node) {
     PATH: `${dirname(node)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     PLANNER_HOST: "127.0.0.1",
     PLANNER_PORT: String(PORT),
+    PLANNER_PUBLIC_BASE_PATH: "/recipe-planner/",
     // Tailscale terminates TLS before forwarding to this loopback-only process.
     // The application must still recognize that public same-origin host.
     PLANNER_ALLOWED_ORIGINS: TAILNET_ORIGIN,

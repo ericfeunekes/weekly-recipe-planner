@@ -28,6 +28,7 @@ import {
   type AuthorityOperationKind,
   type PendingAuthorityOperation,
 } from "./authority-operation-journal.ts";
+import { resolvePublicPath } from "./public-path.ts";
 
 export const LEGACY_V1_STORAGE_KEY = "weekly-recipe-planner:v1";
 
@@ -139,7 +140,7 @@ function throwFailure(response: Response, value: unknown): never {
 
 async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(path, {
+    return await fetch(resolvePublicPath(path, import.meta.env.BASE_URL), {
       cache: "no-store",
       credentials: "same-origin",
       ...init,

@@ -36,7 +36,7 @@ deploy:
 		printf '%s\n' 'error: deploy requires a clean main checkout or detached worktree at main.' >&2; exit 2; \
 	fi; \
 	$(NPM) ci; \
-	$(NPM) run build; \
+	PLANNER_PUBLIC_BASE_PATH=/recipe-planner/ $(NPM) run build; \
 	$(NODE) scripts/direct-deploy.mjs
 
 qa-local:

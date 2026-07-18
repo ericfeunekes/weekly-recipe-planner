@@ -31,6 +31,10 @@ if (!Number.isInteger(plannerWebPort) || plannerWebPort < 1 || plannerWebPort > 
 const plannerApiOrigin = loopbackOrigin(
   process.env.PLANNER_API_ORIGIN ?? "http://127.0.0.1:8788",
 );
+const plannerPublicBasePath = process.env.PLANNER_PUBLIC_BASE_PATH ?? "/";
+if (!plannerPublicBasePath.startsWith("/") || !plannerPublicBasePath.endsWith("/")) {
+  throw new TypeError("PLANNER_PUBLIC_BASE_PATH must begin and end with '/'.");
+}
 
 const localBindingConfig = {
   main: "./worker/index.ts",
@@ -65,6 +69,7 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    base: plannerPublicBasePath,
     server: {
       port: plannerWebPort,
       strictPort: true,
