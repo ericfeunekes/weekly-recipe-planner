@@ -7,7 +7,7 @@ const healthy = {
   status: "ready",
   codex: {
     status: "ready",
-    state: "ready",
+    state: "compatible",
     authenticated: true,
     protocolCompatible: true,
   },
