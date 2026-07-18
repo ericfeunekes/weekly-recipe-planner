@@ -19,7 +19,9 @@ import { isProductionHealthReady } from "./support/production-readiness.mjs";
 const LABEL = "com.ericfeunekes.meal-planner";
 const PORT = Number(process.env.PLANNER_PORT ?? 8642);
 const TAILNET_ORIGIN = process.env.PLANNER_TAILNET_ORIGIN
-  ?? "https://robie-imac.tailae8a7b.ts.net:8642";
+  ?? "https://robie-imac.tailae8a7b.ts.net";
+const TAILNET_URL = process.env.PLANNER_TAILNET_URL
+  ?? `${TAILNET_ORIGIN}/recipe-planner/`;
 const HOME = resolve(process.env.HOME ?? homedir());
 const ROOT = resolve(process.cwd());
 const DEPLOY_ROOT = join(HOME, "meal-planner");
@@ -73,7 +75,7 @@ async function waitForTailnetReady() {
   let last = "no response";
   while (Date.now() < deadline) {
     try {
-      const workspace = await fetch(`${TAILNET_ORIGIN}/api/workspace`);
+      const workspace = await fetch(new URL("api/workspace", TAILNET_URL));
       if (workspace.ok) return;
       last = `workspace ${workspace.status}`;
     } catch (error) { last = error instanceof Error ? error.message : String(error); }
