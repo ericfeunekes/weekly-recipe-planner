@@ -29,9 +29,9 @@ function escapeXml(value) {
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 
-function run(command, args) {
+function run(command, args, options = {}) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(command, args, { stdio: "inherit" });
+    const child = spawn(command, args, { stdio: "inherit", ...options });
     child.once("error", rejectRun);
     child.once("exit", (code) => code === 0
       ? resolveRun()
@@ -122,9 +122,10 @@ try {
     recursive: true,
     filter(source) {
       const name = source.split("/").at(-1);
-      return ![".git", ".next", ".planner-data", "coverage", "outputs"].includes(name);
+      return ![".git", ".next", ".planner-data", "coverage", "node_modules", "outputs"].includes(name);
     },
   });
+  await run("npm", ["ci"], { cwd: APP_ROOT });
   await chmod(APP_ROOT, 0o700);
   await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
