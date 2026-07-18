@@ -178,13 +178,10 @@ try {
   if (!tailnetReadiness.ready) {
     console.warn(`Planner is running; shared Tailscale readiness remains pending (${tailnetReadiness.last}).`);
   }
-  console.log(JSON.stringify({
-    appRoot: APP_ROOT,
-    backup: moved ? backup : null,
-    port: PORT,
-    status: "running",
-    tailnetReady: tailnetReadiness.ready,
-  }));
+  // Readiness probes intentionally keep HTTP connections alive. The
+  // LaunchAgent owns the service now, so end this one-shot deploy process
+  // explicitly instead of letting those idle client sockets hold it open.
+  process.exit(0);
 } catch (error) {
   console.error(
     `Planner deployment failed: ${error instanceof Error ? error.message : String(error)}`,
