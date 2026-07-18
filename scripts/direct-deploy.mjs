@@ -24,6 +24,31 @@ const PLIST_PATH = join(HOME, "Library", "LaunchAgents", `${LABEL}.plist`);
 const DOMAIN = `gui/${process.getuid?.()}`;
 const TARGET = `${DOMAIN}/${LABEL}`;
 
+function dedicatedCodexConfig() {
+  return `forced_login_method = "chatgpt"
+cli_auth_credentials_store = "file"
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+check_for_update_on_startup = false
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false
+
+[orchestrator.skills]
+enabled = false
+
+[orchestrator.mcp]
+enabled = false
+`;
+}
+
 function escapeXml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -106,6 +131,8 @@ if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("PLA
 
 await mkdir(BACKUP_ROOT, { recursive: true, mode: 0o700 });
 await mkdir(dirname(PLIST_PATH), { recursive: true, mode: 0o700 });
+await mkdir(join(DEPLOY_ROOT, "agent"), { recursive: true, mode: 0o700 });
+await writeFile(join(DEPLOY_ROOT, "agent", "config.toml"), dedicatedCodexConfig(), { mode: 0o600 });
 await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
 await waitForUnloaded();
 
