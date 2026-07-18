@@ -188,7 +188,11 @@ try {
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
   await waitForHealthy();
   await waitForTailnetReady();
-  process.stdout.write(`${JSON.stringify({ appRoot: APP_ROOT, backup: moved ? backup : null, port: PORT, status: "running" })}\n`);
+  await new Promise((resolveWrite) => process.stdout.write(
+    `${JSON.stringify({ appRoot: APP_ROOT, backup: moved ? backup : null, port: PORT, status: "running" })}\n`,
+    resolveWrite,
+  ));
+  process.exit(0);
 } catch (error) {
   await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
   await rm(APP_ROOT, { recursive: true, force: true }).catch(() => undefined);
