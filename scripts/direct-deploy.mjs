@@ -129,7 +129,7 @@ function plist(node) {
 </dict></plist>\n`;
 }
 
-if (!(await exists(join(ROOT, ".vinext")))) throw new Error("Build output is missing; run npm run build first.");
+if (!(await exists(join(ROOT, "dist")))) throw new Error("Build output is missing; run npm run build first.");
 if (!(await exists(join(DATA_ROOT, "planner.sqlite")))) throw new Error("Production planner data is missing.");
 if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("PLANNER_PORT is invalid.");
 
