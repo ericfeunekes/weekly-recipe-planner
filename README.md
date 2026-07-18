@@ -150,129 +150,17 @@ git worktree remove "$promotion_dir"
 ```
 
 `make deploy` accepts either a clean `main` checkout or a clean detached
-worktree whose `HEAD` is exactly `main`. It stops the selected service, stages
-the immutable candidate against `PROD_DATA_SOURCE`, activates it, and restarts
-the service. If stage or activation fails, keep the promotion worktree for
-diagnosis; remove it only after the selected service is healthy. Use the
-lower-level release targets only for first install, recovery, or a specific
-operator intervention.
+worktree whose `HEAD` is exactly `main`. It builds the app, replaces only
+`$HOME/meal-planner/app`, installs one current-user LaunchAgent, and waits for
+both `/api/health` and `/api/workspace`. The prior app directory is retained
+under `$HOME/meal-planner/backups`; if startup fails, it is restored and the
+service remains stopped for inspection.
 
-### Evidence-bound local release
-
-Any future candidate for the revised Codex requirements must be installed
-through the existing host-only release transaction. Staging never selects the
-candidate and does not pin or package Codex. The historical operator resolves
-exact Node `22.15.0` through `mise` (or the canonical
-absolute `PLANNER_NODE_FLOOR_EXECUTABLE`), performs a clean install, and runs
-lint plus the complete merge suite under that exact runtime before writing
-`stage.json`. The staged and canonical npm dependency graphs must match:
-
-```bash
-npm run planner:release -- stage \
-  --candidate-source "$PWD" \
-  --baseline-commit c811adc2b2fd05d5573933e10ca77e60f2d0e7ba \
-  --data-source <absolute-planner.sqlite> \
-  --agent-source <absolute-retained-authenticated-agent-home>
-```
-
-On first installation the supplied commit must equal the release-managed value
-in `deployment/release/first-install-baseline.json`; changing that prerequisite
-is an explicit manifest update, not a caller override.
-
-The command returns an activation ID. Activation derives every artifact path
-from that ID, holds the runtime/data boundary offline, builds at the canonical
-app path, and restores or reuses the authenticated dedicated home at
-`$HOME/meal-planner/agent`. Its authentication-readback operator starts one
-fresh updater-managed `codex app-server` with `CODEX_HOME` set to that home and cwd fixed at
-`$HOME/meal-planner/app`, requires `account/read({refreshToken:true})`, then
-runs the separately bounded planner capability smoke. Activation never starts or cancels login,
-logs out, copies credentials, or pins Codex. It then runs installed D4 and D7
-responsive Playwright/axe QA, writes a canonical content-hashed evidence
-manifest bound by `qa.json`, rechecks that evidence and Codex activation, and
-revalidates the exact Node/npm paths, versions, and hashes. Only then does it
-publish `activation.json` and `current.json`:
-
-```bash
-npm run planner:release -- activate --transaction <activation-id> --authorized
-npm run planner:release -- status --transaction <activation-id>
-npm run planner:release -- recover --transaction <activation-id>
-```
-
-The only stale-pending exceptions are release-managed recovery from the exact
-historical pre-adoption first-install shape and an explicit source-drift update.
-The update path requires a pending-only journal with no release effects, the
-same canonical database path/device/inode, a fresh replacement whose staged
-database identity matches a live stopped-database inspection, and a changed old
-identity. Stage a fresh replacement in the same installation mode, then
-run `activate` with
-`--supersede-pending <exact-stale-activation-id>` (or
-`make deploy-activate ACTIVATION_ID=<new-id> SUPERSEDE_PENDING=<stale-id>`).
-The installed replacement operator preserves and retires the old journal,
-generation-CAS replaces `pending.json` without a gap, and recovery replays the
-same recorded lineage. The durable checkpoint binds the recovery classification
-and both database identities. The content-addressed operator handoff completes
-first; the runtime ownership lease and SQLite write reservation are then held
-before that checkpoint or any old-journal/pointer mutation, including recovery.
-The flag rejects ordinary, unrelated, or already-progressed
-transactions and is not a general pending-release deletion mechanism.
-
-The equivalent guarded Make targets are `make deploy-setup`,
-`make deploy-activate`, `make deploy-status`, `make deploy-recover`, and
-`make deploy-rollback`. `make qa-local` exercises the mutable checkout for
-development and deliberately produces no release evidence. There is no
-standalone `deploy-qa` lifecycle.
-
-An uninitialized source database is recorded but cannot be activated until the
-owner explicitly confirms that an empty household authority is intended:
-
-```bash
-npm run planner:release -- activate \
-  --transaction <activation-id> \
-  --authorized \
-  --confirm-uninitialized-authority
-```
-
-The confirmation is persisted before release effects, so installed-operator
-handoff and recovery do not request it again. Supplying the flag for an
-initialized source is rejected. After a committed release, install the
-persistent current-user LaunchAgent:
-
-```bash
-make deploy-service-install
-```
-
-The generated plist is mode `0600`, points at the selected release's immutable
-operator and evidence-bound Node executable, starts at login, and uses launchd
-`KeepAlive`. It serves loopback port `8642` by default and verifies both
-`/api/health` and `/api/workspace` before the command succeeds. Manage it with:
-
-```bash
-make deploy-service-status
-make deploy-service-restart
-make deploy-service-stop
-make deploy-service-start
-make deploy-service-uninstall
-```
-
-Run `make deploy-service-stop` before changing the selected release, then
-`make deploy-service-restart` after activation so the plist is regenerated
-against the new immutable operator. `make deploy-start` remains the foreground
-diagnostic entrypoint. LaunchAgent health does not prove Tailscale access;
-Tailscale Serve and ACL admission must be verified separately from a remote
-device.
-
-Installed start recomputes the frozen app and content-addressed operator tree
-manifests and validates any pending journal's full hash/lifecycle chain before
-executing either entrypoint.
-
-Rollback is whole-release and host-only. Automatic data restore requires an
-unchanged whole-store snapshot; otherwise the operator reports the exact
-activation/current/restore identities required for explicit data-loss
-authorization and retains the newer data directory. A crash after authorization
-forces a fresh snapshot and new authorization if the selected store changed.
-`GET /api/export` remains
-a diagnostic, `restorable: false` support projection and is not a database
-backup or release rollback input.
+There are no release manifests, staging transactions, activation IDs, or
+separate service commands. The household database stays at
+`$HOME/meal-planner/data/planner.sqlite`; deployment replaces application code
+only. The LaunchAgent listens only on loopback port `8642` by default. Stop it
+with `launchctl bootout gui/$(id -u)/com.ericfeunekes.meal-planner`.
 
 ## Hosting Boundary
 

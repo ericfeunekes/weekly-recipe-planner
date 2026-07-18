@@ -20,7 +20,6 @@ import {
   RuntimeOwnershipError,
   runtimeOwnershipSocketPathForDataDirectory,
 } from "../scripts/support/runtime-ownership.mjs";
-import { assertInstalledReleaseStartable } from "../scripts/support/planner-release-contract.mjs";
 
 type RuntimeOwnershipLease = Awaited<
   ReturnType<typeof acquireRuntimeOwnershipLease>
@@ -35,42 +34,6 @@ type ConfiguredPlannerRuntimeOverrides = Pick<
   /** Host-only QA/release seam. Production and spawned clients never receive this path. */
   globalCodexParentDirectory?: string;
 };
-
-export async function assertInstalledRuntimeSelection(
-  environment: NodeJS.ProcessEnv,
-  dependencies: {
-    assertStartable?: typeof assertInstalledReleaseStartable;
-  } = {},
-): Promise<void> {
-  if (environment.PLANNER_INSTALLED_RUNTIME === undefined) return;
-  if (environment.PLANNER_INSTALLED_RUNTIME !== "1") {
-    throw new TypeError("PLANNER_INSTALLED_RUNTIME must be 1 when present.");
-  }
-  const home = environment.HOME;
-  const expectedActivationId = environment.PLANNER_EXPECTED_ACTIVATION_ID;
-  const expectedOperatorSha256 = environment.PLANNER_EXPECTED_OPERATOR_SHA256;
-  const expectedActivationSha256 = environment.PLANNER_EXPECTED_ACTIVATION_SHA256;
-  if (
-    home === undefined ||
-    expectedActivationId === undefined ||
-    expectedOperatorSha256 === undefined ||
-    expectedActivationSha256 === undefined
-  ) {
-    throw new TypeError("Installed runtime selection identities are incomplete.");
-  }
-  const startable = await (
-    dependencies.assertStartable ?? assertInstalledReleaseStartable
-  )(home);
-  if (
-    startable.current.activationId !== expectedActivationId ||
-    startable.current.operatorSha256 !== expectedOperatorSha256 ||
-    startable.current.activationSha256 !== expectedActivationSha256
-  ) {
-    throw new Error(
-      "The installed release selection changed before writer admission.",
-    );
-  }
-}
 
 export async function startConfiguredPlannerRuntime(
   environment: NodeJS.ProcessEnv = process.env,
@@ -95,7 +58,6 @@ export async function startConfiguredPlannerRuntime(
       });
   const closeOwnershipLease = inheritedOwnershipLease === undefined;
   try {
-    await assertInstalledRuntimeSelection(environment);
     const codexRuntime = createFailSoftManagedCodexFollowUpRuntime(
       config.codexFollowUp,
       { sourceEnvironment: environment },

@@ -1,13 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm, stat, symlink } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, realpath, rm, stat, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareDevelopmentCodexHome } from "./support/codex-dev-home.mjs";
 
 import { acquirePlannerStoreWriteReservation } from "../server/store/sqlite-store.ts";
-import { copyReleaseTree } from "./support/planner-release-transaction.mjs";
-import { releaseSourceExclusionSet } from "./support/planner-release-source.mjs";
 
 const READY_TIMEOUT_MS = 30_000;
 
@@ -63,10 +62,12 @@ async function snapshotRuntime(sourceRoot, destinationRoot) {
   // in-memory manifest, which leaves the browser with stale script URLs. Copy
   // the built application into the private QA root, but share installed
   // dependencies read-only through a symlink so the snapshot stays lightweight.
-  const exclusions = releaseSourceExclusionSet();
-  exclusions.delete("dist");
-  await copyReleaseTree(sourceRoot, destinationRoot, {
-    excludedRootNames: exclusions,
+  await cp(sourceRoot, destinationRoot, {
+    recursive: true,
+    filter(source) {
+      const name = source.split("/").at(-1);
+      return ![".git", ".next", ".planner-data", "coverage", "node_modules", "outputs"].includes(name);
+    },
   });
   await symlink(
     join(sourceRoot, "node_modules"),
@@ -140,6 +141,7 @@ async function main() {
 
   try {
     await snapshotRuntime(sourceRoot, runtimeDirectory);
+    const development = await prepareDevelopmentCodexHome({ appRoot: runtimeDirectory });
     const hasSnapshot = await snapshotData(source, databasePath);
     if (!hasSnapshot) {
       console.warn(`QA_DATA_SOURCE was not found; starting an empty QA workspace: ${source}`);
@@ -154,6 +156,8 @@ async function main() {
         PLANNER_DATA_DIR: dataDirectory,
         PLANNER_RUNTIME_OWNER_SOCKET: join(root, "runtime-owner.sock"),
         PLANNER_ALLOWED_ORIGINS: publicOrigin,
+        PLANNER_CODEX_HOME: development.codexHome,
+        PLANNER_CODEX_CWD: development.appRoot,
         // QA has an isolated planner database, but it must exercise the same
         // embedded Codex mutation path as the app it verifies. The global
         // ingress stays disabled because its shared socket is not part of this
