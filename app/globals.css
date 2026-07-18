@@ -1985,61 +1985,6 @@ svg {
   margin: 9px 0 0;
 }
 
-.recipe-summary-steps {
-  display: grid;
-  gap: 0;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.recipe-summary-step {
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  gap: 10px;
-  grid-template-columns: 22px minmax(0, 1fr);
-  padding: 12px 0;
-}
-
-.recipe-summary-step:first-child {
-  padding-top: 2px;
-}
-
-.recipe-summary-step:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-
-.recipe-summary-step-number {
-  align-items: center;
-  background: var(--green-soft);
-  border-radius: 50%;
-  color: var(--green-dark);
-  display: inline-flex;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  height: 22px;
-  justify-content: center;
-  width: 22px;
-}
-
-.recipe-summary-step .step-instruction {
-  margin: 0;
-}
-
-.recipe-summary-step .step-inputs {
-  margin-top: 6px;
-}
-
-.recipe-summary-timer {
-  color: var(--muted);
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  margin-top: 7px;
-}
-
 .ingredient-list {
   display: grid;
   gap: 10px;

@@ -126,6 +126,7 @@ import { isoDateForTimeZone } from "./calendar-time";
 import { resolveDayDate } from "./day-selection";
 import { CodexThreadRail } from "./codex-thread-rail";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
+import { RecipeIngredientList, RecipeInstructionContent } from "@/components/planner-ui/recipe-content";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -1720,6 +1721,9 @@ function PlannerAppContent() {
       {activeOverlay === "recipe-summary" && recipeSummaryMeal && week ? (
           <RecipeSummaryDrawer
             meal={recipeSummaryMeal}
+            week={week}
+            disabled={isReadOnly}
+            mutate={mutate}
             restoreFocusRef={mealTriggerRef}
             onClose={() => {
               setRecipeSummaryMealId(null);
@@ -1759,6 +1763,38 @@ function PlannerAppContent() {
   );
 }
 
+function MealIngredientList({
+  meal,
+  week,
+  disabled,
+  mutate,
+  emptyClassName,
+}: {
+  meal: Meal;
+  week: WeekPlan;
+  disabled: boolean;
+  mutate: Mutate;
+  emptyClassName?: string;
+}) {
+  const groceryByIngredientId = new Map(
+    week.data.groceries
+      .filter((item) => item.mealId === meal.id)
+      .map((item) => [item.ingredientId, item]),
+  );
+  return (
+    <RecipeIngredientList
+      items={meal.ingredients}
+      emptyClassName={emptyClassName}
+      checkedById={new Map([...groceryByIngredientId].map(([ingredientId, item]) => [ingredientId, item.checked]))}
+      disabled={disabled}
+      onCheckedChange={(ingredientId, checked) => {
+        const item = groceryByIngredientId.get(ingredientId);
+        if (item) void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: item.id, checked });
+      }}
+    />
+  );
+}
+
 function MealEditorTrigger({
   mealId,
   onOpenMeal,
@@ -1773,14 +1809,6 @@ function MealEditorTrigger({
   children: ReactNode;
 }) {
   return <PlannerActionButton className={className} tone={tone} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</PlannerActionButton>;
-}
-
-function IngredientList({ meal, emptyClassName }: { meal: Meal; emptyClassName?: string }) {
-  return meal.ingredients.length ? (
-    <ul className="ingredient-list">
-      {meal.ingredients.map((item) => <li key={item.id}><Check size={13} /> {[item.amount, item.ingredient].filter(Boolean).join(" ")}</li>)}
-    </ul>
-  ) : <p className={emptyClassName}>No ingredients listed.</p>;
 }
 
 function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
@@ -1970,7 +1998,7 @@ function TonightView(props: {
       </div>
       <aside className="tonight-side">
         <div className="plain-panel"><div className="section-title"><ShoppingBasket size={16} /><h3>Ingredients</h3></div>
-          <IngredientList meal={meal} />
+          <MealIngredientList meal={meal} week={week} disabled={disabled} mutate={mutate} />
         </div>
         <div className="plain-panel"><div className="section-title"><StickyNote size={16} /><h3>Recipe note</h3></div><p>{meal.notes || "No recipe note."}</p></div>
         <div className="plain-panel leftover-plan"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><strong>{meal.leftoverNote || "No leftover plan."}</strong></div>
@@ -2180,15 +2208,6 @@ function EditablePrepTimer(props: {
   );
 }
 
-function InstructionStepContent({ step }: { step: InstructionStep }) {
-  return (
-    <div className="instruction-line-content">
-      <p className="step-instruction">{step.instruction}</p>
-      {step.inputs.length ? <div className="step-inputs">{step.inputs.map((input, index) => <span key={`${input.amount}-${input.ingredient}-${index}`}><strong>{input.amount}</strong> {input.ingredient}</span>)}</div> : null}
-    </div>
-  );
-}
-
 function InstructionStepCommentComposer({
   step,
   controlTarget,
@@ -2335,7 +2354,7 @@ function InstructionStepLine(props: {
             onChange={(event) => onComplete(event.target.checked)}
           />
         </label>
-        <InstructionStepContent step={step} />
+        <RecipeInstructionContent step={step} />
         {trailing ? <div className="instruction-line-trailing">{trailing}</div> : null}
       </div>
       {step.timerDurationSeconds ? (
@@ -3416,10 +3435,16 @@ function RecipeSource({ meal }: { meal: Meal }) {
 
 function RecipeSummaryDrawer({
   meal,
+  week,
+  disabled,
+  mutate,
   restoreFocusRef,
   onClose,
 }: {
   meal: Meal;
+  week: WeekPlan;
+  disabled: boolean;
+  mutate: Mutate;
   restoreFocusRef: { current: HTMLElement | null };
   onClose: () => void;
 }) {
@@ -3434,23 +3459,26 @@ function RecipeSummaryDrawer({
 
         <section className="snapshot-section">
           <div className="section-title"><ShoppingBasket size={16} /><h3>Ingredients</h3></div>
-          <IngredientList meal={meal} emptyClassName="recipe-summary-copy" />
+          <MealIngredientList meal={meal} week={week} disabled={disabled} mutate={mutate} emptyClassName="recipe-summary-copy" />
         </section>
 
         <section className="snapshot-section">
           <div className="section-title"><CookingPot size={16} /><h3>Instructions</h3><span>{meal.instructions.length} steps</span></div>
           {meal.instructions.length ? (
-            <ol className="recipe-summary-steps">
+            <div className="grid gap-0">
               {meal.instructions.map((step, index) => (
-                <li key={step.id} className="recipe-summary-step">
-                  <span className="recipe-summary-step-number" aria-hidden="true">{index + 1}</span>
-                  <div>
-                    <InstructionStepContent step={step} />
-                    {step.timerDurationSeconds ? <small className="recipe-summary-timer">Timer: {Math.ceil(step.timerDurationSeconds / 60)} min</small> : null}
-                  </div>
-                </li>
+                <InstructionStepLine
+                  key={step.id}
+                  className="border-b border-border py-3 first:pt-0 last:border-b-0 last:pb-0"
+                  step={step}
+                  meal={meal}
+                  stepNumber={index + 1}
+                  disabled={disabled}
+                  onComplete={(complete) => void mutate({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete })}
+                  onTimerAction={(type) => void mutate({ type, weekId: week.id, stepId: step.id })}
+                />
               ))}
-            </ol>
+            </div>
           ) : <p className="recipe-summary-copy">No instructions listed.</p>}
         </section>
 
