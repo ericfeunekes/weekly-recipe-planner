@@ -873,7 +873,6 @@ async function materializeCanonicalApp(context, sourceRoot, dependencies = {}) {
   });
   await runNpm([
     "ci",
-    "--offline",
     "--cache",
     context.layout.npmCacheRoot,
     "--no-bin-links",
