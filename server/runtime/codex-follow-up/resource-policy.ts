@@ -21,8 +21,8 @@ export const CODEX_FOLLOW_UP_RESOURCE_POLICY = Object.freeze({
   }),
   evidenceBytes: 2 * 1024 * 1024,
   runtimeInventory: Object.freeze({
-    maxFiles: 2_048,
-    maxEntries: 8_192,
+    maxFiles: 8_192,
+    maxEntries: 32_768,
     // The updater-managed Codex runtime now nests generated schemas and
     // execution snapshots more deeply than the original layout.
     maxDepth: 16,
