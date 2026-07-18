@@ -715,6 +715,9 @@ async function handleRequest(message) {
     return send({ id, result: { data: [], nextCursor: null } });
   }
   if (method === "app/list") {
+    if (fixtureVariant === "app-list-forbidden") {
+      return send({ id, error: { code: 403, message: "403 Forbidden: apps are disabled" } });
+    }
     if (fixtureVariant === "malformed-app-readback") return send({ id, result: {} });
     return send({ id, result: {
       data: fixtureVariant === "app-surface"

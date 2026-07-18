@@ -37,6 +37,11 @@ test("deployment readback accepts only the dedicated user layer and absent syste
   assert.equal(evidence.instructionSourceHashes["dedicated:0"]?.length, 64);
 });
 
+test("deployment readback treats an explicitly forbidden app listing as no app surface", async (t) => {
+  const evidence = await readbackFixture(t, "app-list-forbidden");
+  assert.deepEqual(evidence.appNames, []);
+});
+
 for (const [variant, pattern] of [
   ["config-missing-config", /required config or origins/],
   ["config-missing-origins", /required config or origins/],

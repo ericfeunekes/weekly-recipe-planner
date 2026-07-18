@@ -2328,6 +2328,29 @@ function enabledAppNames(rows: readonly unknown[]) {
   }).sort();
 }
 
+async function readDisabledAppSurface(
+  client: JsonlRpcClient,
+  timeoutMs: number,
+) {
+  try {
+    return await collectPaginated(client, "app/list", {
+      forceRefetch: false,
+      limit: 100,
+      threadId: null,
+    }, timeoutMs);
+  } catch (error) {
+    // Apps are deliberately disabled in the dedicated runtime. Current Codex
+    // returns a 403 rather than an empty list for that configuration. Treat
+    // only that explicit denial as proof of no available app surface.
+    if (
+      error instanceof CodexCapabilityProbeError &&
+      error.code === "PROBE_PROTOCOL" &&
+      /app\/list failed:.*\b403\b.*\bForbidden\b/iu.test(error.message)
+    ) return [];
+    throw error;
+  }
+}
+
 function installedPluginNames(result: unknown) {
   const marketplaces = requiredArrayProperty(result, "marketplaces", "plugin/list");
   const loadErrors = requiredArrayProperty(result, "marketplaceLoadErrors", "plugin/list");
@@ -2389,11 +2412,7 @@ export async function readActualCodexDeployment(
       limit: 100,
       threadId: null,
     }, timeoutMs);
-    const apps = await collectPaginated(client, "app/list", {
-      forceRefetch: false,
-      limit: 100,
-      threadId: null,
-    }, timeoutMs);
+    const apps = await readDisabledAppSurface(client, timeoutMs);
     const plugins = await client.request("plugin/list", {
       cwds: [deployment.appCwd],
       marketplaceKinds: ["local", "workspace-directory"],
