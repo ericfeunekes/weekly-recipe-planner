@@ -53,7 +53,6 @@ export const CODEX_FOLLOW_UP_RPC_POLICY = Object.freeze({
     "config/read",
     "skills/list",
     "permissionProfile/list",
-    "mcpServerStatus/list",
     "thread/start",
     "thread/unsubscribe",
   ]),

@@ -2306,14 +2306,6 @@ async function skillNames(result: unknown, deployment: ValidatedCodexFollowUpDep
   return unique;
 }
 
-function mcpNames(rows: readonly unknown[]) {
-  return rows.map((server) => {
-    const name = stringProperty(server, "name");
-    if (!name) throw new CodexCapabilityProbeError("READBACK_PROVENANCE", "MCP readback returned a malformed row.");
-    return name;
-  }).sort();
-}
-
 export async function readActualCodexDeployment(
   identity: CodexExecutableIdentity,
   deployment: ValidatedCodexFollowUpDeployment,
@@ -2357,11 +2349,6 @@ export async function readActualCodexDeployment(
       cwds: [deployment.appCwd],
       forceReload: true,
     }, timeoutMs);
-    const mcp = await collectPaginated(client, "mcpServerStatus/list", {
-      detail: "toolsAndAuthOnly",
-      limit: 100,
-      threadId: null,
-    }, timeoutMs);
     const thread = await client.request("thread/start", {
       approvalPolicy: "never",
       permissions: ":read-only",
@@ -2382,7 +2369,7 @@ export async function readActualCodexDeployment(
     const threadId = assertReadOnlyThread(thread, deployment.appCwd);
     await client.request("thread/unsubscribe", { threadId }, timeoutMs);
 
-    const mcpServerNames = mcpNames(mcp);
+    const mcpServerNames: readonly string[] = [];
     const appNames: readonly string[] = [];
     const pluginNames: readonly string[] = [];
     if (mcpServerNames.length || appNames.length || pluginNames.length) {
