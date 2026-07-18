@@ -138,26 +138,32 @@ await mkdir(dirname(PLIST_PATH), { recursive: true, mode: 0o700 });
 await mkdir(join(DEPLOY_ROOT, "agent"), { recursive: true, mode: 0o700 });
 await writeFile(join(DEPLOY_ROOT, "agent", "config.toml"), dedicatedCodexConfig(), { mode: 0o600 });
 await writeFile(join(DEPLOY_ROOT, "agent", "AGENTS.md"), dedicatedCodexInstructions(), { mode: 0o600 });
-await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
-await waitForUnloaded();
 
-const backup = join(BACKUP_ROOT, `${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${randomUUID()}`);
+const deploymentId = `${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${randomUUID()}`;
+const backup = join(BACKUP_ROOT, deploymentId);
+const staging = join(DEPLOY_ROOT, `.app-staging-${deploymentId}`);
 let moved = false;
 try {
-  if (await exists(APP_ROOT)) {
-    await chmod(APP_ROOT, 0o700);
-    await mkdir(backup, { recursive: true, mode: 0o700 });
-    await rename(APP_ROOT, join(backup, "app"));
-    moved = true;
-  }
-  await cp(ROOT, APP_ROOT, {
+  await cp(ROOT, staging, {
     recursive: true,
     filter(source) {
       const name = source.split("/").at(-1);
       return ![".git", ".planner-data", "coverage", "node_modules", "outputs"].includes(name);
     },
   });
-  await run("npm", ["ci"], { cwd: APP_ROOT });
+  if (!(await exists(join(staging, "package.json")))) {
+    throw new Error("Staged application is missing package.json.");
+  }
+  await run("npm", ["ci"], { cwd: staging });
+  await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
+  await waitForUnloaded();
+  if (await exists(APP_ROOT)) {
+    await chmod(APP_ROOT, 0o700);
+    await mkdir(backup, { recursive: true, mode: 0o700 });
+    await rename(APP_ROOT, join(backup, "app"));
+    moved = true;
+  }
+  await rename(staging, APP_ROOT);
   await chmod(APP_ROOT, 0o700);
   await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
@@ -167,5 +173,6 @@ try {
   await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
   await rm(APP_ROOT, { recursive: true, force: true }).catch(() => undefined);
   if (moved) await rename(join(backup, "app"), APP_ROOT).catch(() => undefined);
+  await rm(staging, { recursive: true, force: true }).catch(() => undefined);
   throw error;
 }
