@@ -20,8 +20,6 @@ const LABEL = "com.ericfeunekes.meal-planner";
 const PORT = Number(process.env.PLANNER_PORT ?? 8642);
 const TAILNET_ORIGIN = process.env.PLANNER_TAILNET_ORIGIN
   ?? "https://robie-imac.tailae8a7b.ts.net";
-const TAILNET_URL = process.env.PLANNER_TAILNET_URL
-  ?? `${TAILNET_ORIGIN}/recipe-planner/`;
 const HOME = resolve(process.env.HOME ?? homedir());
 const ROOT = resolve(process.cwd());
 const DEPLOY_ROOT = join(HOME, "meal-planner");
@@ -73,22 +71,6 @@ async function waitForHealthy() {
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error(`Planner did not become healthy (${last}).`);
-}
-
-async function observeTailnetReadiness() {
-  const deadline = Date.now() + 20_000;
-  let last = "no response";
-  while (Date.now() < deadline) {
-    try {
-      const workspace = await fetch(new URL("api/workspace", TAILNET_URL), {
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-      });
-      if (workspace.ok) return { ready: true, last: null };
-      last = `workspace ${workspace.status}`;
-    } catch (error) { last = error instanceof Error ? error.message : String(error); }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-  }
-  return { ready: false, last };
 }
 
 async function waitForUnloaded() {
@@ -174,10 +156,6 @@ try {
   await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
   await waitForHealthy();
-  const tailnetReadiness = await observeTailnetReadiness();
-  if (!tailnetReadiness.ready) {
-    console.warn(`Planner is running; shared Tailscale readiness remains pending (${tailnetReadiness.last}).`);
-  }
   // Readiness probes intentionally keep HTTP connections alive. The
   // LaunchAgent owns the service now, so end this one-shot deploy process
   // explicitly instead of letting those idle client sockets hold it open.
