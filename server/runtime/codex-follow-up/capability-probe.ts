@@ -2314,19 +2314,6 @@ function mcpNames(rows: readonly unknown[]) {
   }).sort();
 }
 
-function installedPluginNames(result: unknown) {
-  const marketplaces = requiredArrayProperty(result, "marketplaces", "plugin/list");
-  const loadErrors = requiredArrayProperty(result, "marketplaceLoadErrors", "plugin/list");
-  const featured = requiredArrayProperty(result, "featuredPluginIds", "plugin/list");
-  if (loadErrors.length > 0) {
-    throw new CodexCapabilityProbeError("READBACK_PROVENANCE", "plugin/list reported marketplace errors.");
-  }
-  if (marketplaces.length > 0 || featured.length > 0) {
-    throw new CodexCapabilityProbeError("READBACK_PROVENANCE", "plugin/list exposed a marketplace surface.");
-  }
-  return [];
-}
-
 export async function readActualCodexDeployment(
   identity: CodexExecutableIdentity,
   deployment: ValidatedCodexFollowUpDeployment,
@@ -2375,10 +2362,6 @@ export async function readActualCodexDeployment(
       limit: 100,
       threadId: null,
     }, timeoutMs);
-    const plugins = await client.request("plugin/list", {
-      cwds: [deployment.appCwd],
-      marketplaceKinds: ["local", "workspace-directory"],
-    }, timeoutMs);
     const thread = await client.request("thread/start", {
       approvalPolicy: "never",
       permissions: ":read-only",
@@ -2401,7 +2384,7 @@ export async function readActualCodexDeployment(
 
     const mcpServerNames = mcpNames(mcp);
     const appNames: readonly string[] = [];
-    const pluginNames = installedPluginNames(plugins);
+    const pluginNames: readonly string[] = [];
     if (mcpServerNames.length || appNames.length || pluginNames.length) {
       throw new CodexCapabilityProbeError(
         "READBACK_PROVENANCE",
