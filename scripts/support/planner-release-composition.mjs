@@ -854,7 +854,9 @@ async function materializeCanonicalApp(context, sourceRoot, dependencies = {}) {
   ));
   await assertStageRuntimeIdentity(context, dependencies, "before canonical installation");
   await ensurePrivateDirectory(context.layout.qaRoot);
-  const copiedManifest = await copyReleaseTree(sourceRoot, context.layout.appRoot);
+  const copiedManifest = await copyReleaseTree(sourceRoot, context.layout.appRoot, {
+    excludedRootNames: releaseSourceExclusionSet(),
+  });
   if (!same(copiedManifest, context.stage.projection.candidateSource)) {
     throw new PlannerReleaseError(
       "The canonical application source changed after the exact Node preflight.",
