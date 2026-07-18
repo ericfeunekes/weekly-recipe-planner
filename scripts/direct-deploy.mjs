@@ -31,6 +31,7 @@ const BACKUP_ROOT = join(DEPLOY_ROOT, "backups");
 const PLIST_PATH = join(HOME, "Library", "LaunchAgents", `${LABEL}.plist`);
 const DOMAIN = `gui/${process.getuid?.()}`;
 const TARGET = `${DOMAIN}/${LABEL}`;
+const PROBE_TIMEOUT_MS = 2_000;
 
 function escapeXml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -59,8 +60,12 @@ async function waitForHealthy() {
   let last = "no response";
   while (Date.now() < deadline) {
     try {
-      const health = await fetch(`http://127.0.0.1:${PORT}/api/health`);
-      const workspace = await fetch(`http://127.0.0.1:${PORT}/api/workspace`);
+      const health = await fetch(`http://127.0.0.1:${PORT}/api/health`, {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
+      const workspace = await fetch(`http://127.0.0.1:${PORT}/api/workspace`, {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
       const healthBody = health.ok ? await health.json() : null;
       if (workspace.ok && isProductionHealthReady(healthBody)) return;
       last = `health ${health.status} (${healthBody?.status ?? "invalid"}), workspace ${workspace.status}`;
@@ -75,7 +80,9 @@ async function observeTailnetReadiness() {
   let last = "no response";
   while (Date.now() < deadline) {
     try {
-      const workspace = await fetch(new URL("api/workspace", TAILNET_URL));
+      const workspace = await fetch(new URL("api/workspace", TAILNET_URL), {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      });
       if (workspace.ok) return { ready: true, last: null };
       last = `workspace ${workspace.status}`;
     } catch (error) { last = error instanceof Error ? error.message : String(error); }
