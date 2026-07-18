@@ -90,6 +90,10 @@ export const CODEX_FOLLOW_UP_RPC_POLICY = Object.freeze({
   ]),
   ignoredNotifications: Object.freeze([
     "account/rateLimits/updated",
+    // Codex 0.142.5 emits this additive cache-invalidation event after the
+    // bounded `app/list` readback. This runtime never consumes app listings,
+    // so it carries no planner authority and must not invalidate readiness.
+    "app/list/updated",
     "item/reasoning/textDelta",
     "remoteControl/status/changed",
     "thread/tokenUsage/updated",

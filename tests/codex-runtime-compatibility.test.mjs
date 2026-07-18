@@ -282,6 +282,7 @@ test("compatibility contract freezes exact capability manifests and RPC allowlis
     assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.clientRequests.includes(method), true);
   }
   assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("warning"), true);
+  assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("app/list/updated"), true);
   assert.equal(
     CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("item/reasoning/textDelta"),
     true,
