@@ -91,10 +91,10 @@ parameter and does not change when a planner location is opened.
 - **RecipeSnapshot**: the recipe-owned fields on the existing flat meal instance: title, optional yield text, meal-local ingredient occurrences, ordered instruction steps, and optional source reference. Scheduling and household execution fields remain on the same meal but are not implicitly replaced with the recipe. The snapshot is editable/adaptable; editing it does not imply the source page changed.
 - **SourceRecipe**: optional informational reference on a meal snapshot, not an attestation. The web form is `{kind:"web",identity,url,retrievedAt}` with a canonical HTTP(S) URL, human-readable source identity/title, and observation time. Embedded web-assisted planning may record the primary page used as its starting point, with host-owned observation-time handling; direct household/Global Codex commands supply a validated but unattested time. It does not attest authorship, extraction fidelity, current page truth, or semantic equivalence after adaptation, and it is not an external authority, recipe-library identity, or actor/admission credential.
 - **RecipeIngredient**: one stable meal-local ingredient occurrence. It preserves the recipe's display amount/name and may resolve to one household `IngredientConcept`; later concept or alias changes never rewrite the snapshot's literal display text. Instruction ingredient uses link to this occurrence. Their amounts explain step use and do not need to add up to the recipe occurrence's displayed requirement.
-- **IngredientConcept**: one shared household food identity such as `Green onion`, `Salmon`, or `White rice`, with a preferred label and accepted matching vocabulary. Concepts support cross-recipe recognition and grocery grouping without turning the planner into a canonical recipe library, product/SKU catalogue, nutrition database, or universal food ontology.
+- **IngredientConcept**: one shared household food identity such as `Green onion`, `Salmon`, or `White rice`, with a preferred label, accepted matching vocabulary, and a default shopping section. An app-provided curated starter catalogue supplies common concepts; the household may add concepts and vocabulary without turning the planner into a canonical recipe library, product/SKU catalogue, nutrition database, or universal food ontology.
 - **InstructionStep**: canonical atomic recipe instruction with a stable ID, recipe order, one or more ingredient uses that link to `RecipeIngredient` records, one free-text instruction, Boolean completion, an optional timer duration and persisted start timestamp, and one optional note. Completion and timer state belong to this object and therefore appear consistently in every view that references it.
 - **PrepSession**: a week-scoped, manually ordered batch-prep workspace with a label and optional date. It contains an ordered projection of references to canonical instruction steps; it never owns copied step state or alters recipe order. A step may be shown in more than one session, but every reference exposes the same canonical instruction state. Dated sessions may use the Sunday before a Monday-start week through that week's ending Sunday.
-- **GroceryItem**: one derived execution record for one grocery-eligible ingredient occurrence in one active/planned-week meal. Its stable identity is the meal-plus-ingredient pair; literal requirement and recipe link derive from that occurrence, while its household ingredient concept supports shopper-facing grouping. Only section, source (`Shop`, `Farm box`, or `On hand`), and checked state are grocery-owned classification/execution state; a visual group is a read model over those rows, never a second execution authority.
+- **GroceryItem**: one derived execution record for one grocery-requirement ingredient occurrence in one active/planned-week meal. Its stable identity is the meal-plus-ingredient pair; literal requirement and recipe link derive from that occurrence, while its household ingredient concept supports shopper-facing grouping. Only section, coverage/source (`Needs source`, `Shop`, `Farm box`, or `On hand`), and checked state are grocery-owned classification/execution state; a visual group is a read model over those rows, never a second execution authority.
 - **Leftover**: food availability produced by a cooked meal and usable by a later meal/day.
 - **FeedbackEntry**: meal or week-level feedback: repeat/modify/drop, leftover quality, prep friction, planning lesson.
 - **CodexThreadSelection**: one opaque selected native top-level thread ID plus a selection revision. Codex owns the catalogue, messages, turns, items, and child-agent threads. The app may render a sanitized read/stream projection and planner-effect status, but it does not persist a second transcript or shadow thread index. Messages may carry stable references to the selected week, meal, or instruction step.
@@ -122,13 +122,17 @@ add a missing occurrence in the same edit. Canonical matching, suggestions, and
 ambiguity handling enhance this interaction behind the text surface rather than
 replacing it with a mandatory picker or blocking ontology workflow.
 
-The matching boundary accepts one ingredient or an ordered bounded list and
-returns one identity-preserving result per input before mutation. Exact preferred
-labels and accepted household vocabulary may resolve directly. Similar strings
-produce explainable candidates; lexical or edit distance is only one signal and
-must not silently collapse materially different foods or forms. The household or
-Codex may keep the literal unresolved, select an existing concept, or deliberately
-create a new concept. Preview is pure, and apply is bound to the same authoritative
+The matching core supports two deliberately different entry contracts. Adding
+one ingredient remains optimistic: the literal occurrence is created immediately,
+then the response may show explainable similar concepts and offer an in-place,
+reversible correction without deleting its stable occurrence. Pasting or importing
+an ordered bounded list is reviewed before mutation and returns one identity-
+preserving result per input. Exact preferred labels and accepted household
+vocabulary may resolve directly. Similar strings produce explainable candidates;
+lexical or edit distance is only one signal and must not silently collapse
+materially different foods or forms. The household or Codex may keep the literal
+unresolved, select an existing concept, or deliberately create a new concept.
+Batch preview is pure, and batch apply is bound to the same authoritative
 planner/catalogue version and input so stale review cannot silently resolve
 different ingredients.
 
@@ -143,15 +147,22 @@ future capabilities, not prerequisites for canonical identity or grocery
 grouping. Unparseable amounts remain valid literal requirements and are never
 guessed or discarded.
 
-Grocery eligibility is explicit. Purchasable ingredient occurrences project to
-Groceries; prepared components, intermediate outputs, finished dishes, and
-leftover/reserved portions do not become Shop requirements merely because an
-instruction uses them. The first delivery need not introduce an automatic
-step-input/output dependency graph: explicit eligibility plus recipe provenance
-is sufficient. When several eligible occurrences resolve to the same concept,
-Groceries groups their compatible standardized totals and concatenates remaining
-literal requirements, while retaining each contributing meal and each occurrence's
-source/check execution state.
+Ingredient execution role is explicit and separate from food identity and
+preparation wording. A recipe occurrence may be a weekly grocery requirement, a
+recipe/prep output, or a leftover/reserved portion. Only weekly requirements
+project to Groceries; prepared components, intermediate outputs, finished dishes,
+and leftover/reserved portions do not project merely because an instruction uses
+them. Each projected requirement has coverage/source state: `Needs source`,
+`Shop`, `Farm box`, or `On hand`; only `Shop` appears in `To buy`, and a missing
+source never silently defaults to Shop. The first delivery need not introduce an
+automatic step-input/output dependency graph: explicit role plus recipe provenance
+is sufficient. When several requirements resolve to the same concept, Groceries
+groups their compatible standardized totals and concatenates remaining literal
+requirements, while retaining each contributing meal and each occurrence's
+source/check execution state. Preparation wording such as `sliced green onion`
+may resolve to `Green onion` without losing its literal form, while a prepared
+output such as `cooked salmon` remains excluded by role rather than becoming a
+second purchasable concept.
 
 The app data store owns household ingredient concepts, occurrence resolutions,
 and grocery execution state. UI, embedded Codex, and Global Codex read, preview,
@@ -162,9 +173,9 @@ interpretation or presentation, never competing durable authorities.
 Acceptance outcomes:
 
 - **ING-1 — Preserve recipe truth.** Creating, matching, renaming, merging, or rejecting a household concept never silently changes or drops a meal-local ingredient literal, instruction link, archived display, or grocery execution classification.
-- **ING-2 — Explain ambiguity before mutation.** Single and batch ingredient review return stable per-input outcomes with exact matches, explainable candidates, and an explicit unresolved/new-concept path; stale review cannot apply a changed decision.
+- **ING-2 — Explain ambiguity at the right moment.** A single add preserves the new literal immediately and offers a reversible in-place correction; batch entry returns stable per-input outcomes with exact matches, explainable candidates, and an explicit unresolved/new-concept path before atomic mutation. Stale batch review cannot apply a changed decision.
 - **ING-3 — Normalize without false precision.** Compatible standardized quantities aggregate correctly, while non-standard, incompatible, ranged, informal, or unparseable requirements remain visible as concatenated literals.
-- **ING-4 — Project only shopping needs.** Grocery views contain every grocery-eligible recipe requirement exactly once, exclude prepared outputs and leftovers, retain source/check state, and show every contributing recipe under their household concept.
+- **ING-4 — Project and cover weekly requirements.** Grocery views contain every grocery-requirement occurrence exactly once, exclude prepared outputs and leftovers, expose `Needs source` rather than assuming Shop, retain Shop/Farm box/On hand/check state and corrected shopping sections, and show every contributing recipe under its household concept.
 - **ING-5 — Preserve fast instruction authoring.** Existing line-oriented instruction amount editing remains usable for adding several ingredient uses, linking existing recipe occurrences, and adding a missing occurrence without a separate mandatory workflow.
 - **ING-6 — Keep operator parity.** The UI and Codex surfaces receive the same resolution, conversion, version-conflict, apply, event, undo, and authoritative-readback semantics.
 
