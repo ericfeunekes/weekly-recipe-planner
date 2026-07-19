@@ -3,6 +3,11 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import {
+  copyPrivateDirectory,
+  validateProductionAgentSources,
+} from "./production-agent-sources.mjs";
+
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 
@@ -17,16 +22,17 @@ async function copyPrivateFile(source, destination) {
 }
 
 /**
- * Materialize the one shared development Codex home from the current worktree.
+ * Materialize the one shared development Codex home from production sources.
  * Native auth/history remains in this home; release-owned config/instructions
- * are refreshed every time a worktree runtime starts.
+ * and skills are copied so local testing cannot mutate or replace production
+ * links. Promoting local changes back to production remains a manual release.
  */
 export async function prepareDevelopmentCodexHome({
-  appRoot = process.cwd(),
   home = process.env.HOME ?? homedir(),
 } = {}) {
-  const canonicalAppRoot = resolve(appRoot);
-  const developmentRoot = join(resolve(home), "meal-planner-dev");
+  const canonicalHome = resolve(home);
+  const production = await validateProductionAgentSources(canonicalHome);
+  const developmentRoot = join(canonicalHome, "meal-planner-dev");
   const devHome = join(developmentRoot, "agent");
   const devAppCwd = join(developmentRoot, "app");
   await mkdir(devHome, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
@@ -38,8 +44,9 @@ export async function prepareDevelopmentCodexHome({
   await mkdir(devAppCwd, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   await chmod(devAppCwd, PRIVATE_DIRECTORY_MODE);
   await Promise.all([
-    copyPrivateFile(join(canonicalAppRoot, "deployment", "codex", "config.toml"), join(devHome, "config.toml")),
-    copyPrivateFile(join(canonicalAppRoot, "deployment", "codex", "AGENTS.md"), join(devHome, "AGENTS.md")),
+    copyPrivateFile(production.config, join(devHome, "config.toml")),
+    copyPrivateFile(production.agents, join(devHome, "AGENTS.md")),
+    copyPrivateDirectory(production.skills, join(devHome, ".agents", "skills")),
   ]);
   return Object.freeze({ appRoot: devAppCwd, codexHome: devHome });
 }

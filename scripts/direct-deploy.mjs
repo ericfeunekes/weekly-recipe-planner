@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { shouldStageApplicationPath } from "./support/deployment-staging-filter.mjs";
+import { validateProductionAgentSources } from "./support/production-agent-sources.mjs";
 import { isProductionHealthReady } from "./support/production-readiness.mjs";
 
 const LABEL = "com.ericfeunekes.meal-planner";
@@ -123,12 +124,12 @@ if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("PLA
 await mkdir(BACKUP_ROOT, { recursive: true, mode: 0o700 });
 await mkdir(dirname(PLIST_PATH), { recursive: true, mode: 0o700 });
 await mkdir(join(DEPLOY_ROOT, "agent"), { recursive: true, mode: 0o700 });
-const [dedicatedCodexConfig, dedicatedCodexInstructions] = await Promise.all([
-  readFile(join(ROOT, "deployment", "codex", "config.toml"), "utf8"),
-  readFile(join(ROOT, "deployment", "codex", "AGENTS.md"), "utf8"),
-]);
+await validateProductionAgentSources(HOME);
+const dedicatedCodexConfig = await readFile(
+  join(ROOT, "deployment", "codex", "config.toml"),
+  "utf8",
+);
 await writeFile(join(DEPLOY_ROOT, "agent", "config.toml"), dedicatedCodexConfig, { mode: 0o600 });
-await writeFile(join(DEPLOY_ROOT, "agent", "AGENTS.md"), dedicatedCodexInstructions, { mode: 0o600 });
 
 const deploymentId = `${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${randomUUID()}`;
 const backup = join(BACKUP_ROOT, deploymentId);
@@ -153,6 +154,9 @@ try {
   }
   await rename(staging, APP_ROOT);
   await chmod(APP_ROOT, 0o700);
+  // These retained CODEX_HOME entries are stable links into the selected app.
+  // A release must never replace them with copied files or write through them.
+  await validateProductionAgentSources(HOME);
   await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
   await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
   await waitForHealthy();
