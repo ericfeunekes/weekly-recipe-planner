@@ -2,13 +2,37 @@
 
 Use `make dev-start` from a worktree to run that worktree through Portless.
 It receives a unique local URL and refreshes the single shared development
-Codex home from the worktree's `deployment/codex` bundle. `make dev-status`
-and `make dev-stop` manage that worktree runtime.
+Codex home with independent copies resolved from the installed production
+instruction and skill links. `make dev-status` and `make dev-stop` manage that
+worktree runtime.
 
 There are two persistent Codex homes: the shared development home and the
-production home. Worktree code, instructions, and skills are tested through
-the former; deployment promotes the approved release bundle into the latter
-without replacing its retained authentication or native runtime history.
+production home. Worktree code is tested through the former, while its agent
+instructions and skills start as production-derived copies. Deployment
+promotes the approved release bundle into production without replacing its
+retained authentication, native runtime history, or managed links.
+
+## Agent instruction source boundary
+
+This repository-root `AGENTS.md` is developer and operator guidance only. It is
+not an embedded-planner instruction source and must never be copied, linked, or
+staged into the installed application or production `CODEX_HOME`. Root
+`AGENTS.override.md` and `CLAUDE.md` files have the same non-release status.
+
+The released embedded-planner instructions live only in
+`deployment/codex/AGENTS.md`; released planner skills live in
+`.agents/skills/`. Production exposes those two installed-app targets through
+the managed `CODEX_HOME/AGENTS.md` and `CODEX_HOME/.agents/skills` symlinks.
+Development and QA copy their resolved production contents rather than linking
+back to a mutable worktree. Drafts may be tested locally, but moving an update
+to production requires the explicit manual promotion path; never update through
+or replace either production link.
+
+`scripts/support/deployment-staging-filter.mjs` mechanically excludes the root
+instruction files while retaining `deployment/codex/AGENTS.md` and
+`.agents/skills/`. Preserve that distinction and its
+`tests/deployment-staging-filter.test.mjs` proof whenever release staging or
+agent-source paths change.
 
 Do not run production from a mutable checkout. `make promote` is the only
 operator-facing production release command: it requires committed `main`,
