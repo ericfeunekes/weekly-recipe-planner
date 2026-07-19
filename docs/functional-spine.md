@@ -48,6 +48,9 @@ first navigation contract is:
 
 - `/weeks/<weekId>` opens that Week overview.
 - `/weeks/<weekId>/day/<date>` opens that Week's Day cooking ticket.
+- `/weeks/<weekId>/prep` opens that Week's Prep workspace.
+- `/weeks/<weekId>/groceries` opens that Week's Groceries workspace.
+- `/weeks/<weekId>/closeout` opens that Week's Closeout workspace.
 - A copied canonical URL loads, reloads, and participates in browser
   back/forward as that same requested Week or Day after the current household
   workspace is available.
@@ -56,44 +59,125 @@ The location is a request for a planner presentation, never a planner mutation
 or an alternative record of household state. The current workspace remains the
 authority that determines whether the requested Week exists and whether the
 requested Day belongs to it. A direct valid URL takes precedence over any
-remembered browser context. Without a direct Week/Day location, reopening the
-app returns to the last valid Week/Day used on that browser; if none remains
-valid, the app uses the existing authoritative default week.
+remembered browser context. Without a direct planner location, reopening the
+app returns to the last valid selected-week workspace used on that browser and
+replaces the root address with that canonical URL; if none remains valid, it
+replaces the root address with the existing authoritative default Week.
 
-Malformed, unavailable, deleted, or out-of-week Week/Day locations resolve to
-the canonical valid default after workspace readback rather than silently
-selecting an unrelated Week or allowing raw URL values into planner state.
+Malformed, unavailable, deleted, or out-of-week Week/Day locations replace the
+address with the canonical valid default only after workspace readback rather
+than silently selecting an unrelated Week or allowing raw URL values into
+planner state.
 Loading, offline, and reconnect behavior remain the shared-workspace behavior:
 the requested location is retained in browser history while the app waits for
 authoritative data; it does not synthesize a household view from URL state.
 
-The initial routing proof deliberately excludes Meal Detail, recipe-summary and
-other modal state, timers, history, Codex thread selection, Prep, Groceries,
-and Closeout. Those remain local presentation state or their existing
-authoritative owner until separately scoped. In particular, the one app-wide
-selected top-level Codex thread is not a URL parameter and does not change when
-a Week/Day URL is opened.
+The full routing outcome also makes the selected Week's top-level Prep,
+Groceries, and Closeout workspaces addressable. They share the resolved Week
+identity rather than creating another planner authority. Their local filters,
+multi-selection, drag state, drafts, timers, history, and modal/detail state
+remain presentation state unless a later requirement explicitly promotes one
+to URL identity.
+
+Meal Detail, recipe-summary and other modal state, timers, history, Codex
+thread selection, and transient controls remain outside the routing contract.
+In particular, the one app-wide selected top-level Codex thread is not a URL
+parameter and does not change when a planner location is opened.
 
 ## Data Model
 
 - **WeekPlan**: a Monday-start week in draft/planned, active, or archived state.
 - **MealInstance**: central week object; assigned to a day/slot; can be moved, edited, cooked, skipped, or replaced by leftovers/flex.
-- **RecipeSnapshot**: the recipe-owned fields on the existing flat meal instance: title, optional yield text, canonical ingredient records, ordered instruction steps, and optional source reference. Scheduling and household execution fields remain on the same meal but are not implicitly replaced with the recipe. The snapshot is editable/adaptable; editing it does not imply the source page changed.
+- **RecipeSnapshot**: the recipe-owned fields on the existing flat meal instance: title, optional yield text, meal-local ingredient occurrences, ordered instruction steps, and optional source reference. Scheduling and household execution fields remain on the same meal but are not implicitly replaced with the recipe. The snapshot is editable/adaptable; editing it does not imply the source page changed.
 - **SourceRecipe**: optional informational reference on a meal snapshot, not an attestation. The web form is `{kind:"web",identity,url,retrievedAt}` with a canonical HTTP(S) URL, human-readable source identity/title, and observation time. Embedded web-assisted planning may record the primary page used as its starting point, with host-owned observation-time handling; direct household/Global Codex commands supply a validated but unattested time. It does not attest authorship, extraction fidelity, current page truth, or semantic equivalence after adaptation, and it is not an external authority, recipe-library identity, or actor/admission credential.
-- **RecipeIngredient**: one canonical ingredient record for a recipe snapshot. It has a stable ID and display amount/name. Instruction ingredient uses link to this record; the app deliberately does not require a quantity parser or prove that split uses add up to the ingredient's display amount.
+- **RecipeIngredient**: one stable meal-local ingredient occurrence. It preserves the recipe's display amount/name and may resolve to one household `IngredientConcept`; later concept or alias changes never rewrite the snapshot's literal display text. Instruction ingredient uses link to this occurrence. Their amounts explain step use and do not need to add up to the recipe occurrence's displayed requirement.
+- **IngredientConcept**: one shared household food identity such as `Green onion`, `Salmon`, or `White rice`, with a preferred label and accepted matching vocabulary. Concepts support cross-recipe recognition and grocery grouping without turning the planner into a canonical recipe library, product/SKU catalogue, nutrition database, or universal food ontology.
 - **InstructionStep**: canonical atomic recipe instruction with a stable ID, recipe order, one or more ingredient uses that link to `RecipeIngredient` records, one free-text instruction, Boolean completion, an optional timer duration and persisted start timestamp, and one optional note. Completion and timer state belong to this object and therefore appear consistently in every view that references it.
 - **PrepSession**: a week-scoped, manually ordered batch-prep workspace with a label and optional date. It contains an ordered projection of references to canonical instruction steps; it never owns copied step state or alters recipe order. A step may be shown in more than one session, but every reference exposes the same canonical instruction state. Dated sessions may use the Sunday before a Monday-start week through that week's ending Sunday.
-- **GroceryItem**: one derived execution record for one canonical ingredient occurrence in one active/planned-week meal. Its stable identity is the meal-plus-ingredient pair; name, amount, and recipe link derive from that ingredient. Only section, source (`Shop`, `Farm box`, or `On hand`), and checked state are grocery-owned classification/execution state.
+- **GroceryItem**: one derived execution record for one grocery-eligible ingredient occurrence in one active/planned-week meal. Its stable identity is the meal-plus-ingredient pair; literal requirement and recipe link derive from that occurrence, while its household ingredient concept supports shopper-facing grouping. Only section, source (`Shop`, `Farm box`, or `On hand`), and checked state are grocery-owned classification/execution state; a visual group is a read model over those rows, never a second execution authority.
 - **Leftover**: food availability produced by a cooked meal and usable by a later meal/day.
 - **FeedbackEntry**: meal or week-level feedback: repeat/modify/drop, leftover quality, prep friction, planning lesson.
 - **CodexThreadSelection**: one opaque selected native top-level thread ID plus a selection revision. Codex owns the catalogue, messages, turns, items, and child-agent threads. The app may render a sanitized read/stream projection and planner-effect status, but it does not persist a second transcript or shadow thread index. Messages may carry stable references to the selected week, meal, or instruction step.
 - **EventLogEntry**: UI or Codex mutation with household-or-Codex actor, time, target object, change summary, and revert/undo basis.
 
+## Ingredient Identity, Measurements, And Instruction Use
+
+The planner preserves three truths that serve different household jobs:
+
+1. **Recipe literal** — the amount/name entered or imported for one meal-local occurrence, retained for source-faithful display and editing.
+2. **Household ingredient identity** — the shared concept used to recognize equivalent household vocabulary across recipes.
+3. **Shopping requirement** — the source-filtered, checked execution row and its shopper-facing grouped presentation.
+
+An ingredient occurrence may remain unresolved without blocking recipe editing,
+cooking, instruction steps, or Prep. Resolution adds or changes its concept
+reference; it does not delete and recreate the occurrence, rewrite its literal
+text, or reset instruction links and grocery execution state. Archived snapshot
+display remains stable when concept labels, matching vocabulary, or matcher
+behavior later change.
+
+Ingredient entry remains free-form and line-oriented in the recipe and
+instruction editors. Instruction amounts keep the compact `amount | ingredient`
+interaction: they link to an existing recipe occurrence when recognized and may
+add a missing occurrence in the same edit. Canonical matching, suggestions, and
+ambiguity handling enhance this interaction behind the text surface rather than
+replacing it with a mandatory picker or blocking ontology workflow.
+
+The matching boundary accepts one ingredient or an ordered bounded list and
+returns one identity-preserving result per input before mutation. Exact preferred
+labels and accepted household vocabulary may resolve directly. Similar strings
+produce explainable candidates; lexical or edit distance is only one signal and
+must not silently collapse materially different foods or forms. The household or
+Codex may keep the literal unresolved, select an existing concept, or deliberately
+create a new concept. Preview is pure, and apply is bound to the same authoritative
+planner/catalogue version and input so stale review cannot silently resolve
+different ingredients.
+
+Every ingredient retains its literal amount. When the planner can parse a
+quantity safely, it may also hold a normalized value and measurement dimension
+for calculation. Compatible standardized measures may be converted and added;
+non-standard or incompatible requirements such as `1 bunch` and `1/3 cup sliced`
+are concatenated under the shared ingredient concept so the shopper can see what
+the recipes require. Ingredient-specific yield/density conversions, `bunch` or
+`pinch` conversions, package optimization, and raw-to-cooked transformations are
+future capabilities, not prerequisites for canonical identity or grocery
+grouping. Unparseable amounts remain valid literal requirements and are never
+guessed or discarded.
+
+Grocery eligibility is explicit. Purchasable ingredient occurrences project to
+Groceries; prepared components, intermediate outputs, finished dishes, and
+leftover/reserved portions do not become Shop requirements merely because an
+instruction uses them. The first delivery need not introduce an automatic
+step-input/output dependency graph: explicit eligibility plus recipe provenance
+is sufficient. When several eligible occurrences resolve to the same concept,
+Groceries groups their compatible standardized totals and concatenates remaining
+literal requirements, while retaining each contributing meal and each occurrence's
+source/check execution state.
+
+The app data store owns household ingredient concepts, occurrence resolutions,
+and grocery execution state. UI, embedded Codex, and Global Codex read, preview,
+and mutate them only through the shared typed, versioned, idempotent planner
+authority. Matching code, browser drafts, route state, and rendered groups are
+interpretation or presentation, never competing durable authorities.
+
+Acceptance outcomes:
+
+- **ING-1 — Preserve recipe truth.** Creating, matching, renaming, merging, or rejecting a household concept never silently changes or drops a meal-local ingredient literal, instruction link, archived display, or grocery execution classification.
+- **ING-2 — Explain ambiguity before mutation.** Single and batch ingredient review return stable per-input outcomes with exact matches, explainable candidates, and an explicit unresolved/new-concept path; stale review cannot apply a changed decision.
+- **ING-3 — Normalize without false precision.** Compatible standardized quantities aggregate correctly, while non-standard, incompatible, ranged, informal, or unparseable requirements remain visible as concatenated literals.
+- **ING-4 — Project only shopping needs.** Grocery views contain every grocery-eligible recipe requirement exactly once, exclude prepared outputs and leftovers, retain source/check state, and show every contributing recipe under their household concept.
+- **ING-5 — Preserve fast instruction authoring.** Existing line-oriented instruction amount editing remains usable for adding several ingredient uses, linking existing recipe occurrences, and adding a missing occurrence without a separate mandatory workflow.
+- **ING-6 — Keep operator parity.** The UI and Codex surfaces receive the same resolution, conversion, version-conflict, apply, event, undo, and authoritative-readback semantics.
+
+Material exclusions for this outcome are a universal food ontology, nutrition or
+allergen inference, store SKUs, automatic package optimization, ingredient-specific
+density/yield tables, mandatory cleanup of every archived ingredient, automatic
+prep scheduling, and a full prepared-material dependency graph.
+
 ## Mutations
 
 The UI and Codex app-server commands reach the same planner mutation authority and typed domain-command surface. The embedded thread carries no approval or authority-grant field and excludes destructive planner `archiveWeek`; that command remains on its separate typed household/UI one-turn-grant path. Every accepted mutation creates event history.
 
-Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `addPrepStepsToDate`, `movePrepStepsToDate`, `removePrepStepsFromDate`, `clearPrepDate`, `moveGroceryItemsToSource`, `setGroceryItemChecked`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Prep is a date-owned queue: instructions can be scheduled on any date up to the active meal week's Sunday, while the underlying instruction remains canonical. Grocery rows are projected automatically from recipe ingredients; there is no free-form grocery CRUD path. The functional contract stays domain-command first so validation and meal-planning semantics remain close to the operation.
+Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, ingredient-resolution preview/apply, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `addPrepStepsToDate`, `movePrepStepsToDate`, `removePrepStepsFromDate`, `clearPrepDate`, `moveGroceryItemsToSource`, `setGroceryItemChecked`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Prep is a date-owned queue: instructions can be scheduled on any date up to the active meal week's Sunday, while the underlying instruction remains canonical. Grocery rows are projected automatically from grocery-eligible recipe ingredient occurrences; there is no free-form grocery CRUD path. The functional contract stays domain-command first so validation and meal-planning semantics remain close to the operation.
 
 Core mutations:
 
@@ -108,7 +192,8 @@ Core mutations:
 - Start or reset an optional step timer. The app persists its start timestamp and derives elapsed/remaining time after reopening, but does not send notifications or complete the step automatically.
 - Create, date or leave undated, manually order, and remove batch prep sessions. Add, reorder, or remove instruction references within a session; sessions never copy instruction execution state or reorder recipe instructions.
 - Add or replace the optional note on an instruction step.
-- Add, edit, complete, or remove grocery items; classify their source and link them to the dinners they support.
+- Resolve ingredient occurrences to household concepts individually or as a reviewed batch without rewriting their literal recipe text.
+- Reconcile derived grocery requirements, classify their source, complete them, and follow their contributing recipe links; grocery names and requirements are never independently authored copies.
 - Mark leftovers available, consumed, or assigned to a later meal.
 - Capture meal/week feedback.
 - Promote a successful recipe snapshot or lesson into future planning material.
@@ -131,9 +216,12 @@ The app owns grocery items needed for planned weeks and active execution. The sc
 
 The app supports the Monday farm-box pattern by classifying ingredient rows as
 `Farm box` and letting the household filter them out of the current `To buy`
-list. Every row links directly to the one dinner and canonical ingredient that
-produced it, so the list remains traceable without becoming a full pantry
-inventory or a separate household-shopping product.
+list. Every execution row links directly to the one meal-local occurrence that
+produced it. The shopping view may group rows by household ingredient concept,
+show compatible totals, concatenate remaining literal requirements, and list
+every contributing recipe, while the child rows retain source/check authority.
+The result remains traceable without becoming a full pantry inventory or a
+separate household-shopping product.
 
 Codex can use known owned ingredients supplied during planning to subtract from the grocery list, but the app does not need to maintain durable full inventory quantities.
 
@@ -175,7 +263,7 @@ Chat with Codex is a first-class mutation surface alongside direct UI editing, d
 - **Tonight / Day**: focused execution view for the current or selected day’s meal, presented as a compact cooking ticket: day and meal identity, ingredient context, one clear cooking action, canonical instruction steps in recipe order with completion checkboxes, optional timers and notes, serving/packing instructions, components, and leftover handling. Steps completed from Prep are already checked here.
 - **Prep / Batch Cook**: an active-week workspace of dated and undated prep sessions. A recipe sidebar supplies canonical instructions to drag into session order; checking a session reference checks the canonical step without changing recipe order.
 - **Meal Detail**: editable active-week meal and recipe snapshot: title, recipe details, independently referenceable instruction steps, source links, venue, and leftover path.
-- **Groceries**: editable weekly food shopping list with section grouping, source filters, and dinner provenance links.
+- **Groceries**: derived weekly food shopping list with household-ingredient grouping, compatible totals or concatenated literal requirements, section/source filters, execution checks, and contributing-recipe provenance.
 - **Feedback / Closeout**: archive summary, repeat/modify/drop, leftover quality, prep friction, planning lessons, and promotion candidates.
 - **Chat component (cross-view)**: always-available Codex side panel on desktop/iPad and drawer on mobile, with native history/select/new, one app-wide selected top-level thread, one composer, selected-object context, and nested worker activity; not a standalone destination view.
 
@@ -194,7 +282,8 @@ In scope for the functional spine:
 - UI and Codex mutations over the same data.
 - Typed Codex/app-server domain commands as the primary command surface.
 - Editable week-local recipe snapshots with canonical atomic instruction steps.
-- Canonical recipe ingredients and instructions, with ordered prep-session references that share step completion, timer, and note state while leaving recipe order unchanged.
+- Stable meal-local recipe ingredient occurrences and canonical instructions, with ordered prep-session references that share step completion, timer, and note state while leaving recipe order unchanged.
+- Shared household ingredient concepts that classify meal-local occurrences without replacing their recipe text, plus partial measurement normalization and grocery-eligibility projection.
 - One shared household planner state and native Codex thread catalogue with exactly one app-wide selected top-level thread, without accounts or private comments.
 - Recent undo backed by event history.
 - Meal movement, status, venue, prep, leftovers, groceries with sources and dinner links, feedback, and closeout.
@@ -202,6 +291,7 @@ In scope for the functional spine:
 Not central to the spine:
 
 - Full canonical recipe-library management.
+- Universal ingredient ontology, store-product catalogue, package optimizer, or mandatory conversion knowledge.
 - Full pantry/freezer/fridge inventory.
 - General household grocery shopping.
 - Nutrition tracking.
@@ -271,6 +361,9 @@ small text receipt, bounded backups, and clear recovery command are sufficient.
 - History: event log with recent undo exposed in UI.
 - Prep model: week-scoped, dated or undated `PrepSession` records contain manually ordered references to canonical instruction steps. Prep never copies or reorders recipe instructions; completion, timers, and notes are shared everywhere; removing a session or reference does not alter the step. Legacy dated prep references migrate into one dated session per date, preserving their prior order.
 - Grocery model: weekly food groceries, not full inventory or household shopping.
+- Ingredient model: meal-local literal occurrences remain recipe truth; shared household concepts support matching and shopping groups; unresolved occurrences remain valid.
+- Measurement model: preserve every literal amount, normalize only safe compatible measures, and concatenate non-standard or incompatible requirements rather than guessing conversions.
+- Instruction ingredient UX: preserve line-oriented `amount | ingredient` editing and resolve/link behind that interaction instead of requiring a picker.
 - Learning: app-owned reusable promotions with optional Obsidian export/archive.
 - Household model: one shared global state with no accounts, personal attribution, permissions, or private content.
 - Notes and Codex: an instruction-step comment field has exactly **Add comment** or **Ask Codex**; comments remain on the step, while requests move into the local native Codex composer with object context.

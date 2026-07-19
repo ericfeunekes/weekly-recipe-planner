@@ -101,6 +101,19 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 | MEAL-13 | P0 | Attempt to move/swap a meal or destination with tracked leftovers, or collide with assigned leftovers. | The protected move is rejected clearly; meals, leftovers, prep, and feedback remain unchanged. | Failure evidence and workspace readback | NOT RUN |
 | MEAL-14 | P1 | Inspect and attempt to edit/clear recipe yield. | Yield display/preservation is verified; absence of a direct yield editor is recorded as a product gap rather than silently treated as covered. | Drawer screenshot and command-surface readback | NOT RUN |
 
+### Ingredient Identity, Measurements, And Resolution
+
+| ID | Priority | User story and actions | Expected result | Evidence | Status |
+| --- | --- | --- | --- | --- | --- |
+| ING-01 | P0 | Enter one ingredient and paste a mixed list containing exact household labels, accepted vocabulary, similar names, and a novel ingredient. | Preview returns one stable result per input with direct matches, explainable alternatives, and unresolved/new-concept choices; preview changes no planner state. | Preview payload, ingredient editor screenshots, and unchanged workspace readback | NOT RUN |
+| ING-02 | P0 | Keep an ambiguous ingredient unresolved, then cook it and add it to an instruction step. | Recipe, Day, and Prep retain the literal ingredient and remain operable; only canonical grouping remains unresolved. | Cross-view screenshots and ingredient/step identity readback | NOT RUN |
+| ING-03 | P0 | Resolve similar vocabulary to one household ingredient concept and reject a dangerous near-match. | Confirmed occurrences group without rewriting recipe text; the rejected candidate stays distinct and is not silently applied by UI or Codex. | Before/after recipe and resolution readback | NOT RUN |
+| ING-04 | P0 | Combine compatible standardized quantities and mix `1 bunch`, `1/3 cup sliced`, ranges, and an unparseable amount for the same concept. | Compatible values total correctly; all remaining requirements are concatenated visibly with recipe provenance and none is guessed or discarded. | Grocery screenshot and projection readback | NOT RUN |
+| ING-05 | P0 | Include raw ingredients, a prepared tray, cooked/reserved portions, and a finished dish across recipe steps. | Every grocery-eligible occurrence projects exactly once; prepared outputs, leftovers, and finished dishes do not appear as Shop requirements. | Recipe/step inputs, grocery screenshot, and authority readback | NOT RUN |
+| ING-06 | P0 | Edit an instruction with several `amount | ingredient` lines, including one existing recipe ingredient and one missing ingredient. | The compact editor remains line-oriented; existing occurrence identity is reused, the missing occurrence is added once, and step execution state is preserved. | Open editor screenshot plus recipe/step readback | NOT RUN |
+| ING-07 | P0 | Have UI and Codex preview the same batch, then apply one accepted resolution while another client changes the catalogue or meal. | Both callers see equivalent candidates; stale apply conflicts without partial mutation, refreshed apply commits once, and event/undo/readback agree. | Two-client trace, Codex receipt, history, and authoritative readback | NOT RUN |
+| ING-08 | P1 | Rename or merge a household concept referenced by active and archived weeks with mixed grocery source/check state. | Meal-local and archived literals remain stable; active links migrate without dangling references or lost Shop/Farm box/On hand/check state. | Before/after archive, grocery, event, undo, and restart readback | NOT RUN |
+
 ### Instruction Steps And Timers
 
 | ID | Priority | User story and actions | Expected result | Evidence | Status |
@@ -142,16 +155,16 @@ Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`. Every failure nee
 
 | ID | Priority | User story and actions | Expected result | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| GROC-01 | P0 | Add a grocery item with section, detail, source, and linked dinner. | It appears once in the correct section, source filter, linked dinner, and on the other client. | Two-client screenshots and authority readback | NOT RUN |
+| GROC-01 | P0 | Add or change a grocery-eligible recipe ingredient. | Its derived execution requirement appears once in the correct section/source with linked recipe provenance and on the other client. | Two-client screenshots and authority readback | NOT RUN |
 | GROC-02 | P0 | Submit blank/whitespace input, maximum valid UI input, and injected API maximum-plus-one values. | Invalid input is blocked accessibly; `maxLength` is coherent; valid boundary input persists/wraps; API overflow has zero effect. | Error/overflow screenshots | NOT RUN |
 | GROC-03 | P0 | Check and uncheck a grocery item. | Shared state updates immediately; To buy, All, Farm box, On hand, and Done filters show correct membership. | Filter recording | NOT RUN |
-| GROC-04 | P0 | Remove an item, including while a filter is active. | The correct item disappears once and filter state remains coherent. | Before/after screenshots | NOT RUN |
+| GROC-04 | P0 | Remove or mark non-purchasable the originating recipe ingredient while a grocery filter is active. | Only its derived execution requirement disappears and filter/group state remains coherent. | Before/after screenshots and recipe projection readback | NOT RUN |
 | GROC-05 | P1 | Lose an Add or Check response after commit. | Pending retry preserves the draft or intended state and cannot duplicate the item/event. | Network trace and readback | NOT RUN |
-| GROC-06 | P1 | Add same-named groceries in different sections/details. | Stable IDs keep actions attached to the selected item; labels remain distinguishable enough to operate safely. | Screenshot and command readback | NOT RUN |
+| GROC-06 | P1 | View same-concept requirements with different literal amounts, sources, completion states, or incompatible measures. | The shopper-facing group is understandable while stable child identities keep source/check actions attached to the intended requirements. | Screenshot and command readback | NOT RUN |
 | GROC-07 | P0 | Tag an existing grocery as Farm box or On hand, filter it, and open its linked dinner. | Source updates once, To buy excludes non-Shop items, and the dinner link opens the correct recipe. | Before/after screenshot, authority readback, and recipe drawer recording | NOT RUN |
 | GROC-08 | P1 | Open a large D4 grocery list on phone/tablet/desktop. | Sections, filters, checkboxes, delete controls, and add form remain usable without layout overflow. | Viewport screenshots | NOT RUN |
 | GROC-09 | P1 | Preview and apply grocery source or dinner-link changes through Codex or Global Codex. | Accepted changes match the preview and no unrelated grocery is changed. | Diff screenshot and receipt | NOT RUN |
-| GROC-10 | P1 | Try to edit an existing grocery's name/detail/section. | The command capability is verified, and the missing family UI path is recorded explicitly as a product gap. | UI inventory and command readback | NOT RUN |
+| GROC-10 | P1 | Attempt to independently edit a derived grocery name or requirement. | The product routes the change to the originating recipe occurrence or grocery-owned classification as appropriate; no competing grocery text authority is created. | UI inventory, recipe link, and command readback | NOT RUN |
 | LEFT-01 | P0 | Cook a meal that yields leftovers. | One leftover record becomes available with correct label and portions. | Closeout/API evidence | NOT RUN |
 | LEFT-02 | P0 | Rate leftover quality good, mixed, and poor. | Exactly one quality is selected and persists across reload. | Segmented-control screenshots | NOT RUN |
 | LEFT-03 | P0 | Assign available leftovers to an open dinner. | The Week and Tonight surfaces show the assigned leftover instead of a meal. | Cross-view screenshots | NOT RUN |
