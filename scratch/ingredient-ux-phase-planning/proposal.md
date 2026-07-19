@@ -51,7 +51,7 @@ A household can enter familiar recipe wording, recognize equivalent ingredients 
 
 ### Phase 1 — Establish household ingredient identity and safe quantity semantics
 
-**Outcome:** The planner can preserve a meal's literal ingredient occurrences while resolving them to shared household concepts, previewing one or many candidate matches, applying reviewed decisions atomically, normalizing only safe compatible measurements, and explicitly classifying grocery eligibility.
+**Outcome:** The planner can preserve a meal's literal ingredient occurrences while resolving them to shared household concepts, suggesting reversible corrections after a single add, preflighting and atomically applying a reviewed batch, normalizing only safe compatible measurements, and explicitly classifying ingredient execution role and grocery coverage.
 
 **Why it is independently provable:** Domain, persistence, HTTP/tool-contract, concurrency, event/undo, and restart tests can prove this without shipping either final presentation. The contract is useful to both downstream surfaces and removes the current three-way overload of normalized recipe names.
 
@@ -65,7 +65,7 @@ A household can enter familiar recipe wording, recognize equivalent ingredients 
 
 ### Phase 2 — Improve ingredient authoring and cooking-context UX
 
-**Outcome:** A household can keep typing recipe ingredients and instruction amounts in the existing compact line-oriented interactions, receive calm non-blocking match/review help, add missing step ingredients once, and read ingredient context consistently in Recipe, Day, and Prep.
+**Outcome:** A household can keep typing recipe ingredients and instruction amounts in the existing compact line-oriented interactions, receive calm non-blocking match/review help outside the protected step editor, add missing step ingredients once, and read ingredient context consistently in Week, Recipe, Day, and Prep.
 
 **Why it is independently provable:** It has a distinct user contract and viewport/accessibility proof boundary. It consumes Phase 1 but does not depend on grocery grouping.
 
@@ -73,13 +73,13 @@ A household can enter familiar recipe wording, recognize equivalent ingredients 
 
 **Excludes:** New route state authority, picker-only entry, grocery grouping, recipe-library management, and automatic prep scheduling.
 
-**Proof:** ING-02, ING-03, and ING-06 plus mobile/tablet/desktop and keyboard/accessibility evidence on Recipe, Day, and Prep; UI and Codex readback agree after review/apply.
+**Proof:** ING-02, ING-03, and ING-06 plus mobile/tablet/desktop and keyboard/accessibility evidence on Week, Recipe, Day, and Prep; UI and Codex readback agree after review/apply.
 
 **Depends on:** Phase 1. May run in parallel with Phase 3 after the shared contracts settle.
 
 ### Phase 3 — Replace grocery occurrence noise with a shopper-readable projection
 
-**Outcome:** Groceries show only purchasable requirements, grouped by household ingredient concept, with compatible quantities totaled, incompatible/non-standard literals concatenated, and every contributing meal, source, and check state still operable.
+**Outcome:** Groceries show every weekly ingredient requirement with explicit coverage, grouped by household ingredient concept, with compatible quantities totaled, incompatible/non-standard literals concatenated, Shop isolated as `To buy`, and every contributing meal, source, section, and check state still operable.
 
 **Why it is independently provable:** It owns the shopper journey and derived-projection rules. It consumes Phase 1 but does not depend on authoring-surface rollout.
 
@@ -101,7 +101,7 @@ A household can enter familiar recipe wording, recognize equivalent ingredients 
 
 - Domain contracts and transitions: identity lifecycle, measurement abstention, eligibility, projection, merge preservation.
 - Store/persistence: migration, restart, atomic batch apply, event/undo, stable archived literals.
-- HTTP and Codex contracts: same ordered preview/apply semantics, version conflicts, idempotent receipts.
+- HTTP and Codex contracts: equivalent post-add suggestion/correction and ordered batch preflight/apply semantics, version conflicts, idempotent receipts.
 - Client contracts: text-first editor remains authoritative interaction; grouped rows retain child action identity.
 - Representative household journey: enter/import -> review candidates -> add to step -> plan/prep -> grocery projection -> source/check -> reload/undo.
 - Architecture closure: no independent browser matcher authority, no duplicate ingredient parser in bootstrap or migration, no independently editable grocery copy, and touched route files only compose shared components.

@@ -188,7 +188,7 @@ prep scheduling, and a full prepared-material dependency graph.
 
 The UI and Codex app-server commands reach the same planner mutation authority and typed domain-command surface. The embedded thread carries no approval or authority-grant field and excludes destructive planner `archiveWeek`; that command remains on its separate typed household/UI one-turn-grant path. Every accepted mutation creates event history.
 
-Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, ingredient-resolution preview/apply, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `addPrepStepsToDate`, `movePrepStepsToDate`, `removePrepStepsFromDate`, `clearPrepDate`, `moveGroceryItemsToSource`, `setGroceryItemChecked`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Prep is a date-owned queue: instructions can be scheduled on any date up to the active meal week's Sunday, while the underlying instruction remains canonical. Grocery rows are projected automatically from grocery-eligible recipe ingredient occurrences; there is no free-form grocery CRUD path. The functional contract stays domain-command first so validation and meal-planning semantics remain close to the operation.
+Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, ingredient suggestion/review/apply, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `addPrepStepsToDate`, `movePrepStepsToDate`, `removePrepStepsFromDate`, `clearPrepDate`, `moveGroceryItemsToSource`, `setGroceryItemChecked`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Prep is a date-owned queue: instructions can be scheduled on any date up to the active meal week's Sunday, while the underlying instruction remains canonical. Grocery rows are projected automatically from weekly-requirement ingredient occurrences; there is no free-form grocery CRUD path. The functional contract stays domain-command first so validation and meal-planning semantics remain close to the operation.
 
 Core mutations:
 
@@ -225,10 +225,11 @@ Meal statuses should stay cooking-specific and simple:
 
 The app owns grocery items needed for planned weeks and active execution. The scope is weekly food, not full pantry/freezer/fridge inventory and not general household shopping.
 
-The app supports the Monday farm-box pattern by classifying ingredient rows as
-`Farm box` and letting the household filter them out of the current `To buy`
-list. Every execution row links directly to the one meal-local occurrence that
-produced it. The shopping view may group rows by household ingredient concept,
+The app supports the Monday farm-box pattern by keeping each projected weekly
+requirement in `Needs source`, `Shop`, `Farm box`, or `On hand` coverage state.
+Only `Shop` rows appear in `To buy`; missing coverage remains visibly unresolved
+instead of silently becoming a purchase. Every execution row links directly to
+the one meal-local occurrence that produced it. The shopping view may group rows by household ingredient concept,
 show compatible totals, concatenate remaining literal requirements, and list
 every contributing recipe, while the child rows retain source/check authority.
 The result remains traceable without becoming a full pantry inventory or a
