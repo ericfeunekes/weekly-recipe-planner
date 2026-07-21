@@ -65,7 +65,7 @@ import type {
   PlannerToolCallReservationDecision,
 } from "../application/ports.ts";
 
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 9;
 const DEFAULT_DATABASE_NAME = "planner.sqlite";
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 const MIGRATIONS = [
@@ -113,6 +113,12 @@ const MIGRATIONS = [
     version: 8,
     path: fileURLToPath(
       new URL("migrations/008-native-codex-mutation-receipts.sql", import.meta.url),
+    ),
+  },
+  {
+    version: 9,
+    path: fileURLToPath(
+      new URL("migrations/009-prep-combined-steps.sql", import.meta.url),
     ),
   },
 ] as const;

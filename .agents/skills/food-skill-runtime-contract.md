@@ -11,7 +11,13 @@ Current supported planner facts:
   registry accepts a shape-valid sourced replacement, the native planner path
   does not bind it to an observed source capture and reviewer verdict, so food
   skills must treat sourced replacement as unavailable.
-- Prep is a date-owned queue of references to canonical instruction steps.
+- Prep is a date-owned queue of direct canonical-step references and combined
+  batch holders. A combined holder owns two or more source step occurrences,
+  stores their exact ingredient occurrence IDs, and has completion independent
+  from canonical instruction completion. Source edits invalidate the holder for
+  review; completed-holder edits, expansion, removal, or date clearing require
+  explicit fulfillment discard. Quantity projection is conservative and keeps
+  literal source amounts whenever safe arithmetic is unavailable.
 - Groceries are derived 1:1 from meal recipe ingredient objects. Their current
   operations organize source/check state, not new grocery text or calculations.
 - Closeout currently supports a meal-level `repeat` / `modify` / `drop` value,

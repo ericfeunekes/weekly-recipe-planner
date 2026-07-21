@@ -55,9 +55,32 @@ export type HouseholdCommand =
   | ({ type: "resetInstructionTimer"; stepId: string } & WeekScoped)
   | ({ type: "setInstructionTimerRemaining"; stepId: string; remainingSeconds: number } & WeekScoped)
   | ({ type: "addPrepStepsToDate"; prepDate: IsoDate; stepIds: string[]; targetPosition: number } & WeekScoped)
+  | ({
+      type: "combinePrepStepsOnDate";
+      prepDate: IsoDate;
+      sourceStepIds: string[];
+      instruction: string;
+      targetPosition: number;
+    } & WeekScoped)
+  | ({
+      type: "updateCombinedPrepStep";
+      entryId: string;
+      instruction: string;
+      discardFulfillment?: boolean;
+    } & WeekScoped)
+  | ({
+      type: "setCombinedPrepStepComplete";
+      entryId: string;
+      complete: boolean;
+    } & WeekScoped)
+  | ({
+      type: "expandCombinedPrepStep";
+      entryId: string;
+      discardFulfillment: boolean;
+    } & WeekScoped)
   | ({ type: "movePrepStepsToDate"; sourcePrepDate: IsoDate; prepDate: IsoDate; entryIds: string[]; targetPosition: number } & WeekScoped)
-  | ({ type: "removePrepStepsFromDate"; prepDate: IsoDate; entryIds: string[] } & WeekScoped)
-  | ({ type: "clearPrepDate"; prepDate: IsoDate } & WeekScoped)
+  | ({ type: "removePrepStepsFromDate"; prepDate: IsoDate; entryIds: string[]; discardFulfillment?: boolean } & WeekScoped)
+  | ({ type: "clearPrepDate"; prepDate: IsoDate; discardFulfillment?: boolean } & WeekScoped)
   | ({
       type: "moveGroceryItemsToSource";
       itemIds: string[];
@@ -104,6 +127,7 @@ export const MAX_COMMAND_TEXT_LENGTH = 4_000;
 export const MAX_ID_LENGTH = 200;
 export const MAX_PREP_ENTRIES = 64;
 export const MAX_PREP_DATES = 32;
+export const MAX_COMBINED_PREP_SOURCES = 16;
 // Every day can contain one meal in each supported slot.
 // This is an input-safety ceiling, not a meal-per-day product rule.
 export const MAX_MEALS_PER_WEEK = 256;
@@ -264,6 +288,24 @@ function weekCommandSchema(type: string, properties: Record<string, unknown> = {
   return commandSchema(type, { weekId: weekIdSchema, ...properties });
 }
 
+function weekCommandSchemaWithOptional(
+  type: string,
+  properties: Record<string, unknown>,
+  optionalProperties: Record<string, unknown>,
+) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["type", "weekId", ...Object.keys(properties)],
+    properties: {
+      type: { type: "string", const: type },
+      weekId: weekIdSchema,
+      ...properties,
+      ...optionalProperties,
+    },
+  };
+}
+
 const HOUSEHOLD_COMMAND_SCHEMAS = {
   moveMeal: weekCommandSchema("moveMeal", { mealId: idSchema, targetDate: isoDateSchema }),
   reorderMeals: weekCommandSchema("reorderMeals", { date: isoDateSchema, mealIds: { type: "array", minItems: 1, maxItems: MAX_MEALS_PER_WEEK, items: idSchema } }),
@@ -289,17 +331,47 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
     stepIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
     targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES - 1 },
   }),
+  combinePrepStepsOnDate: weekCommandSchema("combinePrepStepsOnDate", {
+    prepDate: isoDateSchema,
+    sourceStepIds: {
+      type: "array",
+      minItems: 2,
+      maxItems: MAX_COMBINED_PREP_SOURCES,
+      uniqueItems: true,
+      items: idSchema,
+    },
+    instruction: nonemptyTextSchema,
+    targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES },
+  }),
+  updateCombinedPrepStep: weekCommandSchemaWithOptional("updateCombinedPrepStep", {
+    entryId: idSchema,
+    instruction: nonemptyTextSchema,
+  }, {
+    discardFulfillment: { type: "boolean" },
+  }),
+  setCombinedPrepStepComplete: weekCommandSchema("setCombinedPrepStepComplete", {
+    entryId: idSchema,
+    complete: { type: "boolean" },
+  }),
+  expandCombinedPrepStep: weekCommandSchema("expandCombinedPrepStep", {
+    entryId: idSchema,
+    discardFulfillment: { type: "boolean" },
+  }),
   movePrepStepsToDate: weekCommandSchema("movePrepStepsToDate", {
     sourcePrepDate: isoDateSchema,
     prepDate: isoDateSchema,
     entryIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
     targetPosition: { type: "integer", minimum: 0, maximum: MAX_PREP_ENTRIES },
   }),
-  removePrepStepsFromDate: weekCommandSchema("removePrepStepsFromDate", {
+  removePrepStepsFromDate: weekCommandSchemaWithOptional("removePrepStepsFromDate", {
     prepDate: isoDateSchema,
     entryIds: { type: "array", minItems: 1, maxItems: MAX_PREP_ENTRIES, items: idSchema },
+  }, {
+    discardFulfillment: { type: "boolean" },
   }),
-  clearPrepDate: weekCommandSchema("clearPrepDate", { prepDate: isoDateSchema }),
+  clearPrepDate: weekCommandSchemaWithOptional("clearPrepDate", { prepDate: isoDateSchema }, {
+    discardFulfillment: { type: "boolean" },
+  }),
   moveGroceryItemsToSource: weekCommandSchema("moveGroceryItemsToSource", {
     itemIds: groceryItemIdsSchema,
     source: { type: "string", enum: [...GROCERY_SOURCES] },
@@ -416,6 +488,14 @@ function isWeekCommand(value: Record<string, unknown>, fields: string[]) {
   return hasKeys(value, ["type", "weekId", ...fields]) && isWeekId(value.weekId);
 }
 
+function isWeekCommandWithOptional(
+  value: Record<string, unknown>,
+  fields: string[],
+  optionalFields: string[],
+) {
+  return hasKeys(value, ["type", "weekId", ...fields], optionalFields) && isWeekId(value.weekId);
+}
+
 export type HouseholdCommandScope = "workspace" | "week";
 export type HouseholdCommandExposure = "ordinary" | "explicit_foreground";
 
@@ -444,9 +524,13 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   resetInstructionTimer: { schema: HOUSEHOLD_COMMAND_SCHEMAS.resetInstructionTimer, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
   setInstructionTimerRemaining: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setInstructionTimerRemaining, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "remainingSeconds"]) && isId(value.stepId) && isIntegerInRange(value.remainingSeconds, 1, MAX_TIMER_DURATION_SECONDS) },
   addPrepStepsToDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addPrepStepsToDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate", "stepIds", "targetPosition"]) && isIsoDate(value.prepDate) && Array.isArray(value.stepIds) && value.stepIds.length >= 1 && value.stepIds.length <= MAX_PREP_ENTRIES && value.stepIds.every(isId) && new Set(value.stepIds).size === value.stepIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES - 1) },
+  combinePrepStepsOnDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.combinePrepStepsOnDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate", "sourceStepIds", "instruction", "targetPosition"]) && isIsoDate(value.prepDate) && Array.isArray(value.sourceStepIds) && value.sourceStepIds.length >= 2 && value.sourceStepIds.length <= MAX_COMBINED_PREP_SOURCES && value.sourceStepIds.every(isId) && new Set(value.sourceStepIds).size === value.sourceStepIds.length && isText(value.instruction, MAX_COMMAND_TEXT_LENGTH, false) && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
+  updateCombinedPrepStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateCombinedPrepStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["entryId", "instruction"], ["discardFulfillment"]) && isId(value.entryId) && isText(value.instruction, MAX_COMMAND_TEXT_LENGTH, false) && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
+  setCombinedPrepStepComplete: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setCombinedPrepStepComplete, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["entryId", "complete"]) && isId(value.entryId) && typeof value.complete === "boolean" },
+  expandCombinedPrepStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.expandCombinedPrepStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["entryId", "discardFulfillment"]) && isId(value.entryId) && typeof value.discardFulfillment === "boolean" },
   movePrepStepsToDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepStepsToDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sourcePrepDate", "prepDate", "entryIds", "targetPosition"]) && isIsoDate(value.sourcePrepDate) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
-  removePrepStepsFromDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepStepsFromDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate", "entryIds"]) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length },
-  clearPrepDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.clearPrepDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["prepDate"]) && isIsoDate(value.prepDate) },
+  removePrepStepsFromDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepStepsFromDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["prepDate", "entryIds"], ["discardFulfillment"]) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
+  clearPrepDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.clearPrepDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["prepDate"], ["discardFulfillment"]) && isIsoDate(value.prepDate) && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
   moveGroceryItemsToSource: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveGroceryItemsToSource, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "source"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && GROCERY_SOURCES.includes(value.source as GrocerySource) },
   setGroceryItemChecked: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemChecked, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId", "checked"]) && isId(value.itemId) && typeof value.checked === "boolean" },
   captureFeedback: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureFeedback, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "value"]) && isId(value.mealId) && FEEDBACK_VALUES.includes(value.value as FeedbackValue) },

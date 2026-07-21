@@ -17,6 +17,7 @@ import {
   type PlannerEventProvenance,
   type PlannerOperation,
   type PlannerOperationsDecision,
+  type PreviewPlannerOperationsDecision,
 } from "./planner-operation-contract.ts";
 
 export const GLOBAL_CODEX_CONTRACT_VERSION = 1 as const;
@@ -34,11 +35,18 @@ export const GLOBAL_CODEX_ROUTES = {
   health: "/v1/health",
   workspace: "/v1/workspace",
   batches: "/v1/planner/batches",
+  previews: "/v1/planner/previews",
 } as const;
 
 export type GlobalCodexBatchRequest = {
   contractVersion: 1;
   requestId: string;
+  basePlannerVersion: number;
+  operations: PlannerOperation[];
+};
+
+export type GlobalCodexPreviewRequest = {
+  contractVersion: 1;
   basePlannerVersion: number;
   operations: PlannerOperation[];
 };
@@ -77,6 +85,12 @@ export type GlobalCodexApplyResponse = {
   planner: PlannerReadProjection;
 };
 
+export type GlobalCodexPreviewResponse = {
+  contractVersion: 1;
+  decision: PreviewPlannerOperationsDecision;
+  planner: PlannerReadProjection;
+};
+
 export const GLOBAL_CODEX_ERROR_CODES = [
   "invalid_request",
   "not_found",
@@ -104,6 +118,7 @@ export type GlobalCodexResponse =
   | GlobalCodexHealthResponse
   | GlobalCodexWorkspaceResponse
   | GlobalCodexApplyResponse
+  | GlobalCodexPreviewResponse
   | GlobalCodexErrorResponse;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -130,6 +145,14 @@ export function isGlobalCodexBatchRequest(value: unknown): value is GlobalCodexB
     hasExactKeys(value, ["contractVersion", "requestId", "basePlannerVersion", "operations"]) &&
     value.contractVersion === GLOBAL_CODEX_CONTRACT_VERSION &&
     isUuid(value.requestId) &&
+    isNonNegativeSafeInteger(value.basePlannerVersion) &&
+    isPlannerOperationList(value.operations);
+}
+
+export function isGlobalCodexPreviewRequest(value: unknown): value is GlobalCodexPreviewRequest {
+  return isRecord(value) &&
+    hasExactKeys(value, ["contractVersion", "basePlannerVersion", "operations"]) &&
+    value.contractVersion === GLOBAL_CODEX_CONTRACT_VERSION &&
     isNonNegativeSafeInteger(value.basePlannerVersion) &&
     isPlannerOperationList(value.operations);
 }
@@ -230,6 +253,19 @@ function isDecision(value: unknown): value is PlannerOperationsDecision {
     isNonNegativeSafeInteger(value.operationIndex) && typeof value.message === "string";
 }
 
+function isPreviewDecision(value: unknown): value is PreviewPlannerOperationsDecision {
+  if (!isRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "previewed") {
+    return hasExactKeys(value, ["status", "plannerVersion", "outcomes"]) &&
+      isNonNegativeSafeInteger(value.plannerVersion) && Array.isArray(value.outcomes) &&
+      value.outcomes.every((outcome) => isRecord(outcome) &&
+        hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes"]) &&
+        isNonNegativeSafeInteger(outcome.operationIndex) && typeof outcome.summary === "string" &&
+        typeof outcome.target === "string" && isStringArray(outcome.changes));
+  }
+  return isDecision(value);
+}
+
 function isFieldErrors(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
@@ -249,7 +285,7 @@ export function isGlobalCodexResponse(value: unknown): value is GlobalCodexRespo
   }
   if ("decision" in value) {
     return hasExactKeys(value, ["contractVersion", "decision", "planner"]) &&
-      isDecision(value.decision) && isPlannerReadProjection(value.planner);
+      isPreviewDecision(value.decision) && isPlannerReadProjection(value.planner);
   }
   return hasExactKeys(value, ["contractVersion", "planner"]) &&
     isPlannerReadProjection(value.planner);

@@ -8,12 +8,14 @@ import {
   GLOBAL_CODEX_ROUTES,
   GLOBAL_CODEX_SOCKET_PATH,
   isGlobalCodexBatchRequest,
+  isGlobalCodexPreviewRequest,
   isGlobalCodexResponse,
   type GlobalCodexBatchRequest,
+  type GlobalCodexPreviewRequest,
   type GlobalCodexResponse,
 } from "../lib/global-codex-contract.ts";
 
-type Command = "health" | "workspace" | "apply";
+type Command = "health" | "workspace" | "apply" | "preview";
 
 class ClientError extends Error {
   readonly kind: "input" | "transport" | "protocol";
@@ -50,14 +52,24 @@ function routeFor(command: Command): string {
     ? GLOBAL_CODEX_ROUTES.health
     : command === "workspace"
       ? GLOBAL_CODEX_ROUTES.workspace
-      : GLOBAL_CODEX_ROUTES.batches;
+      : command === "preview"
+        ? GLOBAL_CODEX_ROUTES.previews
+        : GLOBAL_CODEX_ROUTES.batches;
 }
 
 function validateCommandResponse(command: Command, response: GlobalCodexResponse): boolean {
   if ("error" in response) return true;
   if (command === "health") return "status" in response;
   if (command === "workspace") return "planner" in response && !("decision" in response);
-  return "decision" in response;
+  if (!("decision" in response)) return false;
+  if (command === "preview") {
+    return response.decision.status === "previewed" ||
+      response.decision.status === "version_conflict" ||
+      response.decision.status === "domain_rejected";
+  }
+  return response.decision.status === "accepted" ||
+    response.decision.status === "version_conflict" ||
+    response.decision.status === "domain_rejected";
 }
 
 function expectedStatus(response: GlobalCodexResponse): number {
@@ -75,7 +87,7 @@ function expectedStatus(response: GlobalCodexResponse): number {
     }
   }
   if ("decision" in response) {
-    return response.decision.status === "accepted"
+    return response.decision.status === "accepted" || response.decision.status === "previewed"
       ? 200
       : response.decision.status === "version_conflict"
         ? 409
@@ -86,7 +98,7 @@ function expectedStatus(response: GlobalCodexResponse): number {
 
 function invokeAtSocket(
   command: Command,
-  batch: GlobalCodexBatchRequest | null,
+  batch: GlobalCodexBatchRequest | GlobalCodexPreviewRequest | null,
   socketPath: string,
 ): Promise<GlobalCodexResponse> {
   return new Promise((resolve, reject) => {
@@ -169,7 +181,7 @@ function invokeAtSocket(
 type HostOnlyGlobalCodexClient = Readonly<{
   invoke(
     command: Command,
-    batch: GlobalCodexBatchRequest | null,
+    batch: GlobalCodexBatchRequest | GlobalCodexPreviewRequest | null,
   ): Promise<GlobalCodexResponse>;
 }>;
 
@@ -185,18 +197,18 @@ export function createGlobalCodexClientForHostTesting(
   });
 }
 
-function invoke(command: Command, batch: GlobalCodexBatchRequest | null) {
+function invoke(command: Command, batch: GlobalCodexBatchRequest | GlobalCodexPreviewRequest | null) {
   return invokeAtSocket(command, batch, GLOBAL_CODEX_SOCKET_PATH);
 }
 
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
-  if ((command !== "health" && command !== "workspace" && command !== "apply") || rest.length !== 0) {
-    throw new ClientError("input", "Usage: planner-global-client <health|workspace|apply>");
+  if ((command !== "health" && command !== "workspace" && command !== "apply" && command !== "preview") || rest.length !== 0) {
+    throw new ClientError("input", "Usage: planner-global-client <health|workspace|apply|preview>");
   }
 
-  let batch: GlobalCodexBatchRequest | null = null;
-  if (command === "apply") {
+  let batch: GlobalCodexBatchRequest | GlobalCodexPreviewRequest | null = null;
+  if (command === "apply" || command === "preview") {
     const input = await readStdinBounded();
     let parsed: unknown;
     try {
@@ -204,10 +216,17 @@ async function main(): Promise<void> {
     } catch (error) {
       throw new ClientError("input", "Planner batch stdin is not valid JSON.", { cause: error });
     }
-    if (!isGlobalCodexBatchRequest(parsed)) {
-      throw new ClientError("input", "Planner batch stdin does not match contract version 1.");
+    if (command === "apply") {
+      if (!isGlobalCodexBatchRequest(parsed)) {
+        throw new ClientError("input", "Planner batch stdin does not match contract version 1.");
+      }
+      batch = parsed;
+    } else {
+      if (!isGlobalCodexPreviewRequest(parsed)) {
+        throw new ClientError("input", "Planner preview stdin does not match contract version 1.");
+      }
+      batch = parsed;
     }
-    batch = parsed;
   }
 
   const response = await invoke(command, batch);

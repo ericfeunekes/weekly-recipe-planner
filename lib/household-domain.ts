@@ -7,6 +7,8 @@ import {
   PREP_DAYS_AFTER_WEEK_START,
   WEEK_STATUSES,
   isIsoDate,
+  isPrepSessionCombinedStep,
+  isPrepSessionDirectStep,
   isWeekId,
   type GroceryItem,
   type HouseholdPlannerState,
@@ -14,6 +16,7 @@ import {
   type IsoDate,
   type Meal,
   type PrepSession,
+  type PrepSessionCombinedStep,
   type PrepSessionStep,
   type WeekId,
   type WeekPlan,
@@ -21,6 +24,7 @@ import {
 } from "./household-contract.ts";
 import {
   MAX_COMMAND_TEXT_LENGTH,
+  MAX_COMBINED_PREP_SOURCES,
   MAX_GROCERY_ITEMS,
   MAX_ID_LENGTH,
   MAX_INGREDIENT_LINES,
@@ -33,6 +37,7 @@ import {
   type HouseholdCommand,
 } from "./household-command-contract.ts";
 import { isSourceRecipe } from "./sourced-recipe-contract.ts";
+import { projectCombinedPrepEntry } from "./prep-projection.ts";
 
 export type HouseholdStateValidation =
   | { ok: true }
@@ -407,6 +412,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   const mealStatuses = new Map<string, string>();
   const ingredientsByMeal = new Map<string, Set<string>>();
   const stepIds = new Set<string>();
+  const ingredientIdsByStep = new Map<string, string[]>();
   if (!Array.isArray(data.meals) || data.meals.length > MAX_MEALS_PER_WEEK) {
     addIssue(issues, `${path}.data.meals`, `Must contain at most ${MAX_MEALS_PER_WEEK} meals.`);
   } else {
@@ -429,6 +435,20 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
             ),
           );
         }
+        if (isRecord(meal) && Array.isArray(meal.instructions)) {
+          for (const step of meal.instructions) {
+            if (!isRecord(step) || typeof step.id !== "string" || !Array.isArray(step.inputs)) continue;
+            ingredientIdsByStep.set(
+              step.id,
+              [...new Set(
+                step.inputs
+                  .filter(isRecord)
+                  .map((input) => input.ingredientId)
+                  .filter((ingredientId): ingredientId is string => typeof ingredientId === "string"),
+              )],
+            );
+          }
+        }
       }
     });
   }
@@ -436,6 +456,8 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   const prepSessionIds = new Set<string>();
   const prepDates = new Set<string>();
   const prepEntryIds = new Set<string>();
+  const directPrepStepIds = new Set<string>();
+  const combinedPrepStepIds = new Set<string>();
   let prepEntryCount = 0;
   if (!Array.isArray(data.prepSessions) || data.prepSessions.length > MAX_PREP_DATES) {
     addIssue(issues, `${path}.data.prepSessions`, `Must contain at most ${MAX_PREP_DATES} prep-date queues.`);
@@ -467,15 +489,64 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
           addIssue(issues, entryPath, "Must be a prep step reference.");
           return;
         }
-        requireExactShape(issues, entry, entryPath, ["id", "stepId"]);
         if (!isId(entry.id)) addIssue(issues, `${entryPath}.id`, "Must be a nonempty bounded ID.");
         else if (prepEntryIds.has(entry.id)) addIssue(issues, `${entryPath}.id`, "Must be unique within the week.");
         else prepEntryIds.add(entry.id);
+        if (entry.kind === "combined") {
+          requireExactShape(issues, entry, entryPath, ["id", "kind", "sources", "instruction", "complete", "needsReview"]);
+          if (!isText(entry.instruction, MAX_COMMAND_TEXT_LENGTH) || entry.instruction.trim().length === 0) {
+            addIssue(issues, `${entryPath}.instruction`, "Must be a nonempty bounded prep instruction.");
+          }
+          if (typeof entry.complete !== "boolean") addIssue(issues, `${entryPath}.complete`, "Must be Boolean.");
+          if (typeof entry.needsReview !== "boolean") addIssue(issues, `${entryPath}.needsReview`, "Must be Boolean.");
+          if (entry.complete === true && entry.needsReview === true) {
+            addIssue(issues, entryPath, "A combined prep entry needing review cannot be complete.");
+          }
+          if (!Array.isArray(entry.sources) || entry.sources.length < 2 || entry.sources.length > MAX_COMBINED_PREP_SOURCES) {
+            addIssue(issues, `${entryPath}.sources`, `Must contain 2 to ${MAX_COMBINED_PREP_SOURCES} sources.`);
+            return;
+          }
+          const entrySourceIds = new Set<string>();
+          entry.sources.forEach((source, sourceIndex) => {
+            const sourcePath = `${entryPath}.sources[${sourceIndex}]`;
+            if (!isRecord(source)) {
+              addIssue(issues, sourcePath, "Must be a combined prep source.");
+              return;
+            }
+            requireExactShape(issues, source, sourcePath, ["stepId", "ingredientIds"]);
+            if (!isId(source.stepId) || !stepIds.has(source.stepId)) {
+              addIssue(issues, `${sourcePath}.stepId`, "Must reference an instruction step in this week.");
+            } else if (entrySourceIds.has(source.stepId) || combinedPrepStepIds.has(source.stepId)) {
+              addIssue(issues, `${sourcePath}.stepId`, "May belong to only one combined Prep entry in the week.");
+            } else {
+              entrySourceIds.add(source.stepId);
+              combinedPrepStepIds.add(source.stepId);
+              sessionStepIds.add(source.stepId);
+            }
+            if (!Array.isArray(source.ingredientIds) || source.ingredientIds.length > MAX_STEP_INPUTS ||
+                !source.ingredientIds.every(isId) || new Set(source.ingredientIds).size !== source.ingredientIds.length) {
+              addIssue(issues, `${sourcePath}.ingredientIds`, "Must be the unique ordered ingredient occurrences used by the source step.");
+            } else if (typeof source.stepId === "string" &&
+                !equalJson(source.ingredientIds, ingredientIdsByStep.get(source.stepId) ?? [])) {
+              addIssue(issues, `${sourcePath}.ingredientIds`, "Must match the source step's current ordered ingredient occurrences.");
+            }
+          });
+          return;
+        }
+        requireExactShape(issues, entry, entryPath, ["id", "stepId"]);
         if (!isId(entry.stepId) || !stepIds.has(entry.stepId)) addIssue(issues, `${entryPath}.stepId`, "Must reference an instruction step in this week.");
         else if (sessionStepIds.has(entry.stepId)) addIssue(issues, `${entryPath}.stepId`, "May reference an instruction only once for a prep date.");
-        else sessionStepIds.add(entry.stepId);
+        else {
+          sessionStepIds.add(entry.stepId);
+          directPrepStepIds.add(entry.stepId);
+        }
       });
     });
+  }
+  for (const stepId of combinedPrepStepIds) {
+    if (directPrepStepIds.has(stepId)) {
+      addIssue(issues, `${path}.data.prepSessions`, `Instruction ${stepId} cannot be both direct and combined Prep work.`);
+    }
   }
   if (prepEntryCount > MAX_PREP_ENTRIES) {
     addIssue(issues, `${path}.data.prepSessions`, `Must contain at most ${MAX_PREP_ENTRIES} prep references.`);
@@ -618,7 +689,15 @@ function cloneWeekData(data: WeekPlannerData): WeekPlannerData {
     meals: data.meals.map(cloneMeal),
     prepSessions: data.prepSessions.map((session) => ({
       ...session,
-      steps: session.steps.map((entry) => ({ ...entry })),
+      steps: session.steps.map((entry) => isPrepSessionCombinedStep(entry)
+        ? {
+            ...entry,
+            sources: entry.sources.map((source) => ({
+              ...source,
+              ingredientIds: [...source.ingredientIds],
+            })),
+          }
+        : { ...entry }),
     })),
     groceries: data.groceries.map((item) => ({ ...item })),
     leftovers: data.leftovers.map((leftover) => ({ ...leftover })),
@@ -881,8 +960,57 @@ function linkInstructionInputs(
   return linked;
 }
 
+function prepEntrySourceStepIds(entry: PrepSessionStep): string[] {
+  return isPrepSessionCombinedStep(entry)
+    ? entry.sources.map((source) => source.stepId)
+    : [entry.stepId];
+}
+
 function sessionReferencesAnyStep(session: PrepSession, stepIds: Set<string>): boolean {
-  return session.steps.some((entry) => stepIds.has(entry.stepId));
+  return session.steps.some((entry) =>
+    prepEntrySourceStepIds(entry).some((stepId) => stepIds.has(stepId))
+  );
+}
+
+function combinedPrepOwnsStep(week: WeekPlan, stepId: string): boolean {
+  return week.data.prepSessions.some((session) => session.steps.some((entry) =>
+    isPrepSessionCombinedStep(entry) && entry.sources.some((source) => source.stepId === stepId)
+  ));
+}
+
+function currentStepIngredientIds(step: InstructionStep): string[] {
+  return [...new Set(step.inputs.map((input) => input.ingredientId))];
+}
+
+function findCombinedPrepEntry(
+  week: WeekPlan,
+  entryId: string,
+): { session: PrepSession; entry: PrepSessionCombinedStep; entryIndex: number } | null {
+  for (const session of week.data.prepSessions) {
+    const entryIndex = session.steps.findIndex((entry) => entry.id === entryId);
+    if (entryIndex < 0) continue;
+    const entry = session.steps[entryIndex];
+    return isPrepSessionCombinedStep(entry) ? { session, entry, entryIndex } : null;
+  }
+  return null;
+}
+
+function invalidateCombinedPrepForStep(week: WeekPlan, stepId: string): number {
+  const resolved = findStep(week, stepId);
+  if (!resolved) return 0;
+  let invalidated = 0;
+  for (const session of week.data.prepSessions) {
+    for (const entry of session.steps) {
+      if (!isPrepSessionCombinedStep(entry)) continue;
+      const source = entry.sources.find((candidate) => candidate.stepId === stepId);
+      if (!source) continue;
+      source.ingredientIds = currentStepIngredientIds(resolved.step);
+      entry.complete = false;
+      entry.needsReview = true;
+      invalidated += 1;
+    }
+  }
+  return invalidated;
 }
 
 function rejectMissingWeek(state: HouseholdPlannerState, weekId: string): HouseholdCommandExecution {
@@ -1096,6 +1224,7 @@ export function executeHouseholdCommand(
         yieldText: meal.yieldText ?? null,
       };
       if (equalJson(previous, command.changes)) return failure(state, "Meal snapshot is unchanged.");
+      const prepIngredientsChanged = !equalJson(previous.ingredients, ingredientLines);
       meal.title = command.changes.title;
       meal.subtitle = command.changes.subtitle;
       meal.venue = command.changes.venue;
@@ -1115,6 +1244,12 @@ export function executeHouseholdCommand(
         }
       }
       meal.ingredients = reconciledIngredients.ingredients;
+      const invalidatedPrepEntries = prepIngredientsChanged
+        ? meal.instructions.reduce(
+            (count, step) => count + invalidateCombinedPrepForStep(week, step.id),
+            0,
+          )
+        : 0;
       if (command.changes.yieldText === null) delete meal.yieldText;
       else meal.yieldText = command.changes.yieldText;
       const groceryProjection = reconcileGroceryProjection(context, week);
@@ -1123,6 +1258,9 @@ export function executeHouseholdCommand(
         "Week-local recipe details were updated",
         ...(groceryProjection.added || groceryProjection.removed
           ? [`Groceries: ${groceryProjection.added} added, ${groceryProjection.removed} removed`]
+          : []),
+        ...(invalidatedPrepEntries
+          ? [`Combined Prep: ${invalidatedPrepEntries} reopened for review`]
           : []),
       ]);
     }
@@ -1223,6 +1361,11 @@ export function executeHouseholdCommand(
         timerDurationSeconds: resolved.step.timerDurationSeconds ?? null,
       };
       if (equalJson(previous, command.changes)) return failure(state, "Instruction step is unchanged.");
+      const prepRelevantChanged = previous.instruction !== command.changes.instruction ||
+        !equalJson(
+          previous.inputs.map(({ amount, ingredient }) => ({ amount, ingredient })),
+          command.changes.inputs,
+        );
       const durationChanged = (resolved.step.timerDurationSeconds ?? null) !== command.changes.timerDurationSeconds;
       const inputs = linkInstructionInputs(context, resolved.meal, command.changes.inputs, allIngredientIds(next));
       if (!inputs) return failure(state, "Could not link instruction-step ingredients.");
@@ -1234,12 +1377,18 @@ export function executeHouseholdCommand(
         delete resolved.step.timerStartedAt;
         delete resolved.step.timerPaused;
       }
+      const invalidatedPrepEntries = prepRelevantChanged
+        ? invalidateCombinedPrepForStep(week, resolved.step.id)
+        : 0;
       const groceryProjection = reconcileGroceryProjection(context, week);
       if (!groceryProjection) return failure(state, "Could not project groceries for the updated recipe.");
       return success(state, next, "Updated instruction step", resolved.step.id, [
         durationChanged ? "Step content and timer duration updated; running timer reset" : "Step content updated",
         ...(groceryProjection.added
           ? [`Groceries: ${groceryProjection.added} added`]
+          : []),
+        ...(invalidatedPrepEntries
+          ? [`Combined Prep: ${invalidatedPrepEntries} reopened for review`]
           : []),
       ]);
     }
@@ -1259,7 +1408,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const resolved = findStep(week, command.stepId);
       if (!resolved) return failure(state, "Instruction step not found.", { stepId: "Choose a step in the selected week." });
-      if (week.data.prepSessions.some((session) => session.steps.some((entry) => entry.stepId === command.stepId))) {
+      if (week.data.prepSessions.some((session) => sessionReferencesAnyStep(session, new Set([command.stepId])))) {
         return failure(state, "Remove this step from its prep dates before deleting it.", { stepId: "The step still has a prep-date reference." });
       }
       resolved.meal.instructions.splice(resolved.stepIndex, 1);
@@ -1369,13 +1518,20 @@ export function executeHouseholdCommand(
       if (command.stepIds.some((stepId) => !findStep(week, stepId))) {
         return failure(state, "One or more instruction steps could not be found.", { stepIds: "Choose instructions in the selected week." });
       }
+      if (command.stepIds.some((stepId) => combinedPrepOwnsStep(week, stepId))) {
+        return failure(state, "A combined Prep entry already owns one or more selected instructions.", {
+          stepIds: "Expand or remove the combined entry before adding direct references.",
+        });
+      }
       const target = findOrCreatePrepSessionForDate(week, command.prepDate, context);
       if ("error" in target) return failure(state, target.error);
       const session = target.session;
       if (command.targetPosition > session.steps.length) {
         return failure(state, "Prep position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
       }
-      if (command.stepIds.some((stepId) => session.steps.some((entry) => entry.stepId === stepId))) {
+      if (command.stepIds.some((stepId) => session.steps.some((entry) =>
+        prepEntrySourceStepIds(entry).includes(stepId)
+      ))) {
         return failure(state, "One or more instructions are already planned for this date.");
       }
       if (prepSessionEntryCount(week.data.prepSessions) + command.stepIds.length > MAX_PREP_ENTRIES) {
@@ -1399,6 +1555,169 @@ export function executeHouseholdCommand(
           ...(target.created ? { prepDateQueueId: session.id } : {}),
           ...Object.fromEntries(entries.map((entry, index) => [`prepDateStep.${index}`, entry.id])),
         },
+      );
+    }
+
+    case "combinePrepStepsOnDate": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      if (!weekContainsPrepDate(week.id, command.prepDate)) {
+        return failure(state, "Prep date must be on or before the active meal week's Sunday.", { prepDate: "Choose a date in or before this meal week." });
+      }
+      if (new Set(command.sourceStepIds).size !== command.sourceStepIds.length) {
+        return failure(state, "Choose each source instruction once.", { sourceStepIds: "Remove duplicate source instructions." });
+      }
+      const sources = command.sourceStepIds.map((stepId) => findStep(week, stepId));
+      if (sources.some((source) => !source)) {
+        return failure(state, "One or more source instructions could not be found.", { sourceStepIds: "Choose instructions in the selected week." });
+      }
+      if (command.sourceStepIds.some((stepId) => combinedPrepOwnsStep(week, stepId))) {
+        return failure(state, "A combined Prep entry already owns one or more selected instructions.", {
+          sourceStepIds: "Expand or remove the existing combined entry first.",
+        });
+      }
+      const target = findOrCreatePrepSessionForDate(week, command.prepDate, context);
+      if ("error" in target) return failure(state, target.error);
+      const session = target.session;
+      if (command.targetPosition > session.steps.length) {
+        return failure(state, "Prep position is outside this date queue.", { targetPosition: "Choose a position in the target prep date." });
+      }
+      const sourceIds = new Set(command.sourceStepIds);
+      const removedBeforeTarget = session.steps
+        .slice(0, command.targetPosition)
+        .filter((entry) => isPrepSessionDirectStep(entry) && sourceIds.has(entry.stepId))
+        .length;
+      const affectedDates: string[] = [];
+      for (const candidate of week.data.prepSessions) {
+        const remaining = candidate.steps.filter((entry) =>
+          !isPrepSessionDirectStep(entry) || !sourceIds.has(entry.stepId)
+        );
+        if (remaining.length !== candidate.steps.length) affectedDates.push(candidate.prepDate);
+        candidate.steps.splice(0, candidate.steps.length, ...remaining);
+      }
+      week.data.prepSessions.splice(
+        0,
+        week.data.prepSessions.length,
+        ...week.data.prepSessions.filter((candidate) => candidate === session || candidate.steps.length > 0),
+      );
+      if (prepSessionEntryCount(week.data.prepSessions) + 1 > MAX_PREP_ENTRIES) {
+        return failure(state, "The prep-date list is full.");
+      }
+      const id = materializeId(
+        context,
+        "prep-combined-step",
+        new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id))),
+      );
+      if (!id) return failure(state, "Could not materialize a unique combined Prep entry ID.");
+      const entry: PrepSessionCombinedStep = {
+        id,
+        kind: "combined",
+        sources: (sources as StepLocation[]).map(({ step }) => ({
+          stepId: step.id,
+          ingredientIds: currentStepIngredientIds(step),
+        })),
+        instruction: command.instruction,
+        complete: false,
+        needsReview: false,
+      };
+      const insertionPosition = Math.max(0, Math.min(command.targetPosition - removedBeforeTarget, session.steps.length));
+      session.steps.splice(insertionPosition, 0, entry);
+      const projection = projectCombinedPrepEntry(next, entry);
+      return success(
+        state,
+        next,
+        `Combined ${entry.sources.length} instructions on prep date ${command.prepDate}`,
+        entry.id,
+        [
+          `Prep date: ${command.prepDate}`,
+          `Position: ${insertionPosition}`,
+          ...projection.sources.map((source) => `Source: ${source.mealTitle} — ${source.instruction}`),
+          ...projection.aggregates.map((aggregate) => `Quantity: ${aggregate.display}`),
+          affectedDates.length ? `Removed direct references from: ${affectedDates.join(", ")}` : "No direct references needed removal",
+        ],
+        {
+          ...(target.created ? { prepDateQueueId: session.id } : {}),
+          combinedPrepEntryId: entry.id,
+        },
+      );
+    }
+
+    case "updateCombinedPrepStep": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const resolved = findCombinedPrepEntry(week, command.entryId);
+      if (!resolved) return failure(state, "Combined Prep entry not found.", { entryId: "Choose a combined entry in the selected week." });
+      if (resolved.entry.instruction === command.instruction && !resolved.entry.needsReview) {
+        return failure(state, "Combined Prep instruction is unchanged.");
+      }
+      if (resolved.entry.complete && command.discardFulfillment !== true) {
+        return failure(state, "Confirm discarding the completed batch before editing it.", { discardFulfillment: "Set true to discard its prepared state." });
+      }
+      for (const source of resolved.entry.sources) {
+        const step = findStep(week, source.stepId);
+        if (!step) return failure(state, "A source instruction for this combined entry could not be found.");
+        source.ingredientIds = currentStepIngredientIds(step.step);
+      }
+      const discarded = resolved.entry.complete;
+      resolved.entry.instruction = command.instruction;
+      resolved.entry.complete = false;
+      resolved.entry.needsReview = false;
+      return success(
+        state,
+        next,
+        "Updated combined Prep instruction",
+        resolved.entry.id,
+        [
+          "Source occurrence membership refreshed from canonical instructions",
+          discarded ? "Discarded the previously completed batch" : "Combined entry is ready for preparation",
+        ],
+      );
+    }
+
+    case "setCombinedPrepStepComplete": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const resolved = findCombinedPrepEntry(week, command.entryId);
+      if (!resolved) return failure(state, "Combined Prep entry not found.", { entryId: "Choose a combined entry in the selected week." });
+      if (command.complete && resolved.entry.needsReview) {
+        return failure(state, "Review the combined Prep instruction before marking it prepared.");
+      }
+      if (resolved.entry.complete === command.complete) return failure(state, "Combined Prep completion state is unchanged.");
+      resolved.entry.complete = command.complete;
+      return success(
+        state,
+        next,
+        command.complete ? "Marked combined batch prepared" : "Reopened combined batch",
+        resolved.entry.id,
+        [command.complete ? "Its source instructions are now shown as prepared in this batch" : "Prepared-in-batch badges were cleared"],
+      );
+    }
+
+    case "expandCombinedPrepStep": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const resolved = findCombinedPrepEntry(week, command.entryId);
+      if (!resolved) return failure(state, "Combined Prep entry not found.", { entryId: "Choose a combined entry in the selected week." });
+      if (resolved.entry.complete && command.discardFulfillment !== true) {
+        return failure(state, "Confirm discarding the completed batch before expanding it.", { discardFulfillment: "Set true to discard its prepared state." });
+      }
+      if (prepSessionEntryCount(week.data.prepSessions) - 1 + resolved.entry.sources.length > MAX_PREP_ENTRIES) {
+        return failure(state, "The prep-date list is full.");
+      }
+      const existingIds = new Set(week.data.prepSessions.flatMap((candidate) => candidate.steps.map((entry) => entry.id)));
+      const entries: PrepSessionStep[] = [];
+      for (const source of resolved.entry.sources) {
+        const id = materializeId(context, "prep-date-step", existingIds);
+        if (!id) return failure(state, "Could not materialize a unique prep-date step ID.");
+        entries.push({ id, stepId: source.stepId });
+      }
+      resolved.session.steps.splice(resolved.entryIndex, 1, ...entries);
+      return success(
+        state,
+        next,
+        `Expanded combined Prep entry into ${entries.length} instructions`,
+        resolved.session.id,
+        [
+          `Prep date: ${resolved.session.prepDate}`,
+          resolved.entry.complete ? "Discarded the previously completed batch" : "Canonical instruction completion was unchanged",
+        ],
+        Object.fromEntries(entries.map((entry, index) => [`prepDateStep.${index}`, entry.id])),
       );
     }
 
@@ -1430,7 +1749,10 @@ export function executeHouseholdCommand(
         source.steps.splice(0, source.steps.length, ...remaining.slice(0, insertionPosition), ...selectedEntries, ...remaining.slice(insertionPosition));
         return success(state, next, `Reordered ${selectedEntries.length} prep steps`, source.id, [`Prep date: ${command.prepDate}`, `Position: ${command.targetPosition}`]);
       }
-      if (selectedEntries.some((entry) => destination.steps.some((candidate) => candidate.stepId === entry.stepId))) {
+      const selectedStepIds = new Set(selectedEntries.flatMap(prepEntrySourceStepIds));
+      if (destination.steps.some((candidate) =>
+        prepEntrySourceStepIds(candidate).some((stepId) => selectedStepIds.has(stepId))
+      )) {
         return failure(state, "One or more instructions are already planned for this date.");
       }
       source.steps.splice(0, source.steps.length, ...source.steps.filter((entry) => !selectedIds.has(entry.id)));
@@ -1459,6 +1781,10 @@ export function executeHouseholdCommand(
       if (removed.length !== command.entryIds.length) {
         return failure(state, "One or more prep steps could not be found.", { entryIds: "Choose steps from the selected prep date." });
       }
+      const completedCombined = removed.filter((entry) => isPrepSessionCombinedStep(entry) && entry.complete);
+      if (completedCombined.length && command.discardFulfillment !== true) {
+        return failure(state, "Confirm discarding the completed batch before removing it.", { discardFulfillment: "Set true to discard its prepared state." });
+      }
       session.steps.splice(0, session.steps.length, ...session.steps.filter((entry) => !selectedIds.has(entry.id)));
       if (!session.steps.length) week.data.prepSessions.splice(sessionIndex, 1);
       return success(
@@ -1466,7 +1792,10 @@ export function executeHouseholdCommand(
         next,
         `Removed ${removed.length} ${removed.length === 1 ? "instruction" : "instructions"} from prep date ${command.prepDate}`,
         command.prepDate,
-        ["The canonical instructions and recipe order were preserved"],
+        [
+          "The canonical instructions and recipe order were preserved",
+          ...(completedCombined.length ? [`Discarded ${completedCombined.length} completed ${completedCombined.length === 1 ? "batch" : "batches"}`] : []),
+        ],
       );
     }
 
@@ -1477,13 +1806,21 @@ export function executeHouseholdCommand(
       }
       const sessionIndex = week.data.prepSessions.findIndex((candidate) => candidate.prepDate === command.prepDate);
       if (sessionIndex < 0) return failure(state, "Prep date not found.", { prepDate: "Choose a prep date in the selected week." });
-      const [session] = week.data.prepSessions.splice(sessionIndex, 1);
+      const session = week.data.prepSessions[sessionIndex];
+      const completedCombined = session.steps.filter((entry) => isPrepSessionCombinedStep(entry) && entry.complete);
+      if (completedCombined.length && command.discardFulfillment !== true) {
+        return failure(state, "Confirm discarding completed batches before clearing this prep date.", { discardFulfillment: "Set true to discard their prepared state." });
+      }
+      week.data.prepSessions.splice(sessionIndex, 1);
       return success(
         state,
         next,
         `Cleared prep date ${command.prepDate}`,
         command.prepDate,
-        [`Removed ${session.steps.length} prep references; canonical recipe steps were unchanged`],
+        [
+          `Removed ${session.steps.length} prep entries; canonical recipe steps were unchanged`,
+          ...(completedCombined.length ? [`Discarded ${completedCombined.length} completed ${completedCombined.length === 1 ? "batch" : "batches"}`] : []),
+        ],
       );
     }
 

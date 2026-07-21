@@ -330,6 +330,7 @@ export const PLANNER_API_ROUTES = {
   workspace: { method: "GET", path: "/api/workspace" },
   bootstrap: { method: "POST", path: "/api/bootstrap" },
   commands: { method: "POST", path: "/api/commands" },
+  preview: { method: "POST", path: "/api/operations/preview" },
   undo: { method: "POST", path: "/api/undo" },
   export: { method: "GET", path: "/api/export" },
   history: { method: "GET", path: "/api/history" },

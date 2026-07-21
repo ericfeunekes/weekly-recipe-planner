@@ -6,6 +6,7 @@ import {
   GLOBAL_CODEX_RESPONSE_MAX_BYTES,
   GLOBAL_CODEX_ROUTES,
   isGlobalCodexBatchRequest,
+  isGlobalCodexPreviewRequest,
   isGlobalCodexResponse,
   type GlobalCodexErrorCode,
   type GlobalCodexErrorResponse,
@@ -204,7 +205,7 @@ function mapApplicationError(response: ServerResponse, error: unknown): void {
 
 function allowedMethod(path: string): "GET" | "POST" | null {
   if (path === GLOBAL_CODEX_ROUTES.health || path === GLOBAL_CODEX_ROUTES.workspace) return "GET";
-  if (path === GLOBAL_CODEX_ROUTES.batches) return "POST";
+  if (path === GLOBAL_CODEX_ROUTES.batches || path === GLOBAL_CODEX_ROUTES.previews) return "POST";
   return null;
 }
 
@@ -262,17 +263,28 @@ export function createGlobalCodexRouter(
           sendError(response, 400, "invalid_request", "The request body is not valid JSON.");
           return;
         }
-        if (!isGlobalCodexBatchRequest(parsed)) {
-          sendError(response, 400, "invalid_request", "The planner batch contract is invalid.");
-          return;
+        let result;
+        if (path === GLOBAL_CODEX_ROUTES.previews) {
+          if (!isGlobalCodexPreviewRequest(parsed)) {
+            sendError(response, 400, "invalid_request", "The planner preview contract is invalid.");
+            return;
+          }
+          result = planner.previewBatch({
+            basePlannerVersion: parsed.basePlannerVersion,
+            operations: parsed.operations,
+          });
+        } else {
+          if (!isGlobalCodexBatchRequest(parsed)) {
+            sendError(response, 400, "invalid_request", "The planner batch contract is invalid.");
+            return;
+          }
+          result = planner.applyBatch({
+            requestId: parsed.requestId,
+            basePlannerVersion: parsed.basePlannerVersion,
+            operations: parsed.operations,
+          });
         }
-        const applicationRequest = {
-          requestId: parsed.requestId,
-          basePlannerVersion: parsed.basePlannerVersion,
-          operations: parsed.operations,
-        };
-        const result = planner.applyBatch(applicationRequest);
-        const status = result.decision.status === "accepted"
+        const status = result.decision.status === "accepted" || result.decision.status === "previewed"
           ? 200
           : result.decision.status === "version_conflict"
             ? 409

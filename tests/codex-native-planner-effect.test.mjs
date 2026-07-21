@@ -20,7 +20,7 @@ function initializedWorkspace() {
   });
   return {
     initialized: true,
-    schemaVersion: 8,
+    schemaVersion: 9,
     plannerVersion: 0,
     syncRevision: 1,
     state,

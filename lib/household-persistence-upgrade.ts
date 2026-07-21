@@ -123,6 +123,15 @@ function normalizeLegacyPrepSessions(data: Record<string, unknown>): boolean {
   const candidates = Array.isArray(data.prepSessions)
     ? data.prepSessions.filter(isRecord)
     : [];
+  const containsVersionedPrepEntry = candidates.some((session) =>
+    Array.isArray(session.steps) && session.steps.some((entry) =>
+      isRecord(entry) && Object.hasOwn(entry, "kind")
+    )
+  );
+  // Schema-v9 combined entries are already canonical. Never pass a mixed queue
+  // through the direct-reference legacy collapse: an older implementation of
+  // this normalizer would otherwise erase the versioned entry shape.
+  if (containsVersionedPrepEntry) return false;
   const legacyReferences = Array.isArray(data.prep) ? data.prep.filter(isRecord) : [];
   const queues: Array<{ id: string; prepDate: string; steps: Array<{ id: string; stepId: string }> }> = [];
   const queuesByDate = new Map<string, (typeof queues)[number]>();
