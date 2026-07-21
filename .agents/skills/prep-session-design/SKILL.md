@@ -23,15 +23,23 @@ midweek prep session is a grouped batch queue; a cross-day dependency such as
 same-day cooking stays with the meal. For every one-off task, state when it is
 due, the output, hold guidance, and the later handback step.
 
-The current planner models prep as dated references to canonical instruction
-steps. Use `planner.read`, then `planner.preview`, then `planner.apply` to add,
-move, or remove those references. Do not duplicate or rewrite recipe
-instructions just to make a prep queue. If the desired task is not expressible
-as a canonical step, or the available step also contains later cooking, do not
-create a misleading prep reference. Preserve the atomic task in the meal timing
-note/runbook where supported and name the missing capability: independent prep
-tasks need a recipe-step link, date or lead window, output, storage/hold
-guidance, and dependency order.
+The current planner models prep as dated direct references to canonical
+instruction steps plus explicitly authored combined batch holders. Use
+`planner.read`, then `planner.preview`, then `planner.apply` to add, combine,
+edit, complete, expand, move, or remove that work. A combined holder owns two or
+more source instruction occurrences and may consolidate quantities only when
+the projection is safe; ambiguous or unsupported literals remain visible.
+Checking the holder records that the shared batch was prepared while leaving
+canonical recipe-step completion unchanged.
+
+Treat a combined holder as the exclusive Prep owner of its source steps. Do not
+also add those steps as direct Prep references. If a source instruction or its
+ingredient occurrence membership changes, re-read the live source, revise the
+holder, and clear its review warning before completing it. Expanding restores
+direct references in contribution order. Editing, expanding, removing, or
+clearing a completed holder discards recorded fulfillment and must be explicitly
+acknowledged in the previewed operation. Never duplicate or rewrite canonical
+recipe instructions merely to make a prep queue.
 
 Revisit prep after meal-plan changes. Use `grocery-organization` only after the
 ingredient objects are settled.

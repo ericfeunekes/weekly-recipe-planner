@@ -25,12 +25,13 @@ test("global Codex ingress has no store, browser-router, embedded, TCP, or ident
   assert.match(plannerPort, /provenance:\s*GLOBAL_CODEX_PROVENANCE/u);
 });
 
-test("the route table is closed to exactly three route constants", () => {
+test("the route table is closed to exactly four route constants", () => {
   const contract = source("lib/global-codex-contract.ts");
   assert.match(contract, /health:\s*"\/v1\/health"/u);
   assert.match(contract, /workspace:\s*"\/v1\/workspace"/u);
   assert.match(contract, /batches:\s*"\/v1\/planner\/batches"/u);
-  assert.equal((contract.match(/"\/v1\//gu) ?? []).length, 3);
+  assert.match(contract, /previews:\s*"\/v1\/planner\/previews"/u);
+  assert.equal((contract.match(/"\/v1\//gu) ?? []).length, 4);
 });
 
 test("production composition starts global ingress downstream of planner without browser readiness coupling", () => {

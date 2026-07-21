@@ -11,6 +11,8 @@ import {
   GLOBAL_CODEX_PROVENANCE,
   type ApplyPlannerOperationsRequest,
   type PlannerOperationsDecision,
+  type PreviewPlannerOperationsRequest,
+  type PreviewPlannerOperationsDecision,
 } from "../../lib/planner-operation-contract.ts";
 
 export type GlobalCodexPlannerApplication = {
@@ -22,12 +24,19 @@ export type GlobalCodexPlannerApplication = {
       provenance: typeof GLOBAL_CODEX_PROVENANCE;
     },
   ): { decision: PlannerOperationsDecision; workspace: InitializedWorkspace };
+  previewOperations(
+    request: PreviewPlannerOperationsRequest,
+  ): { decision: PreviewPlannerOperationsDecision };
 };
 
 export type GlobalCodexPlannerPort = {
   readPlanner(): PlannerReadProjection;
   applyBatch(request: ApplyPlannerOperationsRequest): {
     decision: PlannerOperationsDecision;
+    planner: PlannerReadProjection;
+  };
+  previewBatch(request: PreviewPlannerOperationsRequest): {
+    decision: PreviewPlannerOperationsDecision;
     planner: PlannerReadProjection;
   };
 };
@@ -83,6 +92,13 @@ export function createGlobalCodexPlannerPort(
       return {
         decision: response.decision,
         planner: projectPlannerWorkspace(response.workspace),
+      };
+    },
+    previewBatch(request) {
+      const response = planner.previewOperations(request);
+      return {
+        decision: response.decision,
+        planner: projectPlannerWorkspace(planner.readWorkspace()),
       };
     },
   };

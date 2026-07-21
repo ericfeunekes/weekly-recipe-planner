@@ -12,6 +12,8 @@ import type {
   LegacyV2Payload,
   PageRequest,
   PlannerEventPage,
+  PreviewPlannerOperationsRequest,
+  PreviewPlannerOperationsResponse,
   UndoLatestRequest,
   WorkspaceResponse,
 } from "../lib/planner-api-contract.ts";
@@ -316,6 +318,22 @@ export async function applyPlannerCommand(options: {
           ? result.decision.message
           : `Someone else changed the plan. “${presentation?.label ?? DEFAULT_OPERATION_LABELS.planner}” was not saved. Review the latest plan, then retry it.`,
       }, presentation);
+}
+
+export async function previewPlannerOperations(
+  request: PreviewPlannerOperationsRequest,
+): Promise<PreviewPlannerOperationsResponse> {
+  const response = await fetchApi(PLANNER_API_ROUTES.preview.path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  const value = await parseJson(response);
+  if (isApiFailure(value)) throwFailure(response, value);
+  if (!isRecord(value) || !isRecord(value.decision) || typeof value.decision.status !== "string") {
+    throw new PlannerApiError({ status: response.status, code: "INVALID_RESPONSE", message: "Invalid planner preview response." });
+  }
+  return value as PreviewPlannerOperationsResponse;
 }
 
 export async function undoLatest(

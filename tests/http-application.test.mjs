@@ -50,6 +50,16 @@ function createDependencies() {
         workspace: { ...WORKSPACE, plannerVersion: 3, syncRevision: 4 },
       };
     },
+    previewOperations(request) {
+      calls.push(["preview", request]);
+      return {
+        decision: {
+          status: "previewed",
+          plannerVersion: 2,
+          outcomes: [{ operationIndex: 0, summary: "Previewed", target: "week", changes: [] }],
+        },
+      };
+    },
     undoLatest(request) {
       calls.push(["undo", request]);
       return {
@@ -342,6 +352,34 @@ test("mutations reject foreign origins and accept only typed command envelopes",
   });
   assert.equal(spoofed.status, 400);
   assert.equal(calls.length, 1);
+});
+
+test("operation previews use the canonical request without creating a mutation call", async (t) => {
+  const { baseUrl, calls } = await startApplication(t);
+  const request = {
+    basePlannerVersion: 2,
+    operations: [{ command: {
+      type: "captureWeekLesson",
+      weekId: "2026-07-06",
+      weekLesson: "Preview prep sequence.",
+    } }],
+  };
+  const response = await fetch(`${baseUrl}/api/operations/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
+    body: JSON.stringify(request),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).decision.status, "previewed");
+  assert.deepEqual(calls, [["preview", request]]);
+
+  const malformed = await fetch(`${baseUrl}/api/operations/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://localhost:3001" },
+    body: JSON.stringify({ ...request, requestId: "not-allowed-for-preview" }),
+  });
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(calls, [["preview", request]]);
 });
 
 test("household HTTP sourced replacement reaches shared reducer without embedded admission", async (t) => {

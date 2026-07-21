@@ -72,10 +72,38 @@ export type Meal = {
   instructions: InstructionStep[];
 };
 
-export type PrepSessionStep = {
+export type PrepSessionDirectStep = {
   id: string;
   stepId: string;
 };
+
+export type PrepSessionCombinedSource = {
+  stepId: string;
+  ingredientIds: string[];
+};
+
+export type PrepSessionCombinedStep = {
+  id: string;
+  kind: "combined";
+  sources: PrepSessionCombinedSource[];
+  instruction: string;
+  complete: boolean;
+  needsReview: boolean;
+};
+
+export type PrepSessionStep = PrepSessionDirectStep | PrepSessionCombinedStep;
+
+export function isPrepSessionCombinedStep(
+  entry: PrepSessionStep,
+): entry is PrepSessionCombinedStep {
+  return "kind" in entry && entry.kind === "combined";
+}
+
+export function isPrepSessionDirectStep(
+  entry: PrepSessionStep,
+): entry is PrepSessionDirectStep {
+  return !isPrepSessionCombinedStep(entry);
+}
 
 export type PrepSession = {
   id: string;

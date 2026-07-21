@@ -1032,6 +1032,10 @@ svg {
   color: var(--surface);
 }
 
+.prep-recipe-picker [data-slot="toggle-group-item"][data-state="on"] small {
+  color: inherit;
+}
+
 .prep-recipe-steps {
   border-top: 1px solid var(--line);
   display: grid;
@@ -1376,6 +1380,29 @@ svg {
 
 .prep-queue-row-wrap {
   display: grid;
+}
+
+.prep-queue-access-controls {
+  align-items: center;
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 5px 8px;
+}
+
+.prep-queue-access-controls label {
+  align-items: center;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.prep-queue-access-controls button {
+  min-height: 28px;
+  padding: 3px 8px;
 }
 
 .prep-insertion-indicator {

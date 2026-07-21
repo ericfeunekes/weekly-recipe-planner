@@ -17,6 +17,7 @@ test("production route, client, runtime, and journal surfaces contain no legacy 
     "export",
     "health",
     "history",
+    "preview",
     "undo",
     "workspace",
   ]);

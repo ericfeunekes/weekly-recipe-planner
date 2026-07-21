@@ -42,8 +42,9 @@ test("server-renders the shared planner loading surface", async () => {
 });
 
 test("keeps the locked product requirements represented in source", async () => {
-  const [planner, recipeContent, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
+  const [planner, prepView, recipeContent, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex-thread-rail.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex-thread-source.ts", import.meta.url), "utf8"),
@@ -55,6 +56,7 @@ test("keeps the locked product requirements represented in source", async () => 
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
+  const plannerUi = `${planner}\n${prepView}`;
 
   for (const command of [
     "moveMeal",
@@ -67,6 +69,10 @@ test("keeps the locked product requirements represented in source", async () => 
     "resetInstructionTimer",
     "setInstructionTimerRemaining",
     "addPrepStepsToDate",
+    "combinePrepStepsOnDate",
+    "updateCombinedPrepStep",
+    "setCombinedPrepStepComplete",
+    "expandCombinedPrepStep",
     "movePrepStepsToDate",
     "removePrepStepsFromDate",
     "clearPrepDate",
@@ -98,14 +104,14 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(recipeContent, /export function RecipeInstructionContent/);
   assert.match(planner, /function RecipeSummaryLink/);
   assert.match(planner, /function MealEditorTrigger/);
-  assert.match(planner, /Add recipe steps to/);
-  assert.match(planner, /aria-label="Prep dates"/);
-  assert.match(planner, /Other dates/);
-  assert.match(planner, /Jump to prep date/);
-  assert.doesNotMatch(planner, /Batch prep planned days|Prep sessions/);
-  assert.match(planner, /role="tabpanel"/);
-  assert.match(planner, /onDragEnter/);
-  assert.match(planner, /receivePrepDrop/);
+  assert.match(plannerUi, /Add recipe steps to/);
+  assert.match(plannerUi, /aria-label="Prep dates"/);
+  assert.match(plannerUi, /Other dates/);
+  assert.match(plannerUi, /Jump to prep date/);
+  assert.doesNotMatch(plannerUi, /Batch prep planned days|Prep sessions/);
+  assert.match(plannerUi, /role="tabpanel"/);
+  assert.match(plannerUi, /onDragEnter/);
+  assert.match(plannerUi, /receivePrepDrop/);
   assert.match(styles, /instruction-step-line/);
   assert.match(styles, /prep-session-tab/);
   assert.match(styles, /prep-session-drop-hint/);
@@ -125,8 +131,8 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /Offline . read-only/);
   assert.match(planner, /leftover\.state === "assigned"/);
   assert.match(planner, /Save recipe details/);
-  assert.match(planner, /<Dialog open=/);
-  assert.match(planner, /<DialogContent[^>]+aria-label=/);
+  assert.match(plannerUi, /<Dialog open=/);
+  assert.match(plannerUi, /<DialogContent[^>]+aria-label=/);
   assert.doesNotMatch(planner, /weekPickerOpen|chat-visible/);
   assert.match(page, /<PlannerApp \/>/);
   assert.match(layout, /title: "Weekly Recipe Planner"/);

@@ -25,6 +25,14 @@ a root-mode development page does not prove the mounted production app.
 - Production release: household production observation after all earlier cells
   pass.
 
+For a schema-changing feature, default-branch merge does not authorize
+production activation. When the household database is still on the previous
+schema, do not run `make promote` or start the newer app against it. Keep the
+previous production app/schema selected until the explicit migration release
+action and the release-safety cells in `docs/TESTING.md` are complete. Migration
+proof uses disposable data; household migration requires separate release
+authorization and readback.
+
 The detailed reusable product-story inventory remains in
 `docs/qa/family-planner-signoff-checklist.md`. Select only the stories touched by
 the change plus one representative dinner journey; do not rerun the entire

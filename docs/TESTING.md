@@ -9,8 +9,11 @@ authority.
 
 ## Current Release Safety Cells
 
-Every change to promotion, deployment, startup, mounted routing, or retained
-application data activates these cells in addition to the normal merge gate.
+Every change to promotion, deployment, startup, or mounted routing activates
+these cells in addition to the normal merge gate. A retained-data schema change
+may merge under the separately defined schema-changing boundary below, but it
+must not be promoted until these release cells and its migration release hold
+are satisfied.
 
 | Gate | Cell | Required boundary |
 |---|---|---|
@@ -25,6 +28,29 @@ The merge and RC cells must not operate on `$HOME/meal-planner` or the family
 database. Production observation is read-only except for an explicitly chosen,
 reversible household action. Release code changes are incomplete if the
 disposable installed-candidate cell cannot run.
+
+### Schema-changing merge and release boundary
+
+A feature that introduces a forward SQLite migration may merge when its normal
+merge gate is green and deterministic proof covers a real-file upgrade,
+pre-migration backup, restart, replay/undo, `PRAGMA quick_check`, and rejection
+by the frozen previous binary without modifying the newer database. The feature
+Issue and pull request must state the production release hold explicitly.
+
+Merging such a feature is not authorization to migrate the household database
+or run `make promote`. If the household schema is older than committed `main`,
+production stays on the previous app and schema. Release remains blocked until:
+
+1. an explicit release action is authorized for the exact schema transition;
+2. its checked-in procedure proves a verified pre-migration backup, migration,
+   integrity check, and authoritative application readback against disposable
+   data before touching household data; and
+3. the non-destructive app promotion/recovery and installed-candidate cells
+   above are green for the candidate.
+
+The migration implementation and disposable proof may live in the feature PR;
+the household data action remains a later `shipping:release` boundary. App
+deployment itself never migrates, copies, restores, or prunes household SQLite.
 
 ## Merge Gate
 

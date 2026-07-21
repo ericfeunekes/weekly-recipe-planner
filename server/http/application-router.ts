@@ -17,6 +17,7 @@ import {
   type PageRequest,
   type WorkspaceResponse,
 } from "../../lib/planner-api-contract.ts";
+import { isPreviewPlannerOperationsRequest } from "../../lib/planner-operation-contract.ts";
 import type { PlannerApplicationService } from "../application/ports.ts";
 import {
   createCodexRouter,
@@ -206,7 +207,7 @@ function parsePageRequest(url: URL): PageRequest {
 }
 
 function plannerDecisionStatus(status: string) {
-  if (status === "accepted") return 200;
+  if (status === "accepted" || status === "previewed") return 200;
   if (status === "version_conflict") return 409;
   return 422;
 }
@@ -345,6 +346,14 @@ export function createApplicationRouter(
           basePlannerVersion: body.basePlannerVersion,
           command: body.command,
         });
+        sendJson(response, plannerDecisionStatus(result.decision.status), result);
+        return;
+      }
+      if (url.pathname === PLANNER_API_ROUTES.preview.path) {
+        if (!isPreviewPlannerOperationsRequest(body)) {
+          throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed planner operation preview request.");
+        }
+        const result = dependencies.planner.previewOperations(body);
         sendJson(response, plannerDecisionStatus(result.decision.status), result);
         return;
       }

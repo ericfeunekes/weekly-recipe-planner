@@ -23,6 +23,7 @@ import {
   GLOBAL_CODEX_RESPONSE_MAX_BYTES,
   GLOBAL_CODEX_ROUTES,
   isGlobalCodexBatchRequest,
+  isGlobalCodexPreviewRequest,
   isGlobalCodexResponse,
 } from "../lib/global-codex-contract.ts";
 import { householdDomain } from "../lib/household-domain.ts";
@@ -113,6 +114,18 @@ function batch(requestId = REQUEST_ID, basePlannerVersion = 0, lesson = "Global 
         weekLesson: lesson,
       },
     }],
+  };
+}
+
+function preview(basePlannerVersion = 0, lesson = "Global lesson") {
+  return {
+    contractVersion: GLOBAL_CODEX_CONTRACT_VERSION,
+    basePlannerVersion,
+    operations: [{ command: {
+      type: "captureWeekLesson",
+      weekId: "2026-07-06",
+      weekLesson: lesson,
+    } }],
   };
 }
 
@@ -255,6 +268,8 @@ test("the global contract rejects unknown keys, non-UUID IDs, and chat-bearing p
   assert.equal(isGlobalCodexBatchRequest(batch()), true);
   assert.equal(isGlobalCodexBatchRequest({ ...batch(), actor: "Codex" }), false);
   assert.equal(isGlobalCodexBatchRequest({ ...batch(), requestId: "not-a-uuid" }), false);
+  assert.equal(isGlobalCodexPreviewRequest(preview()), true);
+  assert.equal(isGlobalCodexPreviewRequest({ ...preview(), requestId: REQUEST_ID }), false);
 
   const projected = projectPlannerWorkspace({
     initialized: true,
@@ -312,6 +327,19 @@ test("real UDS and SQLite preserve apply, replay, conflict, provenance, and plan
     status: "ready",
     serverTime: 123,
   });
+
+  const previewed = await requestSocket(socketPath, {
+    method: "POST",
+    path: GLOBAL_CODEX_ROUTES.previews,
+    body: JSON.stringify(preview()),
+  });
+  assert.equal(previewed.status, 200);
+  assert.equal(JSON.parse(previewed.body).decision.status, "previewed");
+  assert.equal(planner.readWorkspace().plannerVersion, 0);
+  assert.equal(store.database.prepare(
+    "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'global_codex_apply_planner_batch_v1'",
+  ).get().count, 0);
+  assert.equal((await hostOnlyClient.invoke("preview", preview())).decision.status, "previewed");
 
   const accepted = await requestSocket(socketPath, {
     method: "POST",
@@ -419,6 +447,30 @@ test("spawned supported client uses HOME-derived fixed socket and browser-visibl
   });
   assert.equal(JSON.parse(result.stdout).decision.status, "accepted");
   assert.equal(planner.readWorkspace().state.weeks[0].data.weekLesson, "Global lesson");
+});
+
+test("spawned supported client previews without a request ID or receipt", async (t) => {
+  const home = temporaryDirectory(t, "weekly-global-preview-client-home-");
+  const parent = join(home, "meal-planner");
+  mkdirSync(parent, { mode: 0o700 });
+  const { planner, store } = createRealPlanner(t);
+  const socket = await startGlobalCodexSocketServerForTests(
+    createGlobalCodexRouter(createGlobalCodexPlannerPort(planner)),
+    parent,
+  );
+  t.after(() => socket.close());
+
+  const result = await spawnClient({ home, command: "preview", input: JSON.stringify(preview()) });
+  assert.deepEqual({ code: result.code, signal: result.signal, stderr: result.stderr }, {
+    code: 0,
+    signal: null,
+    stderr: "",
+  });
+  assert.equal(JSON.parse(result.stdout).decision.status, "previewed");
+  assert.equal(planner.readWorkspace().plannerVersion, 0);
+  assert.equal(store.database.prepare(
+    "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'global_codex_apply_planner_batch_v1'",
+  ).get().count, 0);
 });
 
 test("the host-only client seam is in-memory and rejects non-absolute paths", () => {

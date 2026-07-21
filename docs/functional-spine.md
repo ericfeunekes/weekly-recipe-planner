@@ -93,7 +93,7 @@ parameter and does not change when a planner location is opened.
 - **RecipeIngredient**: one stable meal-local ingredient occurrence. It preserves the recipe's display amount/name and may resolve to one household `IngredientConcept`; later concept or alias changes never rewrite the snapshot's literal display text. Instruction ingredient uses link to this occurrence. Their amounts explain step use and do not need to add up to the recipe occurrence's displayed requirement.
 - **IngredientConcept**: one shared household food identity such as `Green onion`, `Salmon`, or `White rice`, with a preferred label, accepted matching vocabulary, and a default shopping section. An app-provided curated starter catalogue supplies common concepts; the household may add concepts and vocabulary without turning the planner into a canonical recipe library, product/SKU catalogue, nutrition database, or universal food ontology.
 - **InstructionStep**: canonical atomic recipe instruction with a stable ID, recipe order, one or more ingredient uses that link to `RecipeIngredient` records, one free-text instruction, Boolean completion, an optional timer duration and persisted start timestamp, and one optional note. Completion and timer state belong to this object and therefore appear consistently in every view that references it.
-- **PrepSession**: a week-scoped, manually ordered batch-prep workspace with a label and optional date. It contains an ordered projection of references to canonical instruction steps; it never owns copied step state or alters recipe order. A step may be shown in more than one session, but every reference exposes the same canonical instruction state. Dated sessions may use the Sunday before a Monday-start week through that week's ending Sunday.
+- **PrepSession**: a week-scoped, manually ordered batch-prep workspace with a label and optional date. It contains an ordered mix of references to canonical instruction steps and prep-only combined entries. A direct reference exposes the canonical instruction state; a combined entry owns only its prep-specific wording and completion while retaining stable lineage to every contributing canonical step and ingredient occurrence. Neither entry kind alters recipe order or canonical recipe wording. Dated sessions may use the Sunday before a Monday-start week through that week's ending Sunday.
 - **GroceryItem**: one derived execution record for one grocery-requirement ingredient occurrence in one active/planned-week meal. Its stable identity is the meal-plus-ingredient pair; literal requirement and recipe link derive from that occurrence, while its household ingredient concept supports shopper-facing grouping. Only section, coverage/source (`Needs source`, `Shop`, `Farm box`, or `On hand`), and checked state are grocery-owned classification/execution state; a visual group is a read model over those rows, never a second execution authority.
 - **Leftover**: food availability produced by a cooked meal and usable by a later meal/day.
 - **FeedbackEntry**: meal or week-level feedback: repeat/modify/drop, leftover quality, prep friction, planning lesson.
@@ -184,11 +184,60 @@ allergen inference, store SKUs, automatic package optimization, ingredient-speci
 density/yield tables, mandatory cleanup of every archived ingredient, automatic
 prep scheduling, and a full prepared-material dependency graph.
 
+### Prep-only combined steps
+
+A dated Prep queue may replace two or more direct step references with one
+prep-only combined entry when the household intends to perform shared work once.
+The household or Codex deliberately selects the contributing steps and supplies
+one coherent prep instruction; automatic similarity detection or automatic step
+combination is not required.
+
+The combined entry is planner-owned execution state, not a recipe instruction.
+It retains stable links to every contributing canonical instruction step and to
+the ingredient occurrences used by those steps. Those links are lineage and
+projection inputs rather than copied ingredient truth: recipe literals and
+instruction inputs remain authoritative. Compatible quantities may use the same
+pure derived normalization rules as other ingredient projections. Unsupported,
+incompatible, or raw-to-cooked forms remain visible as contributing literals and
+are never guessed merely because the steps were combined.
+
+Each contribution stores its step ID and ordered ingredient-occurrence IDs while
+labels, literals, and amounts remain live projections. A relevant source edit
+reopens the combined entry and requires review before it can claim fulfillment
+again. While a step belongs to a combined entry it cannot also appear as a direct
+Prep reference elsewhere in the week; combine removes those direct references
+atomically and previews every affected date.
+
+Completing a combined entry records that its shared prep obligation was
+fulfilled for every contribution. It does not set any contributing canonical
+instruction's Boolean completion. Editing, moving, removing, or expanding the
+entry never rewrites or reorders recipes. Expansion restores one direct Prep
+reference per contribution in stable order. Editing, removing, expanding, or
+clearing a completed entry explicitly discards its prep-owned fulfillment after
+confirmation; recent undo can restore the prior combined entry.
+
+The UI, embedded Codex, and Global Codex use the same typed, versioned planner
+authority to preview and atomically create, edit, complete, move, remove, or
+expand a combined entry. Validation rejects missing or duplicate sources,
+cross-week sources, broken ingredient lineage, and stale planner versions.
+
+Acceptance outcomes:
+
+- **PREP-C01 — Combine deliberately.** Two or more selected canonical steps can become one dated combined entry with household- or Codex-authored prep wording after a preview that names the affected date, queue position, sources, and replacement effect.
+- **PREP-C02 — Preserve recipe and ingredient truth.** The combined entry exposes every contributing recipe, canonical step, and ingredient occurrence without copying or rewriting recipe literals, instruction inputs, canonical wording, or recipe order.
+- **PREP-C03 — Complete only the shared obligation.** Checking the combined entry records prep fulfillment for every contribution while leaving canonical step completion unchanged and visibly distinguishable.
+- **PREP-C04 — Remain reversible.** Editing, moving, removing, undoing, and expanding the combined entry survive reload; expansion restores the direct references in stable contribution order without recipe mutation.
+- **PREP-C05 — Keep ingress parity.** Browser UI, embedded Codex, and Global Codex read, preview, and apply the same validated combined-entry operations through the existing atomic planner authority.
+
+Non-goals are automatic candidate discovery, host-generated wording,
+raw-to-cooked or yield conversion, a general prepared-material dependency
+graph, and changing canonical step timers or notes through a combined entry.
+
 ## Mutations
 
 The UI and Codex app-server commands reach the same planner mutation authority and typed domain-command surface. The embedded thread carries no approval or authority-grant field and excludes destructive planner `archiveWeek`; that command remains on its separate typed household/UI one-turn-grant path. Every accepted mutation creates event history.
 
-Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, ingredient suggestion/review/apply, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `addPrepStepsToDate`, `movePrepStepsToDate`, `removePrepStepsFromDate`, `clearPrepDate`, `moveGroceryItemsToSource`, `setGroceryItemChecked`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Prep is a date-owned queue: instructions can be scheduled on any date up to the active meal week's Sunday, while the underlying instruction remains canonical. Grocery rows are projected automatically from weekly-requirement ingredient occurrences; there is no free-form grocery CRUD path. The functional contract stays domain-command first so validation and meal-planning semantics remain close to the operation.
+Codex should use typed domain commands rather than raw record editing as the primary surface. The command layer should expose operations like `createWeekPlan`, `moveMeal`, `updateMealSnapshot`, ingredient suggestion/review/apply, `addInstructionStep`, `updateInstructionStep`, `moveInstructionStep`, `removeInstructionStep`, `setInstructionStepComplete`, `startInstructionTimer`, `resetInstructionTimer`, `updateInstructionStepNote`, `addPrepStepsToDate`, combined-prep create/edit/complete/expand operations, `movePrepStepsToDate`, `removePrepStepsFromDate`, `clearPrepDate`, `moveGroceryItemsToSource`, `setGroceryItemChecked`, `assignLeftover`, `captureFeedback`, and `archiveWeek`. Prep is a date-owned queue: direct references and prep-only combined entries can be scheduled on any date up to the active meal week's Sunday, while underlying recipe instructions remain canonical. Grocery rows are projected automatically from weekly-requirement ingredient occurrences; there is no free-form grocery CRUD path. The functional contract stays domain-command first so validation and meal-planning semantics remain close to the operation.
 
 Core mutations:
 
@@ -199,9 +248,9 @@ Core mutations:
 - Edit meal details and the attached recipe snapshot; ordinary edits preserve any existing source reference, and yield clearing uses explicit `null` rather than omission.
 - Replace only the recipe-owned portion of an existing planned/moved meal from a strict sourced recipe while preserving its date, slot, status, subtitle, venue, protein, prep/leftover notes, and meal notes. This replacement command is the only way to attach/change the source reference. Protected instruction execution state is checked against canonical pre-batch state and blocks replacement until cleanup commits separately and the caller refreshes.
 - Add or edit independently referenceable instruction steps.
-- Check or uncheck an instruction step from either the meal instructions or prep list; both views update the same completion value.
+- Check or uncheck a directly referenced instruction step from either the meal instructions or Prep; both views update the same canonical completion value. Checking a prep-only combined entry instead updates only its prep-fulfillment state.
 - Start or reset an optional step timer. The app persists its start timestamp and derives elapsed/remaining time after reopening, but does not send notifications or complete the step automatically.
-- Create, date or leave undated, manually order, and remove batch prep sessions. Add, reorder, or remove instruction references within a session; sessions never copy instruction execution state or reorder recipe instructions.
+- Create, date or leave undated, manually order, and remove batch prep sessions. Add, reorder, or remove direct instruction references; combine selected references into a prep-owned entry; edit, complete, move, remove, undo, or expand that entry while preserving its source lineage. Prep never reorders or rewrites recipe instructions.
 - Add or replace the optional note on an instruction step.
 - Resolve ingredient occurrences to household concepts individually or as a reviewed batch without rewriting their literal recipe text.
 - Reconcile derived grocery requirements, classify their source, complete them, and follow their contributing recipe links; grocery names and requirements are never independently authored copies.
@@ -273,7 +322,7 @@ Chat with Codex is a first-class mutation surface alongside direct UI editing, d
 - **Calendar / Week Picker**: navigate draft, active, and archived weeks.
 - **Week Overview**: primary opening surface after selecting/current week; a prep-free agenda of the week’s dinners/slots, today, statuses, and leftovers/flex days. It may make the current/selected day actionable, but it contains no Prep counts, indicators, pressure summary, or Week-to-Prep shortcut on any viewport. Prep remains available only through its own destination.
 - **Tonight / Day**: focused execution view for the current or selected day’s meal, presented as a compact cooking ticket: day and meal identity, ingredient context, one clear cooking action, canonical instruction steps in recipe order with completion checkboxes, optional timers and notes, serving/packing instructions, components, and leftover handling. Steps completed from Prep are already checked here.
-- **Prep / Batch Cook**: an active-week workspace of dated and undated prep sessions. A recipe sidebar supplies canonical instructions to drag into session order; checking a session reference checks the canonical step without changing recipe order.
+- **Prep / Batch Cook**: an active-week workspace of dated and undated prep sessions. A recipe sidebar supplies canonical instructions to drag into session order. Direct references share canonical completion; a prep-only combined entry can replace selected references with one independently completable shared obligation while preserving and exposing every contribution.
 - **Meal Detail**: editable active-week meal and recipe snapshot: title, recipe details, independently referenceable instruction steps, source links, venue, and leftover path.
 - **Groceries**: derived weekly food shopping list with household-ingredient grouping, compatible totals or concatenated literal requirements, section/source filters, execution checks, and contributing-recipe provenance.
 - **Feedback / Closeout**: archive summary, repeat/modify/drop, leftover quality, prep friction, planning lessons, and promotion candidates.
@@ -371,7 +420,7 @@ small text receipt, bounded backups, and clear recovery command are sufficient.
 - Codex authority: same planner mutation service and supported non-archive domain-command surface as the UI. Destructive planner `archiveWeek` remains on its separate typed household/UI path and cannot be obtained through a native approval request.
 - Codex surface: typed domain commands.
 - History: event log with recent undo exposed in UI.
-- Prep model: week-scoped, dated or undated `PrepSession` records contain manually ordered references to canonical instruction steps. Prep never copies or reorders recipe instructions; completion, timers, and notes are shared everywhere; removing a session or reference does not alter the step. Legacy dated prep references migrate into one dated session per date, preserving their prior order.
+- Prep model: week-scoped, dated or undated `PrepSession` records contain manually ordered direct references and prep-only combined entries. Direct references share canonical completion, timers, and notes. Combined entries own only their prep wording and fulfillment state and retain stable source-step and ingredient-occurrence lineage; they never copy ingredient truth or rewrite/reorder recipes. Removing a direct reference or combined entry does not alter a canonical step, and expansion restores direct references in contribution order. Legacy dated prep references migrate into one dated session per date, preserving their prior order.
 - Grocery model: weekly food groceries, not full inventory or household shopping.
 - Ingredient model: meal-local literal occurrences remain recipe truth; shared household concepts support matching and shopping groups; unresolved occurrences remain valid.
 - Measurement model: preserve every literal amount, normalize only safe compatible measures, and concatenate non-standard or incompatible requirements rather than guessing conversions.

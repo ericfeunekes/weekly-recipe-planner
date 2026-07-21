@@ -11,6 +11,7 @@ import {
   readLegacyImport,
   readHistoryPage,
   readWorkspace,
+  previewPlannerOperations,
   replayAuthorityOperation,
   shouldAcceptWorkspace,
   undoLatest,
@@ -132,6 +133,31 @@ test("expected command conflicts are decision responses, not transport errors", 
       const [pending] = readAuthorityOperations();
       assert.match(pending.resolution.message, /Someone else changed the plan/);
       assert.match(pending.resolution.message, /Activate dinner week/);
+    });
+  });
+});
+
+test("operation previews post the exact pure request without entering the authority journal", async () => {
+  const request = {
+    basePlannerVersion: 8,
+    operations: [{ command: {
+      type: "captureWeekLesson",
+      weekId: "2026-07-06",
+      weekLesson: "Preview only.",
+    } }],
+  };
+  await withBrowserSessionStorage(async () => {
+    await withFetch(async (path, init) => {
+      assert.equal(path, "/api/operations/preview");
+      assert.equal(init.method, "POST");
+      assert.deepEqual(JSON.parse(init.body), request);
+      return new Response(JSON.stringify({
+        decision: { status: "previewed", plannerVersion: 8, outcomes: [] },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }, async () => {
+      const response = await previewPlannerOperations(request);
+      assert.equal(response.decision.status, "previewed");
+      assert.deepEqual(readAuthorityOperations(), []);
     });
   });
 });
@@ -444,7 +470,11 @@ test("workspace export accepts the canonical export envelope", async () => {
 });
 
 test("client authority source has no browser writes or legacy reducers", async () => {
-  const source = await readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8");
+  const [clientSource, prepSource] = await Promise.all([
+    readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
+  ]);
+  const source = `${clientSource}\n${prepSource}`;
   assert.doesNotMatch(source, /localStorage\.setItem/);
   assert.doesNotMatch(source, /planner-domain|planner-history|planner-persistence|buildChatPlannerState/);
   assert.match(source, /refetchInterval:\s*2_000/);

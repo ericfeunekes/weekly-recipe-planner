@@ -54,6 +54,10 @@ const fixtures = {
   resetInstructionTimer: { type: "resetInstructionTimer", weekId, stepId: id },
   setInstructionTimerRemaining: { type: "setInstructionTimerRemaining", weekId, stepId: id, remainingSeconds: 300 },
   addPrepStepsToDate: { type: "addPrepStepsToDate", weekId, prepDate: "2026-06-29", stepIds: ["step-1", "step-2"], targetPosition: 0 },
+  combinePrepStepsOnDate: { type: "combinePrepStepsOnDate", weekId, prepDate: "2026-06-29", sourceStepIds: ["step-1", "step-2"], instruction: "Prepare 1 1/2 cups rice.", targetPosition: 0 },
+  updateCombinedPrepStep: { type: "updateCombinedPrepStep", weekId, entryId: "entry-1", instruction: "Prepare the rice." },
+  setCombinedPrepStepComplete: { type: "setCombinedPrepStepComplete", weekId, entryId: "entry-1", complete: true },
+  expandCombinedPrepStep: { type: "expandCombinedPrepStep", weekId, entryId: "entry-1", discardFulfillment: false },
   movePrepStepsToDate: { type: "movePrepStepsToDate", weekId, sourcePrepDate: "2026-06-28", prepDate: "2026-06-29", entryIds: ["entry-1", "entry-2"], targetPosition: 0 },
   removePrepStepsFromDate: { type: "removePrepStepsFromDate", weekId, prepDate: "2026-06-29", entryIds: ["entry-1", "entry-2"] },
   clearPrepDate: { type: "clearPrepDate", weekId, prepDate: "2026-06-29" },
@@ -74,11 +78,10 @@ test("one registry derives every command validator, schema variant, and authorit
   const registryKeys = Object.keys(HOUSEHOLD_COMMAND_REGISTRY).sort();
   assert.deepEqual(registryKeys, Object.keys(fixtures).sort());
   for (const [type, entry] of Object.entries(HOUSEHOLD_COMMAND_REGISTRY)) {
-    assert.deepEqual(
-      [...entry.schema.required].sort(),
-      Object.keys(entry.schema.properties).sort(),
-      `${type} exposes every top-level command field as required`,
-    );
+    const optional = type === "updateCombinedPrepStep" || type === "removePrepStepsFromDate" || type === "clearPrepDate"
+      ? ["discardFulfillment"]
+      : [];
+    assert.deepEqual([...entry.schema.required].sort(), Object.keys(entry.schema.properties).filter((key) => !optional.includes(key)).sort());
   }
   assert.deepEqual(
     HOUSEHOLD_COMMAND_SCHEMA.anyOf.map((schema) => schema.properties.type.const).sort(),
