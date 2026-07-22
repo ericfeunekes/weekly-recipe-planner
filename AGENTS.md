@@ -34,13 +34,15 @@ instruction files while retaining `deployment/codex/AGENTS.md` and
 `tests/deployment-staging-filter.test.mjs` proof whenever release staging or
 agent-source paths change.
 
-Do not run production from a mutable checkout. `make promote` is the only
-operator-facing production release command: it requires committed `main`,
-creates a disposable worktree for that exact revision, and invokes the internal
-`make deploy` primitive there. `make deploy` is not a recovery interface and
-must not be run directly from a development checkout. The remaining
-non-destructive activation, recovery, and production-mounted proof obligations
-are defined in `docs/functional-spine.md`, `docs/TESTING.md`, and `docs/QA.md`.
+Do not run production logic from a mutable checkout. `make promote` is the only
+candidate-producing production command; `make recover` is recovery-only. Both
+obtain their implementation from a disposable detached `refs/heads/main`
+worktree. Recovery keeps a ready selected app or restores the immediately
+previous app and proves readiness; it cannot stage or select new candidate
+bytes. Application deployment never migrates, copies, restores, or prunes the
+household SQLite authority. The remaining activation, recovery, and mounted
+proof obligations are defined in `docs/functional-spine.md`, `docs/TESTING.md`,
+and `docs/QA.md`.
 
 ## UI system
 

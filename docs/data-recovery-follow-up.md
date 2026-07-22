@@ -12,7 +12,8 @@ Three existing mechanisms remain deliberately separate:
 
 - Diagnostic JSON supports inspection and troubleshooting only.
 - A pre-migration copy protects one database migration attempt.
-- Release rollback restores the app/data pair recorded by one activation.
+- Application promotion and recovery select only `app` or `app.previous` and
+  never copy, replace, restore, migrate, or prune planner data.
 
 None of them is a general disaster-recovery operator. Family-readiness signoff
 must not describe the diagnostic JSON as a backup or a restorable export.
@@ -45,9 +46,9 @@ The operator contract is frozen as follows:
 7. Journal interrupted restore steps so recovery can distinguish an untouched
    target, a staged candidate, and a published replacement.
 
-This operator must not modify release `current.json`, select an app build,
-change Codex configuration or authentication state, or rewrite release rollback
-history. Those remain owned by the release transaction.
+This operator must not select or rewrite `app` or `app.previous`, change Codex
+configuration or authentication state, or participate in application promotion
+or recovery. Those remain owned by the fixed-slot release lifecycle.
 
 ## Required Proof
 

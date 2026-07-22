@@ -1766,6 +1766,38 @@ function assertReadOnlyPermissionProfiles(
   }
 }
 
+function readCapabilityNames(rows: readonly unknown[], method: string) {
+  const names = rows.map((row) => {
+    const name = stringProperty(row, "name");
+    if (!name) {
+      throw new CodexCapabilityProbeError(
+        "READBACK_PROVENANCE",
+        `${method} returned a malformed capability row.`,
+      );
+    }
+    return name;
+  });
+  if (new Set(names).size !== names.length) {
+    throw new CodexCapabilityProbeError(
+      "READBACK_PROVENANCE",
+      `${method} returned duplicate capability names.`,
+    );
+  }
+  return names.sort();
+}
+
+function readPluginNames(result: unknown) {
+  const marketplaces = requiredArrayProperty(result, "marketplaces", "plugin/list");
+  const loadErrors = requiredArrayProperty(result, "marketplaceLoadErrors", "plugin/list");
+  if (loadErrors.length > 0) {
+    throw new CodexCapabilityProbeError(
+      "READBACK_PROVENANCE",
+      "plugin/list reported marketplace load errors.",
+    );
+  }
+  return readCapabilityNames(marketplaces, "plugin/list");
+}
+
 function assertReadOnlyThread(
   result: unknown,
   expectedCwd: string,
@@ -2139,8 +2171,13 @@ async function configSourceEvidence(
       if (typeof rawPath !== "string" || rawPath.length === 0) {
         throw new CodexCapabilityProbeError("READBACK_PROVENANCE", "User config layer omitted its path.");
       }
+      const expectedPath = join(deployment.codexHome, "config.toml");
       const canonical = await realpath(rawPath);
-      if (canonical !== join(deployment.codexHome, "config.toml")) {
+      const releaseOwnedPath = join(deployment.appCwd, "deployment", "codex", "config.toml");
+      if (
+        rawPath !== expectedPath ||
+        (canonical !== expectedPath && canonical !== releaseOwnedPath)
+      ) {
         throw new CodexCapabilityProbeError(
           "READBACK_PROVENANCE",
           "Actual deployment config is not sourced from the dedicated Codex home.",
@@ -2230,13 +2267,14 @@ async function instructionSourceEvidence(
   try {
     const expectedStats = await stat(expectedGlobalInstructions);
     expectedCanonical = await realpath(expectedGlobalInstructions);
+    const releaseOwnedInstructions = join(deployment.appCwd, "deployment", "codex", "AGENTS.md");
     if (
       !expectedStats.isFile() ||
-      expectedCanonical !== expectedGlobalInstructions ||
+      (expectedCanonical !== expectedGlobalInstructions && expectedCanonical !== releaseOwnedInstructions) ||
       sources.length !== 1 ||
       typeof sources[0] !== "string" ||
       await realpath(sources[0]) !== expectedCanonical ||
-      sources[0] !== expectedCanonical
+      sources[0] !== expectedGlobalInstructions
     ) {
       throw new Error("missing expected instruction source");
     }
@@ -2349,6 +2387,19 @@ export async function readActualCodexDeployment(
       cwds: [deployment.appCwd],
       forceReload: true,
     }, timeoutMs);
+    const mcpServers = await collectPaginated(
+      client,
+      "mcpServerStatus/list",
+      { limit: 100 },
+      timeoutMs,
+    );
+    const apps = await collectPaginated(
+      client,
+      "app/list",
+      { limit: 100 },
+      timeoutMs,
+    );
+    const plugins = await client.request("plugin/list", {}, timeoutMs);
     const thread = await client.request("thread/start", {
       approvalPolicy: "never",
       permissions: ":read-only",
@@ -2369,9 +2420,15 @@ export async function readActualCodexDeployment(
     const threadId = assertReadOnlyThread(thread, deployment.appCwd);
     await client.request("thread/unsubscribe", { threadId }, timeoutMs);
 
-    const mcpServerNames: readonly string[] = [];
-    const appNames: readonly string[] = [];
-    const pluginNames: readonly string[] = [];
+    const mcpServerNames = readCapabilityNames(mcpServers, "mcpServerStatus/list");
+    const appNames = readCapabilityNames(apps, "app/list");
+    const pluginNames = readPluginNames(plugins);
+    if (pluginNames.length > 0) {
+      throw new CodexCapabilityProbeError(
+        "READBACK_PROVENANCE",
+        "Actual deployment exposes an installed plugin marketplace surface.",
+      );
+    }
     if (mcpServerNames.length || appNames.length || pluginNames.length) {
       throw new CodexCapabilityProbeError(
         "READBACK_PROVENANCE",

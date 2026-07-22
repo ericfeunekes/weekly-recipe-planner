@@ -17,6 +17,7 @@
     "qa:serve": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/qa-portless-runtime.mjs",
     "planner:global": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/planner-global-client.ts",
     "probe:codex-follow-up": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/probe-codex-follow-up.mjs",
+    "probe:release-lifecycle": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/probe-release-lifecycle.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {

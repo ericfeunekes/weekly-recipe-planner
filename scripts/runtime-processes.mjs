@@ -120,19 +120,9 @@ export function createInstalledProcessSpecifications(
     agentDirectory,
     dataDirectory,
     runDirectory,
-    activationId,
-    operatorSha256,
-    activationSha256,
   },
   environment = process.env,
 ) {
-  if (
-    [activationId, operatorSha256, activationSha256].some(
-      (value) => typeof value !== "string" || value.length === 0,
-    )
-  ) {
-    throw new TypeError("Installed process specifications require bound release identities.");
-  }
   const installedEnvironment = {
     ...environment,
     PLANNER_CODEX_HOME: agentDirectory,
@@ -140,9 +130,6 @@ export function createInstalledProcessSpecifications(
     PLANNER_DATA_DIR: dataDirectory,
     PLANNER_RUNTIME_OWNER_SOCKET: join(runDirectory, "runtime-owner.sock"),
     PLANNER_INSTALLED_RUNTIME: "1",
-    PLANNER_EXPECTED_ACTIVATION_ID: activationId,
-    PLANNER_EXPECTED_OPERATOR_SHA256: operatorSha256,
-    PLANNER_EXPECTED_ACTIVATION_SHA256: activationSha256,
     WRANGLER_LOG_PATH: join(runDirectory, "logs", "wrangler.log"),
   };
   return createProductionProcessSpecifications(installedEnvironment, {

@@ -118,9 +118,6 @@ test("installed launch fixes both children to the selected app and materializes 
       agentDirectory: "/opt/meal-planner/agent",
       dataDirectory: "/opt/meal-planner/data",
       runDirectory: "/opt/meal-planner/run",
-      activationId: "activation-1",
-      operatorSha256: "operator-sha",
-      activationSha256: "activation-sha",
     },
     {
       HOME: "/Users/planner",
@@ -142,9 +139,6 @@ test("installed launch fixes both children to the selected app and materializes 
   assert.equal("PLANNER_RUNTIME_OWNER_LEASE" in authority.options.env, false);
   assert.equal("PLANNER_RUNTIME_OWNER_TOKEN" in authority.options.env, false);
   assert.equal(authority.options.env.PLANNER_INSTALLED_RUNTIME, "1");
-  assert.equal(authority.options.env.PLANNER_EXPECTED_ACTIVATION_ID, "activation-1");
-  assert.equal(authority.options.env.PLANNER_EXPECTED_OPERATOR_SHA256, "operator-sha");
-  assert.equal(authority.options.env.PLANNER_EXPECTED_ACTIVATION_SHA256, "activation-sha");
   assert.equal(
     web.options.env.WRANGLER_LOG_PATH,
     "/opt/meal-planner/run/logs/wrangler.log",

@@ -10,6 +10,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -255,6 +256,26 @@ test("private executable snapshots retain only the three newest accepted identit
     (await readdir(snapshotRoot)).filter((name) => name.startsWith(".prepare-")),
     [],
   );
+});
+
+test("production spawn accepts only the fixed release-owned config and instruction links", async (t) => {
+  const { fixture, deployment, environment, identity } = await acceptedFixture(t);
+  const releaseSources = join(fixture.appCwd, "deployment", "codex");
+  await mkdir(releaseSources, { recursive: true });
+  for (const name of ["config.toml", "AGENTS.md"]) {
+    const dedicated = join(fixture.codexHome, name);
+    const releaseOwned = join(releaseSources, name);
+    renameSync(dedicated, releaseOwned);
+    await symlink(releaseOwned, dedicated);
+  }
+  const execution = createCompatibleCodexExecution(
+    identity,
+    deployment,
+    environment,
+    await acceptedProvenance(fixture),
+  );
+  const child = await execution.spawnAppServer();
+  child.kill();
 });
 
 for (const [label, mutate] of [

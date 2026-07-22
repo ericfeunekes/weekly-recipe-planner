@@ -13,14 +13,14 @@ DEV_PORTLESS_PORT ?= 1355
 DEV_DATA_SOURCE ?= $(ROOT_DIR)/.planner-data/planner.sqlite
 DEV_STATE_DIR ?= $(ROOT_DIR)/.planner-dev
 
-.PHONY: help promote deploy qa-local qa-deploy qa-status qa-stop dev-start dev-status dev-stop
+.PHONY: help promote recover qa-local qa-deploy qa-status qa-stop dev-start dev-status dev-stop
 
 help:
 	@printf '%s\n' \
 		'  make promote' \
 		'      The only production release command: deploy committed main from a disposable worktree.' \
-		'  make deploy' \
-		'      Internal primitive used by promote; deploy a clean main snapshot.' \
+		'  make recover' \
+		'      Recovery-only: keep a ready selected app or restore the immediately previous app.' \
 		'  make qa-deploy | qa-status | qa-stop' \
 		'      Manage the isolated snapshot-backed QA app.' \
 		'  make dev-start | dev-status | dev-stop' \
@@ -29,15 +29,8 @@ help:
 promote:
 	@$(NODE) scripts/promote.mjs
 
-deploy:
-	@set -eu; \
-	branch="$$(git branch --show-current)"; head="$$(git rev-parse HEAD)"; main="$$(git rev-parse refs/heads/main)"; \
-	if { [ "$$branch" != "main" ] && [ "$$head" != "$$main" ]; } || [ -n "$$(git status --porcelain)" ]; then \
-		printf '%s\n' 'error: deploy requires a clean main checkout or detached worktree at main.' >&2; exit 2; \
-	fi; \
-	$(NPM) ci; \
-	PLANNER_PUBLIC_BASE_PATH=/recipe-planner/ $(NPM) run build; \
-	$(NODE) scripts/direct-deploy.mjs
+recover:
+	@$(NODE) scripts/promote.mjs --recover
 
 qa-local:
 	@cd "$(ROOT_DIR)" && $(NPM) run test:e2e

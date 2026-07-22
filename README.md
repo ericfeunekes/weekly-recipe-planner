@@ -141,26 +141,29 @@ make promote
 ```
 
 Run it from any checkout. It creates a detached temporary worktree at the
-committed local `main` ref, builds there, atomically replaces only
-`$HOME/meal-planner/app`, starts the one current-user LaunchAgent, checks the
-loopback health/workspace routes, records the real Tailscale `/api/workspace`
-observation without rolling back an otherwise healthy service during proxy
-convergence, and always removes the temporary worktree. Uncommitted
-work in the calling checkout cannot enter production.
+committed local `main` ref, installs dependencies, runs the mounted-path test
+and lint gates, stages a candidate, and selects it only after the existing
+service is quiescent. The fixed application slots are
+`$HOME/meal-planner/app` and `$HOME/meal-planner/app.previous`; the current-user
+LaunchAgent always starts `app`. Uncommitted work in the calling checkout
+cannot enter production.
 
-The direct deployer uses the shared Tailscale location
-`https://robie-imac.tailae8a7b.ts.net/recipe-planner/` by default. Set
-`PLANNER_TAILNET_ORIGIN` when the machine's Tailscale hostname differs, or set
-`PLANNER_TAILNET_URL` when its public path differs. The prior app directory is retained under
-`$HOME/meal-planner/backups`; a failed loopback readiness check restores the
-prior app and leaves the service stopped for inspection.
+The service permits the shared Tailscale origin
+`https://robie-imac.tailae8a7b.ts.net` by default. Set
+`PLANNER_TAILNET_ORIGIN` when the machine's Tailscale hostname differs. A
+candidate is ready only when fresh loopback health and workspace requests prove
+the web process, initialized application, SQLite quick check, authenticated and
+compatible Codex runtime, and Global Codex ingress. Failed activation restores
+`app.previous` and requires that restored app to become ready.
 
-`make deploy` is an implementation primitive used by `make promote`; do not use
-it as the operator release command. There are no release manifests, staging
-suites, activation IDs, or separate service commands. The household database
-stays at `$HOME/meal-planner/data/planner.sqlite`; deployment replaces
-application code only. The LaunchAgent listens only on loopback port `8642` by
-default. Stop it with `launchctl bootout gui/$(id -u)/com.ericfeunekes.meal-planner`.
+`make recover` is the only operator recovery command. It preserves a ready
+`app`, otherwise selects `app.previous` when present, and is safe to repeat.
+There is no public direct-deploy command and there are no release manifests,
+receipts, activation IDs, or revision/digest identities. Promotion and recovery
+never migrate, copy, restore, or prune the household SQLite database at
+`$HOME/meal-planner/data/planner.sqlite`. The LaunchAgent listens only on
+loopback port `8642` by default. Stop it with
+`launchctl bootout gui/$(id -u)/com.ericfeunekes.meal-planner`.
 
 
 ## Hosting Boundary
