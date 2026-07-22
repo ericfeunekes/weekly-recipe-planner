@@ -163,9 +163,17 @@ function validateProvenanceSnapshot(snapshot: CodexExecutionProvenanceSnapshot) 
   }
 }
 
-async function assertProvenanceFile(path: string, expectedSha256: string, signal?: AbortSignal) {
+async function assertProvenanceFile(
+  path: string,
+  expectedSha256: string,
+  signal?: AbortSignal,
+  releaseOwnedPath?: string,
+) {
   const metadata = await lstat(path);
-  if (metadata.isSymbolicLink() || !metadata.isFile() || await realpath(path) !== path) {
+  const canonical = await realpath(path);
+  const regularDedicatedFile = metadata.isFile() && canonical === path;
+  const fixedReleaseLink = metadata.isSymbolicLink() && canonical === releaseOwnedPath;
+  if (!regularDedicatedFile && !fixedReleaseLink) {
     throw new CodexLauncherError(
       "PROVENANCE_CHANGED",
       "An accepted Codex provenance file changed kind or canonical identity.",
@@ -203,11 +211,13 @@ async function revalidateDeploymentProvenance(
       join(deployment.codexHome, "config.toml"),
       snapshot.userConfigSha256,
       signal,
+      join(deployment.appCwd, "deployment", "codex", "config.toml"),
     );
     await assertProvenanceFile(
       join(deployment.codexHome, "AGENTS.md"),
       snapshot.instructionSha256,
       signal,
+      join(deployment.appCwd, "deployment", "codex", "AGENTS.md"),
     );
     for (const path of snapshot.systemConfigPaths) {
       try {

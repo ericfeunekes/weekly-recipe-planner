@@ -374,16 +374,16 @@ The current contract is:
 - **RR1 — Preserve the working release.** Candidate preparation happens before
   the current app or service is disturbed. A failure before the first service
   or app disturbance leaves both untouched. Once disturbance begins, every
-  failure before candidate-specific readiness restores the verified prior app
-  and a ready prior service.
+  failure before replacement readiness restores the immediately previous app
+  and a ready service.
 - **RR2 — One release at a time.** Promotion is single-owner. A second release
   attempt fails before it can unload, rename, migrate, or select anything.
-- **RR3 — Prove the selected candidate.** The committed source revision is the
-  candidate's source identity; a digest binds its installed application bundle.
-  The runtime reports both for readiness. Readiness is candidate-specific and
-  requires initialized application/store state, the supported native Codex
-  compatibility state, Global UDS readiness, and the expected production route.
-  A healthy process running unknown code is not release proof.
+- **RR3 — Prove the selected candidate.** A promotion succeeds only after the
+  application selected by that attempt starts and passes readiness for
+  initialized application/store state, the supported native Codex compatibility
+  state, Global UDS readiness, and the expected production route. A readiness
+  observation from the previously running app does not prove the replacement.
+  Persistent revision, digest, manifest, or receipt identity is not required.
 - **RR4 — Match household routing.** Release-candidate proof uses the real
   `/recipe-planner/` mount and front-controller topology. Mounted API, assets,
   favicon, and social metadata must resolve before release.
@@ -392,9 +392,11 @@ The current contract is:
   empty selections, and tests that duplicate a producer's wrong constant do not
   count as green proof.
 - **RR6 — Protect and bound retained state.** The household SQLite authority is
-  never replaced by application deployment. A small fixed number of verified
-  prior application releases is retained for recovery; older app-only residue
-  may be removed only after the current and rollback releases are identified.
+  never copied, replaced, restored, migrated, or pruned by application
+  deployment. The selected app directory and its immediately previous app
+  directory are the complete recovery state. The previous directory remains
+  available until the selected app is ready; older app-only residue may be
+  removed only after that point.
 - **RR7 — Do not overclaim sourced-recipe fidelity.** Direct typed recipe
   replacement may carry an informational source reference as described above.
   A release must not advertise source-faithful web import unless the host binds
@@ -406,8 +408,10 @@ The current contract is:
 
 Non-goals are a generic deployment framework, zero-downtime service, remote
 release orchestration, long-term release archives, comprehensive telemetry, or
-an operator dashboard. A simple exclusive lock, atomic app-directory selection,
-small text receipt, bounded backups, and clear recovery command are sufficient.
+an operator dashboard. Release manifests, receipts, revision/digest reporting,
+artifact stores, and generalized recovery journals are also out of scope. An
+exclusive lock, candidate staging, current/prior directory selection, readiness
+check, and clear recovery command are sufficient.
 
 ## Locked Decisions
 

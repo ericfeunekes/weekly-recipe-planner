@@ -17,6 +17,9 @@ import {
 const args = process.argv.slice(2);
 const codexHome = process.env.CODEX_HOME;
 const bakedFixtureVariant = "compatible-a";
+const bakedInvocationLog = typeof __RELEASE_PROBE_INVOCATION_LOG__ === "string"
+  ? __RELEASE_PROBE_INVOCATION_LOG__
+  : null;
 
 async function fileExists(path) {
   try {
@@ -50,7 +53,7 @@ async function recordInvocation(event = "process-start", details = {}) {
   if (!codexHome) return;
   try {
     const executable = await stat(process.argv[1]);
-    await appendFile(join(codexHome, ".fixture-invocations.jsonl"), `${JSON.stringify({
+    await appendFile(bakedInvocationLog ?? join(codexHome, ".fixture-invocations.jsonl"), `${JSON.stringify({
       event,
       bakedFixtureVariant,
       pid: process.pid,
@@ -730,6 +733,10 @@ async function handleRequest(message) {
     marketplaceLoadErrors: [],
     featuredPluginIds: [],
     } });
+  }
+  if (method === "thread/list") {
+    await recordInvocation("thread-list");
+    return send({ id, result: { data: [], nextCursor: null } });
   }
   if (method === "thread/start") {
     if (

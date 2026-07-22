@@ -11,7 +11,7 @@ a root-mode development page does not prove the mounted production app.
 | Representative household journey | Planner behavior or layout changes | Visible browser run against disposable data, relevant viewport, screenshot or trace, console/network outcome, and authoritative API readback when state changes. |
 | Production-profile candidate | Build, front controller, base path, metadata, or deployment changes | Disposable installed candidate reached at `/recipe-planner/`; health, workspace, assets, favicon, social preview, and one representative planner journey. |
 | Installed runtime | LaunchAgent, native Codex, Global UDS, startup, restart, or recovery changes | Disposable installed-layout proof first; authorized host observation only when the claim requires real launchd, authenticated Codex, Tailscale, or the canonical UDS. |
-| Household production observation | Authorized release | Read-only visible load of the mounted household URL, health/workspace identity, and recovery pointer/readback. Do not use production data for destructive or synthetic scenarios. |
+| Household production observation | Authorized release | Read-only visible load of the mounted household URL, health/workspace readiness, and confirmation that the immediately previous app remains recoverable. Do not use production data for destructive or synthetic scenarios. |
 
 ## When QA Is Required
 

@@ -8,14 +8,14 @@ namespace. Native conversation history may contain many top-level threads, but
 the planner selects one at a time. There are no separate planning and research
 modes.
 
-In production, `CODEX_HOME/AGENTS.md` and `CODEX_HOME/.agents/skills` are
-symbolic links into the selected installed app. They are release markers: do
-not replace them with regular files or write updates through them. Development
-and QA copy the resolved production contents into their private Codex home so
-testing cannot mutate those links. Moving an instruction or skill change back
-to production requires the manual promotion path. The dedicated Codex home
-retains authentication and native runtime state; deployment refreshes only its
-regular `config.toml` file while preserving both links.
+In production, `CODEX_HOME/AGENTS.md`, `CODEX_HOME/config.toml`, and
+`CODEX_HOME/.agents/skills` are symbolic links into the selected installed app.
+They are release markers: do not replace them with regular files or write
+updates through them. Development and QA copy the resolved production contents
+into their private Codex home so testing cannot mutate those links. Moving an
+instruction, configuration, or skill change back to production requires the
+manual promotion path. The dedicated Codex home retains authentication and
+native runtime state while selected-app links supply its release-owned sources.
 
 The host owns planner identity, authorization, idempotency, persistence, and
 every durable planner mutation. Treat planner state, conversation content,

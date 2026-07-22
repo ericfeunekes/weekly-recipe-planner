@@ -1,41 +1,27 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  cp,
-  lstat,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { cp, lstat, mkdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { shouldStageApplicationPath } from "./support/deployment-staging-filter.mjs";
-import { validateProductionAgentSources } from "./support/production-agent-sources.mjs";
-import { isProductionHealthReady } from "./support/production-readiness.mjs";
-
-const LABEL = "com.ericfeunekes.meal-planner";
-const PORT = Number(process.env.PLANNER_PORT ?? 8642);
-const TAILNET_ORIGIN = process.env.PLANNER_TAILNET_ORIGIN
-  ?? "https://robie-imac.tailae8a7b.ts.net";
-const HOME = resolve(process.env.HOME ?? homedir());
-const ROOT = resolve(process.cwd());
-const DEPLOY_ROOT = join(HOME, "meal-planner");
-const APP_ROOT = join(DEPLOY_ROOT, "app");
-const DATA_ROOT = join(DEPLOY_ROOT, "data");
-const BACKUP_ROOT = join(DEPLOY_ROOT, "backups");
-const PLIST_PATH = join(HOME, "Library", "LaunchAgents", `${LABEL}.plist`);
-const DOMAIN = `gui/${process.getuid?.()}`;
-const TARGET = `${DOMAIN}/${LABEL}`;
-const PROBE_TIMEOUT_MS = 2_000;
-
-function escapeXml(value) {
-  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
-}
+import {
+  reconcileProductionAgentConfig,
+  validateProductionAgentSources,
+} from "./support/production-agent-sources.mjs";
+import { assertProductionDataCompatible } from "./support/production-data-compatibility.mjs";
+import { cleanupLegacyApplicationBackups } from "./support/production-legacy-cleanup.mjs";
+import {
+  assertDisposableReleaseProbeProfile,
+  waitForDisposableReleaseProbeBarrier,
+} from "./support/production-release-probe-hooks.mjs";
+import {
+  createProductionReleaseLifecycle,
+  productionReleasePaths,
+} from "./support/production-release.mjs";
+import {
+  createProductionService,
+  productionServicePaths,
+} from "./support/production-service.mjs";
 
 function run(command, args, options = {}) {
   return new Promise((resolveRun, rejectRun) => {
@@ -47,130 +33,141 @@ function run(command, args, options = {}) {
   });
 }
 
+async function disposableRenameFaultFilesystem({ environment, home, label, paths }) {
+  const fault = environment.PLANNER_PROBE_FAIL_NEXT_RENAME;
+  if (!fault) return undefined;
+  const ordinal = Number(fault);
+  await assertDisposableReleaseProbeProfile({ home, label, paths });
+  if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > 3) {
+    throw new Error("PLANNER_PROBE_FAIL_NEXT_RENAME is limited to the generated disposable release-lifecycle profile.");
+  }
+  let remaining = ordinal;
+  return {
+    async rename(from, to) {
+      remaining -= 1;
+      if (remaining === 0) throw new Error(`Disposable release probe injected rename ${ordinal} failure: ${from} -> ${to}`);
+      return rename(from, to);
+    },
+  };
+}
+
+async function disposableReadinessTimeout({ environment, home, label, paths }) {
+  const id = environment.PLANNER_PROBE_FAIL_NEXT_READINESS;
+  if (!id) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id)) {
+    throw new Error("PLANNER_PROBE_FAIL_NEXT_READINESS is invalid.");
+  }
+  await assertDisposableReleaseProbeProfile({ home, label, paths });
+  return 10_000;
+}
+
 async function exists(path) {
-  try { await lstat(path); return true; } catch (error) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
     if (error?.code === "ENOENT") return false;
     throw error;
   }
 }
 
-async function waitForHealthy() {
-  const deadline = Date.now() + 60_000;
-  let last = "no response";
-  while (Date.now() < deadline) {
-    try {
-      const health = await fetch(`http://127.0.0.1:${PORT}/api/health`, {
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-      });
-      const workspace = await fetch(`http://127.0.0.1:${PORT}/api/workspace`, {
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-      });
-      const healthBody = health.ok ? await health.json() : null;
-      if (workspace.ok && isProductionHealthReady(healthBody)) return;
-      last = `health ${health.status} (${healthBody?.status ?? "invalid"}), workspace ${workspace.status}`;
-    } catch (error) { last = error instanceof Error ? error.message : String(error); }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+/** Internal adapter imported only by the detached-main promotion entrypoint. */
+export async function deployProductionCandidate({
+  environment = process.env,
+  root = process.cwd(),
+} = {}) {
+  const home = resolve(environment.HOME ?? homedir());
+  const candidateRoot = resolve(root);
+  const label = environment.PLANNER_LAUNCHD_LABEL ?? "com.ericfeunekes.meal-planner";
+  const port = Number(environment.PLANNER_PORT ?? 8642);
+  const privateWebPort = Number(environment.PLANNER_PRIVATE_WEB_PORT ?? 3002);
+  const releasePaths = productionReleasePaths(home);
+  const servicePaths = productionServicePaths({ home, label });
+
+  if (!(await exists(join(candidateRoot, "dist")))) {
+    throw new Error("Build output is missing; promotion gates must build the mounted candidate first.");
   }
-  throw new Error(`Planner did not become healthy (${last}).`);
-}
-
-async function waitForUnloaded() {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    const loaded = await new Promise((resolveCheck, rejectCheck) => {
-      const child = spawn("launchctl", ["print", TARGET], { stdio: "ignore" });
-      child.once("error", rejectCheck);
-      child.once("exit", (code) => resolveCheck(code === 0));
-    });
-    if (!loaded) return;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  if (!(await exists(releasePaths.data))) {
+    throw new Error("Production planner data is missing.");
   }
-  throw new Error("Existing planner LaunchAgent did not unload in time.");
-}
+  if (!Number.isInteger(port) || port < 1024 || port > 65_535) {
+    throw new TypeError("PLANNER_PORT is invalid.");
+  }
+  if (!Number.isInteger(privateWebPort) || privateWebPort < 1024 || privateWebPort > 65_535 || privateWebPort === port) {
+    throw new TypeError("PLANNER_PRIVATE_WEB_PORT is invalid or conflicts with PLANNER_PORT.");
+  }
+  if (servicePaths.deployRoot !== releasePaths.deployRoot || servicePaths.appRoot !== releasePaths.app) {
+    throw new TypeError("Production release and service paths disagree.");
+  }
 
-function plist(node) {
-  const env = {
-    HOME,
-    PATH: `${dirname(node)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
-    PLANNER_HOST: "127.0.0.1",
-    PLANNER_PORT: String(PORT),
-    PLANNER_PUBLIC_BASE_PATH: "/recipe-planner/",
-    // Tailscale terminates TLS before forwarding to this loopback-only process.
-    // The application must still recognize that public same-origin host.
-    PLANNER_ALLOWED_ORIGINS: `${TAILNET_ORIGIN},${TAILNET_ORIGIN}:${PORT}`,
-    PLANNER_DATA_DIR: DATA_ROOT,
-    PLANNER_CODEX_HOME: join(DEPLOY_ROOT, "agent"),
-    PLANNER_CODEX_CWD: APP_ROOT,
-  };
-  const variables = Object.entries(env).map(([key, value]) =>
-    `    <key>${escapeXml(key)}</key><string>${escapeXml(value)}</string>`).join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>${LABEL}</string>
-  <key>ProgramArguments</key><array><string>${escapeXml(node)}</string><string>scripts/start.mjs</string></array>
-  <key>WorkingDirectory</key><string>${escapeXml(APP_ROOT)}</string>
-  <key>EnvironmentVariables</key><dict>${variables}</dict>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>${escapeXml(join(DEPLOY_ROOT, "planner.log"))}</string>
-  <key>StandardErrorPath</key><string>${escapeXml(join(DEPLOY_ROOT, "planner.log"))}</string>
-</dict></plist>\n`;
-}
-
-if (!(await exists(join(ROOT, "dist")))) throw new Error("Build output is missing; run npm run build first.");
-if (!(await exists(join(DATA_ROOT, "planner.sqlite")))) throw new Error("Production planner data is missing.");
-if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("PLANNER_PORT is invalid.");
-
-await mkdir(BACKUP_ROOT, { recursive: true, mode: 0o700 });
-await mkdir(dirname(PLIST_PATH), { recursive: true, mode: 0o700 });
-await mkdir(join(DEPLOY_ROOT, "agent"), { recursive: true, mode: 0o700 });
-await validateProductionAgentSources(HOME);
-const dedicatedCodexConfig = await readFile(
-  join(ROOT, "deployment", "codex", "config.toml"),
-  "utf8",
-);
-await writeFile(join(DEPLOY_ROOT, "agent", "config.toml"), dedicatedCodexConfig, { mode: 0o600 });
-
-const deploymentId = `${new Date().toISOString().replaceAll(/[:.]/gu, "-")}-${randomUUID()}`;
-const backup = join(BACKUP_ROOT, deploymentId);
-const staging = join(DEPLOY_ROOT, `.app-staging-${deploymentId}`);
-let moved = false;
-try {
-  await cp(ROOT, staging, {
-    recursive: true,
-    filter(source) { return shouldStageApplicationPath(source, ROOT); },
+  await mkdir(servicePaths.agentRoot, { recursive: true, mode: 0o700 });
+  const readinessTimeoutMs = await disposableReadinessTimeout({
+    environment,
+    home,
+    label,
+    paths: releasePaths,
   });
-  if (!(await exists(join(staging, "package.json")))) {
-    throw new Error("Staged application is missing package.json.");
-  }
-  await run("npm", ["ci"], { cwd: staging });
-  await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
-  await waitForUnloaded();
-  if (await exists(APP_ROOT)) {
-    await chmod(APP_ROOT, 0o700);
-    await mkdir(backup, { recursive: true, mode: 0o700 });
-    await rename(APP_ROOT, join(backup, "app"));
-    moved = true;
-  }
-  await rename(staging, APP_ROOT);
-  await chmod(APP_ROOT, 0o700);
-  // These retained CODEX_HOME entries are stable links into the selected app.
-  // A release must never replace them with copied files or write through them.
-  await validateProductionAgentSources(HOME);
-  await writeFile(PLIST_PATH, plist(process.execPath), { mode: 0o600 });
-  await run("launchctl", ["bootstrap", DOMAIN, PLIST_PATH]);
-  await waitForHealthy();
-  // Readiness probes intentionally keep HTTP connections alive. The
-  // LaunchAgent owns the service now, so end this one-shot deploy process
-  // explicitly instead of letting those idle client sockets hold it open.
-  process.exit(0);
-} catch (error) {
-  console.error(
-    `Planner deployment failed: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  await run("launchctl", ["bootout", TARGET]).catch(() => undefined);
-  await rm(APP_ROOT, { recursive: true, force: true }).catch(() => undefined);
-  if (moved) await rename(join(backup, "app"), APP_ROOT).catch(() => undefined);
-  await rm(staging, { recursive: true, force: true }).catch(() => undefined);
-  throw error;
+  const productionService = createProductionService({
+    paths: servicePaths,
+    port,
+    privateWebPort,
+    tailnetOrigin: environment.PLANNER_TAILNET_ORIGIN,
+  });
+  const service = {
+    async quiesce() {
+      await productionService.bootout().catch(() => undefined);
+      await productionService.waitForAbsent().catch(() => undefined);
+      const [loaded, portQuiet, runtimeOwnerQuiet] = await Promise.all([
+        productionService.isLoaded().catch(() => true),
+        productionService.isPortQuiet().catch(() => false),
+        productionService.isRuntimeOwnerQuiet().catch(() => false),
+      ]);
+      return { unloaded: !loaded, portQuiet: portQuiet && runtimeOwnerQuiet };
+    },
+    async bootstrap() {
+      await productionService.bootstrap();
+      await productionService.waitForReady(readinessTimeoutMs);
+    },
+    ready() {
+      return productionService.probeReadiness();
+    },
+  };
+
+  const lifecycle = createProductionReleaseLifecycle({
+    home,
+    paths: releasePaths,
+    service,
+    async prepareCandidate(paths) {
+      await cp(candidateRoot, paths.staging, {
+        recursive: true,
+        filter(source) {
+          return shouldStageApplicationPath(source, candidateRoot);
+        },
+      });
+      if (!(await exists(join(paths.staging, "package.json")))) {
+        throw new Error("Staged application is missing package.json.");
+      }
+      await run("npm", ["ci"], { cwd: paths.staging, env: environment });
+    },
+    compatibilityPreflight(paths) {
+      return assertProductionDataCompatible(paths.data);
+    },
+    cleanupLegacyResidue: cleanupLegacyApplicationBackups,
+    filesystem: await disposableRenameFaultFilesystem({ environment, home, label, paths: releasePaths }),
+    async reconcile() {
+      await reconcileProductionAgentConfig(home);
+      await validateProductionAgentSources(home);
+      await productionService.writePlist();
+    },
+  });
+
+  await waitForDisposableReleaseProbeBarrier({
+    id: environment.PLANNER_PROBE_PROMOTION_BARRIER,
+    operation: "promotion",
+    home,
+    label,
+    paths: releasePaths,
+  });
+  await lifecycle.promote();
+  console.log("Planner promotion selected a ready candidate; app.previous remains recoverable.");
 }

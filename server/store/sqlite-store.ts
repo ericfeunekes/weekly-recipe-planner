@@ -14,7 +14,6 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -64,64 +63,15 @@ import type {
   PlannerToolCallReservation,
   PlannerToolCallReservationDecision,
 } from "../application/ports.ts";
+import {
+  assertPlannerSchemaContract,
+  CURRENT_SCHEMA_VERSION,
+  PLANNER_SCHEMA_MIGRATIONS,
+  type PlannerSchemaObject,
+} from "./schema-contract.ts";
 
-const CURRENT_SCHEMA_VERSION = 9;
 const DEFAULT_DATABASE_NAME = "planner.sqlite";
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
-const MIGRATIONS = [
-  {
-    version: 1,
-    path: fileURLToPath(new URL("migrations/001-initial.sql", import.meta.url)),
-  },
-  {
-    version: 2,
-    path: fileURLToPath(
-      new URL("migrations/002-planner-operations-and-provenance.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 3,
-    path: fileURLToPath(
-      new URL("migrations/003-embedded-tool-lifecycle.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 4,
-    path: fileURLToPath(
-      new URL("migrations/004-sourced-recipe-intake.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 5,
-    path: fileURLToPath(
-      new URL("migrations/005-research-candidate-digest.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 6,
-    path: fileURLToPath(
-      new URL("migrations/006-native-codex-threads.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 7,
-    path: fileURLToPath(
-      new URL("migrations/007-native-codex-admissions.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 8,
-    path: fileURLToPath(
-      new URL("migrations/008-native-codex-mutation-receipts.sql", import.meta.url),
-    ),
-  },
-  {
-    version: 9,
-    path: fileURLToPath(
-      new URL("migrations/009-prep-combined-steps.sql", import.meta.url),
-    ),
-  },
-] as const;
 
 export type SqliteTransaction = DatabaseSync;
 
@@ -138,6 +88,8 @@ export type VerifiedPlannerSnapshotInspection = Readonly<{
   sha256: string;
   quickCheck: "ok";
   schemaVersion: number;
+  migrationVersions: readonly number[];
+  schemaObjects: readonly PlannerSchemaObject[];
   initialized: boolean;
   workspaceSchemaVersion: number | null;
   plannerVersion: number | null;
@@ -705,20 +657,55 @@ function hasTable(database: DatabaseSync, table: string): boolean {
   );
 }
 
-function readCurrentMigrationVersion(database: DatabaseSync): number {
-  const currentVersion = hasTable(database, "schema_migrations")
-    ? Number(
-        (
-          database.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get() as {
-            version: number;
-          }
-        ).version,
-      )
-    : 0;
-  if (!Number.isSafeInteger(currentVersion) || currentVersion < 0) {
-    throw new PlannerStoreError("MIGRATION_FAILED", "Database migration version is invalid.");
+function readAppliedMigrationVersions(database: DatabaseSync): number[] {
+  if (!hasTable(database, "schema_migrations")) return [];
+  const versions = database
+    .prepare("SELECT version FROM schema_migrations ORDER BY version")
+    .all()
+    .map((row) => Number((row as { version: number }).version));
+  for (const [index, version] of versions.entries()) {
+    if (!Number.isSafeInteger(version) || version !== index + 1) {
+      throw new PlannerStoreError(
+        "MIGRATION_FAILED",
+        `Database migration ledger is not contiguous at version ${index + 1}.`,
+      );
+    }
   }
-  return currentVersion;
+  return versions;
+}
+
+function readCurrentMigrationVersion(database: DatabaseSync): number {
+  if (hasTable(database, "schema_migrations")) {
+    const maximum = Number(
+      (database.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get() as {
+        version: number;
+      }).version,
+    );
+    if (!Number.isSafeInteger(maximum) || maximum < 0) {
+      throw new PlannerStoreError("MIGRATION_FAILED", "Database migration version is invalid.");
+    }
+    // Preserve the more actionable forward-incompatibility result even when a
+    // newer implementation uses a ledger shape this binary cannot interpret.
+    if (maximum > CURRENT_SCHEMA_VERSION) return maximum;
+  }
+  return readAppliedMigrationVersions(database).at(-1) ?? 0;
+}
+
+function readPlannerSchemaObjects(database: DatabaseSync): PlannerSchemaObject[] {
+  return database
+    .prepare(
+      "SELECT type, name FROM sqlite_master " +
+      "WHERE type IN ('index', 'table', 'trigger') AND name NOT LIKE 'sqlite_%' " +
+      "ORDER BY type, name",
+    )
+    .all()
+    .map((row) => {
+      const { type, name } = row as { type: string; name: string };
+      if (type !== "index" && type !== "table" && type !== "trigger") {
+        throw new PlannerStoreError("STORE_CORRUPT", "The SQLite schema object type is invalid.");
+      }
+      return Object.freeze({ type, name });
+    });
 }
 
 function assertSupportedMigrationVersion(currentVersion: number): void {
@@ -738,12 +725,16 @@ function inspectPlannerSnapshot(
   const identityBefore = readCanonicalStoreFileIdentity(canonicalFilename);
   const database = new DatabaseSync(canonicalFilename, { readOnly: true });
   let schemaVersion = 0;
+  let migrationVersions: readonly number[] = [];
+  let schemaObjects: readonly PlannerSchemaObject[] = [];
   let initialized = false;
   let workspaceSchemaVersion: number | null = null;
   let plannerVersion: number | null = null;
   try {
     quickCheck(database);
-    schemaVersion = readCurrentMigrationVersion(database);
+    migrationVersions = readAppliedMigrationVersions(database);
+    schemaVersion = migrationVersions.at(-1) ?? 0;
+    schemaObjects = readPlannerSchemaObjects(database);
     if (hasTable(database, "workspace")) {
       let row: { schema_version: number; planner_version: number } | undefined;
       try {
@@ -803,6 +794,8 @@ function inspectPlannerSnapshot(
     sha256: hashed.sha256,
     quickCheck: "ok" as const,
     schemaVersion,
+    migrationVersions,
+    schemaObjects,
     initialized,
     workspaceSchemaVersion,
     plannerVersion,
@@ -1037,7 +1030,7 @@ function createVerifiedMigrationBackup(
 
 function applyMigrations(database: DatabaseSync, startingVersion: number): void {
   let currentVersion = startingVersion;
-  for (const migration of MIGRATIONS) {
+  for (const migration of PLANNER_SCHEMA_MIGRATIONS) {
     if (migration.version <= currentVersion) continue;
     if (migration.version !== currentVersion + 1) {
       throw new PlannerStoreError(
@@ -1897,6 +1890,7 @@ export class SqlitePlannerStore {
 }
 
 export function openPlannerStore(options: OpenPlannerStoreOptions = {}): SqlitePlannerStore {
+  assertPlannerSchemaContract();
   const filename = resolveDatabaseFilename(options);
   const isMemory = filename === ":memory:";
   const existingFileNeedsBackup = !isMemory &&
