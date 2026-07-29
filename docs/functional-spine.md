@@ -378,19 +378,21 @@ The current contract is:
   and a ready service.
 - **RR2 — One release at a time.** Promotion is single-owner. A second release
   attempt fails before it can unload, rename, migrate, or select anything.
-- **RR3 — Prove the selected candidate.** A promotion succeeds only after the
-  application selected by that attempt starts and passes readiness for
-  initialized application/store state, the supported native Codex compatibility
-  state, Global UDS readiness, and the expected production route. A readiness
-  observation from the previously running app does not prove the replacement.
-  Persistent revision, digest, manifest, or receipt identity is not required.
-- **RR4 — Match household routing.** Release-candidate proof uses the real
-  `/recipe-planner/` mount and front-controller topology. Mounted API, assets,
-  favicon, and social metadata must resolve before release.
-- **RR5 — Keep proof truthful.** The release entrypoint runs the documented
-  deterministic and release-candidate gates. Missing commands, stale fixtures,
-  empty selections, and tests that duplicate a producer's wrong constant do not
-  count as green proof.
+- **RR3 — Prove the exact selected candidate.** The exact committed `main`
+  candidate selected by `make promote` must be proven structurally and
+  causally: its build, runtime selection, and ready service are the same
+  candidate. A readiness observation from the previously running app does not
+  prove the replacement. This requires no persistent revision, digest,
+  manifest, or receipt identity.
+- **RR4 — Keep the production path in agreement.** Candidate build, runtime,
+  service, and front-controller paths agree on the real `/recipe-planner/`
+  mount. Mounted API, assets, favicon, and public-origin social metadata must
+  resolve before release.
+- **RR5 — Keep lifecycle and profile gates truthful.** The release entrypoint
+  runs the documented deterministic, lifecycle, and disposable
+  production-profile gates. Missing commands, stale fixtures, empty selections,
+  and tests that duplicate a producer's wrong constant do not count as green
+  proof.
 - **RR6 — Protect and bound retained state.** The household SQLite authority is
   never copied, replaced, restored, migrated, or pruned by application
   deployment. The selected app directory and its immediately previous app

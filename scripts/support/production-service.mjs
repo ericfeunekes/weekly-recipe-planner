@@ -7,6 +7,15 @@ import { dirname, join, resolve } from "node:path";
 
 import { isProductionHealthReady } from "./production-readiness.mjs";
 
+const PRODUCTION_PUBLIC_BASE_PATH = "/recipe-planner/";
+
+function assertProductionPublicBasePath(publicBasePath) {
+  if (publicBasePath !== PRODUCTION_PUBLIC_BASE_PATH) {
+    throw new TypeError(`PLANNER_PUBLIC_BASE_PATH must be ${PRODUCTION_PUBLIC_BASE_PATH}.`);
+  }
+  return publicBasePath;
+}
+
 function escapeXml(value) {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -112,19 +121,21 @@ export function renderProductionServicePlist({
   port = Number(process.env.PLANNER_PORT ?? 8642),
   privateWebPort = Number(process.env.PLANNER_PRIVATE_WEB_PORT ?? 3002),
   tailnetOrigin = process.env.PLANNER_TAILNET_ORIGIN ?? "https://robie-imac.tailae8a7b.ts.net",
+  publicBasePath = process.env.PLANNER_PUBLIC_BASE_PATH ?? PRODUCTION_PUBLIC_BASE_PATH,
 } = {}) {
   if (!paths || !Number.isInteger(port) || port < 1024 || port > 65_535 ||
       !Number.isInteger(privateWebPort) || privateWebPort < 1024 || privateWebPort > 65_535 ||
       privateWebPort === port) {
     throw new TypeError("Production service rendering requires paths and distinct valid non-privileged public and private ports.");
   }
+  assertProductionPublicBasePath(publicBasePath);
   const environment = {
     HOME: paths.home,
     PATH: `${dirname(node)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     PLANNER_HOST: "127.0.0.1",
     PLANNER_PORT: String(port),
     PLANNER_PRIVATE_WEB_PORT: String(privateWebPort),
-    PLANNER_PUBLIC_BASE_PATH: "/recipe-planner/",
+    PLANNER_PUBLIC_BASE_PATH: publicBasePath,
     PLANNER_ALLOWED_ORIGINS: `${tailnetOrigin},${tailnetOrigin}:${port}`,
     PLANNER_DATA_DIR: paths.dataRoot,
     PLANNER_CODEX_HOME: paths.agentRoot,
@@ -154,6 +165,9 @@ export function createProductionService(options = {}) {
   const probeTimeoutMs = options.probeTimeoutMs ?? 2_000;
   const runCommand = options.runCommand ?? run;
   const readJson = options.readJson ?? freshJson;
+  const publicBasePath = assertProductionPublicBasePath(
+    options.publicBasePath ?? process.env.PLANNER_PUBLIC_BASE_PATH ?? PRODUCTION_PUBLIC_BASE_PATH,
+  );
   let lastReadinessFailure = "not probed";
 
   async function isLoaded() {
@@ -176,15 +190,22 @@ export function createProductionService(options = {}) {
 
   async function writePlist() {
     await mkdir(dirname(paths.plistPath), { recursive: true, mode: 0o700 });
-    await writeFile(paths.plistPath, renderProductionServicePlist({ paths, node, port, privateWebPort, tailnetOrigin: options.tailnetOrigin }), { mode: 0o600 });
+    await writeFile(paths.plistPath, renderProductionServicePlist({
+      paths,
+      node,
+      port,
+      privateWebPort,
+      tailnetOrigin: options.tailnetOrigin,
+      publicBasePath,
+    }), { mode: 0o600 });
   }
   async function probeReadiness() {
     if (!(await isLoaded())) return false;
       try {
         const [health, workspace, codexThreads] = await Promise.all([
-          readJson(`http://127.0.0.1:${port}/recipe-planner/api/health`, probeTimeoutMs),
-          readJson(`http://127.0.0.1:${port}/recipe-planner/api/workspace`, probeTimeoutMs),
-          readJson(`http://127.0.0.1:${port}/recipe-planner/api/codex/threads`, probeTimeoutMs),
+          readJson(`http://127.0.0.1:${port}${publicBasePath}api/health`, probeTimeoutMs),
+          readJson(`http://127.0.0.1:${port}${publicBasePath}api/workspace`, probeTimeoutMs),
+          readJson(`http://127.0.0.1:${port}${publicBasePath}api/codex/threads`, probeTimeoutMs),
         ]);
         const ready = health.status >= 200 && health.status < 300 &&
           workspace.status >= 200 && workspace.status < 300 &&

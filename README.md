@@ -43,7 +43,8 @@ authority while retaining the planner effect ledger.
 Development and production have deliberately different HTTP topology. In
 development, Vinext is browser-facing and proxies `/api/*` to the authority. In
 production, the authority is the browser-facing front controller: it handles
-`/api/*` and proxies all other requests to a private Vinext process. See
+`/recipe-planner/api/*`, proxies `/recipe-planner/*` to a private Vinext
+process, and rejects unmounted root aliases. See
 [the family-readiness plan](docs/family-readiness-remediation-plan.md) and
 [functional spine](docs/functional-spine.md). The current embedded-agent target
 is defined by [the Codex planner runtime requirements](docs/codex-agent-runtime-follow-up-phase.md):
@@ -99,10 +100,12 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:3000`; this is the only browser-facing production
-origin. The front controller keeps Vinext private at `127.0.0.1:3002` and
-serves health at `http://127.0.0.1:3000/api/health`. `PLANNER_PORT` changes the
-public port, `PLANNER_HOST` may select `127.0.0.1` or `::1`, and
+Open `http://127.0.0.1:3000/recipe-planner/`; this is the only browser-facing
+production mount. The front controller keeps Vinext private at
+`127.0.0.1:3002`, serves health at
+`http://127.0.0.1:3000/recipe-planner/api/health`, and rejects unmounted root
+web and API routes. `PLANNER_PORT` changes the public port, `PLANNER_HOST` may
+select `127.0.0.1` or `::1`, and
 `PLANNER_DATA_DIR` changes the default `.planner-data` directory. All listeners
 remain loopback-only.
 

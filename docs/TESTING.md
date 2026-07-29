@@ -22,12 +22,12 @@ are satisfied.
 | Merge | Production-profile routing | The production build and front controller are exercised at `/recipe-planner/`; API, workspace, JavaScript, CSS, favicon, and social-preview metadata resolve under the mounted profile. |
 | Merge | Gate integrity | The documented release entrypoint runs typecheck, production build, lint, deterministic tests, and the release lifecycle matrix. A missing script, empty test selection, or shared wrong constant is a failure. |
 | RC | Disposable installed candidate | The candidate produced by the release entrypoint is installed under a temporary home with disposable SQLite data, started through the production front controller, and passes mounted health/workspace plus the representative browser smoke. |
-| QA | Household route observation | After an authorized production release, the mounted household URL is visibly checked from a real browser and the prior release remains recoverable. See `docs/QA.md`. |
+| QA | Disposable production-profile observation | A disposable installed candidate and SQLite profile are visibly checked through the production front controller at `/recipe-planner/`; mounted health, workspace, assets, favicon, social preview, and one narrow active-week dinner journey have authoritative readback. |
 
-The merge and RC cells must not operate on `$HOME/meal-planner` or the family
-database. Production observation is read-only except for an explicitly chosen,
-reversible household action. Release code changes are incomplete if the
-disposable installed-candidate cell cannot run.
+The merge, RC, and QA cells must not operate on `$HOME/meal-planner` or the
+family database. Household production observation is separately authorized and
+defined in `docs/QA.md`; it is not a release-code completion row. Release code
+changes are incomplete if the disposable installed-candidate cell cannot run.
 
 ### Schema-changing merge and release boundary
 
@@ -81,8 +81,9 @@ Before the controlled dinner pilot or broad family-ready claim:
   independent of per-worktree mise trust state. The current Cloudflare Vite
   plugin imports `node:module.registerHooks`, which is unavailable in Node
   22.13.0; 22.15.0 is therefore the proven floor.
-- Start both `dev` and local `start`; call `/api/health` through each public web
-  origin.
+- Start both `dev` and local `start`; call development `/api/health` and
+  production `/recipe-planner/api/health` through their respective public web
+  origins, and prove production rejects the root alias.
 - Run two independent Playwright browser contexts through conflict recovery,
   restart, offline/read-only, the exact dinner journey, mobile dialog behavior,
   and representative navigation.

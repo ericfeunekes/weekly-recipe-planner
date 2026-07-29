@@ -45,9 +45,12 @@ test("production service renders a stable-app plist and rejects a stale keep-ali
   const plist = renderProductionServicePlist({ paths, node: "/usr/local/bin/node", port: 9876, privateWebPort: 9877 });
   assert.ok(plist.includes(`<key>WorkingDirectory</key><string>${paths.appRoot}</string>`));
   assert.match(plist, /<key>PLANNER_PRIVATE_WEB_PORT<\/key><string>9877<\/string>/u);
+  assert.match(plist, /<key>PLANNER_PUBLIC_BASE_PATH<\/key><string>\/recipe-planner\/<\/string>/u);
   assert.doesNotMatch(plist, /app\.previous|activation|sha256/u);
   assert.throws(() => renderProductionServicePlist({ paths, port: 9876, privateWebPort: 9876 }), /distinct valid/u);
   assert.throws(() => renderProductionServicePlist({ paths, port: 9876, privateWebPort: 70000 }), /distinct valid/u);
+  assert.throws(() => renderProductionServicePlist({ paths, publicBasePath: "/" }), /PLANNER_PUBLIC_BASE_PATH/u);
+  assert.throws(() => createProductionService({ paths, publicBasePath: "/planner/" }), /PLANNER_PUBLIC_BASE_PATH/u);
 
   const observedPaths = [];
   const server = createServer((request, response) => {
@@ -106,7 +109,7 @@ test("production service renders a stable-app plist and rejects a stale keep-ali
   const heldAgent = new Agent({ keepAlive: true });
   t.after(() => heldAgent.destroy());
   const heldConnection = await new Promise((resolveHeld, rejectHeld) => {
-    const request = get(`http://127.0.0.1:${port}/api/health`, {
+    const request = get(`http://127.0.0.1:${port}/recipe-planner/api/health`, {
       agent: heldAgent,
     }, (response) => {
       response.resume();

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { resolvePublicPath } from "./public-path.ts";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -11,15 +12,18 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol =
     requestHeaders.get("x-forwarded-proto") ??
     (host.startsWith("localhost") ? "http" : "https");
-  const imageUrl = `${protocol}://${host}/og.png`;
+  const publicBasePath = process.env.PLANNER_PUBLIC_BASE_PATH ?? "/";
+  const faviconPath = resolvePublicPath("/favicon.svg", publicBasePath);
+  const imagePath = resolvePublicPath("/og.png", publicBasePath);
+  const imageUrl = `${protocol}://${host}${imagePath}`;
 
   return {
     title: "Weekly Recipe Planner",
     description:
       "A shared household planner for meals, prep, groceries, leftovers, and family feedback.",
     icons: {
-      icon: "/favicon.svg",
-      apple: "/favicon.svg",
+      icon: faviconPath,
+      apple: faviconPath,
     },
     openGraph: {
       title: "Weekly Recipe Planner",

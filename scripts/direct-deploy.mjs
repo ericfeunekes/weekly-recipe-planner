@@ -81,6 +81,7 @@ export async function deployProductionCandidate({
   const label = environment.PLANNER_LAUNCHD_LABEL ?? "com.ericfeunekes.meal-planner";
   const port = Number(environment.PLANNER_PORT ?? 8642);
   const privateWebPort = Number(environment.PLANNER_PRIVATE_WEB_PORT ?? 3002);
+  const publicBasePath = environment.PLANNER_PUBLIC_BASE_PATH ?? "/recipe-planner/";
   const releasePaths = productionReleasePaths(home);
   const servicePaths = productionServicePaths({ home, label });
 
@@ -112,6 +113,7 @@ export async function deployProductionCandidate({
     port,
     privateWebPort,
     tailnetOrigin: environment.PLANNER_TAILNET_ORIGIN,
+    publicBasePath,
   });
   const service = {
     async quiesce() {

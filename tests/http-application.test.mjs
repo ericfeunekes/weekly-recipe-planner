@@ -630,12 +630,15 @@ test("service failures retain field errors and authoritative workspace readback"
   });
 });
 
-test("front controller keeps API local, accepts its mounted API alias, and proxies the web surface", async (t) => {
+test("front controller serves only its configured mount while keeping API local and web private", async (t) => {
   let upstreamRequestHeaders;
   let upstreamRequestPath;
+  const upstreamPaths = [];
+  const apiPaths = [];
   const upstream = createServer((request, response) => {
     upstreamRequestHeaders = request.headers;
     upstreamRequestPath = request.url;
+    upstreamPaths.push(request.url);
     response.writeHead(200, {
       "Content-Type": "text/plain",
       Connection: "x-upstream-hop",
@@ -652,6 +655,7 @@ test("front controller keeps API local, accepts its mounted API alias, and proxi
 
   const controller = createFrontController({
     apiHandler: (request, response) => {
+      apiPaths.push(request.url);
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ surface: "api", path: request.url }));
     },
@@ -666,22 +670,42 @@ test("front controller keeps API local, accepts its mounted API alias, and proxi
   const web = await rawHttpRequest({
       hostname: "127.0.0.1",
       port: address.port,
-      path: "/",
+      path: "/recipe-planner/",
       headers: {
         Connection: "x-client-hop",
         "X-Client-Hop": "must-not-forward",
+        Host: "planner.example.test",
       },
     });
   assert.equal(web.text, "web surface");
   assert.equal(upstreamRequestHeaders["x-client-hop"], undefined);
+  assert.equal(upstreamRequestHeaders.host, `127.0.0.1:${upstreamAddress.port}`);
+  assert.equal(upstreamRequestHeaders["x-forwarded-host"], "planner.example.test");
+  assert.equal(upstreamRequestHeaders["x-forwarded-proto"], "http");
   assert.equal(web.headers["x-upstream-hop"], undefined);
   const mountedAsset = await fetch(`${baseUrl}/recipe-planner/assets/app.js`);
   assert.equal(await mountedAsset.text(), "web surface");
   assert.equal(upstreamRequestPath, "/assets/app.js");
-  assert.deepEqual(await (await fetch(`${baseUrl}/api/health`)).json(), {
-    surface: "api", path: "/api/health",
+  await rawHttpRequest({
+    hostname: "127.0.0.1",
+    port: address.port,
+    path: "/recipe-planner/",
+    headers: {
+      Host: "planner.example.test",
+      "X-Forwarded-Host": "external.example.test",
+      "X-Forwarded-Proto": "https",
+    },
   });
+  assert.equal(upstreamRequestHeaders["x-forwarded-host"], "external.example.test");
+  assert.equal(upstreamRequestHeaders["x-forwarded-proto"], "https");
   assert.deepEqual(await (await fetch(`${baseUrl}/recipe-planner/api/health?ready=1`)).json(), {
     surface: "api", path: "/api/health?ready=1",
   });
+  const beforeRejectedUpstream = upstreamPaths.length;
+  const beforeRejectedApi = apiPaths.length;
+  assert.equal((await fetch(`${baseUrl}/`)).status, 404);
+  assert.equal((await fetch(`${baseUrl}/api/health`)).status, 404);
+  assert.equal((await fetch(`${baseUrl}/recipe-planner-other`)).status, 404);
+  assert.equal(upstreamPaths.length, beforeRejectedUpstream, "unmounted paths never reach the private web process");
+  assert.equal(apiPaths.length, beforeRejectedApi, "unmounted API paths never reach the local API handler");
 });
