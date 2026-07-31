@@ -29,6 +29,20 @@ function forwardedHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   return forwarded;
 }
 
+function upstreamHeaders(request: IncomingMessage, webOrigin: URL): IncomingHttpHeaders {
+  const headers = forwardedHeaders(request.headers);
+  if (headers["x-forwarded-host"] === undefined && request.headers.host !== undefined) {
+    headers["x-forwarded-host"] = request.headers.host;
+  }
+  if (headers["x-forwarded-proto"] === undefined) {
+    headers["x-forwarded-proto"] = (request.socket as { encrypted?: boolean }).encrypted === true
+      ? "https"
+      : "http";
+  }
+  headers.host = webOrigin.host;
+  return headers;
+}
+
 export type HttpHandler = (
   request: IncomingMessage,
   response: ServerResponse,
@@ -65,6 +79,14 @@ export function createFrontController({
       (url.pathname === mountedPathPrefix || url.pathname.startsWith(`${mountedPathPrefix}/`))
         ? `${url.pathname.slice(mountedPathPrefix.length) || "/"}${url.search}`
         : null;
+    if (mountedPathPrefix !== null && mountedRequestPath === null) {
+      response.writeHead(404, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      response.end("Not found.");
+      return;
+    }
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       await apiHandler(request, response);
       return;
@@ -90,7 +112,7 @@ export function createFrontController({
         port: webOrigin.port,
         method: request.method,
         path: mountedRequestPath ?? request.url,
-        headers: { ...forwardedHeaders(request.headers), host: webOrigin.host },
+        headers: upstreamHeaders(request, webOrigin),
         timeout: proxyTimeoutMs,
       },
       (upstreamResponse) => {

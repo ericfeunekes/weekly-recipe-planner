@@ -65,7 +65,7 @@ No prior remediation plan exists for this surface, so the recurrence/root-closur
 
 Build one local modular-monolith application server backed by one SQLite database. Keep the pure typed-command reducer pattern and compatible transition logic, but refactor the state/command vocabulary for canonical weeks, ISO dates, slots, and server-owned IDs. Remove authoritative state, history, undo, transcript, and Codex command application from React.
 
-All application processes remain loopback-only. In development, Vite is the browser-facing origin and proxies `/api/*` to the application/API process. In local production, the Node application process is the browser-facing front controller: it handles `/api/*` itself and reverse-proxies every other request to an internal `vinext start` web process. Tailscale Serve can later expose that one composed origin without binding the Codex app-server transport directly to the LAN. This plan proves shared state only among clients that reach that origin; remote-device reachability remains a deployment claim.
+All application processes remain loopback-only. In development, Vite is the browser-facing origin and proxies `/api/*` to the application/API process. In local production, the Node application process is the browser-facing front controller: it handles `/recipe-planner/api/*`, reverse-proxies `/recipe-planner/*` to an internal `vinext start` web process, and rejects unmounted root aliases. Tailscale Serve can later expose that one composed mount without binding the Codex app-server transport directly to the LAN. This plan proves shared state only among clients that reach that origin; remote-device reachability remains a deployment claim.
 
 ### Architecture Decisions
 
@@ -108,7 +108,7 @@ The implementation may combine small files, but these ownership boundaries must 
 The shipped runtime topology is part of the change:
 
 - `scripts/dev.mjs` launches the application/API process plus `vinext dev`, propagates shutdown, and fails when either exits. Vite `server.proxy` handles `/api/*` only in this development topology.
-- A matching `scripts/start.mjs` launches `vinext start` on an internal loopback port and the Node application/front-controller process on the public loopback port. The front controller handles `/api/*` and reverse-proxies all other HTTP requests to Vinext. It owns real forwarding/error/timeout behavior; the plan does not assume Vite `server.proxy` works in production.
+- A matching `scripts/start.mjs` launches `vinext start` on an internal loopback port and the Node application/front-controller process on the public loopback port. The front controller handles `/recipe-planner/api/*`, reverse-proxies only `/recipe-planner/*` to Vinext, and rejects unmounted paths. It owns real forwarding/error/timeout behavior; the plan does not assume Vite `server.proxy` works in production.
 - `server/index.mjs` owns startup, migrations, readiness, front-controller HTTP shutdown, SQLite, and composition of planner/chat/Codex services. The browser never calls the internal Vinext or Codex transport ports directly.
 - Responsibilities currently in `bridge/server.mjs` are split explicitly: HTTP/origin validation moves to the API router, canonical prompt/output-schema work moves to chat/Codex services, and process transport remains in the Codex adapter. `bridge/validation.mjs` either becomes shared contract code or is removed after callers move.
 - `worker/index.ts` remains a web-only Vinext/Cloudflare entry and never owns household data. `build` may still build that web surface; local `start` must compose it with the Node authority. Cloud hosting is not the family runtime in this phase.
@@ -394,7 +394,7 @@ Second-pass transcript, scope/simplicity, and architecture/proof reviewers signe
 - Run schema migrations transactionally before accepting traffic. Schema `001` creates a new database and has nothing to back up. Starting with the first migration that can modify an existing database, take an online SQLite backup and verify it can be opened before migration.
 - Add schema-versioned JSON export before the broad family-ready gate, after durable household data exists. Never copy a live SQLite/WAL file directly. Automated retention belongs to the later installed-service/deployment lane.
 - Run SQLite `quick_check` at startup. On corruption, fail planner readiness visibly and preserve the file; never reseed automatically.
-- `/api/health` reports web/application/store readiness separately from optional Codex authentication. Planner operation remains available when ChatGPT is unavailable.
+- The canonical internal `/api/health` route reports web/application/store readiness separately from optional Codex authentication; production exposes it only as `/recipe-planner/api/health`. Planner operation remains available when ChatGPT is unavailable.
 - OS service supervision, Tailscale Serve configuration, TLS, ACLs, and remote-device smoke are deferred to the later deployment lane.
 
 ## Parallel Delivery Graph And Claim Gates
@@ -557,7 +557,7 @@ Do not re-invoke review until all of the following are true:
 - Every typed command has explicit OCC/idempotency behavior and validator/schema parity; toggle commands are gone.
 - The current reducer/state vocabulary has been refactored to canonical week/date/dinner-slot semantics, zero-or-one active week, server-materialized IDs, and exact instruction/prep-reference ownership.
 - SQLite schema `001`, startup integrity, exact v2 bootstrap, restart/interruption handling, and future-migration backup rule are implemented against a real file adapter and tested on Node 22.15.0.
-- `dev` and local `start` compose the web and application processes with their distinct proxy mechanisms; `/api/health` succeeds through each browser-facing origin; web-only build success is not mistaken for application readiness.
+- `dev` and local `start` compose the web and application processes with their distinct proxy mechanisms; development `/api/health` and production `/recipe-planner/api/health` succeed through their browser-facing origins while production rejects the root alias; web-only build success is not mistaken for application readiness.
 - The realistic-local HTTP race, atomic failure, retry, bootstrap, restart, timer, undo, offline, bounded-prompt, and chat lifecycle matrix is green.
 - Repo-owned Playwright tests prove two-context synchronization/conflict, the exact cross-recipe dinner journey, always-available chat semantics, mobile dialog focus, and representative navigation behavior.
 - README and functional requirements describe the server authority, race semantics, offline read-only behavior, latest-only undo, shared transcript, and deferred Tailscale boundary accurately.

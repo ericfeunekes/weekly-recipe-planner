@@ -11,9 +11,17 @@ import {
   assertCandidateEvidence,
   candidateIdentitySummary,
   copyCandidate,
+  installedPlaywrightExecutablePath,
+  parseProbeArguments,
   readCandidateGitIdentity,
 } from "../scripts/probe-release-lifecycle.mjs";
 import { createCodexRuntimeFixture } from "../scripts/support/codex-runtime-fixture.mjs";
+import {
+  createDisposableReleaseDatabase,
+  readDisposableReleaseDatabaseContract,
+} from "../server/store/disposable-release-fixture.ts";
+import { openPlannerStore } from "../server/store/sqlite-store.ts";
+import { validateHouseholdState } from "../lib/household-domain.ts";
 
 test("release-lifecycle QA profile refuses household-shaped targets", () => {
   const household = process.env.HOME;
@@ -26,7 +34,65 @@ test("release-lifecycle QA profile permits only its generated database location"
   assert.throws(() => assertDisposableProfile({ home: "/private/tmp/probe-home", label: "com.ericfeunekes.meal-planner.qa.test", database: "/private/tmp/other.sqlite" }), /database/u);
 });
 
-test("release candidate evidence identifies the committed copied snapshot", async (t) => {
+test("release-lifecycle CLI accepts only one documented proof mode", () => {
+  assert.deepEqual(parseProbeArguments([]), { realLaunchd: false, publicCommandRc: false });
+  assert.deepEqual(parseProbeArguments(["--real-launchd"]), { realLaunchd: true, publicCommandRc: false });
+  assert.deepEqual(parseProbeArguments(["--public-command-rc"]), { realLaunchd: false, publicCommandRc: true });
+  assert.throws(() => parseProbeArguments(["--unknown"]), /Usage/u);
+  assert.throws(() => parseProbeArguments(["--real-launchd", "--public-command-rc"]), /Usage/u);
+});
+
+test("release-lifecycle launches the exact installed browser across disposable HOME", async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), "planner-release-browser-home-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const executablePath = await installedPlaywrightExecutablePath();
+  const child = spawn(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    "const { chromium } = await import('@playwright/test'); const browser = await chromium.launch({ headless: true, executablePath: process.env.PLANNER_PROBE_PLAYWRIGHT_EXECUTABLE_PATH }); await browser.close();",
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: temporary,
+      PLANNER_PROBE_PLAYWRIGHT_EXECUTABLE_PATH: executablePath,
+    },
+    stdio: "inherit",
+  });
+  assert.equal(await new Promise((resolveExit, rejectExit) => {
+    child.once("error", rejectExit);
+    child.once("exit", resolveExit);
+  }), 0);
+});
+
+test("disposable release database contains one bounded active-week dinner", async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), "planner-release-dinner-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const database = join(temporary, "planner.sqlite");
+  createDisposableReleaseDatabase(database);
+  const contract = readDisposableReleaseDatabaseContract(database);
+  const state = JSON.parse(contract.workspace.state_json);
+  assert.equal(state.activeWeekId, "2026-07-20");
+  assert.deepEqual(state.weeks[0].data.meals.map(({ id }) => id), ["release-dinner"]);
+  assert.equal(state.weeks[0].data.meals[0].instructions.length, 1);
+  assert.equal(state.weeks[0].data.meals[0].ingredients.length, 1);
+  assert.deepEqual(validateHouseholdState(state), { ok: true });
+});
+
+test("disposable release database is already canonical when the production store opens it", async (t) => {
+  const temporary = await mkdtemp(join(tmpdir(), "planner-release-canonical-"));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const database = join(temporary, "planner.sqlite");
+  createDisposableReleaseDatabase(database);
+  const before = readDisposableReleaseDatabaseContract(database);
+
+  const store = openPlannerStore({ filename: database });
+  store.close();
+
+  assert.deepEqual(readDisposableReleaseDatabaseContract(database), before);
+});
+
+test("release candidate evidence identifies the pinned clean clone", async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), "planner-candidate-identity-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const candidate = join(temporary, "candidate");
@@ -35,10 +101,11 @@ test("release candidate evidence identifies the committed copied snapshot", asyn
   const identity = await readCandidateGitIdentity(candidate);
 
   assert.match(identity.commit, /^[0-9a-f]{40}$/u);
-  assert.match(identity.tree, /^[0-9a-f]{40}$/u);
+  assert.equal(identity.clean, true);
+  assert.equal(identity.headEqualsMain, true);
   assert.deepEqual(candidateIdentitySummary(identity), [
     `- candidate commit: ${identity.commit}`,
-    `- candidate tree: ${identity.tree}`,
+    "- candidate clean HEAD equals local main: PASS",
   ]);
   const summary = join(temporary, "summary.md");
   await writeFile(summary, `${candidateIdentitySummary(identity).join("\n")}\n`);

@@ -10,8 +10,12 @@ async function render() {
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
+    new Request("https://private-web-origin.invalid/", {
+      headers: {
+        accept: "text/html",
+        "x-forwarded-host": "planner.example.test",
+        "x-forwarded-proto": "https",
+      },
     }),
     {
       ASSETS: {
@@ -25,7 +29,7 @@ async function render() {
   );
 }
 
-test("server-renders the shared planner loading surface", async () => {
+test("fresh mounted build renders public-origin metadata and the shared planner loading surface", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -34,7 +38,9 @@ test("server-renders the shared planner loading surface", async () => {
   assert.match(html, /<title>Weekly Recipe Planner<\/title>/i);
   assert.match(html, /Opening the shared planner/);
   assert.match(html, /Reading the latest household workspace/);
-  assert.match(html, /http:\/\/localhost:3001\/og\.png/);
+  assert.match(html, /href="\/recipe-planner\/favicon\.svg"/);
+  assert.match(html, /https:\/\/planner\.example\.test\/recipe-planner\/og\.png/);
+  assert.doesNotMatch(html, /private-web-origin\.invalid|localhost:3001/);
   assert.doesNotMatch(
     html,
     /Harissa chicken traybake|Miso salmon rice bowls|codex-preview|Your site is taking shape|react-loading-skeleton/i,
@@ -139,6 +145,8 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(layout, /shared household planner/i);
   assert.match(layout, /images: \[imageUrl\]/);
   assert.match(layout, /requestHeaders\.get\("x-forwarded-host"\)/);
+  assert.match(layout, /resolvePublicPath\("\/favicon\.svg", publicBasePath\)/);
+  assert.match(layout, /resolvePublicPath\("\/og\.png", publicBasePath\)/);
   assert.doesNotMatch(layout, /next\/font|Geist|antialiased/);
   assert.match(styles, /--muted: #52605d/);
   assert.match(styles, /@import "tailwindcss\/theme\.css" layer\(theme\)/);

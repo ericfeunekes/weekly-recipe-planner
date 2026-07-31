@@ -21,11 +21,16 @@ import { acquireRuntimeOwnershipLease } from "./support/runtime-ownership.mjs";
 const home = resolve(process.env.HOME ?? homedir());
 const label = process.env.PLANNER_LAUNCHD_LABEL ?? "com.ericfeunekes.meal-planner";
 const port = Number(process.env.PLANNER_PORT ?? 8642);
+const privateWebPort = Number(process.env.PLANNER_PRIVATE_WEB_PORT ?? 3002);
+const publicBasePath = process.env.PLANNER_PUBLIC_BASE_PATH ?? "/recipe-planner/";
 const releasePaths = productionReleasePaths(home);
 const servicePaths = productionServicePaths({ home, label });
 
 if (!Number.isInteger(port) || port < 1024 || port > 65_535) {
   throw new TypeError("PLANNER_PORT is invalid.");
+}
+if (!Number.isInteger(privateWebPort) || privateWebPort < 1024 || privateWebPort > 65_535 || privateWebPort === port) {
+  throw new TypeError("PLANNER_PRIVATE_WEB_PORT is invalid or conflicts with PLANNER_PORT.");
 }
 if (servicePaths.deployRoot !== releasePaths.deployRoot || servicePaths.appRoot !== releasePaths.app) {
   throw new TypeError("Production release and service paths disagree.");
@@ -39,7 +44,13 @@ const recoveryProbe = await waitForDisposableReleaseProbeBarrier({
   label,
   paths: releasePaths,
 });
-const productionService = createProductionService({ paths: servicePaths, port });
+const productionService = createProductionService({
+  paths: servicePaths,
+  port,
+  privateWebPort,
+  tailnetOrigin: process.env.PLANNER_TAILNET_ORIGIN,
+  publicBasePath,
+});
 const service = {
   async quiesce() {
     await productionService.bootout().catch(() => undefined);
