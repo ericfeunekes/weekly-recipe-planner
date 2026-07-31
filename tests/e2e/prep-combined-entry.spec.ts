@@ -96,6 +96,11 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   const combined = page.getByTestId("prep-combined-step");
   await expect(combined).toHaveCount(1);
   await expect(page.getByTestId("prep-session-step")).toHaveCount(1);
+  await expect(combined).toContainText("Combined prep");
+  await expect(combined).toContainText("Glaze the salmon and roast until just cooked.");
+  await expect(combined).toContainText("Roast the chicken, peppers, and chickpeas until cooked through.");
+  await expect(combined).toContainText("680 g salmon");
+  await expect(combined).toContainText("2 red peppers");
   await combined.getByRole("checkbox", { name: "Complete combined prep batch" }).click();
   await expect(combined.getByRole("checkbox", { name: "Reopen combined prep batch" })).toBeChecked();
   await expect(combined).toContainText("Prepared in batch");
@@ -107,6 +112,8 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await page.getByRole("button", { name: "Prep", exact: true }).click();
   await sunday.click();
   await expect(page.getByTestId("prep-combined-step")).toContainText("Prepared in batch");
+  await expect(page.getByTestId("prep-combined-step")).toContainText("Glaze the salmon and roast until just cooked.");
+  await expect(page.getByTestId("prep-combined-step")).toContainText("Roast the chicken, peppers, and chickpeas until cooked through.");
 
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const ownedSources = page.getByRole("dialog", { name: "Recipe instructions" });
@@ -151,12 +158,23 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   const reviewBatch = page.getByTestId("prep-combined-step");
   await expect(reviewBatch).toContainText("Needs review");
   await expect(reviewBatch.getByRole("checkbox", { name: "Complete combined prep batch" })).toBeDisabled();
-  await reviewBatch.getByRole("button", { name: "Edit" }).click();
+  const batchOptions = reviewBatch.getByLabel(/Options for combined prep batch/);
+  await batchOptions.focus();
+  await page.keyboard.press("Enter");
+  await expect(reviewBatch.getByRole("button", { name: "Move up" })).toBeVisible();
+  await expect(reviewBatch.getByRole("button", { name: "Move down" })).toBeVisible();
+  await expect(reviewBatch.getByRole("button", { name: "Edit wording" })).toBeVisible();
+  await expect(reviewBatch.getByRole("button", { name: "Expand to separate prep steps" })).toBeVisible();
+  await expect(reviewBatch.getByRole("button", { name: "Remove" })).toBeVisible();
+  await reviewBatch.getByRole("button", { name: "Edit wording" }).click();
+  await expect(batchOptions).toBeFocused();
   await reviewBatch.getByRole("button", { name: "Save batch" }).click();
   await expect(reviewBatch).not.toContainText("Needs review");
   await reviewBatch.getByRole("checkbox", { name: "Complete combined prep batch" }).click();
   await expect(reviewBatch).toContainText("Prepared in batch");
-  await page.getByTestId("prep-combined-step").getByRole("button", { name: "Expand" }).click();
+  await batchOptions.focus();
+  await page.keyboard.press("Enter");
+  await reviewBatch.getByRole("button", { name: "Expand to separate prep steps" }).click();
   const discard = page.getByRole("dialog", { name: "Discard prepared batch?" });
   await expect(discard).toContainText("canonical recipe completion remains unchanged");
   await expect(discard.getByRole("status")).toContainText("Preview ready");
