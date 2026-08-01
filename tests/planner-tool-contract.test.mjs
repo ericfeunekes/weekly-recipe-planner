@@ -158,6 +158,7 @@ test("sourced replacement remains typed but is withheld pending host admission",
     ok: false,
     operationIndex: 0,
     message: "The replaceMealRecipeFromSource operation is unavailable until the host admits exact observed-candidate binding.",
+    retry: "none",
   });
 });
 
@@ -192,6 +193,7 @@ test("explicit-foreground commands require one exact frozen host grant", () => {
     ok: false,
     operationIndex: 0,
     message: "The archiveWeek operation requires an exact foreground grant.",
+    retry: "new_foreground_turn",
   });
   const authority = freezeForegroundAuthority([
     { commandType: "archiveWeek", target: "2026-07-06" },

@@ -434,6 +434,7 @@ test("native planner host rejects unavailable sourced replacement, explicit arch
     assert.equal(deniedSourced.ok, false);
     assert.equal(deniedSourced.error.code, "NOT_AUTHORIZED");
     assert.match(deniedSourced.error.message, /unavailable until the host admits/i);
+    assert.equal(deniedSourced.error.retry, "none");
   }
   assert.equal(planner.calls.preview, 0);
   assert.equal(planner.calls.apply, 0);
@@ -443,6 +444,7 @@ test("native planner host rejects unavailable sourced replacement, explicit arch
   })));
   assert.equal(denied.ok, false);
   assert.equal(denied.error.code, "NOT_AUTHORIZED");
+  assert.equal(denied.error.retry, "new_foreground_turn");
   assert.equal(planner.calls.preview, 0);
   const applyDenied = decode(await host.handle(callback("apply", {
     basePlannerVersion: 0,
@@ -451,6 +453,7 @@ test("native planner host rejects unavailable sourced replacement, explicit arch
   }, { callId: "call-archive-apply" })));
   assert.equal(applyDenied.ok, false);
   assert.equal(applyDenied.error.code, "NOT_AUTHORIZED");
+  assert.equal(applyDenied.error.retry, "new_foreground_turn");
   assert.equal(planner.calls.apply, 0);
   await assert.rejects(
     host.handle(callback("read", { query: { kind: "workspace" } }, {

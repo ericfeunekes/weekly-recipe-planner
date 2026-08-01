@@ -449,20 +449,36 @@ export function foregroundTarget(command: HouseholdCommand): string {
 export function authorizePlannerOperations(
   operations: readonly PlannerOperation[],
   authority: ForegroundAuthority,
-): { ok: true } | { ok: false; operationIndex: number; message: string } {
+): { ok: true } | {
+  ok: false;
+  operationIndex: number;
+  message: string;
+  retry: "new_foreground_turn" | "none";
+} {
   for (const [operationIndex, operation] of operations.entries()) {
     if (!isHouseholdCommand(operation.command)) {
-      return { ok: false, operationIndex, message: "The operation command is not registered." };
+      return {
+        ok: false,
+        operationIndex,
+        message: "The operation command is not registered.",
+        retry: "none",
+      };
     }
     const registration = HOUSEHOLD_COMMAND_REGISTRY[operation.command.type];
     if (!registration) {
-      return { ok: false, operationIndex, message: "The operation command is not registered." };
+      return {
+        ok: false,
+        operationIndex,
+        message: "The operation command is not registered.",
+        retry: "none",
+      };
     }
     if (registration.exposure === "host_admission_required") {
       return {
         ok: false,
         operationIndex,
         message: `The ${operation.command.type} operation is unavailable until the host admits exact observed-candidate binding.`,
+        retry: "none",
       };
     }
     if (registration.exposure !== "explicit_foreground") continue;
@@ -474,6 +490,7 @@ export function authorizePlannerOperations(
         ok: false,
         operationIndex,
         message: `The ${operation.command.type} operation requires an exact foreground grant.`,
+        retry: "new_foreground_turn",
       };
     }
   }
