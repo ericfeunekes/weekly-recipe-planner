@@ -225,14 +225,15 @@ const plannerCommandModelSchema = {
   properties: {
     type: {
       type: "string",
-      enum: Object.values(HOUSEHOLD_COMMAND_REGISTRY).map(
-        (entry) => entry.schema.properties.type.const,
-      ),
+      enum: Object.values(HOUSEHOLD_COMMAND_REGISTRY)
+        .filter((entry) => entry.exposure !== "host_admission_required")
+        .map((entry) => entry.schema.properties.type.const),
     },
   },
 } as const;
 
 const plannerCommandFieldGuide = Object.entries(HOUSEHOLD_COMMAND_REGISTRY)
+  .filter(([, entry]) => entry.exposure !== "host_admission_required")
   .map(([type, entry]) =>
     `${type}[${entry.schema.required.filter((field) => field !== "type").join(",")}]`)
   .join("; ");
@@ -287,10 +288,9 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
     "Read, preview, and transactionally apply household planner operations. " +
     "Every operation is exactly {command:{type:<schema camelCase type>,...}}; " +
     "never invent action, kind, commandType, event-style names, data, or payload wrappers. " +
-    "A supplied research candidate can replace a meal only through " +
-    "replaceMealRecipeFromSource with its exact title, optional yieldText, source, and steps; " +
-    "setMealRecipe is not a command. Clear old prep references, completion, notes, or running " +
-    "timers in an earlier apply call when the domain requires it.",
+    "Use only the currently admitted command discriminators and their documented fields. " +
+    "Clear old prep references, completion, notes, or running timers in an earlier apply call " +
+    "when the domain requires it.",
   tools: Object.freeze([
     Object.freeze({
       type: "function",
@@ -449,14 +449,37 @@ export function foregroundTarget(command: HouseholdCommand): string {
 export function authorizePlannerOperations(
   operations: readonly PlannerOperation[],
   authority: ForegroundAuthority,
-): { ok: true } | { ok: false; operationIndex: number; message: string } {
+): { ok: true } | {
+  ok: false;
+  operationIndex: number;
+  message: string;
+  retry: "new_foreground_turn" | "none";
+} {
   for (const [operationIndex, operation] of operations.entries()) {
     if (!isHouseholdCommand(operation.command)) {
-      return { ok: false, operationIndex, message: "The operation command is not registered." };
+      return {
+        ok: false,
+        operationIndex,
+        message: "The operation command is not registered.",
+        retry: "none",
+      };
     }
     const registration = HOUSEHOLD_COMMAND_REGISTRY[operation.command.type];
     if (!registration) {
-      return { ok: false, operationIndex, message: "The operation command is not registered." };
+      return {
+        ok: false,
+        operationIndex,
+        message: "The operation command is not registered.",
+        retry: "none",
+      };
+    }
+    if (registration.exposure === "host_admission_required") {
+      return {
+        ok: false,
+        operationIndex,
+        message: `The ${operation.command.type} operation is unavailable until the host admits exact observed-candidate binding.`,
+        retry: "none",
+      };
     }
     if (registration.exposure !== "explicit_foreground") continue;
     const target = foregroundTarget(operation.command);
@@ -467,6 +490,7 @@ export function authorizePlannerOperations(
         ok: false,
         operationIndex,
         message: `The ${operation.command.type} operation requires an exact foreground grant.`,
+        retry: "new_foreground_turn",
       };
     }
   }

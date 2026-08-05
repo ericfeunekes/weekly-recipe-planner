@@ -348,7 +348,7 @@ export class NativePlannerEffectHost {
             now,
             "NOT_AUTHORIZED",
             authorized.message,
-            "new_foreground_turn",
+            authorized.retry,
             authorized.operationIndex,
           );
         } else {
@@ -412,7 +412,7 @@ export class NativePlannerEffectHost {
           now,
           "NOT_AUTHORIZED",
           authorized.message,
-          "new_foreground_turn",
+          authorized.retry,
           authorized.operationIndex,
         );
         completion = completionBase(identity, result, now);

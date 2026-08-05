@@ -89,6 +89,10 @@ test("one registry derives every command validator, schema variant, and authorit
   );
   assert.deepEqual(Object.keys(HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST.commands).sort(), registryKeys);
   assert.equal(HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST.commands.archiveWeek.exposure, "explicit_foreground");
+  assert.equal(
+    HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST.commands.replaceMealRecipeFromSource.exposure,
+    "host_admission_required",
+  );
   assert.equal(HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST.permanentlyDeniedOperations.includes("undoLatest"), true);
 });
 

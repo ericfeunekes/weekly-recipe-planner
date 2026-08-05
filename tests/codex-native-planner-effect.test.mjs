@@ -398,7 +398,7 @@ test("native apply and its callback fence roll back together and recover after a
   sqlite.close();
 });
 
-test("native planner host rejects explicit archive authority and ineligible callers", async () => {
+test("native planner host rejects unavailable sourced replacement, explicit archive authority, and ineligible callers", async () => {
   const sqlite = openPlannerStore({ filename: ":memory:" });
   const planner = fakePlanner();
   const host = createNativePlannerEffectHost({
@@ -409,12 +409,42 @@ test("native planner host rejects explicit archive authority and ineligible call
     now: () => 400,
   });
   const weekId = planner.readWorkspace().state.activeWeekId;
+  const sourced = {
+    type: "replaceMealRecipeFromSource",
+    weekId,
+    mealId: planner.readWorkspace().state.weeks[0].data.meals[0].id,
+    recipe: {
+      title: "Sourced rice",
+      source: {
+        kind: "web",
+        identity: "Example Kitchen",
+        url: "https://example.com/recipes/rice",
+        retrievedAt: 1_750_000_000_000,
+      },
+      steps: [{ inputs: [{ amount: "1 cup", ingredient: "rice" }], instruction: "Cook the rice." }],
+    },
+  };
+  for (const [tool, argumentsValue] of [
+    ["preview", { basePlannerVersion: 0, operations: [{ command: sourced }] }],
+    ["apply", { basePlannerVersion: 0, operations: [{ command: sourced }], readback: { kind: "workspace" } }],
+  ]) {
+    const deniedSourced = decode(await host.handle(callback(tool, argumentsValue, {
+      callId: `call-sourced-${tool}`,
+    })));
+    assert.equal(deniedSourced.ok, false);
+    assert.equal(deniedSourced.error.code, "NOT_AUTHORIZED");
+    assert.match(deniedSourced.error.message, /unavailable until the host admits/i);
+    assert.equal(deniedSourced.error.retry, "none");
+  }
+  assert.equal(planner.calls.preview, 0);
+  assert.equal(planner.calls.apply, 0);
   const denied = decode(await host.handle(callback("preview", {
     basePlannerVersion: 0,
     operations: [{ command: { type: "archiveWeek", weekId } }],
   })));
   assert.equal(denied.ok, false);
   assert.equal(denied.error.code, "NOT_AUTHORIZED");
+  assert.equal(denied.error.retry, "new_foreground_turn");
   assert.equal(planner.calls.preview, 0);
   const applyDenied = decode(await host.handle(callback("apply", {
     basePlannerVersion: 0,
@@ -423,6 +453,7 @@ test("native planner host rejects explicit archive authority and ineligible call
   }, { callId: "call-archive-apply" })));
   assert.equal(applyDenied.ok, false);
   assert.equal(applyDenied.error.code, "NOT_AUTHORIZED");
+  assert.equal(applyDenied.error.retry, "new_foreground_turn");
   assert.equal(planner.calls.apply, 0);
   await assert.rejects(
     host.handle(callback("read", { query: { kind: "workspace" } }, {

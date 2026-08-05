@@ -92,8 +92,7 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
     PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.map((tool) => tool.name),
     PLANNER_TOOL_NAMES,
   );
-  assert.match(PLANNER_DYNAMIC_TOOL_NAMESPACE.description, /replaceMealRecipeFromSource/);
-  assert.match(PLANNER_DYNAMIC_TOOL_NAMESPACE.description, /setMealRecipe is not a command/);
+  assert.doesNotMatch(PLANNER_DYNAMIC_TOOL_NAMESPACE.description, /replaceMealRecipeFromSource/);
   assert.match(PLANNER_DYNAMIC_TOOL_NAMESPACE.description, /prep references/);
   assert.deepEqual(PLANNER_TOOL_AUTHORITY_MANIFEST.tools, PLANNER_TOOL_NAMES);
 
@@ -102,7 +101,9 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
     assert.doesNotThrow(() => ajv.compile(tool.inputSchema), `${tool.name} schema compiles`);
   }
 
-  const canonicalFieldGuide = Object.entries(HOUSEHOLD_COMMAND_REGISTRY)
+  const admittedEntries = Object.entries(HOUSEHOLD_COMMAND_REGISTRY)
+    .filter(([, entry]) => entry.exposure !== "host_admission_required");
+  const canonicalFieldGuide = admittedEntries
     .map(([type, entry]) =>
       `${type}[${entry.schema.required.filter((field) => field !== "type").join(",")}]`)
     .join("; ");
@@ -112,8 +113,8 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
       .command.properties.type.enum;
     assert.deepEqual(
       [...commandTypes].sort(),
-      Object.keys(HOUSEHOLD_COMMAND_REGISTRY).sort(),
-      `${toolName} exposes every registry command discriminator`,
+      admittedEntries.map(([type]) => type).sort(),
+      `${toolName} exposes every currently admitted command discriminator`,
     );
     assert.match(
       toolSchema.description,
@@ -128,6 +129,37 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
     applyTool.description,
     /Readback fields by kind: workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
   );
+});
+
+test("sourced replacement remains typed but is withheld pending host admission", () => {
+  const sourced = {
+    command: {
+      type: "replaceMealRecipeFromSource",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      recipe: {
+        title: "Sourced rice",
+        source: {
+          kind: "web",
+          identity: "Example Kitchen",
+          url: "https://example.com/recipes/rice",
+          retrievedAt: 1_750_000_000_000,
+        },
+        steps: [{ inputs: [{ amount: "1 cup", ingredient: "rice" }], instruction: "Cook the rice." }],
+      },
+    },
+  };
+  assert.equal(isPlannerApplyArguments({
+    basePlannerVersion: 7,
+    operations: [sourced],
+    readback: { kind: "workspace" },
+  }), true, "the direct typed informational-source contract remains valid");
+  assert.deepEqual(authorizePlannerOperations([sourced], []), {
+    ok: false,
+    operationIndex: 0,
+    message: "The replaceMealRecipeFromSource operation is unavailable until the host admits exact observed-candidate binding.",
+    retry: "none",
+  });
 });
 
 test("closed read/apply validators reject hidden identity and extra properties", () => {
@@ -161,6 +193,7 @@ test("explicit-foreground commands require one exact frozen host grant", () => {
     ok: false,
     operationIndex: 0,
     message: "The archiveWeek operation requires an exact foreground grant.",
+    retry: "new_foreground_turn",
   });
   const authority = freezeForegroundAuthority([
     { commandType: "archiveWeek", target: "2026-07-06" },
