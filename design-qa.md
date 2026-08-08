@@ -13,6 +13,11 @@
 - Kept the overflow control as a native `details`/`summary` disclosure with ordinary buttons, keyboard opening, and focus restoration instead of claiming ARIA menu behavior.
 - Fresh focused Playwright proof passed against the exact follow-up candidate, including source lineage after apply/restart and keyboard operation of the disclosure actions.
 
+## Landing refresh — 2026-08-08
+
+- Moved the combined-holder and prep-row layout additions from global CSS into Tailwind classes on the owning Prep component, matching the current `main` styling contract without changing the accepted interaction or visual hierarchy.
+- Re-ran the mounted production build, lint, all 17 focused combined-Prep tests, and the complete focused Playwright journey against the rebased follow-up candidate; all passed.
+
 ## Comparison target
 
 - **Source visual truth path:** `/Users/ericfeunekes/.codex/generated_images/019f812c-b3eb-7793-8fdf-ea06d9e5f824/exec-ed6ca754-40ef-4d7c-9431-5ca51ca09ddb.png` (selected Product Design ideation option 2).

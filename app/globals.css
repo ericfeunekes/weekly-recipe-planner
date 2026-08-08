@@ -1380,7 +1380,6 @@ svg {
 
 .prep-queue-row-wrap {
   display: grid;
-  position: relative;
 }
 
 .prep-queue-access-controls {
@@ -1404,175 +1403,6 @@ svg {
 .prep-queue-access-controls button {
   min-height: 28px;
   padding: 3px 8px;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .prep-queue-row-wrap > .prep-queue-access-controls {
-    background: color-mix(in srgb, var(--paper) 94%, transparent);
-    border: 0;
-    opacity: 0;
-    padding: 4px;
-    position: absolute;
-    right: 38px;
-    top: 8px;
-    transition: opacity 140ms ease;
-    z-index: 3;
-  }
-
-  .prep-queue-row-wrap:hover > .prep-queue-access-controls,
-  .prep-queue-row-wrap:focus-within > .prep-queue-access-controls {
-    opacity: 1;
-  }
-}
-
-.instruction-step.instruction-step-line.combined-prep-step {
-  border-left: 3px solid color-mix(in srgb, var(--green) 42%, var(--line));
-  padding: 16px 0 16px 16px;
-}
-
-.instruction-step.instruction-step-line.combined-prep-step.complete {
-  background: color-mix(in srgb, var(--green-soft) 35%, transparent);
-}
-
-.instruction-step.instruction-step-line.combined-prep-step.needs-review {
-  border-left-color: var(--amber);
-}
-
-.combined-prep-main {
-  grid-template-columns: 24px minmax(0, 1fr) 32px;
-}
-
-.combined-prep-content {
-  display: grid;
-  gap: 7px;
-  min-width: 0;
-}
-
-.combined-prep-heading {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px 10px;
-}
-
-.combined-prep-heading strong {
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.combined-prep-heading span {
-  background: var(--green-soft);
-  border-radius: 5px;
-  color: var(--green-dark);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1;
-  padding: 5px 8px;
-}
-
-.combined-prep-step.needs-review .combined-prep-heading span {
-  background: var(--amber-soft);
-  color: var(--amber);
-}
-
-.combined-prep-aggregates {
-  color: var(--ink-soft);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 12px;
-  gap: 4px 12px;
-}
-
-.combined-prep-sources {
-  border-left: 3px solid color-mix(in srgb, var(--green) 34%, var(--line));
-  display: grid;
-  gap: 8px;
-  margin-top: 2px;
-  max-width: 560px;
-  padding: 3px 0 3px 14px;
-}
-
-.combined-prep-source {
-  align-items: start;
-  display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(0, 250px) minmax(180px, 260px);
-}
-
-.combined-prep-source > div {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.combined-prep-source strong {
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.combined-prep-source-step {
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.combined-prep-source > span {
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.combined-prep-source > span {
-  padding-top: 1px;
-  text-align: right;
-}
-
-.combined-prep-effect {
-  color: var(--ink-soft);
-  font-size: 11px;
-  line-height: 1.45;
-  margin-top: 3px;
-}
-
-.combined-prep-overflow summary {
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  cursor: pointer;
-  display: inline-flex;
-  justify-content: center;
-  list-style: none;
-  padding: 0;
-}
-
-.combined-prep-overflow summary:hover,
-.combined-prep-overflow summary:focus-visible {
-  background: var(--surface-muted);
-}
-
-.combined-prep-overflow summary::-webkit-details-marker {
-  display: none;
-}
-
-.combined-prep-menu-select {
-  align-items: center;
-  color: var(--ink-soft);
-  display: flex;
-  font-size: 11px;
-  gap: 7px;
-  min-height: 32px;
-  padding: 6px 8px;
-}
-
-.combined-prep-menu-select input {
-  accent-color: var(--green);
-}
-
-.combined-prep-editor {
-  margin-left: 32px;
-  padding-top: 10px;
 }
 
 .prep-insertion-indicator {
@@ -3839,23 +3669,6 @@ textarea[aria-invalid="true"] {
   .draft-heading {
     align-items: flex-start;
     display: grid;
-  }
-
-  .instruction-step.instruction-step-line.combined-prep-step {
-    padding-left: 10px;
-  }
-
-  .combined-prep-source {
-    gap: 2px;
-    grid-template-columns: 1fr;
-  }
-
-  .combined-prep-source > span {
-    text-align: left;
-  }
-
-  .combined-prep-editor {
-    margin-left: 0;
   }
 
   .execution-grid,
