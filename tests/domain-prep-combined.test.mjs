@@ -181,3 +181,37 @@ test("completed combined Prep work requires explicit discard and source edits re
   }, context)).state;
   assert.equal(activeWeek(state).data.prepSessions[0].steps[0].needsReview, false);
 });
+
+test("combined Prep rejects duplicate and missing source selections without mutation", () => {
+  const seedContext = createContext();
+  const state = createCanonicalSeed(seedContext);
+  const week = activeWeek(state);
+  const [firstStep, secondStep] = week.data.meals[0].instructions;
+  const prepDate = addIsoDateDays(week.id, -1);
+  let createIdCalls = 0;
+  const context = {
+    now: NOW,
+    createId(prefix) {
+      createIdCalls += 1;
+      return `${prefix}-unexpected-${createIdCalls}`;
+    },
+  };
+
+  for (const sourceStepIds of [
+    [firstStep.id, firstStep.id],
+    [firstStep.id, "missing-step"],
+    [secondStep.id],
+  ]) {
+    const result = householdDomain.execute(state, {
+      type: "combinePrepStepsOnDate",
+      weekId: week.id,
+      prepDate,
+      sourceStepIds,
+      instruction: "Prepare an invalid combined batch.",
+      targetPosition: 0,
+    }, context);
+    assert.equal(result.ok, false);
+    assert.equal(result.state, state);
+  }
+  assert.ok(createIdCalls <= 1, "rejected combinations may allocate at most one transient entry ID");
+});
