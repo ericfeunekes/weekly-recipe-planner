@@ -97,6 +97,10 @@ export const CODEX_FOLLOW_UP_RPC_POLICY = Object.freeze({
     // bounded `app/list` readback. This runtime never consumes app listings,
     // so it carries no planner authority and must not invalidate readiness.
     "app/list/updated",
+    // Codex 0.147.0 emits this informational protocol migration notice during
+    // initialization. The runtime consumes no deprecated app-server surface,
+    // so the notice carries no planner authority and does not affect readiness.
+    "deprecationNotice",
     "item/reasoning/textDelta",
     "remoteControl/status/changed",
     "thread/tokenUsage/updated",
@@ -109,12 +113,7 @@ export const CODEX_FOLLOW_UP_TOOL_MANIFESTS = Object.freeze({
   nativeThread: Object.freeze([
     "update_plan",
     "request_user_input",
-    "spawn_agent",
-    "send_message",
-    "followup_task",
-    "wait_agent",
-    "interrupt_agent",
-    "list_agents",
+    "collaboration",
     "skills",
     "planner",
     "web_search",
@@ -122,14 +121,16 @@ export const CODEX_FOLLOW_UP_TOOL_MANIFESTS = Object.freeze({
   workerRequired: Object.freeze([
     "update_plan",
     "request_user_input",
-    "spawn_agent",
-    "send_message",
-    "followup_task",
-    "wait_agent",
-    "interrupt_agent",
-    "list_agents",
     "skills",
     "web_search",
+  ]),
+  collaborationNamespace: Object.freeze([
+    "followup_task",
+    "interrupt_agent",
+    "list_agents",
+    "send_message",
+    "spawn_agent",
+    "wait_agent",
   ]),
   skillsNamespace: Object.freeze(["list", "read"]),
   // Stable release-evidence projections retained for the version-1 artifact

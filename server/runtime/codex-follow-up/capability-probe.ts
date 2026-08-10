@@ -166,6 +166,7 @@ function parseJsonObject(value: unknown): JsonObject | null {
 function hasExactProviderFunctionCall(
   input: readonly unknown[],
   callId: string,
+  namespace: string,
   name: string,
   argumentsValue: JsonObject,
 ) {
@@ -173,6 +174,7 @@ function hasExactProviderFunctionCall(
     isObject(item) &&
     item.type === "function_call" &&
     item.call_id === callId &&
+    item.namespace === namespace &&
     item.name === name &&
     canonicalText(parseJsonObject(item.arguments)) === canonicalText(argumentsValue));
 }
@@ -745,9 +747,10 @@ function assistantMessage(responseId: string, messageId: string, text: string) {
   ]);
 }
 
-function dynamicFunctionCall(
+function namespacedFunctionCall(
   responseId: string,
   callId: string,
+  namespace: string,
   name: string,
   argumentsValue: JsonObject,
 ) {
@@ -758,7 +761,7 @@ function dynamicFunctionCall(
       item: {
         type: "function_call",
         call_id: callId,
-        namespace: "planner",
+        namespace,
         name,
         arguments: JSON.stringify(argumentsValue),
       },
@@ -925,26 +928,29 @@ async function startLocalResponsesServer() {
           payload = assistantMessage("response-root-4", "message-root", "native-thread-complete");
         } else if (serializedInput.includes("call-A") && serializedInput.includes("previewed")) {
           dependentPlannerResultObserved = true;
-          payload = dynamicFunctionCall(
+          payload = namespacedFunctionCall(
             "response-root-3",
             "call-B",
+            "planner",
             "apply",
             PLANNER_PROBE_APPLY_ARGUMENTS,
           );
         } else if (serializedInput.includes("call-read") && serializedInput.includes("workspace")) {
           plannerReadObserved = true;
-          payload = dynamicFunctionCall(
+          payload = namespacedFunctionCall(
             "response-root-readback",
             "call-A",
+            "planner",
             "preview",
             PLANNER_PROBE_PREVIEW_ARGUMENTS,
           );
         } else if (serializedInput.includes("question-capability") &&
                    serializedInput.includes("Continue")) {
           userInputRoundTripObserved = true;
-          payload = dynamicFunctionCall(
+          payload = namespacedFunctionCall(
             "response-root-read",
             "call-read",
+            "planner",
             "read",
             PLANNER_PROBE_READ_ARGUMENTS,
           );
@@ -952,6 +958,7 @@ async function startLocalResponsesServer() {
           workerWaitCallObserved = hasExactProviderFunctionCall(
             input,
             "root-wait",
+            "collaboration",
             "wait_agent",
             {},
           );
@@ -979,16 +986,18 @@ async function startLocalResponsesServer() {
             },
           );
         } else if (serializedInput.includes("root-spawn")) {
-          payload = ordinaryFunctionCall(
+          payload = namespacedFunctionCall(
             "response-root-wait",
             "root-wait",
+            "collaboration",
             "wait_agent",
             {},
           );
         } else {
-          payload = ordinaryFunctionCall(
+          payload = namespacedFunctionCall(
             "response-root-1",
             "root-spawn",
+            "collaboration",
             "spawn_agent",
             {
               task_name: "capability_worker",
@@ -1426,16 +1435,7 @@ function assertSkillsNamespace(tools: readonly unknown[], context: string) {
   }
 }
 
-const REQUIRED_NATIVE_FUNCTIONS = Object.freeze([
-  "update_plan",
-  "request_user_input",
-  "spawn_agent",
-  "send_message",
-  "followup_task",
-  "wait_agent",
-  "interrupt_agent",
-  "list_agents",
-]);
+const REQUIRED_NATIVE_FUNCTIONS = Object.freeze(["update_plan", "request_user_input"]);
 
 function assertNativeFunctions(tools: readonly unknown[], context: string) {
   for (const name of REQUIRED_NATIVE_FUNCTIONS) {
@@ -1448,6 +1448,29 @@ function assertNativeFunctions(tools: readonly unknown[], context: string) {
         `${context} exposed a malformed ${name} function tool.`,
       );
     }
+  }
+}
+
+function assertCollaborationNamespace(tools: readonly unknown[], context: string) {
+  const namespace = tools.find((tool) =>
+    isObject(tool) && tool.type === "namespace" && tool.name === "collaboration");
+  const members = isObject(namespace) && Array.isArray(namespace.tools)
+    ? namespace.tools
+    : [];
+  const names = members.map((member) =>
+    isObject(member) && member.type === "function" ? stringProperty(member, "name") : null);
+  if (
+    canonicalText(names) !== canonicalText(
+      CODEX_FOLLOW_UP_TOOL_MANIFESTS.collaborationNamespace,
+    ) ||
+    members.some((member) =>
+      !isObject(member) || member.strict !== false || !isObject(member.parameters) ||
+      member.parameters.type !== "object" || member.parameters.additionalProperties !== false)
+  ) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      `${context} did not expose the exact bounded collaboration namespace.`,
+    );
   }
 }
 
@@ -1498,6 +1521,53 @@ export function evaluateObservedCapabilityRequests(
       `Expected seven native-thread and one worker provider calls; observed ${nativeThread.length} and ${workers.length}.`,
     );
   }
+  const invalidCollaborationCallObserved = nativeThread.some((request) =>
+    arrayProperty(request, "input").some((item) =>
+      isObject(item) &&
+      item.type === "function_call" &&
+      typeof item.name === "string" &&
+      CODEX_FOLLOW_UP_TOOL_MANIFESTS.collaborationNamespace.includes(
+        item.name as (typeof CODEX_FOLLOW_UP_TOOL_MANIFESTS.collaborationNamespace)[number],
+      ) &&
+      item.namespace !== "collaboration"));
+  if (invalidCollaborationCallObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The owning native thread issued a collaboration call outside its exact namespace.",
+    );
+  }
+  const workerCollaborationCallObserved = workers.some((request) =>
+    arrayProperty(request, "input").some((item) =>
+      isObject(item) &&
+      item.type === "function_call" &&
+      typeof item.name === "string" &&
+      CODEX_FOLLOW_UP_TOOL_MANIFESTS.collaborationNamespace.includes(
+        item.name as (typeof CODEX_FOLLOW_UP_TOOL_MANIFESTS.collaborationNamespace)[number],
+      )));
+  if (workerCollaborationCallObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "Worker provider history exposed a forbidden collaboration call.",
+    );
+  }
+  const workerSpawnCallObserved = nativeThread.some((request) =>
+    hasExactProviderFunctionCall(
+      arrayProperty(request, "input"),
+      "root-spawn",
+      "collaboration",
+      "spawn_agent",
+      {
+        task_name: "capability_worker",
+        message: "WORKER_CONTEXT_PROBE: finish without calling tools",
+        fork_turns: "none",
+      },
+    ));
+  if (!workerSpawnCallObserved) {
+    throw new CodexCapabilityProbeError(
+      "PROBE_CAPABILITY",
+      "The owning native thread did not issue the exact collaboration.spawn_agent call.",
+    );
+  }
 
   const expectedRoot = [...CODEX_FOLLOW_UP_TOOL_MANIFESTS.nativeThread];
   const expectedWorker = [...CODEX_FOLLOW_UP_TOOL_MANIFESTS.workerRequired];
@@ -1513,6 +1583,7 @@ export function evaluateObservedCapabilityRequests(
     }
     assertHostedSearch(tools, "Native thread");
     assertNativeFunctions(tools, "Native thread");
+    assertCollaborationNamespace(tools, "Native thread");
     assertSkillsNamespace(tools, "Native thread");
     assertPlannerNamespace(tools, "Native thread");
     if (!isObject(request) || request.parallel_tool_calls !== false) {
