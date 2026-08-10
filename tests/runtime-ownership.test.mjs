@@ -112,6 +112,22 @@ test("runtime ownership is exclusive and inheritance accepts only the exact live
   await assert.rejects(access(successor.socketPath));
 });
 
+test("simultaneous runtime ownership acquisition classifies the loser", async (t) => {
+  const root = await temporaryRoot(t);
+  const socketPath = join(root, "run", "runtime-owner.sock");
+  const results = await Promise.allSettled([
+    acquireRuntimeOwnershipLease({ socketPath }),
+    acquireRuntimeOwnershipLease({ socketPath }),
+  ]);
+  const winners = results.filter((result) => result.status === "fulfilled");
+  const losers = results.filter((result) => result.status === "rejected");
+  assert.equal(winners.length, 1);
+  assert.equal(losers.length, 1);
+  assert.ok(losers[0].reason instanceof RuntimeOwnershipError);
+  assert.equal(losers[0].reason.code, "OWNER_LIVE_OR_INDETERMINATE");
+  await winners[0].value.close();
+});
+
 test("a killed authority leaves only a stable-ECONNREFUSED socket recoverable", async (t) => {
   const root = await temporaryRoot(t);
   const socketPath = join(root, "run", "runtime-owner.sock");
