@@ -59,6 +59,30 @@ async function waitForReadyPid(child) {
   });
 }
 
+async function waitForOwnershipResult(child) {
+  return new Promise((resolveResult, rejectResult) => {
+    let output = "";
+    const timer = setTimeout(
+      () => rejectResult(new Error("ownership contender did not report a result")),
+      5_000,
+    );
+    timer.unref();
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+      const match = /(winner:\d+|loser:[A-Z_]+)/u.exec(output);
+      if (match === null) return;
+      clearTimeout(timer);
+      resolveResult(match[1]);
+    });
+    child.once("error", rejectResult);
+    child.once("close", (code, signal) => {
+      if (!/(winner:\d+|loser:[A-Z_]+)/u.test(output)) {
+        rejectResult(new Error(`ownership contender exited before result (${code ?? signal})`));
+      }
+    });
+  });
+}
+
 test("runtime ownership is exclusive and inheritance accepts only the exact live object", async (t) => {
   const root = await temporaryRoot(t);
   const socketPath = join(root, "run", "runtime-owner.sock");
@@ -128,7 +152,7 @@ test("simultaneous runtime ownership acquisition classifies the loser", async (t
   await winners[0].value.close();
 });
 
-test("a killed authority leaves only a stable-ECONNREFUSED socket recoverable", async (t) => {
+test("a killed authority permits exactly one cross-process stale-socket recovery", async (t) => {
   const root = await temporaryRoot(t);
   const socketPath = join(root, "run", "runtime-owner.sock");
   const fixture = `
@@ -159,12 +183,78 @@ test("a killed authority leaves only a stable-ECONNREFUSED socket recoverable", 
   await once(child, "close");
   assert.equal((await stat(socketPath)).isSocket(), true);
 
-  const recovered = await acquireRuntimeOwnershipLease({
-    socketPath,
-    probeTimeoutMs: 500,
+  const guardPath = `${socketPath}.recovery.lock`;
+  const guardHolder = spawn(
+    "/usr/bin/lockf",
+    [
+      "-k",
+      "-s",
+      "-t",
+      "0",
+      guardPath,
+      process.execPath,
+      "--input-type=module",
+      "--eval",
+      'console.log("ready"); process.stdin.resume();',
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  t.after(() => {
+    if (guardHolder.exitCode === null && guardHolder.signalCode === null) {
+      guardHolder.kill("SIGKILL");
+    }
   });
-  assert.equal((await stat(recovered.socketPath)).isSocket(), true);
-  await recovered.close();
+  await waitForReady(guardHolder);
+  await assert.rejects(
+    acquireRuntimeOwnershipLease({ socketPath, probeTimeoutMs: 250 }),
+    (error) =>
+      error instanceof RuntimeOwnershipError &&
+      error.code === "OWNER_LIVE_OR_INDETERMINATE",
+    "a live stale-socket recovery guard must exclude another recovery",
+  );
+  guardHolder.kill("SIGKILL");
+  await once(guardHolder, "close");
+
+  const contenderFixture = `
+    import { stat } from "node:fs/promises";
+    import { acquireRuntimeOwnershipLease } from ${JSON.stringify(OWNERSHIP_MODULE_URL)};
+    await new Promise((resolveStart) => process.stdin.once("data", resolveStart));
+    try {
+      const lease = await acquireRuntimeOwnershipLease({
+        socketPath: ${JSON.stringify(socketPath)},
+        probeTimeoutMs: 500,
+      });
+      const identity = await stat(lease.socketPath, { bigint: true });
+      console.log("winner:" + identity.ino);
+      setInterval(() => {}, 60_000);
+    } catch (error) {
+      console.log("loser:" + (error?.code ?? "UNEXPECTED"));
+    }
+  `;
+  const contenders = Array.from({ length: 2 }, () => spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", contenderFixture],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  ));
+  t.after(() => {
+    for (const contender of contenders) {
+      if (contender.exitCode === null && contender.signalCode === null) {
+        contender.kill("SIGKILL");
+      }
+    }
+  });
+  const resultPromises = contenders.map(waitForOwnershipResult);
+  for (const contender of contenders) contender.stdin.end("go\n");
+  const results = await Promise.all(resultPromises);
+  const winners = results.filter((result) => result.startsWith("winner:"));
+  const losers = results.filter((result) => result.startsWith("loser:"));
+  assert.equal(winners.length, 1);
+  assert.deepEqual(losers, ["loser:OWNER_LIVE_OR_INDETERMINATE"]);
+
+  const winnerInode = BigInt(winners[0].slice("winner:".length));
+  const selectedSocket = await stat(socketPath, { bigint: true });
+  assert.equal(selectedSocket.isSocket(), true);
+  assert.equal(selectedSocket.ino, winnerInode);
 });
 
 test("supervisor death cannot release a lease retained by its authority child", async (t) => {

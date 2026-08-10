@@ -1,9 +1,11 @@
 import { constants } from "node:fs";
+import { spawn } from "node:child_process";
 import {
   access,
   chmod,
   lstat,
   mkdir,
+  open,
   realpath,
   unlink,
 } from "node:fs/promises";
@@ -229,6 +231,56 @@ async function removeStableStaleSocket(socketPath, directoryBefore, timeoutMs) {
   await unlink(socketPath);
 }
 
+async function acquireStaleSocketRecoveryGuard(socketPath) {
+  const guardPath = `${socketPath}.recovery.lock`;
+  let guardHandle;
+  try {
+    guardHandle = await open(
+      guardPath,
+      constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+      PRIVATE_SOCKET_MODE,
+    );
+    const metadata = await guardHandle.stat({ bigint: true });
+    if (!metadata.isFile() || metadata.uid !== currentUid()) {
+      throw new RuntimeOwnershipError(
+        "OWNER_PATH_UNSAFE",
+        "The runtime owner recovery guard has an unsafe identity.",
+      );
+    }
+    await guardHandle.chmod(PRIVATE_SOCKET_MODE);
+  } catch (error) {
+    await guardHandle?.close().catch(() => undefined);
+    throw error;
+  }
+  const acquirer = spawn(
+    "/usr/bin/lockf",
+    [
+      "-s",
+      "-t",
+      "0",
+      "3",
+    ],
+    { stdio: ["ignore", "ignore", "ignore", guardHandle.fd] },
+  );
+  const [code, signal] = await new Promise((resolveLock, rejectLock) => {
+    acquirer.once("error", rejectLock);
+    acquirer.once("close", (exitCode, exitSignal) => {
+      resolveLock([exitCode, exitSignal]);
+    });
+  }).catch(async (error) => {
+    await guardHandle.close().catch(() => undefined);
+    throw error;
+  });
+  if (code !== 0 || signal !== null) {
+    await guardHandle.close().catch(() => undefined);
+    throw new RuntimeOwnershipError(
+      "OWNER_LIVE_OR_INDETERMINATE",
+      "Another process is recovering the runtime owner socket.",
+    );
+  }
+  return () => guardHandle.close();
+}
+
 async function assertRecordHeld(record, expectedSocketPath) {
   if (record.closed || !record.server.listening) {
     throw new RuntimeOwnershipError(
@@ -292,17 +344,26 @@ export async function acquireRuntimeOwnershipLease({
   const directoryPath = ensuredDirectory.canonicalPath;
   const canonicalSocketPath = resolve(directoryPath, basename(socketPath));
   const directoryIdentity = ensuredDirectory.identity;
+  let releaseRecoveryGuard = null;
   if (await pathExists(canonicalSocketPath)) {
-    await removeStableStaleSocket(
+    releaseRecoveryGuard = await acquireStaleSocketRecoveryGuard(
       canonicalSocketPath,
-      directoryIdentity,
-      probeTimeoutMs,
     );
   }
 
   const server = createServer((socket) => socket.end());
   let socketIdentity = null;
   try {
+    if (
+      releaseRecoveryGuard !== null &&
+      await pathExists(canonicalSocketPath)
+    ) {
+      await removeStableStaleSocket(
+        canonicalSocketPath,
+        directoryIdentity,
+        probeTimeoutMs,
+      );
+    }
     await listen(server, canonicalSocketPath);
     await chmod(canonicalSocketPath, PRIVATE_SOCKET_MODE);
     socketIdentity = await readIdentity(
@@ -323,6 +384,7 @@ export async function acquireRuntimeOwnershipLease({
     }
   } catch (error) {
     await closeServer(server).catch(() => undefined);
+    await releaseRecoveryGuard?.().catch(() => undefined);
     if (["EADDRINUSE", "EEXIST"].includes(errorCode(error))) {
       throw new RuntimeOwnershipError(
         "OWNER_LIVE_OR_INDETERMINATE",
@@ -330,6 +392,12 @@ export async function acquireRuntimeOwnershipLease({
         { cause: error },
       );
     }
+    throw error;
+  }
+  try {
+    await releaseRecoveryGuard?.();
+  } catch (error) {
+    await closeServer(server).catch(() => undefined);
     throw error;
   }
 
