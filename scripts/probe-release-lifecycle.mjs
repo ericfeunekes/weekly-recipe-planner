@@ -182,6 +182,16 @@ async function runNestedRelease(mode, candidate, environment) {
   });
 }
 
+async function runDirectDeployment(candidate, environment) {
+  return run(process.execPath, [
+    "--disable-warning=ExperimentalWarning",
+    "--experimental-strip-types",
+    "--input-type=module",
+    "--eval",
+    'import("./scripts/direct-deploy.mjs").then(({ deployProductionCandidate }) => deployProductionCandidate({ root: process.cwd(), environment: process.env }))',
+  ], { cwd: candidate, env: environment });
+}
+
 async function assertCleanCommittedHead(directory) {
   const [head, status] = await Promise.all([
     capture("git", ["rev-parse", "HEAD"], { cwd: directory }),
@@ -486,10 +496,15 @@ async function main() {
       assert.deepEqual(await databaseProof(database), firstDatabase, "completed-selection interruption leaves SQLite bytes and rows unchanged");
       await waitForRequired(origin);
 
+      await run("npm", ["ci"], { cwd: candidate, env: environment });
+      await run("npm", ["run", "build"], {
+        cwd: candidate,
+        env: { ...environment, PLANNER_PUBLIC_BASE_PATH: "/recipe-planner/" },
+      });
       const promotionBarrier = `promote-${runId}`;
       const promotionResults = await Promise.allSettled([
-        runNestedRelease("promote", candidate, { ...environment, PLANNER_PROBE_PROMOTION_BARRIER: promotionBarrier }),
-        runNestedRelease("promote", candidate, { ...environment, PLANNER_PROBE_PROMOTION_BARRIER: promotionBarrier }),
+        runDirectDeployment(candidate, { ...environment, PLANNER_PROBE_PROMOTION_BARRIER: promotionBarrier }),
+        runDirectDeployment(candidate, { ...environment, PLANNER_PROBE_PROMOTION_BARRIER: promotionBarrier }),
       ]);
       const promotionWinners = promotionResults.filter((result) => result.status === "fulfilled");
       const promotionLosers = promotionResults.filter((result) => result.status === "rejected");
@@ -513,7 +528,7 @@ async function main() {
       lines.push(
         "- shipped first-rename failure reversal: PASS",
         "- shipped completed-selection interruption recovery: PASS",
-        "- competing shipped promotion commands: PASS",
+        "- competing shipped deployment transactions: PASS",
       );
 
       await run("launchctl", ["bootout", target], { env: environment });
