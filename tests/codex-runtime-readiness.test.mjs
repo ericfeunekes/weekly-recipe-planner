@@ -61,9 +61,7 @@ const CONTROL_CAPABILITY = Object.freeze({
   researchTools: ["update_plan", "web_search"],
   plannerTools: ["update_plan", "planner"],
   workerTools: [
-    "update_plan", "request_user_input", "spawn_agent", "send_message",
-    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
-    "skills", "web_search",
+    "update_plan", "request_user_input", "skills", "web_search",
   ],
   plannerNamespaceMembers: ["read", "preview", "apply"],
   forbiddenHits: [],

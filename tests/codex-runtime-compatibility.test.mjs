@@ -39,9 +39,7 @@ const capability = Object.freeze({
   researchTools: ["update_plan", "web_search"],
   plannerTools: ["update_plan", "planner"],
   workerTools: [
-    "update_plan", "request_user_input", "spawn_agent", "send_message",
-    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
-    "skills", "web_search",
+    "update_plan", "request_user_input", "skills", "web_search",
   ],
   plannerNamespaceMembers: ["read", "preview", "apply"],
   forbiddenHits: [],
@@ -234,14 +232,14 @@ test("required protocol and dynamic response drift fail validation", () => {
 test("compatibility contract freezes exact capability manifests and RPC allowlists", () => {
   assert.equal(CODEX_FOLLOW_UP_TOOL_MANIFESTS.researchWebSearchMode, "live");
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.nativeThread, [
-    "update_plan", "request_user_input", "spawn_agent", "send_message",
-    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
-    "skills", "planner", "web_search",
+    "update_plan", "request_user_input", "collaboration", "skills", "planner", "web_search",
   ]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.workerRequired, [
-    "update_plan", "request_user_input", "spawn_agent", "send_message",
-    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
-    "skills", "web_search",
+    "update_plan", "request_user_input", "skills", "web_search",
+  ]);
+  assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.collaborationNamespace, [
+    "followup_task", "interrupt_agent", "list_agents", "send_message", "spawn_agent",
+    "wait_agent",
   ]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.skillsNamespace, ["list", "read"]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.research, ["update_plan", "web_search"]);
@@ -283,6 +281,7 @@ test("compatibility contract freezes exact capability manifests and RPC allowlis
   }
   assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("warning"), true);
   assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("app/list/updated"), true);
+  assert.equal(CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("deprecationNotice"), true);
   assert.equal(
     CODEX_FOLLOW_UP_RPC_POLICY.ignoredNotifications.includes("item/reasoning/textDelta"),
     true,
@@ -319,17 +318,24 @@ test("observed capability inspection requires exact ordered arrays and dependent
     strict: false,
     parameters: { type: "object", properties: {}, additionalProperties: false },
   });
-  const nativeFunctions = [
-    "update_plan", "request_user_input", "spawn_agent", "send_message",
-    "followup_task", "wait_agent", "interrupt_agent", "list_agents",
-  ].map(functionTool);
+  const nativeFunctions = ["update_plan", "request_user_input"].map(functionTool);
+  const collaborationNamespace = {
+    type: "namespace",
+    name: "collaboration",
+    tools: [
+      "followup_task", "interrupt_agent", "list_agents", "send_message", "spawn_agent",
+      "wait_agent",
+    ].map(functionTool),
+  };
   const skillsNamespace = {
     type: "namespace",
     name: "skills",
     tools: [functionTool("list"), functionTool("read")],
   };
   const webSearch = { type: "web_search", external_web_access: true };
-  const rootTools = [...nativeFunctions, skillsNamespace, plannerNamespace, webSearch];
+  const rootTools = [
+    ...nativeFunctions, collaborationNamespace, skillsNamespace, plannerNamespace, webSearch,
+  ];
   const workerTools = [...nativeFunctions, skillsNamespace, webSearch];
   const requests = [
     ...Array.from({ length: 7 }, (_, index) => ({
@@ -337,6 +343,8 @@ test("observed capability inspection requires exact ordered arrays and dependent
         { text: `NATIVE_THREAD_CAPABILITY_PROBE ${index}` },
         ...(index === 1 ? [{
           type: "function_call",
+          call_id: "root-spawn",
+          namespace: "collaboration",
           name: "spawn_agent",
           arguments: {
             task_name: "capability_worker",
@@ -383,6 +391,41 @@ test("observed capability inspection requires exact ordered arrays and dependent
   });
   assert.deepEqual(currentProjection.researchTools, ["update_plan", "web_search"]);
   assert.deepEqual(currentProjection.plannerTools, ["update_plan", "planner"]);
+
+  const unnamespacedSpawn = structuredClone(requests);
+  delete unnamespacedSpawn[1].input[1].namespace;
+  assert.throws(() => evaluateObservedCapabilityRequests(unnamespacedSpawn, {
+    dependentResultObserved: true,
+    permissionProfileVerified: true,
+    outboundPolicyRejected: true,
+  }), /collaboration call outside its exact namespace/);
+
+  const additiveFlatSpawn = structuredClone(requests);
+  additiveFlatSpawn[2].input.push({
+    type: "function_call",
+    call_id: "legacy-spawn",
+    name: "spawn_agent",
+    arguments: {},
+  });
+  assert.throws(() => evaluateObservedCapabilityRequests(additiveFlatSpawn, {
+    dependentResultObserved: true,
+    permissionProfileVerified: true,
+    outboundPolicyRejected: true,
+  }), /collaboration call outside its exact namespace/);
+
+  const workerCollaborationHistory = structuredClone(requests);
+  workerCollaborationHistory[7].input.push({
+    type: "function_call",
+    call_id: "worker-spawn",
+    namespace: "collaboration",
+    name: "spawn_agent",
+    arguments: {},
+  });
+  assert.throws(() => evaluateObservedCapabilityRequests(workerCollaborationHistory, {
+    dependentResultObserved: true,
+    permissionProfileVerified: true,
+    outboundPolicyRejected: true,
+  }), /Worker provider history exposed a forbidden collaboration call/);
 
   const unrelatedFunction = structuredClone(functionProjectedUpdatePlan);
   unrelatedFunction[0].tools[0] = { type: "function", name: "calendar" };

@@ -209,12 +209,14 @@ function toolsFor(thread) {
   const tools = [
     updatePlan,
     functionTool("request_user_input"),
-    functionTool("spawn_agent"),
-    functionTool("send_message"),
-    functionTool("followup_task"),
-    functionTool("wait_agent"),
-    functionTool("interrupt_agent"),
-    functionTool("list_agents"),
+    ...(thread.kind === "worker" ? [] : [{
+      type: "namespace",
+      name: "collaboration",
+      tools: [
+        "followup_task", "interrupt_agent", "list_agents", "send_message", "spawn_agent",
+        "wait_agent",
+      ].map(functionTool),
+    }]),
     skillsNamespace,
     ...(plannerNamespace ? [plannerNamespace] : []),
     {
@@ -336,6 +338,7 @@ async function runNativeThread(thread, turnId, text) {
     { type: "message", role: "user", content: text },
     {
       type: "function_call",
+      namespace: "collaboration",
       name: "spawn_agent",
       call_id: "root-spawn",
       arguments: JSON.stringify({
@@ -355,6 +358,7 @@ async function runNativeThread(thread, turnId, text) {
     ...rootSpawnHistory,
     {
       type: "function_call",
+      namespace: "collaboration",
       name: "wait_agent",
       call_id: "root-wait",
       arguments: JSON.stringify(fixtureVariant === "worker-wait-call-not-returned"
