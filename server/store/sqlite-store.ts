@@ -13,7 +13,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -103,10 +103,48 @@ export type PlannerStoreWriteReservation = Readonly<{
   close(): void;
 }>;
 
-const MIGRATION_SNAPSHOT_CREATORS = new WeakMap<
+type ReservedMigrationConnection = Readonly<{
+  database: DatabaseSync;
+  assertActive(): void;
+  commit(): void;
+}>;
+
+type ReservedStoreOperations = Readonly<{
+  createMigrationSnapshot(destinationFilename: string): VerifiedPlannerSnapshotInspection;
+  migrationConnection: ReservedMigrationConnection;
+}>;
+
+const RESERVED_STORE_OPERATIONS = new WeakMap<
   PlannerStoreWriteReservation,
-  (destinationFilename: string) => VerifiedPlannerSnapshotInspection
+  ReservedStoreOperations
 >();
+
+type LogicalCell = readonly [sqliteType: string, value: string];
+type LogicalTableInventory = Readonly<{
+  sql: string | null;
+  columns: readonly string[];
+  rows: readonly (readonly LogicalCell[])[];
+}>;
+type LogicalInventory = Readonly<{
+  schema: readonly Readonly<{ type: string; name: string; sql: string | null }>[];
+  tables: Readonly<Record<string, LogicalTableInventory>>;
+}>;
+
+type SchemaDefinition = LogicalInventory["schema"][number];
+let canonicalPlannerSchemaDefinitions: readonly SchemaDefinition[] | null = null;
+
+export type PlannerStoreV8ToV9MigrationResult = Readonly<{
+  database: Readonly<{
+    filename: string;
+    quickCheck: "ok";
+    schemaVersion: 9;
+    migrationVersions: readonly [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    workspaceSchemaVersion: 9;
+    rowCounts: Readonly<Record<string, number>>;
+  }>;
+  backup: VerifiedPlannerSnapshotInspection;
+  migration: Readonly<{ from: 8; to: 9; allowedChanges: readonly ["schema_migrations:9", "workspace:household.schema_version"] }>;
+}>;
 
 export class PlannerStoreError extends Error {
   readonly code: "STORE_CORRUPT" | "MIGRATION_FAILED" | "NOT_INITIALIZED" | "BUSY";
@@ -861,11 +899,13 @@ export function acquirePlannerStoreWriteReservation({
   const sourceIdentity = readCanonicalStoreFileIdentity(canonicalFilename);
   const database = new DatabaseSync(canonicalFilename);
   let active = false;
+  let transactionOpen = false;
   try {
     database.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
     database.exec("PRAGMA synchronous = FULL");
     database.exec("BEGIN IMMEDIATE");
     active = true;
+    transactionOpen = true;
     const identityAfterBegin = readCanonicalStoreFileIdentity(canonicalFilename);
     if (!sameStoreFileIdentity(sourceIdentity, identityAfterBegin)) {
       throw new PlannerStoreError(
@@ -874,7 +914,7 @@ export function acquirePlannerStoreWriteReservation({
       );
     }
   } catch (error) {
-    if (active) {
+    if (transactionOpen) {
       try {
         database.exec("ROLLBACK");
       } catch {
@@ -968,10 +1008,13 @@ export function acquirePlannerStoreWriteReservation({
       if (!active) return;
       active = false;
       let closeError: unknown;
-      try {
-        database.exec("ROLLBACK");
-      } catch (error) {
-        closeError = error;
+      if (transactionOpen) {
+        try {
+          database.exec("ROLLBACK");
+        } catch (error) {
+          closeError = error;
+        }
+        transactionOpen = false;
       }
       try {
         database.close();
@@ -981,9 +1024,25 @@ export function acquirePlannerStoreWriteReservation({
       if (closeError !== undefined) throw closeError;
     },
   });
-  MIGRATION_SNAPSHOT_CREATORS.set(
+  RESERVED_STORE_OPERATIONS.set(
     reservation,
-    (destinationFilename) => createSnapshot(destinationFilename, true),
+    Object.freeze({
+      createMigrationSnapshot(destinationFilename): VerifiedPlannerSnapshotInspection {
+        return createSnapshot(destinationFilename, true);
+      },
+      migrationConnection: Object.freeze({
+        database,
+        assertActive,
+        commit(): void {
+          assertActive();
+          if (!transactionOpen) {
+            throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite migration transaction is no longer open.");
+          }
+          database.exec("COMMIT");
+          transactionOpen = false;
+        },
+      }),
+    }),
   );
   return reservation;
 }
@@ -1004,14 +1063,14 @@ function createVerifiedMigrationBackup(
   let reservation: PlannerStoreWriteReservation | null = null;
   try {
     reservation = acquirePlannerStoreWriteReservation({ filename });
-    const createMigrationSnapshot = MIGRATION_SNAPSHOT_CREATORS.get(reservation);
-    if (createMigrationSnapshot === undefined) {
+    const operations = RESERVED_STORE_OPERATIONS.get(reservation);
+    if (operations === undefined) {
       throw new PlannerStoreError(
         "MIGRATION_FAILED",
         "The SQLite migration snapshot primitive is unavailable.",
       );
     }
-    return createMigrationSnapshot(backupPath).filename;
+    return operations.createMigrationSnapshot(backupPath).filename;
   } catch (error) {
     try {
       rmSync(backupPath, { force: true });
@@ -1028,6 +1087,14 @@ function createVerifiedMigrationBackup(
   }
 }
 
+function executeMigrationEntry(database: DatabaseSync, migration: (typeof PLANNER_SCHEMA_MIGRATIONS)[number]): void {
+  const sql = readFileSync(migration.path, "utf8");
+  database.exec(sql);
+  database
+    .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+    .run(migration.version, Date.now());
+}
+
 function applyMigrations(database: DatabaseSync, startingVersion: number): void {
   let currentVersion = startingVersion;
   for (const migration of PLANNER_SCHEMA_MIGRATIONS) {
@@ -1038,13 +1105,9 @@ function applyMigrations(database: DatabaseSync, startingVersion: number): void 
         `Database migration path is not contiguous after version ${currentVersion}.`,
       );
     }
-    const sql = readFileSync(migration.path, "utf8");
     database.exec("BEGIN IMMEDIATE");
     try {
-      database.exec(sql);
-      database
-        .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
-        .run(migration.version, Date.now());
+      executeMigrationEntry(database, migration);
       database.exec("COMMIT");
       currentVersion = migration.version;
     } catch (error) {
@@ -1059,6 +1122,286 @@ function applyMigrations(database: DatabaseSync, startingVersion: number): void 
         { cause: error },
       );
     }
+  }
+}
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+function readNonInternalSchemaDefinitions(database: DatabaseSync): readonly SchemaDefinition[] {
+  return Object.freeze(database.prepare(
+    "SELECT type, name, sql FROM sqlite_schema " +
+      "WHERE type IN ('index', 'table', 'trigger', 'view') AND name NOT LIKE 'sqlite_%' " +
+      "ORDER BY type, name",
+  ).all().map((row) => {
+    const entry = row as { type: string; name: string; sql: string | null };
+    return Object.freeze({ type: entry.type, name: entry.name, sql: entry.sql });
+  }));
+}
+
+function readInventoryTableNames(database: DatabaseSync): string[] {
+  return database.prepare(
+    "SELECT name FROM sqlite_schema WHERE type = 'table' AND " +
+      "(name NOT LIKE 'sqlite_%' OR name = 'sqlite_sequence' OR name LIKE 'sqlite_stat%') ORDER BY name",
+  ).all().map((row) => (row as { name: string }).name).sort();
+}
+
+function readLogicalInventory(database: DatabaseSync): LogicalInventory {
+  const schema = readNonInternalSchemaDefinitions(database);
+  const tableNames = readInventoryTableNames(database);
+  const tables: Record<string, LogicalTableInventory> = {};
+  for (const name of tableNames.sort()) {
+    const quoted = quoteIdentifier(name);
+    const columns = database.prepare(`PRAGMA table_xinfo(${quoted})`).all()
+      .filter((row) => Number((row as { hidden: number }).hidden) === 0)
+      .map((row) => String((row as { name: string }).name));
+    const encodedColumns = columns.map((column) =>
+      `typeof(${quoteIdentifier(column)}) AS ${quoteIdentifier(`type_${column}`)}, ` +
+      `CASE typeof(${quoteIdentifier(column)}) ` +
+      `WHEN 'text' THEN hex(CAST(${quoteIdentifier(column)} AS BLOB)) ` +
+      `WHEN 'blob' THEN hex(${quoteIdentifier(column)}) ` +
+      `ELSE quote(${quoteIdentifier(column)}) END AS ${quoteIdentifier(`value_${column}`)}`,
+    ).join(", ");
+    const rows = (database.prepare(`SELECT ${encodedColumns} FROM ${quoted}`).all() as Array<Record<string, string>>)
+      .map((row) => Object.freeze(columns.map((column) => Object.freeze([
+        String(row[`type_${column}`]),
+        String(row[`value_${column}`]),
+      ] as const))))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    const schemaEntry = schema.find((entry) => entry.type === "table" && entry.name === name);
+    tables[name] = Object.freeze({
+      sql: schemaEntry?.sql ?? null,
+      columns: Object.freeze(columns),
+      rows: Object.freeze(rows),
+    });
+  }
+  return Object.freeze({ schema: Object.freeze(schema), tables: Object.freeze(tables) });
+}
+
+function sameLogicalValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function readRowCounts(database: DatabaseSync): Readonly<Record<string, number>> {
+  return Object.freeze(Object.fromEntries(readInventoryTableNames(database).map((name) => {
+    const row = database.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(name)}`).get() as {
+      count: number;
+    };
+    return [name, Number(row.count)];
+  })));
+}
+
+function assertExpectedSchemaObjects(database: DatabaseSync): void {
+  if (canonicalPlannerSchemaDefinitions === null) {
+    const canonical = new DatabaseSync(":memory:");
+    try {
+      for (const migration of PLANNER_SCHEMA_MIGRATIONS) executeMigrationEntry(canonical, migration);
+      canonicalPlannerSchemaDefinitions = readNonInternalSchemaDefinitions(canonical);
+    } finally {
+      canonical.close();
+    }
+  }
+  if (!sameLogicalValue(readNonInternalSchemaDefinitions(database), canonicalPlannerSchemaDefinitions)) {
+    throw new PlannerStoreError("STORE_CORRUPT", "The SQLite schema definitions do not match the repository migration catalogue.");
+  }
+}
+
+function assertForeignKeyIntegrity(database: DatabaseSync): void {
+  const violations = database.prepare("PRAGMA foreign_key_check").all();
+  if (violations.length > 0) {
+    throw new PlannerStoreError(
+      "STORE_CORRUPT",
+      "The SQLite store contains foreign-key violations.",
+    );
+  }
+}
+
+function assertCoherentV8Store(database: DatabaseSync): void {
+  quickCheck(database);
+  assertForeignKeyIntegrity(database);
+  const versions = readAppliedMigrationVersions(database);
+  if (!sameLogicalValue(versions, [1, 2, 3, 4, 5, 6, 7, 8])) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store must have the contiguous v1 through v8 migration ledger.");
+  }
+  assertExpectedSchemaObjects(database);
+  const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
+  const household = database.prepare(
+    "SELECT schema_version FROM workspace WHERE id = 'household'",
+  ).get() as { schema_version: number } | undefined;
+  if (workspaceCount !== 1 || household?.schema_version !== 8) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "The SQLite store must contain exactly one household workspace at schema version 8.",
+    );
+  }
+}
+
+function assertCoherentV9Store(database: DatabaseSync): void {
+  quickCheck(database);
+  assertForeignKeyIntegrity(database);
+  const versions = readAppliedMigrationVersions(database);
+  if (!sameLogicalValue(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9])) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store did not reach the contiguous v1 through v9 migration ledger.");
+  }
+  assertExpectedSchemaObjects(database);
+  const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
+  const household = database.prepare(
+    "SELECT schema_version FROM workspace WHERE id = 'household'",
+  ).get() as { schema_version: number } | undefined;
+  if (workspaceCount !== 1 || household?.schema_version !== 9) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite household workspace did not reach schema version 9.");
+  }
+}
+
+function assertExactV8ToV9Delta(before: LogicalInventory, after: LogicalInventory): void {
+  if (!sameLogicalValue(before.schema, after.schema)) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite schema changed outside the v8-to-v9 data transition.");
+  }
+  const beforeNames = Object.keys(before.tables).sort();
+  const afterNames = Object.keys(after.tables).sort();
+  if (!sameLogicalValue(beforeNames, afterNames)) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite durable table set changed outside the v8-to-v9 transition.");
+  }
+  for (const name of beforeNames) {
+    const initial = before.tables[name];
+    const migrated = after.tables[name];
+    if (!sameLogicalValue(initial.sql, migrated.sql) || !sameLogicalValue(initial.columns, migrated.columns)) {
+      throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite table definition changed unexpectedly: ${name}.`);
+    }
+    if (name === "schema_migrations") {
+      const versionColumn = initial.columns.indexOf("version");
+      const appliedAtColumn = initial.columns.indexOf("applied_at");
+      if (versionColumn < 0 || appliedAtColumn < 0) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite migration ledger shape is invalid.");
+      }
+      const added = migrated.rows.filter((row) => row[versionColumn][1] === "9");
+      const retained = migrated.rows.filter((row) => row[versionColumn][1] !== "9");
+      if (added.length !== 1 || added[0][versionColumn][0] !== "integer" || added[0][appliedAtColumn][0] !== "integer" || !sameLogicalValue(initial.rows, retained)) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite migration ledger changed outside its one version-9 entry.");
+      }
+      continue;
+    }
+    if (name === "workspace") {
+      const idColumn = initial.columns.indexOf("id");
+      const schemaColumn = initial.columns.indexOf("schema_version");
+      if (idColumn < 0 || schemaColumn < 0 || initial.rows.length !== 1 || migrated.rows.length !== 1) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite workspace shape is invalid for v8-to-v9 validation.");
+      }
+      const previous = initial.rows[0];
+      const current = migrated.rows[0];
+      const expected = previous.map((cell, index) => index === schemaColumn ? ["integer", "9"] as const : cell);
+      if (previous[idColumn][0] !== "text" || previous[idColumn][1] !== "686F757365686F6C64" || previous[schemaColumn][0] !== "integer" || previous[schemaColumn][1] !== "8" || !sameLogicalValue(current, expected)) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite household workspace changed outside schema_version 8 to 9.");
+      }
+      continue;
+    }
+    if (!sameLogicalValue(initial.rows, migrated.rows)) {
+      throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite table changed unexpectedly: ${name}.`);
+    }
+  }
+}
+
+function readCommittedV9Summary(
+  filename: string,
+): PlannerStoreV8ToV9MigrationResult["database"] {
+  const database = new DatabaseSync(filename, { readOnly: true });
+  try {
+    assertCoherentV9Store(database);
+    return Object.freeze({
+      filename,
+      quickCheck: "ok" as const,
+      schemaVersion: 9 as const,
+      migrationVersions: Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9] as const),
+      workspaceSchemaVersion: 9 as const,
+      rowCounts: readRowCounts(database),
+    });
+  } finally {
+    database.close();
+  }
+}
+
+export function migratePlannerStoreV8ToV9({
+  filename,
+  backupFilename,
+}: {
+  filename: string;
+  backupFilename: string;
+}): PlannerStoreV8ToV9MigrationResult {
+  assertPlannerSchemaContract();
+  if (CURRENT_SCHEMA_VERSION !== 9) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "The one-time SQLite v8-to-v9 command is unavailable after the schema catalogue advances.",
+    );
+  }
+  if (!isAbsolute(filename) || !isAbsolute(backupFilename)) {
+    throw new TypeError("The SQLite database and backup paths must be absolute.");
+  }
+  const canonicalFilename = realpathSync(filename);
+  const canonicalBackup = canonicalSnapshotDestination(backupFilename);
+  if (canonicalFilename === canonicalBackup) {
+    throw new TypeError("The SQLite backup path must differ from its database path.");
+  }
+  let reservation: PlannerStoreWriteReservation | null = null;
+  let backup: VerifiedPlannerSnapshotInspection | null = null;
+  let committed = false;
+  try {
+    reservation = acquirePlannerStoreWriteReservation({ filename: canonicalFilename });
+    const operations = RESERVED_STORE_OPERATIONS.get(reservation);
+    if (operations === undefined) {
+      throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v8-to-v9 reservation primitives are unavailable.");
+    }
+    const connection = operations.migrationConnection;
+    assertCoherentV8Store(connection.database);
+    const before = readLogicalInventory(connection.database);
+    backup = operations.createMigrationSnapshot(canonicalBackup);
+    const backupDatabase = new DatabaseSync(backup.filename, { readOnly: true });
+    try {
+      assertCoherentV8Store(backupDatabase);
+      if (!sameLogicalValue(before, readLogicalInventory(backupDatabase))) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The verified SQLite backup does not equal the locked v8 source.");
+      }
+    } finally {
+      backupDatabase.close();
+    }
+    const migration = PLANNER_SCHEMA_MIGRATIONS.find((entry) => entry.version === 9);
+    if (migration === undefined) throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v9 catalogue entry is unavailable.");
+    executeMigrationEntry(connection.database, migration);
+    assertCoherentV9Store(connection.database);
+    const after = readLogicalInventory(connection.database);
+    assertExactV8ToV9Delta(before, after);
+    const verifiedBackup = backup;
+    connection.commit();
+    committed = true;
+    reservation.close();
+    reservation = null;
+    const databaseSummary = readCommittedV9Summary(canonicalFilename);
+    return Object.freeze({
+      database: databaseSummary,
+      backup: verifiedBackup,
+      migration: Object.freeze({
+        from: 8,
+        to: 9,
+        allowedChanges: Object.freeze(["schema_migrations:9", "workspace:household.schema_version"] as const),
+      }),
+    });
+  } catch (error) {
+    if (committed) {
+      throw new PlannerStoreError(
+        "MIGRATION_FAILED",
+        `The SQLite v8-to-v9 migration committed at ${canonicalFilename}, but final closed-file readback failed. ` +
+          `Inspect it before retrying; verified v8 backup: ${backup?.filename ?? canonicalBackup}.`,
+        { cause: error, migrationBackupPath: backup?.filename ?? null },
+      );
+    }
+    if (error instanceof PlannerStoreError) throw error;
+    if (isSqliteBusy(error)) {
+      throw new PlannerStoreError("BUSY", "The household store already has an active writer.", { cause: error });
+    }
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v8-to-v9 migration did not complete.", { cause: error });
+  } finally {
+    reservation?.close();
   }
 }
 
