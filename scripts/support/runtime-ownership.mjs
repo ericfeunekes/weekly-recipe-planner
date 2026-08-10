@@ -323,7 +323,7 @@ export async function acquireRuntimeOwnershipLease({
     }
   } catch (error) {
     await closeServer(server).catch(() => undefined);
-    if (errorCode(error) === "EADDRINUSE") {
+    if (["EADDRINUSE", "EEXIST"].includes(errorCode(error))) {
       throw new RuntimeOwnershipError(
         "OWNER_LIVE_OR_INDETERMINATE",
         "Another authority process owns the runtime writer lease.",
