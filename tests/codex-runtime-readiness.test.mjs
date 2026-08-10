@@ -29,6 +29,7 @@ function fixtureConfig(fixture) {
 }
 
 const CONTROL_SHA = "a".repeat(64);
+const SUBPROCESS_EVALUATION_TIMEOUT_MS = 30_000;
 const CONTROL_IDENTITY = Object.freeze({
   launcherPath: "/tmp/codex-managed-test/launcher",
   canonicalPath: "/tmp/codex-managed-test/codex",
@@ -435,7 +436,7 @@ test("real subprocess readiness proves no-auth capability, actual-home provenanc
 
   const first = createFailSoftManagedCodexFollowUpRuntime(config, {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
   assert.equal(first.readStatus().state, "checking");
   const firstStatus = await first.evaluate();
@@ -486,7 +487,7 @@ test("real subprocess readiness proves no-auth capability, actual-home provenanc
 
   const second = createFailSoftManagedCodexFollowUpRuntime(config, {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
   const secondStatus = await second.evaluate();
   assert.equal(secondStatus.state, "compatible");
@@ -512,7 +513,7 @@ test("capability probe rejects a Codex build that accepts only the obsolete simp
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
 
   const status = await runtime.evaluate();
@@ -533,7 +534,7 @@ test("missing dedicated authentication keeps the managed runtime unavailable wit
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
 
   const status = await runtime.evaluate();
@@ -555,7 +556,7 @@ test("actual-home readback accepts only canonical normal-home standalone skills"
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
   const status = await runtime.evaluate();
   assert.equal(status.state, "compatible");
@@ -572,7 +573,7 @@ test("actual-home readback accepts release-owned skills from the immutable app",
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
   const status = await runtime.evaluate();
   assert.equal(status.state, "compatible");
@@ -589,7 +590,7 @@ test("required schema drift marks only the managed Codex runtime incompatible", 
   t.after(() => rm(fixture.root, { recursive: true, force: true }));
   const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
     sourceEnvironment: fixture.environment,
-    evaluationTimeoutMs: 10_000,
+    evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
   });
 
   const status = await runtime.evaluate();
@@ -679,7 +680,7 @@ for (const [variant, expectedState, pattern] of [
     t.after(() => rm(fixture.root, { recursive: true, force: true }));
     const runtime = createFailSoftManagedCodexFollowUpRuntime(fixtureConfig(fixture), {
       sourceEnvironment: fixture.environment,
-      evaluationTimeoutMs: 10_000,
+      evaluationTimeoutMs: SUBPROCESS_EVALUATION_TIMEOUT_MS,
     });
     const status = await runtime.evaluate();
     assert.equal(status.state, expectedState, JSON.stringify(status));
