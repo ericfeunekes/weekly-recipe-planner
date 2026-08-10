@@ -183,7 +183,7 @@ async function runNestedRelease(mode, candidate, environment) {
 }
 
 async function runDirectDeployment(candidate, environment) {
-  return run(process.execPath, [
+  return capture(process.execPath, [
     "--disable-warning=ExperimentalWarning",
     "--experimental-strip-types",
     "--input-type=module",
