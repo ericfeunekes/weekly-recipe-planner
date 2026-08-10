@@ -52,6 +52,75 @@ The migration implementation and disposable proof may live in the feature PR;
 the household data action remains a later `shipping:release` boundary. App
 deployment itself never migrates, copies, restores, or prunes household SQLite.
 
+### One-time SQLite schema-v9 activation
+
+Issue 24 owns the one-time v8-to-v9 database transition. The command has no
+default database path and acts on exactly one explicit file:
+
+```sh
+npm --silent run planner:migrate-v8-v9 -- \
+  --database /absolute/path/to/planner-copy.sqlite \
+  --backup /absolute/path/to/planner-copy.pre-v9.sqlite
+```
+
+Run it first against a transactionally consistent disposable rehearsal source;
+do not copy a live SQLite main file with Finder or `cp`. With the application
+still running, create that rehearsal source using SQLite's online backup
+primitive, which captures one consistent database image without authorizing a
+household service action:
+
+```sh
+sqlite3 /absolute/path/to/planner.sqlite ".backup '/absolute/path/to/planner-copy.sqlite'"
+```
+
+On success the command prints bounded JSON only: canonical source path,
+source `quick_check`, schema and workspace versions, migration versions and
+per-table row counts; plus the verified backup's canonical path, byte length,
+SHA-256, `quick_check`, versions, and object catalogue. It records the two
+allowed changes—migration-ledger row 9 and
+`workspace.household.schema_version` from 8 to 9—and never prints household
+values. Retain the verified v8 backup.
+
+The same command may later be run against the real database with only the two
+paths changed, but only under separately granted `shipping:release`
+authorization for the exact committed candidate. Quiesce household writers
+before this command and keep them stopped through its final release readback
+and any authorized application promotion:
+
+```sh
+launchctl bootout gui/$(id -u)/com.ericfeunekes.meal-planner
+! launchctl print gui/$(id -u)/com.ericfeunekes.meal-planner
+! lsof -nP -iTCP:8642 -sTCP:LISTEN
+```
+
+Quiescence means booting out the supervised LaunchAgent—not closing a browser
+or killing one child. Then run the authorized migration:
+
+```sh
+npm --silent run planner:migrate-v8-v9 -- \
+  --database /absolute/path/to/planner.sqlite \
+  --backup /absolute/path/to/planner.pre-v9.sqlite
+```
+
+The disposable rehearsal source and its backup are proof artifacts. The real
+run's verified v8 backup is the sole retained data-recovery material and must
+be retained with the release record. No checked-in database restore operator
+currently exists, and `make recover` cannot restore SQLite. The authorized
+household activation must therefore name and verify its separate restoration
+steps before the real run; this one-time command does not supply them.
+Application promotion does not migrate SQLite and is not part of this
+procedure. The command rejects anything other than one
+coherent schema-v8 planner store, creates a verified v8 recovery copy while
+holding the source write reservation, and commits only after the migrated
+store passes `PRAGMA quick_check`, `PRAGMA foreign_key_check`, and full logical equality except for those
+two changes, then closes and reads the committed source back before reporting
+success. If it reports that migration committed but final readback failed,
+do not retry: keep writers stopped and inspect the named source and retained
+backup under the active release authorization. Record on Issue 24 the backup
+verification, rehearsal result, production result, candidate commit, exact
+paths, release authorization, and remaining limitations. The migration command
+itself does not perform that recording or a post-commit source-file hash.
+
 ## Merge Gate
 
 Every implementation merge must keep these deterministic cells green:
