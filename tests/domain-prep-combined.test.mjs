@@ -67,7 +67,7 @@ test("combined Prep entries replace direct references across dates and expand in
     kind: "combined",
     sources: [firstStep, secondStep].map((step) => ({
       stepId: step.id,
-      ingredientIds: [...new Set(step.inputs.map((input) => input.ingredientId))],
+      ingredientIds: [...new Set(step.inputs.map((input) => input.occurrenceId))],
     })),
     instruction: "Prepare the shared rice batch.",
     complete: false,
@@ -152,11 +152,11 @@ test("completed combined Prep work requires explicit discard and source edits re
 
   const currentFirst = activeWeek(state).data.meals[0].instructions.find((step) => step.id === firstStep.id);
   state = accepted(householdDomain.execute(state, {
-    type: "updateInstructionStep",
+    type: "editInstructionStep",
     weekId: week.id,
     stepId: firstStep.id,
     changes: {
-      inputs: currentFirst.inputs.map((input) => ({ amount: `${input.amount} extra`, ingredient: input.ingredient })),
+      inputs: currentFirst.inputs.map((input) => ({ kind: "retain", occurrenceId: input.occurrenceId, amount: `${input.amount} extra`, ingredient: input.ingredient })),
       instruction: currentFirst.instruction,
       timerDurationSeconds: currentFirst.timerDurationSeconds ?? null,
     },
@@ -180,6 +180,125 @@ test("completed combined Prep work requires explicit discard and source edits re
     instruction: "Prepare the revised batch after reviewing sources.",
   }, context)).state;
   assert.equal(activeWeek(state).data.prepSessions[0].steps[0].needsReview, false);
+});
+
+test("recipe occurrence core rename and removal refresh combined Prep lineage and require review", () => {
+  const context = createContext();
+  let state = createCanonicalSeed(context);
+  let week = activeWeek(state);
+  const meal = week.data.meals[0];
+  const [firstStep, secondStep] = meal.instructions;
+  const combined = accepted(householdDomain.execute(state, {
+    type: "combinePrepStepsOnDate",
+    weekId: week.id,
+    prepDate: addIsoDateDays(week.id, -1),
+    sourceStepIds: [firstStep.id, secondStep.id],
+    instruction: "Prepare the shared batch.",
+    targetPosition: 0,
+  }, context));
+  state = combined.state;
+  const entryId = combined.createdIds.combinedPrepEntryId;
+  const editedOccurrenceId = firstStep.inputs[0].occurrenceId;
+  const recipeChanges = (currentMeal) => ({
+    title: currentMeal.title,
+    subtitle: currentMeal.subtitle,
+    venue: currentMeal.venue,
+    prepNote: currentMeal.prepNote,
+    leftoverNote: currentMeal.leftoverNote,
+    notes: currentMeal.notes,
+    yieldText: currentMeal.yieldText ?? null,
+  });
+  const retain = (occurrence) => ({
+    kind: "retain",
+    occurrenceId: occurrence.id,
+    source: occurrence.source,
+    amount: occurrence.amount,
+    unit: occurrence.unit,
+    ingredient: occurrence.ingredient,
+    qualifier: occurrence.qualifier,
+    conceptId: occurrence.conceptId,
+  });
+
+  state = accepted(householdDomain.execute(state, {
+    type: "setCombinedPrepStepComplete",
+    weekId: week.id,
+    entryId,
+    complete: true,
+  }, context)).state;
+  week = activeWeek(state);
+  let currentMeal = week.data.meals[0];
+  state = accepted(householdDomain.execute(state, {
+    type: "editMealRecipe",
+    weekId: week.id,
+    mealId: currentMeal.id,
+    changes: recipeChanges(currentMeal),
+    occurrences: currentMeal.ingredients.map((occurrence) =>
+      occurrence.id === editedOccurrenceId
+        ? { ...retain(occurrence), amount: `${occurrence.amount} adjusted` }
+        : retain(occurrence)),
+    removedOccurrenceIds: [],
+  }, context)).state;
+  let entry = activeWeek(state).data.prepSessions[0].steps[0];
+  assert.equal(entry.needsReview, true);
+  assert.equal(entry.complete, false);
+  assert.deepEqual(
+    entry.sources.find((source) => source.stepId === firstStep.id).ingredientIds,
+    [...new Set(firstStep.inputs.map((input) => input.occurrenceId))],
+    "a linked amount edit retains exact occurrence lineage but reopens fulfillment",
+  );
+
+  state = accepted(householdDomain.execute(state, {
+    type: "updateCombinedPrepStep",
+    weekId: week.id,
+    entryId,
+    instruction: "Prepare the reviewed shared batch.",
+  }, context)).state;
+  week = activeWeek(state);
+  currentMeal = week.data.meals[0];
+  state = accepted(householdDomain.execute(state, {
+    type: "editMealRecipe",
+    weekId: week.id,
+    mealId: currentMeal.id,
+    changes: recipeChanges(currentMeal),
+    occurrences: currentMeal.ingredients.map((occurrence) =>
+      occurrence.id === editedOccurrenceId
+        ? { ...retain(occurrence), ingredient: `${occurrence.ingredient} renamed` }
+        : retain(occurrence)),
+    removedOccurrenceIds: [],
+  }, context)).state;
+  entry = activeWeek(state).data.prepSessions[0].steps[0];
+  assert.equal(entry.needsReview, true);
+  assert.deepEqual(
+    entry.sources.find((source) => source.stepId === firstStep.id).ingredientIds,
+    [...new Set(firstStep.inputs.map((input) => input.occurrenceId))],
+    "a core rename retains exact occurrence lineage",
+  );
+
+  state = accepted(householdDomain.execute(state, {
+    type: "updateCombinedPrepStep",
+    weekId: week.id,
+    entryId,
+    instruction: "Prepare the reviewed shared batch after the rename.",
+  }, context)).state;
+  week = activeWeek(state);
+  currentMeal = week.data.meals[0];
+  state = accepted(householdDomain.execute(state, {
+    type: "editMealRecipe",
+    weekId: week.id,
+    mealId: currentMeal.id,
+    changes: recipeChanges(currentMeal),
+    occurrences: currentMeal.ingredients
+      .filter((occurrence) => occurrence.id !== editedOccurrenceId)
+      .map(retain),
+    removedOccurrenceIds: [editedOccurrenceId],
+  }, context)).state;
+  entry = activeWeek(state).data.prepSessions[0].steps[0];
+  assert.equal(entry.needsReview, true);
+  assert.deepEqual(
+    entry.sources.find((source) => source.stepId === firstStep.id).ingredientIds,
+    firstStep.inputs.filter((input) => input.occurrenceId !== editedOccurrenceId).map((input) => input.occurrenceId),
+    "explicit removal removes only that occurrence from the source lineage",
+  );
 });
 
 test("combined Prep rejects duplicate and missing source selections without mutation", () => {

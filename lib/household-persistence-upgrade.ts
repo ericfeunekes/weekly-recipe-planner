@@ -1,11 +1,17 @@
 import {
   MEAL_STATUSES,
   type GroceryItem,
+  type GroceryCoverage,
   type GrocerySection,
   type GrocerySource,
   type HouseholdPlannerState,
   type MealStatus,
 } from "./household-contract.ts";
+import {
+  isGroceryRequirementRole,
+  matchOccurrenceByCore,
+  parseLegacyIngredientLine,
+} from "./ingredient-occurrence.ts";
 
 export type HouseholdStateNormalization = {
   state: HouseholdPlannerState;
@@ -21,82 +27,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function ingredientKey(ingredient: string): string {
-  return ingredient.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-CA");
-}
-
-function ingredientLineParts(line: string): { amount: string; ingredient: string } {
-  const trimmed = line.trim();
-  const match = /^((?:\d+\s+)?(?:\d+(?:[./]\d+)?|[¼½¾⅓⅔]))(?:\s+(cups?|tbsp|tsp|ml|l|g|kg|lb|lbs|oz|cans?|cloves?|bunch(?:es)?|pinches?|packages?|pkgs?|sprigs?|heads?|slices?))?\s+(.+)$/i.exec(trimmed);
-  if (!match) return { amount: "", ingredient: trimmed };
-  return { amount: [match[1], match[2]].filter(Boolean).join(" "), ingredient: match[3].trim() };
-}
-
 function normalizeLegacyRecipeIngredients(meal: Record<string, unknown>): boolean {
-  if (typeof meal.id !== "string" || !Array.isArray(meal.instructions)) return false;
-  let changed = false;
-  const ingredients = Array.isArray(meal.ingredients) ? meal.ingredients : [];
-  const canonical = ingredients.every((ingredient) =>
-    isRecord(ingredient) &&
-    typeof ingredient.id === "string" &&
-    typeof ingredient.amount === "string" &&
-    typeof ingredient.ingredient === "string",
-  );
-  const records: Array<{ id: string; amount: string; ingredient: string }> = [];
-  const mergedIngredientIds = new Map<string, string>();
-  if (canonical) {
-    for (const ingredient of ingredients as Array<Record<string, string>>) {
-      const parsed = ingredientLineParts([ingredient.amount, ingredient.ingredient].filter(Boolean).join(" "));
-      const existing = records.find((candidate) => ingredientKey(candidate.ingredient) === ingredientKey(parsed.ingredient));
-      if (existing) {
-        mergedIngredientIds.set(ingredient.id, existing.id);
-        changed = true;
-        continue;
-      }
-      records.push({ id: ingredient.id, ...parsed });
-      if (parsed.amount !== ingredient.amount || parsed.ingredient !== ingredient.ingredient) changed = true;
-    }
-    if (changed) meal.ingredients = records;
-  }
-  if (!canonical) {
-    let nextIndex = 0;
-    for (const line of ingredients) {
-      if (typeof line !== "string") continue;
-      const parsed = ingredientLineParts(line);
-      if (!parsed.ingredient || records.some((ingredient) => ingredientKey(ingredient.ingredient) === ingredientKey(parsed.ingredient))) continue;
-      records.push({ id: `${meal.id}:ingredient:${nextIndex}`, ...parsed });
-      nextIndex += 1;
-    }
-    meal.ingredients = records;
-    changed = true;
-  }
-  let nextIndex = records.length;
-  const resolveIngredient = (amount: string, ingredient: string) => {
-    let record = records.find((candidate) => ingredientKey(candidate.ingredient) === ingredientKey(ingredient));
-    if (!record) {
-      record = { id: `${meal.id}:ingredient:${nextIndex}`, amount, ingredient };
-      nextIndex += 1;
-      records.push(record);
-      meal.ingredients = records;
-      changed = true;
-    }
-    return record.id;
-  };
-  for (const step of meal.instructions) {
-    if (!isRecord(step) || !Array.isArray(step.inputs)) continue;
-    for (const input of step.inputs) {
-      if (!isRecord(input) || typeof input.amount !== "string" || typeof input.ingredient !== "string") continue;
-      const linkedIngredientId = typeof input.ingredientId === "string"
-        ? mergedIngredientIds.get(input.ingredientId) ?? input.ingredientId
-        : undefined;
-      const canonicalIngredientId = linkedIngredientId && records.some((record) => record.id === linkedIngredientId)
-        ? linkedIngredientId
-        : resolveIngredient(input.amount, input.ingredient);
-      if (input.ingredientId !== canonicalIngredientId) {
-        input.ingredientId = canonicalIngredientId;
-        changed = true;
-      }
-    }
+  const issues: IngredientOccurrenceUpgradeIssue[] = [];
+  const changed = upgradeMealOccurrences(meal, "$.meal", issues);
+  if (issues.length > 0) {
+    throw new TypeError(issues.map(({ path, message }) => `${path}: ${message}`).join("; "));
   }
   return changed;
 }
@@ -225,9 +160,10 @@ type IngredientOccurrence = {
   ingredientId: string;
   ingredient: string;
   amount: string;
+  role: "weekly_requirement";
 };
 
-type LegacyGroceryClassification = Pick<GroceryItem, "section" | "source" | "checked"> & {
+type LegacyGroceryClassification = Pick<GroceryItem, "section" | "coverage" | "checked"> & {
   id?: string;
 };
 
@@ -235,17 +171,19 @@ function legacyGroceryClassification(
   record: Record<string, unknown>,
   occurrences: IngredientOccurrence[],
 ): { key: string; classification: LegacyGroceryClassification } | null {
-  const source = isGrocerySource(record.source)
-    ? record.source
+  const coverage: GroceryCoverage = ["needs_source", "shop", "farm_box", "on_hand"].includes(String(record.coverage))
+    ? record.coverage as GroceryCoverage
+    : isGrocerySource(record.source)
+      ? record.source
     : record.farmBox === true
       ? "farm_box"
       : record.farmBox === false
         ? "shop"
-        : "shop";
+        : "needs_source";
   const classification: LegacyGroceryClassification = {
     ...(typeof record.id === "string" ? { id: record.id } : {}),
     section: isGrocerySection(record.section) ? record.section : "Pantry",
-    source,
+    coverage,
     checked: record.checked === true,
   };
 
@@ -287,12 +225,13 @@ function normalizeLegacyGroceryProjection(data: Record<string, unknown>): boolea
   for (const meal of data.meals) {
     if (!isRecord(meal) || typeof meal.id !== "string" || !Array.isArray(meal.ingredients)) continue;
     for (const ingredient of meal.ingredients) {
-      if (!isRecord(ingredient) || typeof ingredient.id !== "string" || typeof ingredient.ingredient !== "string" || typeof ingredient.amount !== "string") continue;
+      if (!isRecord(ingredient) || typeof ingredient.id !== "string" || typeof ingredient.ingredient !== "string" || typeof ingredient.amount !== "string" || !isGroceryRequirementRole(ingredient.role)) continue;
       occurrences.push({
         mealId: meal.id,
         ingredientId: ingredient.id,
         ingredient: ingredient.ingredient,
         amount: ingredient.amount,
+        role: ingredient.role,
       });
     }
   }
@@ -326,7 +265,7 @@ function normalizeLegacyGroceryProjection(data: Record<string, unknown>): boolea
       mealId: occurrence.mealId,
       ingredientId: occurrence.ingredientId,
       section: classification?.section ?? inferredGrocerySection(occurrence.ingredient),
-      source: classification?.source ?? "shop",
+      coverage: classification?.coverage ?? "needs_source",
       checked: classification?.checked ?? false,
     };
   });
@@ -433,4 +372,287 @@ export function normalizeLegacyHouseholdPayload<T>(value: T): HouseholdPayloadNo
 
   visit(next);
   return changed ? { value: next, changed: true } : { value, changed: false };
+}
+
+export type IngredientOccurrenceUpgradeIssue = { path: string; message: string };
+export type HouseholdStateUpgrade =
+  | { ok: true; state: HouseholdPlannerState; changed: boolean }
+  | { ok: false; issues: IngredientOccurrenceUpgradeIssue[] };
+export type HouseholdPayloadUpgrade<T> =
+  | { ok: true; value: T; changed: boolean }
+  | { ok: false; issues: IngredientOccurrenceUpgradeIssue[] };
+
+const LEGACY_GROCERY_COVERAGE = new Set(["shop", "farm_box", "on_hand"]);
+
+function occurrenceDefaults(record: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: record.id,
+    source: null,
+    amount: record.amount,
+    unit: null,
+    ingredient: record.ingredient,
+    qualifier: null,
+    conceptId: null,
+    role: "weekly_requirement",
+    canonicalIngredientId: null,
+  };
+}
+
+function isSchemaTenOccurrence(record: Record<string, unknown>): boolean {
+  return (
+    typeof record.id === "string" &&
+    (record.source === null || typeof record.source === "string") &&
+    typeof record.amount === "string" &&
+    (record.unit === null || typeof record.unit === "string") &&
+    typeof record.ingredient === "string" &&
+    (record.qualifier === null || typeof record.qualifier === "string") &&
+    (record.conceptId === null || typeof record.conceptId === "string") &&
+    ["weekly_requirement", "output", "leftover"].includes(String(record.role)) &&
+    (record.canonicalIngredientId === null ||
+      (Number.isSafeInteger(record.canonicalIngredientId) && Number(record.canonicalIngredientId) > 0))
+  );
+}
+
+function upgradeMealOccurrences(
+  meal: Record<string, unknown>,
+  path: string,
+  issues: IngredientOccurrenceUpgradeIssue[],
+): boolean {
+  if (typeof meal.id !== "string" || !Array.isArray(meal.ingredients) || !Array.isArray(meal.instructions)) {
+    issues.push({ path, message: "Expected a meal with an ID, ingredient rows, and instruction steps." });
+    return false;
+  }
+  let changed = false;
+  const occurrences: Array<Record<string, unknown>> = [];
+  const ids = new Set<string>();
+  for (const [index, candidate] of meal.ingredients.entries()) {
+    const ingredientPath = `${path}.ingredients[${index}]`;
+    let occurrence: Record<string, unknown>;
+    if (typeof candidate === "string") {
+      const parsed = parseLegacyIngredientLine(candidate);
+      occurrence = {
+        id: `${meal.id}:ingredient:${index}`,
+        ...parsed,
+        conceptId: null,
+        role: "weekly_requirement",
+        canonicalIngredientId: null,
+      };
+      changed = true;
+    } else if (
+      isRecord(candidate) &&
+      typeof candidate.id === "string" &&
+      typeof candidate.amount === "string" &&
+      typeof candidate.ingredient === "string"
+    ) {
+      if (isSchemaTenOccurrence(candidate)) {
+        occurrence = candidate;
+      } else {
+        const legacyKeys = new Set(["id", "amount", "ingredient"]);
+        if (Object.keys(candidate).some((key) => !legacyKeys.has(key))) {
+          issues.push({
+            path: ingredientPath,
+            message: "Structured ingredient row has a partial or unsupported occurrence shape.",
+          });
+          continue;
+        }
+        occurrence = occurrenceDefaults(candidate);
+        changed = true;
+      }
+    } else {
+      issues.push({ path: ingredientPath, message: "Ingredient row is neither a legacy string nor a structured occurrence." });
+      continue;
+    }
+    const id = String(occurrence.id);
+    if (!id || ids.has(id)) {
+      issues.push({ path: `${ingredientPath}.id`, message: "Occurrence ID is empty or duplicated within the meal." });
+      continue;
+    }
+    ids.add(id);
+    occurrences.push(occurrence);
+  }
+
+  let nextIndex = occurrences.length;
+  for (const [stepIndex, stepCandidate] of meal.instructions.entries()) {
+    if (!isRecord(stepCandidate) || !Array.isArray(stepCandidate.inputs)) continue;
+    for (const [inputIndex, inputCandidate] of stepCandidate.inputs.entries()) {
+      if (!isRecord(inputCandidate)) continue;
+      const inputPath = `${path}.instructions[${stepIndex}].inputs[${inputIndex}]`;
+      const explicit = typeof inputCandidate.occurrenceId === "string"
+        ? inputCandidate.occurrenceId
+        : typeof inputCandidate.ingredientId === "string"
+          ? inputCandidate.ingredientId
+          : null;
+      if (explicit !== null) {
+        if (!ids.has(explicit)) {
+          issues.push({ path: inputPath, message: `Instruction input references missing occurrence ${explicit}.` });
+          continue;
+        }
+        if (inputCandidate.occurrenceId !== explicit || Object.hasOwn(inputCandidate, "ingredientId")) {
+          inputCandidate.occurrenceId = explicit;
+          delete inputCandidate.ingredientId;
+          changed = true;
+        }
+        continue;
+      }
+      if (typeof inputCandidate.amount !== "string" || typeof inputCandidate.ingredient !== "string") {
+        issues.push({ path: inputPath, message: "Legacy instruction input has no usable literal or occurrence reference." });
+        continue;
+      }
+      const match = matchOccurrenceByCore(
+        inputCandidate.ingredient,
+        occurrences.map((occurrence) => ({ id: String(occurrence.id), ingredient: String(occurrence.ingredient) })),
+      );
+      if (match.kind === "ambiguous") {
+        issues.push({
+          path: inputPath,
+          message: `Legacy instruction input ambiguously matches ${match.occurrenceIds.length} occurrences: ${match.occurrenceIds.join(", ")}.`,
+        });
+        continue;
+      }
+      if (match.kind === "missing") {
+        let id = `${meal.id}:ingredient:${nextIndex}`;
+        while (ids.has(id)) id = `${meal.id}:ingredient:${++nextIndex}`;
+        nextIndex += 1;
+        const occurrence = {
+          id,
+          source: null,
+          amount: inputCandidate.amount,
+          unit: null,
+          ingredient: inputCandidate.ingredient,
+          qualifier: null,
+          conceptId: null,
+          role: "weekly_requirement",
+          canonicalIngredientId: null,
+        };
+        ids.add(id);
+        occurrences.push(occurrence);
+      }
+      inputCandidate.occurrenceId = match.kind === "unique"
+        ? match.occurrenceId
+        : String(occurrences[occurrences.length - 1].id);
+      changed = true;
+    }
+  }
+  if (issues.length === 0 && (changed || meal.ingredients !== occurrences)) meal.ingredients = occurrences;
+  return changed;
+}
+
+function upgradeWeekOccurrences(
+  week: Record<string, unknown>,
+  path: string,
+  issues: IngredientOccurrenceUpgradeIssue[],
+): boolean {
+  const data = isRecord(week.data) ? week.data : week;
+  if (!Array.isArray(data.meals)) return false;
+  let changed = false;
+  for (const [mealIndex, meal] of data.meals.entries()) {
+    if (!isRecord(meal)) {
+      issues.push({ path: `${path}.meals[${mealIndex}]`, message: "Meal must be an object." });
+      continue;
+    }
+    changed = upgradeMealOccurrences(meal, `${path}.meals[${mealIndex}]`, issues) || changed;
+  }
+  // Occurrence IDs must exist before grocery execution rows can be projected.
+  // This is what lets a true legacy string row become one distinct grocery row
+  // without using normalized text as its identity.
+  changed = normalizeLegacyGroceryProjection(data) || changed;
+  if (Array.isArray(data.groceries)) {
+    for (const [index, grocery] of data.groceries.entries()) {
+      if (!isRecord(grocery)) continue;
+      const groceryPath = `${path}.groceries[${index}]`;
+      if (typeof grocery.coverage === "string") {
+        if (!["needs_source", "shop", "farm_box", "on_hand"].includes(grocery.coverage)) {
+          issues.push({ path: `${groceryPath}.coverage`, message: "Grocery coverage is unsupported." });
+        }
+        if (Object.hasOwn(grocery, "source")) {
+          issues.push({ path: groceryPath, message: "Grocery row contains both source and coverage." });
+        }
+        continue;
+      }
+      grocery.coverage = typeof grocery.source === "string" && LEGACY_GROCERY_COVERAGE.has(grocery.source)
+        ? grocery.source
+        : "needs_source";
+      delete grocery.source;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function upgradeOccurrenceStateValue(
+  value: unknown,
+  path: string,
+  issues: IngredientOccurrenceUpgradeIssue[],
+): boolean {
+  if (!isRecord(value) || !Array.isArray(value.weeks)) {
+    issues.push({ path, message: "Expected a household state with weeks." });
+    return false;
+  }
+  let changed = false;
+  for (const [weekIndex, week] of value.weeks.entries()) {
+    if (!isRecord(week)) {
+      issues.push({ path: `${path}.weeks[${weekIndex}]`, message: "Week must be an object." });
+      continue;
+    }
+    changed = upgradeWeekOccurrences(week, `${path}.weeks[${weekIndex}].data`, issues) || changed;
+  }
+  return changed;
+}
+
+/** Mechanical schema-9 to schema-10 state upgrade. Never mutates the input. */
+export function upgradeHouseholdStateToIngredientOccurrences(state: unknown): HouseholdStateUpgrade {
+  const next = structuredClone(state);
+  const issues: IngredientOccurrenceUpgradeIssue[] = [];
+  const changed = upgradeOccurrenceStateValue(next, "$", issues);
+  return issues.length > 0
+    ? { ok: false, issues }
+    : { ok: true, state: next as HouseholdPlannerState, changed };
+}
+
+/** Upgrades only the closed household slots in a persisted planner tool result. */
+export function upgradeHouseholdPayloadToIngredientOccurrences<T>(
+  value: T,
+  legacyOperationCount = 1,
+): HouseholdPayloadUpgrade<T> {
+  const next = structuredClone(value);
+  const issues: IngredientOccurrenceUpgradeIssue[] = [];
+  let changed = false;
+  const upgradeReadback = (candidate: unknown, path: string): void => {
+    if (!isRecord(candidate)) return;
+    if (candidate.kind === "week" && isRecord(candidate.week)) {
+      changed = upgradeWeekOccurrences(candidate.week, `${path}.week`, issues) || changed;
+    } else if (candidate.kind === "meal" && isRecord(candidate.meal)) {
+      changed = upgradeMealOccurrences(candidate.meal, `${path}.meal`, issues) || changed;
+    }
+  };
+  if (
+    isRecord(next) && next.schemaVersion === 1 && next.ok === true &&
+    typeof next.callId === "string" && isRecord(next.data)
+  ) {
+    const data = next.data;
+    if (
+      (data.status === "accepted" || data.status === "replayed") &&
+      typeof data.eventId === "string" && isRecord(data.readback) &&
+      !Object.hasOwn(data, "occurrenceResults")
+    ) {
+      data.occurrenceResults = Array.from(
+        { length: legacyOperationCount },
+        (_, operationIndex) => ({ operationIndex, occurrences: [] }),
+      );
+      changed = true;
+    }
+    if (data.status === "previewed" && Array.isArray(data.outcomes)) {
+      for (const outcome of data.outcomes) {
+        if (isRecord(outcome) && !Object.hasOwn(outcome, "occurrences")) {
+          outcome.occurrences = [];
+          changed = true;
+        }
+      }
+    }
+    if (isRecord(data.readback)) upgradeReadback(data.readback, "$.data.readback");
+    else upgradeReadback(data, "$.data");
+  }
+  return issues.length > 0
+    ? { ok: false, issues }
+    : { ok: true, value: next, changed };
 }

@@ -17,8 +17,19 @@ import {
 
 const weekId = "2026-07-06";
 const id = "id-1";
+const occurrence = {
+  kind: "create",
+  correlationId: "ingredient-1",
+  source: "1 cup rice",
+  amount: "1",
+  unit: "cup",
+  ingredient: "rice",
+  qualifier: null,
+  conceptId: null,
+  canonicalIngredientId: null,
+};
 const step = {
-  inputs: [{ amount: "1 cup", ingredient: "rice" }],
+  inputs: [{ kind: "create", correlationId: "ingredient-1", amount: "1 cup", ingredient: "rice" }],
   instruction: "Rinse the rice.",
 };
 
@@ -27,7 +38,7 @@ const fixtures = {
   reorderMeals: { type: "reorderMeals", weekId, date: "2026-07-07", mealIds: [id, "id-2"] },
   swapMealDays: { type: "swapMealDays", weekId, firstDate: "2026-07-06", secondDate: "2026-07-07" },
   updateMealStatus: { type: "updateMealStatus", weekId, mealId: id, status: "cooking" },
-  updateMealSnapshot: { type: "updateMealSnapshot", weekId, mealId: id, changes: { title: "Rice", subtitle: "", venue: "Home", prepNote: "", leftoverNote: "", notes: "", ingredients: [], yieldText: null } },
+  editMealRecipe: { type: "editMealRecipe", weekId, mealId: id, changes: { title: "Rice", subtitle: "", venue: "Home", prepNote: "", leftoverNote: "", notes: "", yieldText: null }, occurrences: [], removedOccurrenceIds: [] },
   replaceMealRecipeFromSource: {
     type: "replaceMealRecipeFromSource",
     weekId,
@@ -40,11 +51,12 @@ const fixtures = {
         url: "https://example.com/recipes/rice",
         retrievedAt: 1_750_000_000_000,
       },
-      steps: [step],
+      occurrences: [occurrence],
+      steps: [{ inputs: [{ occurrenceCorrelationId: "ingredient-1", amount: "1 cup", ingredient: "rice" }], instruction: step.instruction }],
     },
   },
   addInstructionStep: { type: "addInstructionStep", weekId, mealId: id, position: 0, step },
-  updateInstructionStep: { type: "updateInstructionStep", weekId, stepId: id, changes: { inputs: [], instruction: "Rest.", timerDurationSeconds: null } },
+  editInstructionStep: { type: "editInstructionStep", weekId, stepId: id, changes: { inputs: [], instruction: "Rest.", timerDurationSeconds: null } },
   moveInstructionStep: { type: "moveInstructionStep", weekId, stepId: id, targetPosition: 0 },
   removeInstructionStep: { type: "removeInstructionStep", weekId, stepId: id },
   setInstructionStepComplete: { type: "setInstructionStepComplete", weekId, stepId: id, complete: true },
@@ -61,7 +73,7 @@ const fixtures = {
   movePrepStepsToDate: { type: "movePrepStepsToDate", weekId, sourcePrepDate: "2026-06-28", prepDate: "2026-06-29", entryIds: ["entry-1", "entry-2"], targetPosition: 0 },
   removePrepStepsFromDate: { type: "removePrepStepsFromDate", weekId, prepDate: "2026-06-29", entryIds: ["entry-1", "entry-2"] },
   clearPrepDate: { type: "clearPrepDate", weekId, prepDate: "2026-06-29" },
-  moveGroceryItemsToSource: { type: "moveGroceryItemsToSource", weekId, itemIds: [id, "id-2"], source: "shop" },
+  setGroceryItemsCoverage: { type: "setGroceryItemsCoverage", weekId, itemIds: [id, "id-2"], coverage: "shop" },
   setGroceryItemChecked: { type: "setGroceryItemChecked", weekId, itemId: id, checked: true },
   captureFeedback: { type: "captureFeedback", weekId, mealId: id, value: "repeat" },
   captureWeekLesson: { type: "captureWeekLesson", weekId, weekLesson: "Prep earlier." },
@@ -96,14 +108,14 @@ test("one registry derives every command validator, schema variant, and authorit
   assert.equal(HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST.permanentlyDeniedOperations.includes("undoLatest"), true);
 });
 
-test("source provenance can enter only through sourced replacement, never create or snapshot update", () => {
+test("source provenance can enter only through sourced replacement, never ordinary recipe editing", () => {
   const ajv = new Ajv({ allErrors: true, schemaId: "auto" });
   const validateCanonical = ajv.compile(HOUSEHOLD_COMMAND_SCHEMA);
   const validateProvider = ajv.compile(HOUSEHOLD_COMMAND_PROVIDER_SCHEMA);
   const sourceRecipe = fixtures.replaceMealRecipeFromSource.recipe.source;
   const injectedUpdate = {
-    ...fixtures.updateMealSnapshot,
-    changes: { ...fixtures.updateMealSnapshot.changes, sourceRecipe },
+    ...fixtures.editMealRecipe,
+    changes: { ...fixtures.editMealRecipe.changes, sourceRecipe },
   };
   const canonicalCreate = {
     type: "createWeekPlan",
@@ -118,15 +130,15 @@ test("source provenance can enter only through sourced replacement, never create
         prepNote: "",
         leftoverNote: "",
         notes: "",
-        ingredients: [],
-        instructions: [step],
+        occurrences: [occurrence],
+        instructions: [{ inputs: [{ occurrenceCorrelationId: "ingredient-1", amount: "1 cup", ingredient: "rice" }], instruction: step.instruction }],
       }],
     },
   };
   const injectedCreate = structuredClone(canonicalCreate);
   injectedCreate.plan.meals[0].sourceRecipe = sourceRecipe;
   for (const [label, baseline, command] of [
-    ["updateMealSnapshot", fixtures.updateMealSnapshot, injectedUpdate],
+    ["editMealRecipe", fixtures.editMealRecipe, injectedUpdate],
     ["createWeekPlan", canonicalCreate, injectedCreate],
   ]) {
     assert.equal(isHouseholdCommand(baseline), true, `${label} runtime baseline`);
@@ -135,8 +147,8 @@ test("source provenance can enter only through sourced replacement, never create
     assert.equal(validateCanonical(command), false, `${label} canonical schema`);
   }
 
-  assert.equal(validateProvider(fixtures.updateMealSnapshot), true, "snapshot provider baseline");
-  assert.equal(validateProvider(injectedUpdate), false, "snapshot provider source injection");
+  assert.equal(validateProvider(fixtures.editMealRecipe), true, "recipe edit provider baseline");
+  assert.equal(validateProvider(injectedUpdate), false, "recipe edit provider source injection");
   const providerCreate = structuredClone(canonicalCreate);
   providerCreate.plan.weekLesson = null;
   providerCreate.plan.meals[0].status = null;
@@ -158,6 +170,38 @@ test("draft-07 Ajv independently compiles every canonical command variant", () =
     assert.equal(isHouseholdCommand(extra), false, `${type} runtime extra-field rejection`);
     assert.equal(validate(extra), false, `${type} schema extra-field rejection`);
   }
+});
+
+test("recipe edit runtime guard enforces the same bounded change fields as its schema", () => {
+  for (const changes of [
+    { ...fixtures.editMealRecipe.changes, title: 7 },
+    { ...fixtures.editMealRecipe.changes, title: "" },
+    { ...fixtures.editMealRecipe.changes, venue: "" },
+    { ...fixtures.editMealRecipe.changes, notes: "x".repeat(4_001) },
+    { ...fixtures.editMealRecipe.changes, yieldText: "x".repeat(81) },
+  ]) {
+    assert.equal(isHouseholdCommand({ ...fixtures.editMealRecipe, changes }), false);
+  }
+});
+
+test("week-plan occurrence correlations are unique across the whole operation", () => {
+  const meal = {
+    date: "2026-07-13",
+    title: "Rice",
+    subtitle: "",
+    venue: "Home",
+    protein: "none",
+    prepNote: "",
+    leftoverNote: "",
+    notes: "",
+    occurrences: [occurrence],
+    instructions: [],
+  };
+  assert.equal(isHouseholdCommand({
+    type: "createWeekPlan",
+    weekStartDate: "2026-07-13",
+    plan: { meals: [meal, { ...meal, date: "2026-07-14" }] },
+  }), false);
 });
 
 test("provider-strict schema is derived without changing canonical optionality", () => {
@@ -186,13 +230,13 @@ test("provider-strict schema is derived without changing canonical optionality",
   ]) assert.equal(isHouseholdCommand(command), false);
 });
 
-test("bulk grocery source moves require a bounded, unique selection and supported destination", () => {
-  const baseline = fixtures.moveGroceryItemsToSource;
+test("bulk grocery coverage changes require a bounded, unique selection and supported destination", () => {
+  const baseline = fixtures.setGroceryItemsCoverage;
   for (const command of [
     { ...baseline, itemIds: [] },
     { ...baseline, itemIds: [id, id] },
     { ...baseline, itemIds: Array.from({ length: MAX_GROCERY_ITEMS + 1 }, (_, index) => `id-${index}`) },
-    { ...baseline, source: "delivery" },
+    { ...baseline, coverage: "delivery" },
   ]) {
     assert.equal(isHouseholdCommand(command), false);
   }
@@ -213,9 +257,13 @@ test("grocery capacity derives from the published maximum plan cardinality", () 
         prepNote: "",
         leftoverNote: "",
         notes: "",
-        ingredients: Array.from(
+        occurrences: Array.from(
           { length: MAX_INGREDIENT_LINES },
-          (_, ingredientIndex) => `${ingredientIndex + 1} g ingredient ${mealIndex + 1}-${ingredientIndex + 1}`,
+          (_, ingredientIndex) => ({
+            ...occurrence,
+            correlationId: `ingredient-${mealIndex + 1}-${ingredientIndex + 1}`,
+            ingredient: `ingredient ${mealIndex + 1}-${ingredientIndex + 1}`,
+          }),
         ),
         instructions: [],
       })),

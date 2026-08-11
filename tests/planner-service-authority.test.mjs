@@ -15,6 +15,7 @@ import {
 import {
   EMBEDDED_CODEX_PROVENANCE,
   GLOBAL_CODEX_PROVENANCE,
+  isPlannerOperationsDecision,
 } from "../lib/planner-operation-contract.ts";
 import {
   PlannerServiceError,
@@ -52,15 +53,15 @@ function seedState(lesson = "Initial lesson") {
               leftoverNote: "Two lunches",
               notes: "",
               ingredients: [
-                { id: "ingredient-rice", amount: "1 cup", ingredient: "rice" },
-                { id: "ingredient-water", amount: "2 cups", ingredient: "water" },
+                { id: "ingredient-rice", source: null, amount: "1 cup", unit: null, ingredient: "rice", qualifier: null, conceptId: null, role: "weekly_requirement", canonicalIngredientId: null },
+                { id: "ingredient-water", source: null, amount: "2 cups", unit: null, ingredient: "water", qualifier: null, conceptId: null, role: "weekly_requirement", canonicalIngredientId: null },
               ],
               instructions: [
                 {
                   id: "step-rice",
                   inputs: [
-                    { amount: "1 cup", ingredient: "rice", ingredientId: "ingredient-rice" },
-                    { amount: "2 cups", ingredient: "water", ingredientId: "ingredient-water" },
+                    { amount: "1 cup", ingredient: "rice", occurrenceId: "ingredient-rice" },
+                    { amount: "2 cups", ingredient: "water", occurrenceId: "ingredient-water" },
                   ],
                   instruction: "Cook the rice.",
                   complete: false,
@@ -80,7 +81,7 @@ function seedState(lesson = "Initial lesson") {
               mealId: "meal-1",
               ingredientId: "ingredient-rice",
               section: "Pantry",
-              source: "shop",
+              coverage: "shop",
               checked: false,
             },
             {
@@ -88,7 +89,7 @@ function seedState(lesson = "Initial lesson") {
               mealId: "meal-1",
               ingredientId: "ingredient-water",
               section: "Pantry",
-              source: "shop",
+              coverage: "shop",
               checked: false,
             },
           ],
@@ -129,6 +130,7 @@ function fakeDomain() {
           target: command.weekId,
           changes: ["Planning lesson revised"],
           createdIds: {},
+          occurrenceResolutions: [],
         };
       }
       if (command.type === "setInstructionStepComplete") {
@@ -144,6 +146,7 @@ function fakeDomain() {
           target: step.id,
           changes: [`Complete: ${!command.complete} to ${command.complete}`],
           createdIds: {},
+          occurrenceResolutions: [],
         };
       }
       return { ok: false, state: value, message: `Unsupported fake command ${command.type}` };
@@ -414,8 +417,9 @@ test("v1 planner receipts replay unchanged after the v2 migration", (t) => {
     status: "accepted",
     eventId: "event-v1",
     plannerVersion: 1,
+    occurrenceResults: [{ operationIndex: 0, occurrences: [] }],
   });
-  assert.equal(replay.workspace.schemaVersion, 9);
+  assert.equal(replay.workspace.schemaVersion, 10);
   assert.equal(replay.workspace.plannerVersion, 1);
   assert.equal(replay.workspace.events.length, 1);
   assert.deepEqual(replay.workspace.events[0].provenance, {
@@ -481,7 +485,7 @@ test("bootstrap is atomic, imports transcript once, and arbitrates a second clie
     payload: { data: {}, events: [], chatMessages: [] },
   };
   assert.throws(() => serviceA.bootstrap(importRequest), /bootstrap failure/);
-  assert.deepEqual(serviceA.readWorkspace(), { initialized: false, schemaVersion: 9 });
+  assert.deepEqual(serviceA.readWorkspace(), { initialized: false, schemaVersion: 10 });
   fail = false;
   const imported = serviceA.bootstrap(importRequest);
   assert.equal(imported.imported, true);
@@ -512,7 +516,7 @@ test("bootstrap is atomic, imports transcript once, and arbitrates a second clie
   assert.equal(exported.formatVersion, DIAGNOSTIC_EXPORT_FORMAT_VERSION);
   assert.equal(exported.restorable, false);
   assert.equal(exported.warning, DIAGNOSTIC_EXPORT_WARNING);
-  assert.equal(exported.schemaVersion, 9);
+  assert.equal(exported.schemaVersion, 10);
   assert.equal(exported.transcriptEntries.length, 1);
   assert.equal(exported.events.length, 0);
   storeB.close();
@@ -542,7 +546,7 @@ test("invalid legacy bootstrap fails visibly without initializing the workspace"
       error.code === "INVALID_REQUEST" &&
       error.fieldErrors["data.prep[0].due"] === "Expected an ISO date.",
   );
-  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 9 });
+  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 10 });
   assert.throws(
     () => service.readEventPage({}),
     (error) => error instanceof PlannerServiceError && error.code === "NOT_INITIALIZED",
@@ -728,7 +732,7 @@ test("an accepted batch replays from its immutable receipt after a real-file reo
   reopenedStore.close();
 });
 
-test("a bulk grocery source move rolls back, persists, and replays after a real-file reopen", (t) => {
+test("a bulk grocery coverage change rolls back, persists, and replays after a real-file reopen", (t) => {
   const filename = temporaryDatabase(t);
   let seedIds = 0;
   let durableIds = 0;
@@ -753,7 +757,7 @@ test("a bulk grocery source move rolls back, persists, and replays after a real-
   const week = bootstrapped.workspace.state.weeks.find((candidate) => candidate.id === bootstrapped.workspace.state.activeWeekId);
   assert.ok(week);
   const selectedIds = week.data.groceries
-    .filter((item) => item.source === "shop")
+    .filter((item) => item.coverage === "needs_source")
     .slice(0, 2)
     .map((item) => item.id);
   assert.equal(selectedIds.length, 2);
@@ -761,10 +765,10 @@ test("a bulk grocery source move rolls back, persists, and replays after a real-
     requestId: "bulk-move-reopen",
     basePlannerVersion: 0,
     command: {
-      type: "moveGroceryItemsToSource",
+      type: "setGroceryItemsCoverage",
       weekId: week.id,
       itemIds: selectedIds,
-      source: "on_hand",
+      coverage: "on_hand",
     },
   };
 
@@ -778,7 +782,7 @@ test("a bulk grocery source move rolls back, persists, and replays after a real-
   assert.equal(
     rolledBackWeek.data.groceries
       .filter((item) => selectedIds.includes(item.id))
-      .every((item) => item.source === "shop"),
+      .every((item) => item.coverage === "needs_source"),
     true,
   );
   assert.equal(
@@ -803,7 +807,7 @@ test("a bulk grocery source move rolls back, persists, and replays after a real-
   assert.equal(
     persistedWeek.data.groceries
       .filter((item) => selectedIds.includes(item.id))
-      .every((item) => item.source === "on_hand"),
+      .every((item) => item.coverage === "on_hand"),
     true,
   );
   const replay = reopenedService.applyCommand(request);
@@ -911,6 +915,217 @@ test("trusted operation kinds reject mismatched caller provenance before reservi
   store.close();
 });
 
+test("every retired command grammar is receipt-only: exact replay never executes the domain", () => {
+  const retiredCommands = [
+    {
+      type: "updateMealSnapshot",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      changes: {
+        title: "Old rice bowls", subtitle: "", venue: "Home", prepNote: "", leftoverNote: "", notes: "", ingredients: ["1 cup rice"], yieldText: null,
+      },
+    },
+    {
+      type: "addInstructionStep",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      position: 0,
+      step: { inputs: [], instruction: "Old instruction." },
+    },
+    {
+      type: "updateInstructionStep",
+      weekId: "2026-07-06",
+      stepId: "step-rice",
+      changes: { inputs: [], instruction: "Old updated instruction.", timerDurationSeconds: null },
+    },
+    {
+      type: "moveGroceryItemsToSource",
+      weekId: "2026-07-06",
+      itemIds: ["grocery-rice"],
+      source: "shop",
+    },
+    {
+      type: "reconcileGroceries",
+      weekId: "2026-07-06",
+      items: [{
+        id: "grocery-rice",
+        section: "Pantry",
+        item: "rice",
+        detail: "1 cup",
+        checked: false,
+        farmBox: false,
+      }],
+    },
+    {
+      type: "replaceMealRecipeFromSource",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      recipe: {
+        title: "Legacy sourced rice",
+        source: {
+          kind: "web",
+          identity: "Example Kitchen",
+          url: "https://example.com/recipes/rice",
+          retrievedAt: 1_750_000_000_000,
+        },
+        steps: [{
+          inputs: [{ amount: "1 cup", ingredient: "rice" }],
+          instruction: "Cook the rice gently.",
+        }],
+      },
+    },
+    {
+      type: "createWeekPlan",
+      weekStartDate: "2026-07-13",
+      plan: {
+        meals: [{
+          date: "2026-07-13", title: "Old plan", subtitle: "", venue: "Home", protein: "none", prepNote: "", leftoverNote: "", notes: "", ingredients: [], instructions: [],
+        }],
+      },
+    },
+  ];
+
+  for (const [index, command] of retiredCommands.entries()) {
+    const store = openPlannerStore({ filename: ":memory:" });
+    let executions = 0;
+    const domain = fakeDomain();
+    const execute = domain.execute.bind(domain);
+    domain.execute = (...args) => {
+      executions += 1;
+      return execute(...args);
+    };
+    const service = createPlannerApplicationService(dependencies(store, { domain }));
+    service.bootstrap({ requestId: `historical-bootstrap-${index}`, mode: "seed" });
+    const request = {
+      requestId: `historical-${index}`,
+      basePlannerVersion: 0,
+      operations: [{ command }],
+    };
+    const storedDecision = {
+      status: "accepted",
+      eventId: `historical-event-${index}`,
+      plannerVersion: 0,
+    };
+    const decision = { ...storedDecision, occurrenceResults: [{ operationIndex: 0, occurrences: [] }] };
+    store.transaction((transaction) => {
+      store.insertReceipt(transaction, {
+        operationKind: "planner_command",
+        requestId: request.requestId,
+        payloadHash: hashCanonicalPayload("planner_command", {
+          requestId: request.requestId,
+          basePlannerVersion: request.basePlannerVersion,
+          command,
+        }),
+        httpStatus: 200,
+        decision: { kind: "planner_decision", decision: storedDecision },
+        createdAt: 1,
+      });
+    });
+    const before = service.readWorkspace();
+    const replay = service.replayHistoricalOperations(request, {
+      operationKind: "planner_command",
+      provenance: { actorClass: "household", actorSource: "browser", admission: "same_origin_http_v1" },
+    });
+    assert.deepEqual(replay.decision, decision, command.type);
+    assert.deepEqual(replay.workspace, before, command.type);
+    assert.equal(executions, 0, command.type);
+    assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 0, command.type);
+    assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts").get().count, 2, command.type);
+    const changed = structuredClone(request);
+    changed.operations[0].command = command.type === "createWeekPlan"
+      ? { ...command, weekStartDate: "2026-07-20" }
+      : command.type === "reconcileGroceries"
+        ? { ...command, items: [{ ...command.items[0], item: "changed rice" }] }
+        : command.type === "replaceMealRecipeFromSource"
+          ? { ...command, recipe: { ...command.recipe, title: "Changed legacy recipe" } }
+          : { ...command, weekId: "2026-07-20" };
+    assert.throws(
+      () => service.replayHistoricalOperations(changed, {
+        operationKind: "planner_command",
+        provenance: { actorClass: "household", actorSource: "browser", admission: "same_origin_http_v1" },
+      }),
+      (error) => error instanceof PlannerServiceError && error.code === "REQUEST_ID_REUSE",
+      command.type,
+    );
+    assert.throws(
+      () => service.replayHistoricalOperations({ ...request, requestId: `missing-${index}` }, {
+        operationKind: "planner_command",
+        provenance: { actorClass: "household", actorSource: "browser", admission: "same_origin_http_v1" },
+      }),
+      (error) => error instanceof PlannerServiceError && error.code === "INVALID_REQUEST",
+      command.type,
+    );
+    assert.equal(executions, 0, command.type);
+    assert.equal(service.readWorkspace().plannerVersion, 0, command.type);
+    store.close();
+  }
+});
+
+test("historical replay rejects a malformed stored decision instead of casting it into the API", () => {
+  const store = openPlannerStore({ filename: ":memory:" });
+  const service = createPlannerApplicationService(dependencies(store));
+  service.bootstrap({ requestId: "malformed-historical-bootstrap", mode: "seed" });
+  const request = {
+    requestId: "malformed-historical-receipt",
+    basePlannerVersion: 0,
+    operations: [{ command: {
+      type: "moveGroceryItemsToSource",
+      weekId: "2026-07-06",
+      itemIds: ["grocery-rice"],
+      source: "shop",
+    } }],
+  };
+  const context = {
+    operationKind: "global_codex_apply_planner_batch_v1",
+    provenance: { actorClass: "codex", actorSource: "global", admission: "same_uid_uds_v1" },
+  };
+  store.transaction((transaction) => store.insertReceipt(transaction, {
+    operationKind: context.operationKind,
+    requestId: request.requestId,
+    payloadHash: hashCanonicalPayload(context.operationKind, {
+      basePlannerVersion: request.basePlannerVersion,
+      operations: request.operations,
+    }),
+    httpStatus: 200,
+    decision: {
+      kind: "planner_decision",
+      decision: { status: "accepted", eventId: 17, plannerVersion: "bad", occurrenceResults: [{ operationIndex: 9, occurrences: [] }] },
+    },
+    createdAt: 1,
+  }));
+  assert.throws(
+    () => service.replayHistoricalOperations(request, context),
+    (error) => error instanceof PlannerServiceError && error.code === "STORE_CORRUPT",
+  );
+  store.close();
+});
+
+test("accepted occurrence results preserve operation and correlation order exactly", () => {
+  const occurrence = (correlationId, occurrenceId) => ({ correlationId, occurrenceId });
+  const accepted = {
+    status: "accepted",
+    eventId: "event-one",
+    plannerVersion: 2,
+    occurrenceResults: [
+      { operationIndex: 0, occurrences: [occurrence("first", "occurrence-one")] },
+      { operationIndex: 1, occurrences: [occurrence("second", "occurrence-two")] },
+    ],
+  };
+  assert.equal(isPlannerOperationsDecision(accepted, 2), true);
+  assert.equal(isPlannerOperationsDecision({
+    ...accepted,
+    occurrenceResults: [...accepted.occurrenceResults].reverse(),
+  }, 2), false);
+  assert.equal(isPlannerOperationsDecision({
+    ...accepted,
+    occurrenceResults: [{
+      operationIndex: 0,
+      occurrences: [occurrence("same", "occurrence-one"), occurrence("same", "occurrence-two")],
+    }],
+  }, 1), false);
+  assert.equal(isPlannerOperationsDecision({ ...accepted, occurrenceResults: [] }, 2), false);
+});
+
 test("sixteen sequential operations still produce exactly one durable planner unit", () => {
   const store = openPlannerStore({ filename: ":memory:" });
   const service = createPlannerApplicationService(dependencies(store));
@@ -985,7 +1200,7 @@ test("preview uses throwaway IDs and redacts every generated-ID occurrence witho
               prepNote: "",
               leftoverNote: "",
               notes: "",
-              ingredients: [],
+              occurrences: [],
               instructions: [{ inputs: [], instruction: "Simmer." }],
             }],
           },
@@ -1085,8 +1300,11 @@ function replacementCommand({
         retrievedAt: 1_750_000_000_000,
       },
       steps: [{
-        inputs: [{ amount: "1 cup", ingredient: "rice" }],
+        inputs: [{ occurrenceCorrelationId: "sourced-rice", amount: "1 cup", ingredient: "rice" }],
         instruction: "Cook the rice gently.",
+      }],
+      occurrences: [{
+        kind: "create", correlationId: "sourced-rice", source: null, amount: "1 cup", unit: null, ingredient: "rice", qualifier: null, conceptId: null, canonicalIngredientId: null,
       }],
     },
   };
@@ -1153,7 +1371,7 @@ test("canonical pre-batch guard blocks target, status, move, and every protected
     prepNote: "",
     leftoverNote: "",
     notes: "",
-    ingredients: [],
+    occurrences: [],
     instructions: [{ inputs: [], instruction: "Cook." }],
   };
   const cases = [

@@ -57,13 +57,13 @@ test("strict v2 transform preserves planner and transcript state while normalizi
     mealId: chickenGrocery.mealId,
     ingredientId: chickenGrocery.ingredientId,
     section: chickenGrocery.section,
-    source: chickenGrocery.source,
+    coverage: chickenGrocery.coverage,
     checked: chickenGrocery.checked,
   }, {
     mealId: week.data.meals[0].id,
     ingredientId: chickenIngredient?.id,
     section: "Meat & seafood",
-    source: "shop",
+    coverage: "needs_source",
     checked: false,
   });
   assert.equal(result.state.weeks[0].data.leftovers[0].assignedDate, "2026-07-08");

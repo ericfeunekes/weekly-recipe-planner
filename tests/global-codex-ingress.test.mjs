@@ -28,7 +28,7 @@ import {
 } from "../lib/global-codex-contract.ts";
 import { householdDomain } from "../lib/household-domain.ts";
 import { createGlobalCodexClientForHostTesting } from "../scripts/planner-global-client.ts";
-import { createPlannerApplicationService } from "../server/application/planner-service.ts";
+import { createPlannerApplicationService, hashCanonicalPayload } from "../server/application/planner-service.ts";
 import {
   createGlobalCodexIngressForTests,
 } from "../server/global-ingress/index.ts";
@@ -151,8 +151,11 @@ function sourcedBatch(
           retrievedAt: 1_750_000_000_000,
         },
         steps: [{
-          inputs: [{ amount: "1 cup", ingredient: "lentils" }],
+          inputs: [{ occurrenceCorrelationId: "global-lentils", amount: "1 cup", ingredient: "lentils" }],
           instruction: "Simmer until tender.",
+        }],
+        occurrences: [{
+          kind: "create", correlationId: "global-lentils", source: null, amount: "1 cup", unit: null, ingredient: "lentils", qualifier: null, conceptId: null, canonicalIngredientId: null,
         }],
       },
     } }],
@@ -426,6 +429,75 @@ test("real UDS and SQLite preserve apply, replay, conflict, provenance, and plan
   assert.equal(store.database.prepare(
     "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'global_codex_apply_planner_batch_v1'",
   ).get().count, 3);
+});
+
+test("global ingress routes retired sourced replacements to receipt-only replay", async (t) => {
+  const home = temporaryDirectory(t, "weekly-global-historical-");
+  const parent = join(home, "meal-planner");
+  mkdirSync(parent, { mode: 0o700 });
+  const { planner, store } = createRealPlanner(t);
+  const socket = await startGlobalCodexSocketServerForTests(
+    createGlobalCodexRouter(createGlobalCodexPlannerPort(planner)),
+    parent,
+  );
+  t.after(() => socket.close());
+  const request = {
+    contractVersion: GLOBAL_CODEX_CONTRACT_VERSION,
+    requestId: "f055c5a7-cae2-47a1-947d-67b5510f8e2c",
+    basePlannerVersion: 0,
+    operations: [{ command: {
+      type: "replaceMealRecipeFromSource",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      recipe: {
+        title: "Legacy global rice",
+        source: {
+          kind: "web",
+          identity: "Example Kitchen",
+          url: "https://example.com/recipes/rice",
+          retrievedAt: 1_750_000_000_000,
+        },
+        steps: [{
+          inputs: [{ amount: "1 cup", ingredient: "rice" }],
+          instruction: "Cook the rice gently.",
+        }],
+      },
+    } }],
+  };
+  const storedDecision = { status: "accepted", eventId: "historical-global-event", plannerVersion: 0 };
+  const decision = { ...storedDecision, occurrenceResults: [{ operationIndex: 0, occurrences: [] }] };
+  store.transaction((transaction) => store.insertReceipt(transaction, {
+    operationKind: "global_codex_apply_planner_batch_v1",
+    requestId: request.requestId,
+    payloadHash: hashCanonicalPayload("global_codex_apply_planner_batch_v1", {
+      basePlannerVersion: request.basePlannerVersion,
+      operations: request.operations,
+    }),
+    httpStatus: 200,
+    decision: { kind: "planner_decision", decision: storedDecision },
+    createdAt: 1,
+  }));
+  const socketPath = join(parent, "run", "global-codex.sock");
+  const before = planner.readWorkspace();
+  const replay = await requestSocket(socketPath, {
+    method: "POST", path: GLOBAL_CODEX_ROUTES.batches, body: JSON.stringify(request),
+  });
+  assert.equal(replay.status, 200);
+  assert.deepEqual(JSON.parse(replay.body).decision, decision);
+  assert.deepEqual(planner.readWorkspace(), before);
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 0);
+  const changed = structuredClone(request);
+  changed.operations[0].command.recipe.title = "Changed legacy global rice";
+  assert.equal((await requestSocket(socketPath, {
+    method: "POST", path: GLOBAL_CODEX_ROUTES.batches, body: JSON.stringify(changed),
+  })).status, 409);
+  const missing = { ...request, requestId: "1f8c119d-5e6e-4aef-bb2a-a30d675d3677" };
+  const missingResponse = await requestSocket(socketPath, {
+    method: "POST", path: GLOBAL_CODEX_ROUTES.batches, body: JSON.stringify(missing),
+  });
+  assert.equal(missingResponse.status, 409, missingResponse.body);
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 0);
+  assert.equal(planner.readWorkspace().plannerVersion, 0);
 });
 
 test("spawned supported client uses HOME-derived fixed socket and browser-visible application state", async (t) => {

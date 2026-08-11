@@ -67,7 +67,7 @@ test("keeps the locked product requirements represented in source", async () => 
   for (const command of [
     "moveMeal",
     "swapMealDays",
-    "updateMealSnapshot",
+    "editMealRecipe",
     "setInstructionStepComplete",
     "updateInstructionStepNote",
     "startInstructionTimer",

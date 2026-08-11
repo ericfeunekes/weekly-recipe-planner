@@ -6,6 +6,7 @@ import {
   GLOBAL_CODEX_RESPONSE_MAX_BYTES,
   GLOBAL_CODEX_ROUTES,
   isGlobalCodexBatchRequest,
+  isHistoricalGlobalCodexBatchRequest,
   isGlobalCodexPreviewRequest,
   isGlobalCodexResponse,
   type GlobalCodexErrorCode,
@@ -19,6 +20,7 @@ const POST_HEADERS = new Set(["host", "connection", "content-type", "content-len
 
 type ErrorShape = {
   code?: unknown;
+  httpStatus?: unknown;
   fieldErrors?: unknown;
 };
 
@@ -186,7 +188,7 @@ function mapApplicationError(response: ServerResponse, error: unknown): void {
     case "INVALID_REQUEST":
       sendError(
         response,
-        400,
+        shaped.httpStatus === 409 ? 409 : 400,
         "invalid_request",
         "The planner batch is invalid.",
         { fieldErrors: safeFieldErrors(shaped.fieldErrors) },
@@ -274,15 +276,21 @@ export function createGlobalCodexRouter(
             operations: parsed.operations,
           });
         } else {
-          if (!isGlobalCodexBatchRequest(parsed)) {
+          if (!isGlobalCodexBatchRequest(parsed) && !isHistoricalGlobalCodexBatchRequest(parsed)) {
             sendError(response, 400, "invalid_request", "The planner batch contract is invalid.");
             return;
           }
-          result = planner.applyBatch({
-            requestId: parsed.requestId,
-            basePlannerVersion: parsed.basePlannerVersion,
-            operations: parsed.operations,
-          });
+          result = isGlobalCodexBatchRequest(parsed)
+            ? planner.applyBatch({
+                requestId: parsed.requestId,
+                basePlannerVersion: parsed.basePlannerVersion,
+                operations: parsed.operations,
+              })
+            : planner.replayHistoricalBatch({
+                requestId: parsed.requestId,
+                basePlannerVersion: parsed.basePlannerVersion,
+                operations: parsed.operations,
+              });
         }
         const status = result.decision.status === "accepted" || result.decision.status === "previewed"
           ? 200

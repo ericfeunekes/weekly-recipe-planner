@@ -1,6 +1,7 @@
 import type {
   HistoricalGroceryReconciliationCommand,
   HouseholdCommand,
+  HistoricalHouseholdCommand,
 } from "./household-command-contract";
 import type { HouseholdPlannerState } from "./household-contract";
 import type {
@@ -57,6 +58,7 @@ export type OperationReceipt = {
 
 export type PlannerEventCommand =
   | HouseholdCommand
+  | HistoricalHouseholdCommand
   | HistoricalGroceryReconciliationCommand
   | PlannerBatchEventCommand
   | { type: "undoLatest"; targetEventId: string };
@@ -129,7 +131,7 @@ export type ApplyPlannerCommandRequest = {
 };
 
 export type PlannerCommandDecision =
-  | { status: "accepted"; eventId: string; plannerVersion: number }
+  | { status: "accepted"; eventId: string; plannerVersion: number; occurrenceResults: Array<{ operationIndex: number; occurrences: Array<{ correlationId: string; occurrenceId: string }> }> }
   | {
       status: "version_conflict";
       expectedVersion: number;

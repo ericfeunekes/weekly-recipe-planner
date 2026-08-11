@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   fsyncSync,
   fstatSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readFileSync,
   readSync,
@@ -13,7 +15,8 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -48,6 +51,8 @@ import type { HouseholdPlannerState } from "../../lib/household-contract.ts";
 import {
   normalizeLegacyHouseholdPayload,
   normalizeLegacyHouseholdState,
+  upgradeHouseholdPayloadToIngredientOccurrences,
+  upgradeHouseholdStateToIngredientOccurrences,
 } from "../../lib/household-persistence-upgrade.ts";
 import {
   isDigestBoundResearchCandidateReference,
@@ -144,6 +149,29 @@ export type PlannerStoreV8ToV9MigrationResult = Readonly<{
   }>;
   backup: VerifiedPlannerSnapshotInspection;
   migration: Readonly<{ from: 8; to: 9; allowedChanges: readonly ["schema_migrations:9", "workspace:household.schema_version"] }>;
+}>;
+
+export type PlannerStoreV9ToV10MigrationResult = Readonly<{
+  database: Readonly<{
+    filename: string;
+    quickCheck: "ok";
+    schemaVersion: 10;
+    migrationVersions: readonly [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    workspaceSchemaVersion: 10;
+    rowCounts: Readonly<Record<string, number>>;
+  }>;
+  backup: VerifiedPlannerSnapshotInspection;
+  migration: Readonly<{
+    from: 9;
+    to: 10;
+    allowedChanges: readonly [
+      "schema_migrations:10",
+      "workspace:household.schema_version,state_json,sync_revision,updated_at",
+      "planner_events:before_state_json",
+      "planner_tool_calls:result_envelope_json",
+      "codex_native_tool_calls:result_envelope_json",
+    ];
+  }>;
 }>;
 
 export class PlannerStoreError extends Error {
@@ -372,6 +400,268 @@ function normalizeStoredLegacyHouseholdState(database: DatabaseSync): void {
       "Legacy household state normalization failed.",
       { cause: error },
     );
+  }
+}
+
+type IngredientOccurrenceUpgradeIssue = Readonly<{ path: string; message: string }>;
+
+function occurrenceUpgradeFailure(issues: readonly IngredientOccurrenceUpgradeIssue[]): PlannerStoreError {
+  const detail = issues.map(({ path, message }) => `${path}: ${message}`).join("; ");
+  return new PlannerStoreError(
+    "MIGRATION_FAILED",
+    `Schema-9 ingredient occurrence migration is ambiguous: ${detail}`,
+  );
+}
+
+function persistedEventOperationCount(database: DatabaseSync, eventId: string | null): number {
+  if (eventId === null) return 1;
+  const row = database.prepare("SELECT command_json FROM planner_events WHERE event_id = ?").get(eventId) as { command_json: string } | undefined;
+  if (!row) return 1;
+  const command = parseJson<unknown>(row.command_json, `planner event ${eventId} command`);
+  if (command === null || typeof command !== "object" || Array.isArray(command)) return 1;
+  const operations = (command as Record<string, unknown>).operations;
+  return (command as Record<string, unknown>).type === "plannerBatch" && Array.isArray(operations)
+    ? operations.length
+    : 1;
+}
+
+function assertNoSqliteSidecars(filename: string): void {
+  if (existsSync(`${filename}-wal`) || existsSync(`${filename}-shm`)) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "Schema-9 ingredient occurrence migration requires a checkpointed source without WAL or SHM sidecars.",
+    );
+  }
+}
+
+function withClosedPreflightDatabase<Result>(
+  filename: string,
+  work: (database: DatabaseSync) => Result,
+): Result {
+  const sidecars = [`${filename}-wal`, `${filename}-shm`].filter((artifact) => existsSync(artifact));
+  if (sidecars.length === 0) {
+    const immutableUrl = pathToFileURL(filename);
+    immutableUrl.searchParams.set("mode", "ro");
+    immutableUrl.searchParams.set("immutable", "1");
+    const database = new DatabaseSync(immutableUrl, { readOnly: true });
+    try {
+      return work(database);
+    } finally {
+      database.close();
+      assertNoSqliteSidecars(filename);
+    }
+  }
+
+  const copyDirectory = mkdtempSync(join(dirname(filename), ".planner-preflight-"));
+  const copyFilename = join(copyDirectory, basename(filename));
+  try {
+    copyFileSync(filename, copyFilename);
+    for (const sidecar of sidecars) {
+      copyFileSync(sidecar, join(copyDirectory, basename(sidecar)));
+    }
+    const database = new DatabaseSync(copyFilename, { readOnly: true });
+    try {
+      return work(database);
+    } finally {
+      database.close();
+    }
+  } finally {
+    rmSync(copyDirectory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Read all persisted household-shaped JSON with SQLite's immutable URI mode.
+ * This is deliberately separate from the writer: opening a normal read-only
+ * connection to a WAL database can create sidecars, which would invalidate the
+ * non-mutation guarantee on an ambiguous source.
+ */
+function preflightV9IngredientOccurrenceUpgrade(filename: string): void {
+  assertNoSqliteSidecars(filename);
+  const immutableUrl = pathToFileURL(filename);
+  immutableUrl.searchParams.set("mode", "ro");
+  immutableUrl.searchParams.set("immutable", "1");
+  const database = new DatabaseSync(immutableUrl, { readOnly: true });
+  try {
+    assertCoherentV9Store(database);
+    const issues: IngredientOccurrenceUpgradeIssue[] = [];
+    const inspectState = (text: string, path: string) => {
+      const upgraded = upgradeHouseholdStateToIngredientOccurrences(parseJson<unknown>(text, path));
+      if (!upgraded.ok) {
+        for (const issue of upgraded.issues) {
+          issues.push({ path: `${path}${issue.path ? `.${issue.path}` : ""}`, message: issue.message });
+        }
+      }
+    };
+    const inspectPayload = (text: string, path: string, operationCount = 1) => {
+      const upgraded = upgradeHouseholdPayloadToIngredientOccurrences(parseJson<unknown>(text, path), operationCount);
+      if (!upgraded.ok) {
+        for (const issue of upgraded.issues) {
+          issues.push({ path: `${path}${issue.path ? `.${issue.path}` : ""}`, message: issue.message });
+        }
+      }
+    };
+    const workspace = database.prepare("SELECT state_json FROM workspace WHERE id = 'household'").get() as { state_json: string };
+    inspectState(workspace.state_json, "workspace.state_json");
+    for (const event of database.prepare("SELECT sequence, before_state_json FROM planner_events").all() as Array<{ sequence: number; before_state_json: string }>) {
+      inspectState(event.before_state_json, `planner_events[${event.sequence}].before_state_json`);
+    }
+    for (const row of database.prepare(
+      "SELECT turn_id, tool_call_id, event_id, result_envelope_json FROM planner_tool_calls WHERE result_envelope_json IS NOT NULL",
+    ).all() as Array<{ turn_id: string; tool_call_id: string; event_id: string | null; result_envelope_json: string }>) {
+      inspectPayload(row.result_envelope_json, `planner_tool_calls[${row.turn_id},${row.tool_call_id}].result_envelope_json`, persistedEventOperationCount(database, row.event_id));
+    }
+    for (const row of database.prepare(
+      "SELECT thread_id, turn_id, call_id, event_id, result_envelope_json FROM codex_native_tool_calls WHERE result_envelope_json IS NOT NULL",
+    ).all() as Array<{ thread_id: string; turn_id: string; call_id: string; event_id: string | null; result_envelope_json: string }>) {
+      inspectPayload(row.result_envelope_json, `codex_native_tool_calls[${row.thread_id},${row.turn_id},${row.call_id}].result_envelope_json`, persistedEventOperationCount(database, row.event_id));
+    }
+    if (issues.length > 0) throw occurrenceUpgradeFailure(issues);
+  } finally {
+    database.close();
+  }
+  assertNoSqliteSidecars(filename);
+}
+
+/** Fail legacy semantic normalization before generic SQL migrations can write. */
+function preflightPreV9HouseholdNormalization(filename: string): void {
+  withClosedPreflightDatabase(filename, (database) => {
+    const inspectState = (text: string, label: string) => {
+      try {
+        const normalized = normalizeLegacyHouseholdState(parseJson<HouseholdPlannerState>(text, label));
+        const upgraded = upgradeHouseholdStateToIngredientOccurrences(normalized.state);
+        if (!upgraded.ok) {
+          throw occurrenceUpgradeFailure(upgraded.issues.map((issue) => ({
+            path: `${label}${issue.path ? `.${issue.path}` : ""}`,
+            message: issue.message,
+          })));
+        }
+      } catch (error) {
+        if (error instanceof PlannerStoreError) throw error;
+        const detail = error instanceof Error ? ` ${error.message}` : "";
+        throw new PlannerStoreError("MIGRATION_FAILED", `Legacy household state normalization failed at ${label}.${detail}`, { cause: error });
+      }
+    };
+    const inspectPayload = (text: string, label: string) => {
+      try {
+        const normalized = normalizeLegacyHouseholdPayload(parseJson<unknown>(text, label));
+        const upgraded = upgradeHouseholdPayloadToIngredientOccurrences(normalized.value);
+        if (!upgraded.ok) {
+          throw occurrenceUpgradeFailure(upgraded.issues.map((issue) => ({
+            path: `${label}${issue.path ? `.${issue.path}` : ""}`,
+            message: issue.message,
+          })));
+        }
+      } catch (error) {
+        if (error instanceof PlannerStoreError) throw error;
+        const detail = error instanceof Error ? ` ${error.message}` : "";
+        throw new PlannerStoreError("MIGRATION_FAILED", `Legacy household payload normalization failed at ${label}.${detail}`, { cause: error });
+      }
+    };
+    if (hasTableColumns(database, "workspace", ["id", "state_json"])) {
+      const workspace = database.prepare("SELECT state_json FROM workspace WHERE id = 'household'").get() as { state_json: string } | undefined;
+      if (workspace) inspectState(workspace.state_json, "workspace.state_json");
+    }
+    if (hasTableColumns(database, "planner_events", ["sequence", "before_state_json"])) {
+      for (const row of database.prepare("SELECT sequence, before_state_json FROM planner_events").all() as Array<{ sequence: number; before_state_json: string }>) {
+        inspectState(row.before_state_json, `planner_events[${row.sequence}].before_state_json`);
+      }
+    }
+    if (hasTableColumns(database, "chat_turns", ["turn_id", "proposed_command_json"])) {
+      for (const row of database.prepare("SELECT turn_id, proposed_command_json FROM chat_turns WHERE proposed_command_json IS NOT NULL").all() as Array<{ turn_id: string; proposed_command_json: string }>) {
+        inspectPayload(row.proposed_command_json, `chat_turns[${row.turn_id}].proposed_command_json`);
+      }
+    }
+    if (hasTableColumns(database, "planner_tool_calls", ["turn_id", "tool_call_id", "result_envelope_json"])) {
+      for (const row of database.prepare("SELECT turn_id, tool_call_id, result_envelope_json FROM planner_tool_calls WHERE result_envelope_json IS NOT NULL").all() as Array<{ turn_id: string; tool_call_id: string; result_envelope_json: string }>) {
+        inspectPayload(row.result_envelope_json, `planner_tool_calls[${row.turn_id},${row.tool_call_id}].result_envelope_json`);
+      }
+    }
+    if (hasTableColumns(database, "codex_native_tool_calls", ["thread_id", "turn_id", "call_id", "result_envelope_json"])) {
+      for (const row of database.prepare("SELECT thread_id, turn_id, call_id, result_envelope_json FROM codex_native_tool_calls WHERE result_envelope_json IS NOT NULL").all() as Array<{ thread_id: string; turn_id: string; call_id: string; result_envelope_json: string }>) {
+        inspectPayload(row.result_envelope_json, `codex_native_tool_calls[${row.thread_id},${row.turn_id},${row.call_id}].result_envelope_json`);
+      }
+    }
+  });
+}
+
+function applyV9IngredientOccurrenceUpgrade(database: DatabaseSync, write = true): void {
+  const issues: IngredientOccurrenceUpgradeIssue[] = [];
+  const upgradeState = (text: string, path: string) => {
+    const upgraded = upgradeHouseholdStateToIngredientOccurrences(parseJson<unknown>(text, path));
+    if (!upgraded.ok) {
+      issues.push(...upgraded.issues.map((issue) => ({
+        path: `${path}${issue.path ? `.${issue.path}` : ""}`,
+        message: issue.message,
+      })));
+      return null;
+    }
+    return upgraded;
+  };
+  const upgradePayload = (text: string, path: string, operationCount = 1) => {
+    const upgraded = upgradeHouseholdPayloadToIngredientOccurrences(parseJson<unknown>(text, path), operationCount);
+    if (!upgraded.ok) {
+      issues.push(...upgraded.issues.map((issue) => ({
+        path: `${path}${issue.path ? `.${issue.path}` : ""}`,
+        message: issue.message,
+      })));
+      return null;
+    }
+    return upgraded;
+  };
+
+  const workspace = database.prepare(
+    "SELECT state_json FROM workspace WHERE id = 'household'",
+  ).get() as { state_json: string } | undefined;
+  if (!workspace) return;
+  const upgradedWorkspace = upgradeState(workspace.state_json, "workspace.state_json");
+  const eventRows = database.prepare("SELECT sequence, before_state_json FROM planner_events").all() as Array<{
+    sequence: number;
+    before_state_json: string;
+  }>;
+  const upgradedEvents = eventRows.map((event) => ({
+    event,
+    upgraded: upgradeState(event.before_state_json, `planner_events[${event.sequence}].before_state_json`),
+  }));
+  const toolRows = database.prepare(
+    "SELECT turn_id, tool_call_id, event_id, result_envelope_json FROM planner_tool_calls WHERE result_envelope_json IS NOT NULL",
+  ).all() as Array<{ turn_id: string; tool_call_id: string; event_id: string | null; result_envelope_json: string }>;
+  const upgradedTools = toolRows.map((row) => ({
+    row,
+    upgraded: upgradePayload(row.result_envelope_json, `planner_tool_calls[${row.turn_id},${row.tool_call_id}].result_envelope_json`, persistedEventOperationCount(database, row.event_id)),
+  }));
+  const nativeRows = database.prepare(
+    "SELECT thread_id, turn_id, call_id, event_id, result_envelope_json FROM codex_native_tool_calls WHERE result_envelope_json IS NOT NULL",
+  ).all() as Array<{ thread_id: string; turn_id: string; call_id: string; event_id: string | null; result_envelope_json: string }>;
+  const upgradedNativeTools = nativeRows.map((row) => ({
+    row,
+    upgraded: upgradePayload(row.result_envelope_json, `codex_native_tool_calls[${row.thread_id},${row.turn_id},${row.call_id}].result_envelope_json`, persistedEventOperationCount(database, row.event_id)),
+  }));
+  if (issues.length > 0) throw occurrenceUpgradeFailure(issues);
+  if (!write) return;
+
+  if (upgradedWorkspace?.changed) {
+    database.prepare(
+      `UPDATE workspace
+       SET state_json = ?, sync_revision = sync_revision + 1, updated_at = ?
+       WHERE id = 'household'`,
+    ).run(JSON.stringify(upgradedWorkspace.state), Date.now());
+  }
+  const updateEvent = database.prepare("UPDATE planner_events SET before_state_json = ? WHERE sequence = ?");
+  for (const { event, upgraded } of upgradedEvents) {
+    if (upgraded?.changed) updateEvent.run(JSON.stringify(upgraded.state), event.sequence);
+  }
+  const updateTool = database.prepare(
+    "UPDATE planner_tool_calls SET result_envelope_json = ? WHERE turn_id = ? AND tool_call_id = ?",
+  );
+  for (const { row, upgraded } of upgradedTools) {
+    if (upgraded?.changed) updateTool.run(JSON.stringify(upgraded.value), row.turn_id, row.tool_call_id);
+  }
+  const updateNativeTool = database.prepare(
+    "UPDATE codex_native_tool_calls SET result_envelope_json = ? WHERE thread_id = ? AND turn_id = ? AND call_id = ?",
+  );
+  for (const { row, upgraded } of upgradedNativeTools) {
+    if (upgraded?.changed) updateNativeTool.run(JSON.stringify(upgraded.value), row.thread_id, row.turn_id, row.call_id);
   }
 }
 
@@ -695,6 +985,15 @@ function hasTable(database: DatabaseSync, table: string): boolean {
   );
 }
 
+function hasTableColumns(database: DatabaseSync, table: string, columns: readonly string[]): boolean {
+  if (!hasTable(database, table)) return false;
+  const present = new Set(
+    (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .map(({ name }) => name),
+  );
+  return columns.every((column) => present.has(column));
+}
+
 function readAppliedMigrationVersions(database: DatabaseSync): number[] {
   if (!hasTable(database, "schema_migrations")) return [];
   const versions = database
@@ -727,6 +1026,13 @@ function readCurrentMigrationVersion(database: DatabaseSync): number {
     if (maximum > CURRENT_SCHEMA_VERSION) return maximum;
   }
   return readAppliedMigrationVersions(database).at(-1) ?? 0;
+}
+
+function readCurrentMigrationVersionReadOnly(filename: string): number {
+  return withClosedPreflightDatabase(filename, (database) => {
+    quickCheck(database);
+    return readCurrentMigrationVersion(database);
+  });
 }
 
 function readPlannerSchemaObjects(database: DatabaseSync): PlannerSchemaObject[] {
@@ -1254,6 +1560,26 @@ function assertCoherentV9Store(database: DatabaseSync): void {
   }
 }
 
+function assertCoherentV10Store(database: DatabaseSync): void {
+  quickCheck(database);
+  assertForeignKeyIntegrity(database);
+  const versions = readAppliedMigrationVersions(database);
+  if (!sameLogicalValue(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store did not reach the contiguous v1 through v10 migration ledger.");
+  }
+  assertExpectedSchemaObjects(database);
+  const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
+  const household = database.prepare(
+    "SELECT schema_version FROM workspace WHERE id = 'household'",
+  ).get() as { schema_version: number } | undefined;
+  if (workspaceCount !== 1 || household?.schema_version !== 10) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "The SQLite household workspace did not reach schema version 10.",
+    );
+  }
+}
+
 function assertExactV8ToV9Delta(before: LogicalInventory, after: LogicalInventory): void {
   if (!sameLogicalValue(before.schema, after.schema)) {
     throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite schema changed outside the v8-to-v9 data transition.");
@@ -1302,6 +1628,70 @@ function assertExactV8ToV9Delta(before: LogicalInventory, after: LogicalInventor
   }
 }
 
+function assertExactV9ToV10Delta(before: LogicalInventory, after: LogicalInventory): void {
+  if (!sameLogicalValue(before.schema, after.schema)) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite schema changed outside the v9-to-v10 data transition.");
+  }
+  const beforeNames = Object.keys(before.tables).sort();
+  const afterNames = Object.keys(after.tables).sort();
+  if (!sameLogicalValue(beforeNames, afterNames)) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite durable table set changed outside the v9-to-v10 transition.");
+  }
+  const changedColumns = new Map<string, ReadonlySet<string>>([
+    ["workspace", new Set(["schema_version", "state_json", "sync_revision", "updated_at"])],
+    ["planner_events", new Set(["before_state_json"])],
+    ["planner_tool_calls", new Set(["result_envelope_json"])],
+    ["codex_native_tool_calls", new Set(["result_envelope_json"])],
+  ]);
+  for (const name of beforeNames) {
+    const initial = before.tables[name];
+    const migrated = after.tables[name];
+    if (!sameLogicalValue(initial.sql, migrated.sql) || !sameLogicalValue(initial.columns, migrated.columns)) {
+      throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite table definition changed unexpectedly: ${name}.`);
+    }
+    if (name === "schema_migrations") {
+      const versionColumn = initial.columns.indexOf("version");
+      const appliedAtColumn = initial.columns.indexOf("applied_at");
+      const added = migrated.rows.filter((row) => row[versionColumn]?.[1] === "10");
+      const retained = migrated.rows.filter((row) => row[versionColumn]?.[1] !== "10");
+      if (versionColumn < 0 || appliedAtColumn < 0 || added.length !== 1 ||
+        added[0][versionColumn][0] !== "integer" || added[0][appliedAtColumn][0] !== "integer" ||
+        !sameLogicalValue(initial.rows, retained)) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite migration ledger changed outside its one version-10 entry.");
+      }
+      continue;
+    }
+    const permitted = changedColumns.get(name);
+    if (permitted === undefined) {
+      if (!sameLogicalValue(initial.rows, migrated.rows)) {
+        throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite table changed unexpectedly: ${name}.`);
+      }
+      continue;
+    }
+    const indexes = initial.columns.map((column, index) => ({ column, index }));
+    const changedIndexes = indexes.filter(({ column }) => permitted.has(column)).map(({ index }) => index);
+    const keyIndexes = indexes.filter(({ column }) => !permitted.has(column)).map(({ index }) => index);
+    const stableKey = (row: readonly LogicalCell[]) => JSON.stringify(keyIndexes.map((index) => row[index]));
+    const initialRows = new Map(initial.rows.map((row) => [stableKey(row), row]));
+    const migratedRows = new Map(migrated.rows.map((row) => [stableKey(row), row]));
+    if (initialRows.size !== initial.rows.length || migratedRows.size !== migrated.rows.length ||
+      !sameLogicalValue([...initialRows.keys()].sort(), [...migratedRows.keys()].sort())) {
+      throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite row identity changed unexpectedly: ${name}.`);
+    }
+    for (const [key, previous] of initialRows) {
+      const current = migratedRows.get(key);
+      if (!current || keyIndexes.some((index) => !sameLogicalValue(previous[index], current[index]))) {
+        throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite table changed outside its permitted columns: ${name}.`);
+      }
+      // This explicit loop prevents a future migration from changing a column
+      // merely because it happens to share the same row identity.
+      for (const index of changedIndexes) {
+        if (!current[index]) throw new PlannerStoreError("MIGRATION_FAILED", `The SQLite changed column is missing: ${name}.`);
+      }
+    }
+  }
+}
+
 function readCommittedV9Summary(
   filename: string,
 ): PlannerStoreV8ToV9MigrationResult["database"] {
@@ -1321,6 +1711,25 @@ function readCommittedV9Summary(
   }
 }
 
+function readCommittedV10Summary(
+  filename: string,
+): PlannerStoreV9ToV10MigrationResult["database"] {
+  const database = new DatabaseSync(filename, { readOnly: true });
+  try {
+    assertCoherentV10Store(database);
+    return Object.freeze({
+      filename,
+      quickCheck: "ok" as const,
+      schemaVersion: 10 as const,
+      migrationVersions: Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const),
+      workspaceSchemaVersion: 10 as const,
+      rowCounts: readRowCounts(database),
+    });
+  } finally {
+    database.close();
+  }
+}
+
 export function migratePlannerStoreV8ToV9({
   filename,
   backupFilename,
@@ -1329,12 +1738,6 @@ export function migratePlannerStoreV8ToV9({
   backupFilename: string;
 }): PlannerStoreV8ToV9MigrationResult {
   assertPlannerSchemaContract();
-  if (CURRENT_SCHEMA_VERSION !== 9) {
-    throw new PlannerStoreError(
-      "MIGRATION_FAILED",
-      "The one-time SQLite v8-to-v9 command is unavailable after the schema catalogue advances.",
-    );
-  }
   if (!isAbsolute(filename) || !isAbsolute(backupFilename)) {
     throw new TypeError("The SQLite database and backup paths must be absolute.");
   }
@@ -1400,6 +1803,105 @@ export function migratePlannerStoreV8ToV9({
       throw new PlannerStoreError("BUSY", "The household store already has an active writer.", { cause: error });
     }
     throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v8-to-v9 migration did not complete.", { cause: error });
+  } finally {
+    reservation?.close();
+  }
+}
+
+export function migratePlannerStoreV9ToV10({
+  filename,
+  backupFilename,
+}: {
+  filename: string;
+  backupFilename: string;
+}): PlannerStoreV9ToV10MigrationResult {
+  assertPlannerSchemaContract();
+  if (CURRENT_SCHEMA_VERSION !== 10) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "The one-time SQLite v9-to-v10 command is unavailable after the schema catalogue advances.",
+    );
+  }
+  if (!isAbsolute(filename) || !isAbsolute(backupFilename)) {
+    throw new TypeError("The SQLite database and backup paths must be absolute.");
+  }
+  const canonicalFilename = realpathSync(filename);
+  const canonicalBackup = canonicalSnapshotDestination(backupFilename);
+  if (canonicalFilename === canonicalBackup) {
+    throw new TypeError("The SQLite backup path must differ from its database path.");
+  }
+
+  // This must precede the writer reservation: an ambiguous source is left
+  // entirely closed and untouched, including its artifact inventory.
+  preflightV9IngredientOccurrenceUpgrade(canonicalFilename);
+
+  let reservation: PlannerStoreWriteReservation | null = null;
+  let backup: VerifiedPlannerSnapshotInspection | null = null;
+  let committed = false;
+  try {
+    reservation = acquirePlannerStoreWriteReservation({ filename: canonicalFilename });
+    const operations = RESERVED_STORE_OPERATIONS.get(reservation);
+    if (operations === undefined) {
+      throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v9-to-v10 reservation primitives are unavailable.");
+    }
+    const connection = operations.migrationConnection;
+    assertCoherentV9Store(connection.database);
+    const before = readLogicalInventory(connection.database);
+    // Close the preflight/reservation race before creating any backup artifact.
+    applyV9IngredientOccurrenceUpgrade(connection.database, false);
+    backup = operations.createMigrationSnapshot(canonicalBackup);
+    const backupDatabase = new DatabaseSync(backup.filename, { readOnly: true });
+    try {
+      assertCoherentV9Store(backupDatabase);
+      if (!sameLogicalValue(before, readLogicalInventory(backupDatabase))) {
+        throw new PlannerStoreError("MIGRATION_FAILED", "The verified SQLite backup does not equal the locked v9 source.");
+      }
+    } finally {
+      backupDatabase.close();
+    }
+    // Re-run the same fail-closed authority under the writer lock so the
+    // committed state cannot differ from the immutable preflight candidate.
+    applyV9IngredientOccurrenceUpgrade(connection.database);
+    const migration = PLANNER_SCHEMA_MIGRATIONS.find((entry) => entry.version === 10);
+    if (migration === undefined) throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v10 catalogue entry is unavailable.");
+    executeMigrationEntry(connection.database, migration);
+    assertCoherentV10Store(connection.database);
+    const after = readLogicalInventory(connection.database);
+    assertExactV9ToV10Delta(before, after);
+    const verifiedBackup = backup;
+    connection.commit();
+    committed = true;
+    reservation.close();
+    reservation = null;
+    return Object.freeze({
+      database: readCommittedV10Summary(canonicalFilename),
+      backup: verifiedBackup,
+      migration: Object.freeze({
+        from: 9,
+        to: 10,
+        allowedChanges: Object.freeze([
+          "schema_migrations:10",
+          "workspace:household.schema_version,state_json,sync_revision,updated_at",
+          "planner_events:before_state_json",
+          "planner_tool_calls:result_envelope_json",
+          "codex_native_tool_calls:result_envelope_json",
+        ] as const),
+      }),
+    });
+  } catch (error) {
+    if (committed) {
+      throw new PlannerStoreError(
+        "MIGRATION_FAILED",
+        `The SQLite v9-to-v10 migration committed at ${canonicalFilename}, but final closed-file readback failed. ` +
+          `Inspect it before retrying; verified v9 backup: ${backup?.filename ?? canonicalBackup}.`,
+        { cause: error, migrationBackupPath: backup?.filename ?? null },
+      );
+    }
+    if (error instanceof PlannerStoreError) throw error;
+    if (isSqliteBusy(error)) {
+      throw new PlannerStoreError("BUSY", "The household store already has an active writer.", { cause: error });
+    }
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite v9-to-v10 migration did not complete.", { cause: error });
   } finally {
     reservation?.close();
   }
@@ -2246,6 +2748,20 @@ export function openPlannerStore(options: OpenPlannerStoreOptions = {}): SqliteP
   }
   if (!isMemory) mkdirSync(dirname(filename), { recursive: true });
 
+  let migrationBackupPath: string | null = null;
+  if (existingFileNeedsBackup) {
+    const existingVersion = readCurrentMigrationVersionReadOnly(filename);
+    if (existingVersion === 9) {
+      const migration = migratePlannerStoreV9ToV10({
+        filename: realpathSync(filename),
+        backupFilename: nextBackupPath(filename, 9),
+      });
+      migrationBackupPath = migration.backup.filename;
+    } else if (existingVersion < 9) {
+      preflightPreV9HouseholdNormalization(realpathSync(filename));
+    }
+  }
+
   let database: DatabaseSync;
   try {
     database = new DatabaseSync(filename);
@@ -2255,18 +2771,33 @@ export function openPlannerStore(options: OpenPlannerStoreOptions = {}): SqliteP
     });
   }
 
-  let migrationBackupPath: string | null = null;
   try {
     quickCheck(database);
     const currentVersion = readCurrentMigrationVersion(database);
     assertSupportedMigrationVersion(currentVersion);
-    migrationBackupPath =
-      existingFileNeedsBackup && currentVersion < CURRENT_SCHEMA_VERSION
+    migrationBackupPath ??= existingFileNeedsBackup && currentVersion < CURRENT_SCHEMA_VERSION
         ? createVerifiedMigrationBackup(filename, currentVersion)
         : null;
     configureDatabase(database, busyTimeoutMs, isMemory);
     applyMigrations(database, currentVersion);
-    normalizeStoredLegacyHouseholdState(database);
+    // The pre-v10 normalizer is a legacy compatibility bridge. The schema-10
+    // occurrence migration owns its own mechanical transform and must never be
+    // followed by text-based reconciliation on a current workspace.
+    if (currentVersion < 10) {
+      normalizeStoredLegacyHouseholdState(database);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        applyV9IngredientOccurrenceUpgrade(database);
+        database.exec("COMMIT");
+      } catch (error) {
+        try {
+          database.exec("ROLLBACK");
+        } catch {
+          // Preserve the occurrence upgrade failure.
+        }
+        throw error;
+      }
+    }
     quickCheck(database);
     validateStoredPlannerToolCalls(database);
     validateStoredChatTurns(database);

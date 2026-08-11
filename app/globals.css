@@ -2678,6 +2678,76 @@ textarea[aria-invalid="true"] {
   margin-bottom: 14px;
 }
 
+.occurrence-editor-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.occurrence-editor-heading small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.occurrence-editor-rows,
+.instruction-input-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.occurrence-editor-row,
+.instruction-input-row {
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.occurrence-editor-row {
+  grid-template-columns: minmax(88px, 1fr) minmax(68px, .65fr) minmax(56px, .45fr) minmax(120px, 1.3fr) minmax(88px, 1fr) auto;
+}
+
+.occurrence-editor-row label,
+.instruction-input-row label {
+  display: grid;
+  gap: 4px;
+}
+
+.occurrence-editor-row label > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.instruction-input-editor {
+  border: 0;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.instruction-input-editor legend {
+  font-size: 10px;
+  font-weight: 700;
+  margin-bottom: 7px;
+}
+
+.instruction-input-row {
+  grid-template-columns: minmax(72px, .5fr) minmax(140px, 1fr) auto;
+}
+
+@media (max-width: 640px) {
+  .occurrence-editor-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .occurrence-editor-row > button {
+    grid-column: 2;
+    justify-self: end;
+  }
+}
+
 .snapshot-section {
   border-top: 1px solid var(--line);
   margin-top: 20px;

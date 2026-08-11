@@ -68,7 +68,7 @@ function allStepLocations(week: WeekPlan | undefined): Map<string, StepLocation>
 }
 
 function resolveIngredient(meal: Meal, step: InstructionStep, ingredientId: string): RecipeIngredient | null {
-  if (!step.inputs.some((input) => input.ingredientId === ingredientId)) return null;
+  if (!step.inputs.some((input) => input.occurrenceId === ingredientId)) return null;
   return meal.ingredients.find((ingredient) => ingredient.id === ingredientId) ?? null;
 }
 
@@ -169,7 +169,7 @@ export function projectCombinedPrepDraft(
   const locations = allStepLocations(week);
   const sources: Source[] = sourceStepIds.map((stepId) => ({
     stepId,
-    ingredientIds: [...new Set(locations.get(stepId)?.step.inputs.map((input) => input.ingredientId) ?? [])],
+    ingredientIds: [...new Set(locations.get(stepId)?.step.inputs.map((input) => input.occurrenceId) ?? [])],
   }));
   return {
     entryId: null,

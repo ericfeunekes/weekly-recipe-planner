@@ -137,6 +137,41 @@ test("expected command conflicts are decision responses, not transport errors", 
   });
 });
 
+test("occurrence-aware recipe edits preserve opaque IDs and creation correlations on the wire", async () => {
+  const workspace = initializedWorkspace(10, 8);
+  const command = {
+    type: "editMealRecipe",
+    weekId: "2026-07-06",
+    mealId: "meal-1",
+    changes: {
+      title: "Dinner", subtitle: "", venue: "Home", prepNote: "", leftoverNote: "", notes: "", yieldText: null,
+    },
+    occurrences: [
+      { kind: "retain", occurrenceId: "ingredient-pepper", source: null, amount: "2", unit: null, ingredient: "red onions", qualifier: null, conceptId: null },
+      { kind: "create", correlationId: "new-ginger", source: null, amount: "1", unit: "tbsp", ingredient: "ginger", qualifier: null, conceptId: null, canonicalIngredientId: null },
+    ],
+    removedOccurrenceIds: ["ingredient-old-herb"],
+  };
+  await withBrowserSessionStorage(async () => {
+    await withFetch(async (path, init) => {
+      assert.equal(path, "/api/commands");
+      assert.deepEqual(JSON.parse(init.body).command, command);
+      return new Response(JSON.stringify({
+        decision: {
+          status: "accepted",
+          eventId: "event-9",
+          plannerVersion: 9,
+          occurrenceResults: [{ operationIndex: 0, occurrences: [{ correlationId: "new-ginger", occurrenceId: "ingredient-ginger" }] }],
+        },
+        workspace,
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }, async () => {
+      const result = await applyPlannerCommand({ requestId: "occurrence-edit-1", basePlannerVersion: 8, command });
+      assert.equal(result.decision.status, "accepted");
+    });
+  });
+});
+
 test("operation previews post the exact pure request without entering the authority journal", async () => {
   const request = {
     basePlannerVersion: 8,

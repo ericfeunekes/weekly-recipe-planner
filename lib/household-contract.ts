@@ -13,7 +13,10 @@ export const MEAL_STATUSES = [
 ] as const;
 export const FEEDBACK_VALUES = ["repeat", "modify", "drop"] as const;
 export const LEFTOVER_QUALITIES = ["good", "mixed", "poor"] as const;
+export const GROCERY_COVERAGES = ["needs_source", "shop", "farm_box", "on_hand"] as const;
+/** @deprecated Schema 9 name; use GROCERY_COVERAGES for new values. */
 export const GROCERY_SOURCES = ["shop", "farm_box", "on_hand"] as const;
+export const INGREDIENT_ROLES = ["weekly_requirement", "output", "leftover"] as const;
 
 import type { SourceRecipe } from "./sourced-recipe-contract.ts";
 
@@ -27,6 +30,8 @@ export type MealStatus = (typeof MEAL_STATUSES)[number];
 export type FeedbackValue = (typeof FEEDBACK_VALUES)[number];
 export type LeftoverQuality = (typeof LEFTOVER_QUALITIES)[number];
 export type GrocerySource = (typeof GROCERY_SOURCES)[number];
+export type GroceryCoverage = (typeof GROCERY_COVERAGES)[number];
+export type IngredientRole = (typeof INGREDIENT_ROLES)[number];
 export type GrocerySection = "Produce" | "Meat & seafood" | "Dairy" | "Pantry";
 
 export type IngredientAmountLine = {
@@ -35,11 +40,19 @@ export type IngredientAmountLine = {
 };
 
 export type RecipeIngredient = IngredientAmountLine & {
+  /** Opaque planner occurrence identity. It is never derived from text. */
   id: string;
+  source: string | null;
+  unit: string | null;
+  qualifier: string | null;
+  conceptId: string | null;
+  role: IngredientRole;
+  /** Canonical correlation only; never an occurrence identity. */
+  canonicalIngredientId: number | null;
 };
 
 export type IngredientUse = IngredientAmountLine & {
-  ingredientId: string;
+  occurrenceId: string;
 };
 
 export type InstructionStep = {
@@ -123,7 +136,7 @@ export type GroceryItem = {
   ingredientId: string;
   section: GrocerySection;
   checked: boolean;
-  source: GrocerySource;
+  coverage: GroceryCoverage;
 };
 
 export type Leftover = {
@@ -179,6 +192,26 @@ export type MealPlanInput = Omit<
 
 export type WeekPlanInput = {
   meals: MealPlanInput[];
+  weekLesson?: string;
+};
+
+export type CorrelatedInstructionInput = {
+  occurrenceCorrelationId: string;
+  amount: string;
+  ingredient: string;
+};
+export type OccurrenceAwareInstructionPlanInput = {
+  inputs: CorrelatedInstructionInput[];
+  instruction: string;
+  timerDurationSeconds?: number;
+  note?: string;
+};
+export type OccurrenceAwareMealPlanInput = Omit<MealPlanInput, "ingredients" | "instructions"> & {
+  occurrences: import("./ingredient-occurrence.ts").OccurrenceCreateInput[];
+  instructions: OccurrenceAwareInstructionPlanInput[];
+};
+export type OccurrenceAwareWeekPlanInput = {
+  meals: OccurrenceAwareMealPlanInput[];
   weekLesson?: string;
 };
 

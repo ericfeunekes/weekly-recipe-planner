@@ -2,6 +2,7 @@ import {
   HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST,
   HOUSEHOLD_COMMAND_REGISTRY,
   isHistoricalGroceryReconciliationCommand,
+  isHistoricalHouseholdCommand,
   isHouseholdCommand,
   type HouseholdCommand,
 } from "./household-command-contract.ts";
@@ -22,11 +23,13 @@ import type {
   PlannerEvent,
   PlannerEventCommand,
 } from "./planner-api-contract.ts";
+import type { OccurrenceResolution } from "./ingredient-occurrence.ts";
 import {
   MAX_PLANNER_OPERATIONS,
   MIN_PLANNER_OPERATIONS,
   isHistoricalPlannerEventOperationList,
   isPlannerOperationList,
+  type HistoricalPlannerEventOperation,
   type PlannerEventProvenance,
   type PlannerOperation,
   type PlannerOperationPreview,
@@ -161,6 +164,10 @@ export type PlannerPreviewData = {
 export type PlannerApplyData = {
   status: "accepted" | "replayed";
   eventId: string;
+  occurrenceResults: Array<{
+    operationIndex: number;
+    occurrences: OccurrenceResolution[];
+  }>;
   readback: PlannerReadProjection;
 };
 
@@ -311,8 +318,8 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
         "For an atomic day swap, call exactly " +
         "{basePlannerVersion:<read version>,operations:[{command:{type:'swapMealDays',weekId:'...',firstDate:'YYYY-MM-DD',secondDate:'YYYY-MM-DD'}}]}; " +
         "operations entries must always contain the command wrapper. " +
-        "to classify existing ingredient rows, use moveGroceryItemsToSource, for example " +
-        "{command:{type:'moveGroceryItemsToSource',weekId:'...',itemIds:['...'],source:'farm_box'}}. Required fields by type: " +
+        "to classify existing ingredient rows, use setGroceryItemsCoverage, for example " +
+        "{command:{type:'setGroceryItemsCoverage',weekId:'...',itemIds:['...'],coverage:'farm_box'}}. Required fields by type: " +
         plannerCommandFieldGuide,
       inputSchema: {
         type: "object",
@@ -329,7 +336,7 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
       name: "apply",
       description:
         "Atomically apply one ordered operation batch and return one readback. Grocery item names, amounts, and recipe links " +
-        "come from meal ingredients; use moveGroceryItemsToSource or setGroceryItemChecked for their execution state. Required fields by type: " +
+        "come from meal ingredients; use setGroceryItemsCoverage or setGroceryItemChecked for their execution state. Required fields by type: " +
         plannerCommandFieldGuide + ". For an atomic day swap, operations must be " +
         "[{command:{type:'swapMealDays',weekId:'...',firstDate:'YYYY-MM-DD',secondDate:'YYYY-MM-DD'}}]. " +
         "Readback fields by kind: " + readQueryFieldGuide + ".",
@@ -407,6 +414,15 @@ export function isPlannerApplyArguments(value: unknown): value is PlannerApplyAr
     hasExactKeys(value, ["basePlannerVersion", "operations", "readback"]) &&
     Number.isSafeInteger(value.basePlannerVersion) && Number(value.basePlannerVersion) >= 0 &&
     isPlannerOperationList(value.operations) && isReadQuery(value.readback);
+}
+
+export function isHistoricalPlannerApplyArguments(
+  value: unknown,
+): value is Omit<PlannerApplyArguments, "operations"> & { operations: HistoricalPlannerEventOperation[] } {
+  return isRecord(value) &&
+    hasExactKeys(value, ["basePlannerVersion", "operations", "readback"]) &&
+    Number.isSafeInteger(value.basePlannerVersion) && Number(value.basePlannerVersion) >= 0 &&
+    isHistoricalPlannerEventOperationList(value.operations) && isReadQuery(value.readback);
 }
 
 export function freezeForegroundAuthority(value: unknown): ForegroundAuthority {
@@ -671,6 +687,7 @@ function isPlannerEventProvenance(value: unknown): value is PlannerEventProvenan
 
 function isPlannerEventCommand(value: unknown): value is PlannerEventCommand {
   if (isHouseholdCommand(value)) return true;
+  if (isHistoricalHouseholdCommand(value)) return true;
   if (isHistoricalGroceryReconciliationCommand(value)) return true;
   if (!isRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "plannerBatch") {
@@ -744,7 +761,7 @@ function isMeal(value: unknown): value is Meal {
           mealId: meal.id,
           ingredientId: ingredient.id,
           section: "Pantry" as const,
-          source: "shop" as const,
+          coverage: "shop" as const,
           checked: false,
         })),
         leftovers: [],
@@ -807,14 +824,15 @@ export function isPlannerPreviewData(value: unknown): value is PlannerPreviewDat
   return value.outcomes.every((outcome) => {
     if (
       !isRecord(outcome) ||
-      !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes"]) ||
+      !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes", "occurrences"]) ||
       !Number.isSafeInteger(outcome.operationIndex) ||
       Number(outcome.operationIndex) < 0 ||
       Number(outcome.operationIndex) >= MAX_PLANNER_OPERATIONS ||
       indexes.has(Number(outcome.operationIndex)) ||
       typeof outcome.summary !== "string" ||
       typeof outcome.target !== "string" ||
-      !isStringArray(outcome.changes)
+      !isStringArray(outcome.changes) ||
+      !isOccurrenceResolutions(outcome.occurrences)
     ) return false;
     indexes.add(Number(outcome.operationIndex));
     return true;
@@ -823,10 +841,21 @@ export function isPlannerPreviewData(value: unknown): value is PlannerPreviewDat
 
 export function isPlannerApplyData(value: unknown): value is PlannerApplyData {
   return isRecord(value) &&
-    hasExactKeys(value, ["status", "eventId", "readback"]) &&
+    hasExactKeys(value, ["status", "eventId", "occurrenceResults", "readback"]) &&
     (value.status === "accepted" || value.status === "replayed") &&
     isBoundedId(value.eventId) &&
+    Array.isArray(value.occurrenceResults) && value.occurrenceResults.every((result) =>
+      isRecord(result) && hasExactKeys(result, ["operationIndex", "occurrences"]) &&
+      Number.isSafeInteger(result.operationIndex) && Number(result.operationIndex) >= 0 &&
+      Number(result.operationIndex) < MAX_PLANNER_OPERATIONS &&
+      isOccurrenceResolutions(result.occurrences)) &&
     isPlannerReadProjection(value.readback);
+}
+
+function isOccurrenceResolutions(value: unknown): boolean {
+  return Array.isArray(value) && value.every((resolution) =>
+    isRecord(resolution) && hasExactKeys(resolution, ["correlationId", "occurrenceId"]) &&
+    isBoundedId(resolution.correlationId) && isBoundedId(resolution.occurrenceId));
 }
 
 export function isPlannerToolResultForTool<Tool extends PlannerToolName>(

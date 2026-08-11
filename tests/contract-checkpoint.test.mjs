@@ -124,7 +124,12 @@ test("contract checkpoint freezes bounded workspace and prep semantics", () => {
       mealId: "meal-1",
       position: 1,
       step: {
-        inputs: [{ amount: "2 cups", ingredient: "water" }],
+        inputs: [{
+          kind: "create",
+          correlationId: "new-water",
+          amount: "2 cups",
+          ingredient: "water",
+        }],
         instruction: "Bring the water to a boil.",
       },
     }),
@@ -132,7 +137,7 @@ test("contract checkpoint freezes bounded workspace and prep semantics", () => {
   );
   assert.equal(
     isHouseholdCommand({
-      type: "updateInstructionStep",
+      type: "editInstructionStep",
       weekId: "2026-07-06",
       stepId: "step-1",
       changes: {

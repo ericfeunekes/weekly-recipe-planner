@@ -234,7 +234,7 @@ test("opens and migrates a real file with required SQLite durability settings", 
   const filename = temporaryDatabase(t);
   const store = openPlannerStore({ filename, busyTimeoutMs: 2_345 });
 
-  assert.deepEqual(store.readWorkspace(), { initialized: false, schemaVersion: 9 });
+  assert.deepEqual(store.readWorkspace(), { initialized: false, schemaVersion: 10 });
   assert.equal(store.migrationBackupPath, null);
   assert.equal(store.checkIntegrity(), "ok");
   assert.equal(store.database.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
@@ -243,12 +243,12 @@ test("opens and migrates a real file with required SQLite durability settings", 
   assert.equal(store.database.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(
     store.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,
-    9,
+    10,
   );
   store.close();
 
   const reopened = openPlannerStore({ filename });
-  assert.deepEqual(reopened.readWorkspace(), { initialized: false, schemaVersion: 9 });
+  assert.deepEqual(reopened.readWorkspace(), { initialized: false, schemaVersion: 10 });
   assert.equal(reopened.checkIntegrity(), "ok");
   reopened.close();
 });
@@ -277,9 +277,9 @@ test("a held write reservation captures one deterministic closed WAL image and e
     join(dirname(filename), "rollback-two.sqlite"),
   );
   assert.equal(first.quickCheck, "ok");
-  assert.equal(first.schemaVersion, 9);
+  assert.equal(first.schemaVersion, 10);
   assert.equal(first.initialized, true);
-  assert.equal(first.workspaceSchemaVersion, 9);
+  assert.equal(first.workspaceSchemaVersion, 10);
   assert.equal(first.plannerVersion, 0);
   assert.match(first.sha256, /^[a-f0-9]{64}$/u);
   assert.equal(first.sha256, second.sha256, "the unchanged reserved image is deterministic");
@@ -335,7 +335,7 @@ test("backs up and upgrades a populated v1 file before modification", (t) => {
   const store = openPlannerStore({ filename });
   assert.ok(store.migrationBackupPath);
   assert.equal(existsSync(store.migrationBackupPath), true);
-  assert.equal(store.readWorkspace().schemaVersion, 9);
+  assert.equal(store.readWorkspace().schemaVersion, 10);
   const events = store.readWorkspace().events;
   assert.deepEqual(events.find((event) => event.eventId === "event-legacy").provenance, {
     actorClass: "household",
@@ -353,7 +353,7 @@ test("backs up and upgrades a populated v1 file before modification", (t) => {
   );
   assert.equal(
     store.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,
-    9,
+    10,
   );
   assert.equal(
     store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts WHERE request_id = 'legacy-request'").get().count,
@@ -399,12 +399,56 @@ test("backs up and upgrades a populated v1 file before modification", (t) => {
   store.close();
 });
 
+test("ambiguous pre-v9 occurrence state fails before any schema or file mutation", (t) => {
+  const filename = temporaryDatabase(t);
+  createV1Database(filename);
+  const database = new DatabaseSync(filename);
+  database.prepare("PRAGMA journal_mode = WAL").get();
+  const ambiguous = state("Ambiguous legacy occurrence");
+  ambiguous.weeks[0].data.meals = [{
+    id: "legacy-meal",
+    ingredients: [
+      { id: "duplicate-a", amount: "1", ingredient: "red pepper" },
+      { id: "duplicate-b", amount: "2", ingredient: "red pepper" },
+    ],
+    instructions: [{
+      id: "legacy-step",
+      inputs: [{ amount: "1", ingredient: "red pepper" }],
+      instruction: "Slice the pepper.",
+      complete: false,
+    }],
+  }];
+  database.prepare("UPDATE workspace SET state_json = ? WHERE id = 'household'")
+    .run(JSON.stringify(ambiguous));
+  database.close();
+  assert.equal(existsSync(`${filename}-wal`), false);
+  assert.equal(existsSync(`${filename}-shm`), false);
+  const before = readFileSync(filename);
+
+  assert.throws(() => openPlannerStore({ filename }), (error) => {
+    assert.equal(error instanceof PlannerStoreError, true);
+    assert.equal(error.code, "MIGRATION_FAILED");
+    assert.match(error.message, /workspace\.state_json.*ambiguously matches.*duplicate-a, duplicate-b/iu);
+    return true;
+  });
+  assert.deepEqual(readFileSync(filename), before);
+  assert.equal(existsSync(`${filename}-wal`), false);
+  assert.equal(existsSync(`${filename}-shm`), false);
+  const unchanged = new DatabaseSync(filename, { readOnly: true });
+  assert.deepEqual(
+    unchanged.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map(({ version }) => ({ version })),
+    [{ version: 1 }],
+  );
+  assert.equal(unchanged.prepare("SELECT schema_version FROM workspace WHERE id = 'household'").get().schema_version, 1);
+  unchanged.close();
+});
+
 test("migrations 004 and 005 back up v3 and add digest-bound compact sourced intent", (t) => {
   const filename = temporaryDatabase(t);
   createV3Database(filename);
   const store = openPlannerStore({ filename });
   assert.ok(store.migrationBackupPath);
-  assert.equal(store.readWorkspace().schemaVersion, 9);
+  assert.equal(store.readWorkspace().schemaVersion, 10);
   const turn = store.readAllChatTurns()[0];
   assert.equal(turn.researchKind, "none");
   assert.equal(turn.researchCandidate, null);
@@ -427,7 +471,7 @@ test("migrations 004 and 005 back up v3 and add digest-bound compact sourced int
   }
   store.close();
   const reopened = openPlannerStore({ filename });
-  assert.equal(reopened.readWorkspace().schemaVersion, 9);
+  assert.equal(reopened.readWorkspace().schemaVersion, 10);
   assert.equal(reopened.readAllChatTurns()[0].researchKind, "none");
   assert.equal(reopened.readAllChatTurns()[0].researchCandidate, null);
   assert.equal(reopened.migrationBackupPath, null, "reopen must not rerun the v3 migration");
@@ -439,7 +483,7 @@ test("migration 005 preserves legacy references for audit but only digest-bound 
   const filename = temporaryDatabase(t);
   createV4LegacyResearchDatabase(filename);
   const store = openPlannerStore({ filename });
-  assert.equal(store.readWorkspace().schemaVersion, 9);
+  assert.equal(store.readWorkspace().schemaVersion, 10);
   assert.ok(store.migrationBackupPath);
   const backup = new DatabaseSync(store.migrationBackupPath, { readOnly: true });
   try {
@@ -786,7 +830,7 @@ test("rejects a database newer than the supported migration manifest without mod
   createV1Database(filename);
   const newer = new DatabaseSync(filename);
   try {
-    newer.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (10, 10)").run();
+    newer.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (11, 11)").run();
   } finally {
     newer.close();
   }
@@ -800,7 +844,7 @@ test("rejects a database newer than the supported migration manifest without mod
   );
   const unchanged = new DatabaseSync(filename, { readOnly: true });
   try {
-    assert.equal(unchanged.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 10);
+    assert.equal(unchanged.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 11);
   } finally {
     unchanged.close();
   }
@@ -862,7 +906,7 @@ test("transaction rollback removes partial workspace, event, and receipt writes"
     /injected failure/,
   );
 
-  assert.deepEqual(store.readWorkspace(), { initialized: false, schemaVersion: 9 });
+  assert.deepEqual(store.readWorkspace(), { initialized: false, schemaVersion: 10 });
   assert.equal(
     store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts").get().count,
     0,

@@ -86,6 +86,19 @@ export type SourcedRecipeReplacement = {
   title: string;
   yieldText?: string;
   source: SourceRecipe;
+  occurrences: import("./ingredient-occurrence.ts").OccurrenceCreateInput[];
+  steps: Array<{
+    inputs: Array<{ occurrenceCorrelationId: string; amount: string; ingredient: string }>;
+    instruction: string;
+    timerDurationSeconds?: number;
+    note?: string;
+  }>;
+};
+
+export type LegacySourcedRecipeReplacement = {
+  title: string;
+  yieldText?: string;
+  source: SourceRecipe;
   steps: SourcedRecipeStep[];
 };
 
@@ -206,16 +219,26 @@ export const RESEARCH_RECIPE_DRAFT_SCHEMA = Object.freeze({
 export const SOURCED_RECIPE_REPLACEMENT_SCHEMA = Object.freeze({
   type: "object",
   additionalProperties: false,
-  required: ["title", "source", "steps"],
+  required: ["title", "source", "occurrences", "steps"],
   properties: {
     title: boundedString(RESEARCH_TITLE_LENGTH, 1),
     yieldText: boundedString(RESEARCH_YIELD_LENGTH, 1),
     source: sourceRecipeSchema,
+    occurrences: {
+      type: "array", maxItems: RESEARCH_TOTAL_INPUT_LIMIT,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["kind", "correlationId", "source", "amount", "unit", "ingredient", "qualifier", "conceptId", "canonicalIngredientId"],
+        properties: {
+          kind: { const: "create" }, correlationId: boundedString(200, 1), source: { anyOf: [boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH), { type: "null" }] }, amount: boundedString(RESEARCH_AMOUNT_LENGTH), unit: { anyOf: [boundedString(RESEARCH_AMOUNT_LENGTH), { type: "null" }] }, ingredient: boundedString(RESEARCH_INGREDIENT_LENGTH), qualifier: { anyOf: [boundedString(RESEARCH_INGREDIENT_LENGTH), { type: "null" }] }, conceptId: { anyOf: [boundedString(200), { type: "null" }] }, canonicalIngredientId: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
+        },
+      },
+    },
     steps: {
       type: "array",
       minItems: 1,
       maxItems: RESEARCH_STEP_LIMIT,
-      items: canonicalStepSchema,
+      items: { type: "object", additionalProperties: false, required: ["inputs", "instruction"], properties: { inputs: { type: "array", maxItems: RESEARCH_STEP_INPUT_LIMIT, items: { type: "object", additionalProperties: false, required: ["occurrenceCorrelationId", "amount", "ingredient"], properties: { occurrenceCorrelationId: boundedString(200, 1), amount: boundedString(RESEARCH_AMOUNT_LENGTH), ingredient: boundedString(RESEARCH_INGREDIENT_LENGTH) } } }, instruction: boundedString(RESEARCH_INSTRUCTION_LENGTH, 1), timerDurationSeconds: canonicalStepSchema.properties.timerDurationSeconds, note: boundedString(RESEARCH_INSTRUCTION_LENGTH) } },
     },
   },
 });
@@ -497,9 +520,59 @@ export function projectResearchCandidateReference(
 export function isSourcedRecipeReplacement(
   value: unknown,
 ): value is SourcedRecipeReplacement {
+  if (!(isRecord(value) &&
+    hasExactKeys(value, ["title", "source", "occurrences", "steps"], ["yieldText"]) &&
+    isBoundedTrimmedText(value.title, RESEARCH_TITLE_LENGTH) &&
+    (!Object.hasOwn(value, "yieldText") || isBoundedTrimmedText(value.yieldText, RESEARCH_YIELD_LENGTH)) &&
+    isSourceRecipe(value.source) && Array.isArray(value.occurrences) &&
+    value.occurrences.every((occurrence) => isIngredientOccurrenceEdit(occurrence) && occurrence.kind === "create" &&
+      hasExactKeys(occurrence, ["kind", "correlationId", "source", "amount", "unit", "ingredient", "qualifier", "conceptId", "canonicalIngredientId"]) &&
+      isBoundedTrimmedText(occurrence.correlationId, 200) &&
+      (occurrence.source === null || isBoundedTrimmedText(occurrence.source, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
+      occurrence.amount.length <= RESEARCH_AMOUNT_LENGTH &&
+      (occurrence.unit === null || occurrence.unit.length <= RESEARCH_AMOUNT_LENGTH) &&
+      isBoundedTrimmedText(occurrence.ingredient, RESEARCH_INGREDIENT_LENGTH) &&
+      (occurrence.qualifier === null || occurrence.qualifier.length <= RESEARCH_INGREDIENT_LENGTH) &&
+      (occurrence.conceptId === null || occurrence.conceptId.length <= 200) &&
+      (occurrence.canonicalIngredientId === null || (Number.isSafeInteger(occurrence.canonicalIngredientId) && Number(occurrence.canonicalIngredientId) > 0))) &&
+    Array.isArray(value.steps) && value.steps.length >= 1 && value.steps.length <= RESEARCH_STEP_LIMIT &&
+    value.steps.every((step) => isRecord(step) && hasExactKeys(step, ["inputs", "instruction"], ["timerDurationSeconds", "note"]) &&
+      Array.isArray(step.inputs) && step.inputs.length <= RESEARCH_STEP_INPUT_LIMIT &&
+      step.inputs.every((input) => isRecord(input) &&
+        hasExactKeys(input, ["occurrenceCorrelationId", "amount", "ingredient"]) &&
+        isBoundedTrimmedText(input.occurrenceCorrelationId, 200) &&
+        isBoundedTrimmedText(input.amount, RESEARCH_AMOUNT_LENGTH) &&
+        isSingleLine(input.amount) &&
+        isBoundedTrimmedText(input.ingredient, RESEARCH_INGREDIENT_LENGTH) &&
+        isSingleLine(input.ingredient)) &&
+      isBoundedTrimmedText(step.instruction, RESEARCH_INSTRUCTION_LENGTH) &&
+      (!Object.hasOwn(step, "timerDurationSeconds") ||
+        (Number.isSafeInteger(step.timerDurationSeconds) &&
+          Number(step.timerDurationSeconds) >= 1 &&
+          Number(step.timerDurationSeconds) <= RESEARCH_TIMER_DURATION_LIMIT)) &&
+      (!Object.hasOwn(step, "note") ||
+        isBoundedTrimmedText(step.note, RESEARCH_INSTRUCTION_LENGTH))) &&
+    value.steps.reduce((count, step) => count + step.inputs.length, 0) <= RESEARCH_TOTAL_INPUT_LIMIT)) return false;
+  const candidate = value as SourcedRecipeReplacement;
+  const correlations = candidate.occurrences.map((occurrence) => occurrence.correlationId);
+  const correlationSet = new Set(correlations);
+  return correlationSet.size === correlations.length &&
+    candidate.steps.every((step) => {
+      const inputCorrelations = step.inputs.map((input) => input.occurrenceCorrelationId);
+      return inputCorrelations.every((correlation) => correlationSet.has(correlation));
+    });
+}
+
+export function isLegacySourcedRecipeReplacement(
+  value: unknown,
+): value is LegacySourcedRecipeReplacement {
   return isRecord(value) &&
     hasExactKeys(value, ["title", "source", "steps"], ["yieldText"]) &&
-    isSourceRecipe(value.source) && hasValidRecipeBody(value);
+    isBoundedTrimmedText(value.title, RESEARCH_TITLE_LENGTH) &&
+    (value.yieldText === undefined || isBoundedTrimmedText(value.yieldText, RESEARCH_YIELD_LENGTH)) &&
+    isSourceRecipe(value.source) &&
+    Array.isArray(value.steps) && value.steps.length >= 1 && value.steps.length <= RESEARCH_STEP_LIMIT &&
+    value.steps.every(isSourcedRecipeStep);
 }
 
 export function sourceRecipeEquals(left: SourceRecipe, right: SourceRecipe): boolean {
@@ -526,8 +599,19 @@ export function canonicalSourcedRecipeReplacementJson(
       url: replacement.source.url,
       retrievedAt: replacement.source.retrievedAt,
     },
+    occurrences: replacement.occurrences.map((occurrence) => ({
+      correlationId: occurrence.correlationId,
+      source: occurrence.source,
+      amount: occurrence.amount,
+      unit: occurrence.unit,
+      ingredient: occurrence.ingredient,
+      qualifier: occurrence.qualifier,
+      conceptId: occurrence.conceptId,
+      canonicalIngredientId: occurrence.canonicalIngredientId,
+    })),
     steps: replacement.steps.map((step) => ({
       inputs: step.inputs.map((input) => ({
+        occurrenceCorrelationId: input.occurrenceCorrelationId,
         amount: input.amount,
         ingredient: input.ingredient,
       })),
@@ -562,12 +646,32 @@ export function sourcedReplacementFromCandidate(
   if (!isResearchRecipeCandidate(candidate)) {
     throw new TypeError("Cannot project an invalid research candidate.");
   }
+  const occurrenceRows = candidate.steps.flatMap((step, stepIndex) =>
+    step.inputs.map((input, inputIndex) => ({
+      correlationId: `candidate.${stepIndex}.${inputIndex}`,
+      input,
+    })),
+  );
   return {
     title: candidate.title,
     ...(candidate.yieldText === undefined ? {} : { yieldText: candidate.yieldText }),
     source: { ...candidate.source },
-    steps: candidate.steps.map((step) => ({
-      inputs: step.inputs.map((input) => ({ ...input })),
+    occurrences: occurrenceRows.map(({ correlationId, input }) => ({
+      kind: "create" as const,
+      correlationId,
+      source: null,
+      amount: input.amount,
+      unit: null,
+      ingredient: input.ingredient,
+      qualifier: null,
+      conceptId: null,
+      canonicalIngredientId: null,
+    })),
+    steps: candidate.steps.map((step, stepIndex) => ({
+      inputs: step.inputs.map((input, inputIndex) => ({
+        occurrenceCorrelationId: `candidate.${stepIndex}.${inputIndex}`,
+        ...input,
+      })),
       instruction: step.instruction,
       ...(step.timerDurationSeconds === undefined
         ? {}
@@ -604,3 +708,4 @@ export function authorizeEmbeddedSourcedReplacements(
   }
   return { ok: true };
 }
+import { isIngredientOccurrenceEdit } from "./ingredient-occurrence.ts";

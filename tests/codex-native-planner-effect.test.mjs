@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import test from "node:test";
 import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import { householdDomain } from "../lib/household-domain.ts";
 import { PLANNER_TOOL_NAMESPACE } from "../lib/planner-tool-contract.ts";
-import { createPlannerApplicationService } from "../server/application/planner-service.ts";
+import { createPlannerApplicationService, hashCanonicalPayload } from "../server/application/planner-service.ts";
 import { createNativePlannerEffectHost } from "../server/codex/planner-effect-host.ts";
 import { createSqliteCodexThreadStore } from "../server/store/codex-thread-store.ts";
 import { openPlannerStore } from "../server/store/sqlite-store.ts";
@@ -20,7 +21,7 @@ function initializedWorkspace() {
   });
   return {
     initialized: true,
-    schemaVersion: 9,
+    schemaVersion: 10,
     plannerVersion: 0,
     syncRevision: 1,
     state,
@@ -51,6 +52,7 @@ function fakePlanner() {
         status: "accepted",
         eventId: "event-native",
         plannerVersion: workspace.plannerVersion,
+        occurrenceResults: [],
       },
       workspace,
     };
@@ -84,6 +86,8 @@ function fakePlanner() {
       };
     },
     applyOperations,
+    replayHistoricalOperations: () => { throw new Error("native planner tools do not admit retired commands"); },
+    replayHistoricalPlannerOperations: () => { throw new Error("native planner tools do not admit retired commands"); },
     applyPlannerOperations: (_transaction, request, context) =>
       applyOperations(request, context),
     undoLatest: () => { throw new Error("unused"); },
@@ -132,6 +136,16 @@ function decode(response) {
   return JSON.parse(response.contentItems[0].text);
 }
 
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 test("native planner host reads and replays the exact result", async () => {
   const sqlite = openPlannerStore({ filename: ":memory:" });
   const planner = fakePlanner();
@@ -154,7 +168,7 @@ test("native planner host reads and replays the exact result", async () => {
   sqlite.close();
 });
 
-test("native planner host applies through the shared service once and replays", async () => {
+test("native planner host applies an occurrence edit through the shared service once and replays", async () => {
   const sqlite = openPlannerStore({ filename: ":memory:" });
   const planner = realPlanner(sqlite);
   const host = createNativePlannerEffectHost({
@@ -163,16 +177,61 @@ test("native planner host applies through the shared service once and replays", 
     isEligibleCall: () => true,
     now: () => 200,
   });
-  const weekId = planner.readWorkspace().state.activeWeekId;
+  const before = planner.readWorkspace();
+  const weekId = before.state.activeWeekId;
+  const meal = before.state.weeks.find((week) => week.id === weekId).data.meals[0];
+  const correlationId = "native-created-occurrence";
   const params = callback("apply", {
     basePlannerVersion: 0,
-    operations: [{ command: { type: "captureWeekLesson", weekId, weekLesson: "Keep it simple." } }],
+    operations: [{ command: {
+      type: "editMealRecipe",
+      weekId,
+      mealId: meal.id,
+      changes: {
+        title: meal.title,
+        subtitle: meal.subtitle,
+        venue: meal.venue,
+        prepNote: meal.prepNote,
+        leftoverNote: meal.leftoverNote,
+        notes: meal.notes,
+        yieldText: meal.yieldText ?? null,
+      },
+      occurrences: [
+        ...meal.ingredients.map((ingredient) => ({
+          kind: "retain",
+          occurrenceId: ingredient.id,
+          source: ingredient.source,
+          amount: ingredient.amount,
+          unit: ingredient.unit,
+          ingredient: ingredient.ingredient,
+          qualifier: ingredient.qualifier,
+          conceptId: ingredient.conceptId,
+        })),
+        {
+          kind: "create",
+          correlationId,
+          source: "1 lime",
+          amount: "1",
+          unit: null,
+          ingredient: "lime",
+          qualifier: null,
+          conceptId: null,
+          canonicalIngredientId: null,
+        },
+      ],
+      removedOccurrenceIds: [],
+    } }],
     readback: { kind: "week", weekId },
   });
   const first = decode(await host.handle(params));
   const replay = decode(await host.handle(params));
   assert.equal(first.ok, true);
   assert.equal(first.data.status, "accepted");
+  const createdOccurrenceId = first.data.occurrenceResults[0].occurrences
+    .find((resolution) => resolution.correlationId === correlationId)?.occurrenceId;
+  assert.ok(createdOccurrenceId);
+  assert.equal(first.data.readback.week.data.meals[0].ingredients.at(-1).id, createdOccurrenceId);
+  assert.equal(first.data.readback.week.data.meals[0].ingredients.at(-1).ingredient, "lime");
   assert.deepEqual(replay, first);
   assert.equal(planner.readWorkspace().plannerVersion, 1);
   assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
@@ -184,6 +243,90 @@ test("native planner host applies through the shared service once and replays", 
   assert.equal(row.operation_kind, "native_codex_apply_planner_operations_v1");
   assert.match(row.request_id, /^native-codex:[a-f0-9]{64}$/u);
   assert.match(row.event_id, /^event-native-/u);
+  sqlite.close();
+});
+
+test("native planner host recovers a retired inner command only from its exact historical receipt", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const planner = realPlanner(sqlite);
+  const host = createNativePlannerEffectHost({
+    planner,
+    store: createSqliteCodexThreadStore(sqlite),
+    isEligibleCall: () => true,
+    now: () => 225,
+  });
+  const weekId = planner.readWorkspace().state.activeWeekId;
+  const meal = planner.readWorkspace().state.weeks.find((week) => week.id === weekId).data.meals[0];
+  const args = {
+    basePlannerVersion: 0,
+    operations: [{ command: {
+      type: "updateMealSnapshot",
+      weekId,
+      mealId: meal.id,
+      changes: {
+        title: meal.title, subtitle: meal.subtitle, venue: meal.venue,
+        prepNote: meal.prepNote, leftoverNote: meal.leftoverNote, notes: meal.notes,
+        ingredients: meal.ingredients.map(({ amount, ingredient }) => `${amount} ${ingredient}`),
+        yieldText: meal.yieldText ?? null,
+      },
+    } }],
+    readback: { kind: "week", weekId },
+  };
+  const params = callback("apply", args, { callId: "historical-native-call" });
+  const argumentHash = sha256(canonicalJson(args));
+  const callbackIdentityHash = sha256([
+    params.threadId, params.turnId, params.callId, params.namespace, params.tool, argumentHash,
+  ].join("\0"));
+  const requestId = `native-codex:${callbackIdentityHash}`;
+  const initial = planner.readWorkspace();
+  sqlite.transaction((transaction) => {
+    assert.ok(sqlite.updateWorkspace(transaction, initial.state, 0, 1));
+    sqlite.insertPlannerEvent(transaction, {
+      eventId: "historical-native-event",
+      requestId,
+      actor: "Codex",
+      provenance: { actorClass: "codex", actorSource: "embedded", admission: "app_server_dynamic_v1" },
+      command: args.operations[0].command,
+      baseVersion: 0,
+      resultVersion: 1,
+      summary: "Historical native recipe edit",
+      target: meal.id,
+      changes: [],
+      revertsEventId: null,
+      chatTurnId: null,
+      occurredAt: 1,
+    }, initial.state);
+    sqlite.insertReceipt(transaction, {
+      operationKind: "native_codex_apply_planner_operations_v1",
+      requestId,
+      payloadHash: hashCanonicalPayload("native_codex_apply_planner_operations_v1", {
+        basePlannerVersion: args.basePlannerVersion,
+        operations: args.operations,
+      }),
+      httpStatus: 200,
+      decision: {
+        kind: "planner_decision",
+        decision: { status: "accepted", eventId: "historical-native-event", plannerVersion: 1 },
+      },
+      createdAt: 1,
+    });
+  });
+  const before = planner.readWorkspace();
+  const recovered = decode(await host.handle(params));
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.data.status, "replayed");
+  assert.equal(recovered.data.eventId, "historical-native-event");
+  assert.deepEqual(recovered.data.occurrenceResults, [{ operationIndex: 0, occurrences: [] }]);
+  assert.deepEqual(planner.readWorkspace(), before);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
+
+  const changed = structuredClone(params);
+  changed.arguments.operations[0].command.changes.title = "Changed historical request";
+  assert.equal(decode(await host.handle(changed)).ok, false);
+  const missing = callback("apply", args, { callId: "missing-historical-native-call" });
+  assert.equal(decode(await host.handle(missing)).ok, false);
+  assert.deepEqual(planner.readWorkspace(), before);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
   sqlite.close();
 });
 
@@ -432,9 +575,12 @@ test("native planner host rejects unavailable sourced replacement, explicit arch
       callId: `call-sourced-${tool}`,
     })));
     assert.equal(deniedSourced.ok, false);
-    assert.equal(deniedSourced.error.code, "NOT_AUTHORIZED");
-    assert.match(deniedSourced.error.message, /unavailable until the host admits/i);
-    assert.equal(deniedSourced.error.retry, "none");
+    assert.equal(deniedSourced.error.code, "INVALID_ARGUMENTS");
+    assert.match(
+      deniedSourced.error.message,
+      tool === "apply" ? /retired commands|receipt/i : /ordered operation.*contract/i,
+    );
+    assert.equal(deniedSourced.error.retry, "revise_new_call");
   }
   assert.equal(planner.calls.preview, 0);
   assert.equal(planner.calls.apply, 0);

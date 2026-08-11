@@ -9,7 +9,7 @@ import {
   DIAGNOSTIC_EXPORT_KIND,
   DIAGNOSTIC_EXPORT_WARNING,
 } from "../lib/planner-api-contract.ts";
-import { createPlannerApplicationService } from "../server/application/planner-service.ts";
+import { createPlannerApplicationService, hashCanonicalPayload } from "../server/application/planner-service.ts";
 import { createApplicationRouter } from "../server/http/application-router.ts";
 import { createFrontController } from "../server/http/front-controller.ts";
 import {
@@ -204,8 +204,11 @@ function sourcedHttpCommand() {
         retrievedAt: 1_750_000_000_000,
       },
       steps: [{
-        inputs: [{ amount: "1 cup", ingredient: "lentils" }],
+        inputs: [{ occurrenceCorrelationId: "http-lentils", amount: "1 cup", ingredient: "lentils" }],
         instruction: "Simmer until tender.",
+      }],
+      occurrences: [{
+        kind: "create", correlationId: "http-lentils", source: null, amount: "1 cup", unit: null, ingredient: "lentils", qualifier: null, conceptId: null, canonicalIngredientId: null,
       }],
     },
   };
@@ -434,6 +437,56 @@ test("household HTTP sourced replacement reaches shared reducer without embedded
   assert.equal(store.database.prepare(
     "SELECT COUNT(*) AS count FROM command_receipts WHERE operation_kind = 'planner_command'",
   ).get().count, 2);
+});
+
+test("household HTTP routes retired grocery reconciliation to receipt-only replay", async (t) => {
+  const { baseUrl, planner, store } = await startRealSourcedApplication(t);
+  const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
+  const request = {
+    requestId: "historical-http-1",
+    basePlannerVersion: 0,
+    command: {
+      type: "reconcileGroceries",
+      weekId: "2026-07-06",
+      items: [{
+        id: "grocery-rice",
+        section: "Pantry",
+        item: "rice",
+        detail: "1 cup",
+        checked: false,
+        farmBox: false,
+      }],
+    },
+  };
+  const storedDecision = { status: "accepted", eventId: "historical-http-event", plannerVersion: 0 };
+  const decision = { ...storedDecision, occurrenceResults: [{ operationIndex: 0, occurrences: [] }] };
+  store.transaction((transaction) => store.insertReceipt(transaction, {
+    operationKind: "planner_command",
+    requestId: request.requestId,
+    payloadHash: hashCanonicalPayload("planner_command", request),
+    httpStatus: 200,
+    decision: { kind: "planner_decision", decision: storedDecision },
+    createdAt: 1,
+  }));
+  const before = planner.readWorkspace();
+  const replay = await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(request),
+  });
+  assert.equal(replay.status, 200);
+  assert.deepEqual((await replay.json()).decision, decision);
+  assert.deepEqual(planner.readWorkspace(), before);
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 0);
+  const changed = structuredClone(request);
+  changed.command.items[0].item = "Changed historical rice";
+  assert.equal((await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(changed),
+  })).status, 409);
+  const missing = { ...request, requestId: "historical-http-missing" };
+  assert.equal((await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(missing),
+  })).status, 409);
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 0);
+  assert.equal(planner.readWorkspace().plannerVersion, 0);
 });
 
 test("IPv6 loopback browser origins can mutate through the configured authority", async (t) => {

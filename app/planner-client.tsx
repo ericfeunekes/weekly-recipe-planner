@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Clock3,
   CookingPot,
+  Copy,
   EllipsisVertical,
   GripVertical,
   Home,
@@ -29,6 +30,7 @@ import {
   Plus,
   RotateCcw,
   ShoppingBasket,
+  Split,
   StickyNote,
   Trash2,
   Utensils,
@@ -64,12 +66,18 @@ import {
   type HouseholdCommand,
 } from "@/lib/household-command-contract";
 import {
+  isIngredientOccurrenceEdit,
+  normalizedCoreIngredientLiteral,
+  type InstructionInputEdit,
+} from "@/lib/ingredient-occurrence";
+import {
   FEEDBACK_VALUES,
-  GROCERY_SOURCES,
+  GROCERY_COVERAGES,
   LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   isPrepSessionCombinedStep,
   type GroceryItem,
+  type GroceryCoverage,
   type InstructionStep,
   type IsoDate,
   type Meal,
@@ -169,7 +177,7 @@ type PendingRetryVolatile = {
   options?: MutateOptions;
 };
 
-type MealSnapshotRecoveryCommand = Extract<HouseholdCommand, { type: "updateMealSnapshot" }>;
+type MealRecipeRecoveryCommand = Extract<HouseholdCommand, { type: "editMealRecipe" }>;
 
 function hasExactRecordKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
@@ -178,11 +186,11 @@ function hasExactRecordKeys(value: Record<string, unknown>, keys: readonly strin
     actual.every((key, index) => key === expected[index]);
 }
 
-function isMealSnapshotRecoveryCommand(value: unknown): value is MealSnapshotRecoveryCommand {
+function isMealRecipeRecoveryCommand(value: unknown): value is MealRecipeRecoveryCommand {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const command = value as Record<string, unknown>;
-  if (!hasExactRecordKeys(command, ["type", "weekId", "mealId", "changes"]) ||
-      command.type !== "updateMealSnapshot" ||
+  if (!hasExactRecordKeys(command, ["type", "weekId", "mealId", "changes", "occurrences", "removedOccurrenceIds"]) ||
+      command.type !== "editMealRecipe" ||
       typeof command.weekId !== "string" || command.weekId.length === 0 || command.weekId.length > MAX_ID_LENGTH ||
       typeof command.mealId !== "string" || command.mealId.length === 0 || command.mealId.length > MAX_ID_LENGTH ||
       command.changes === null || typeof command.changes !== "object" || Array.isArray(command.changes)) {
@@ -196,7 +204,6 @@ function isMealSnapshotRecoveryCommand(value: unknown): value is MealSnapshotRec
     "prepNote",
     "leftoverNote",
     "notes",
-    "ingredients",
     "yieldText",
   ])) return false;
   return typeof changes.title === "string" && changes.title.length <= MAX_MEAL_TITLE_LENGTH &&
@@ -205,10 +212,11 @@ function isMealSnapshotRecoveryCommand(value: unknown): value is MealSnapshotRec
     typeof changes.prepNote === "string" && changes.prepNote.length <= MAX_COMMAND_TEXT_LENGTH &&
     typeof changes.leftoverNote === "string" && changes.leftoverNote.length <= MAX_COMMAND_TEXT_LENGTH &&
     typeof changes.notes === "string" && changes.notes.length <= MAX_COMMAND_TEXT_LENGTH &&
-    Array.isArray(changes.ingredients) && changes.ingredients.length <= MAX_INGREDIENT_LINES &&
-    changes.ingredients.every((ingredient) =>
-      typeof ingredient === "string" && ingredient.length <= MAX_INGREDIENT_LINE_LENGTH
-    ) &&
+    Array.isArray(command.occurrences) && command.occurrences.length <= MAX_INGREDIENT_LINES &&
+    command.occurrences.every(isIngredientOccurrenceEdit) &&
+    Array.isArray(command.removedOccurrenceIds) && command.removedOccurrenceIds.length <= MAX_INGREDIENT_LINES &&
+    command.removedOccurrenceIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= MAX_ID_LENGTH) &&
+    new Set(command.removedOccurrenceIds).size === command.removedOccurrenceIds.length &&
     (changes.yieldText === null ||
       (typeof changes.yieldText === "string" && changes.yieldText.length <= 80));
 }
@@ -243,7 +251,7 @@ function pendingRetryFromOperation(
   if (operation.kind === "planner") {
     const original = request as ApplyPlannerCommandRequest;
     const editableCommand = resolved &&
-        (isMealSnapshotRecoveryCommand(operation.editableDraft) ||
+        (isMealRecipeRecoveryCommand(operation.editableDraft) ||
           isHouseholdCommand(operation.editableDraft)) &&
         operation.editableDraft.type === original.command.type
       ? operation.editableDraft
@@ -284,10 +292,10 @@ const PLANNER_ACTION_LABELS = {
   reorderMeals: "Reorder meals",
   swapMealDays: "Swap meal days",
   updateMealStatus: "Change meal status",
-  updateMealSnapshot: "Save recipe details",
+  editMealRecipe: "Save recipe details",
   replaceMealRecipeFromSource: "Replace sourced recipe",
   addInstructionStep: "Add recipe step",
-  updateInstructionStep: "Save recipe step",
+  editInstructionStep: "Save recipe step",
   moveInstructionStep: "Reorder recipe step",
   removeInstructionStep: "Delete recipe step",
   setInstructionStepComplete: "Change recipe step completion",
@@ -304,7 +312,7 @@ const PLANNER_ACTION_LABELS = {
   movePrepStepsToDate: "Move prep steps to date",
   removePrepStepsFromDate: "Remove prep steps from date",
   clearPrepDate: "Clear prep date",
-  moveGroceryItemsToSource: "Move selected groceries",
+  setGroceryItemsCoverage: "Set grocery coverage",
   setGroceryItemChecked: "Change grocery item completion",
   captureFeedback: "Save dinner feedback",
   captureWeekLesson: "Save week lesson",
@@ -365,6 +373,34 @@ function isAmbiguousPostError(error: unknown): error is PlannerApiError {
     (error.code === "NETWORK_ERROR" || error.code === "INVALID_RESPONSE");
 }
 
+function mergeIdentityRows<Row extends object>(
+  canonicalRows: readonly Row[],
+  baselineRows: readonly Row[],
+  localRows: readonly Row[],
+  identity: (row: Row) => string,
+): Row[] {
+  const baselineById = new Map(baselineRows.map((row) => [identity(row), row]));
+  const canonicalById = new Map(canonicalRows.map((row) => [identity(row), row]));
+  const localIds = new Set(localRows.map(identity));
+  const merged = localRows.flatMap((localRow) => {
+    const rowId = identity(localRow);
+    const baselineRow = baselineById.get(rowId);
+    if (!baselineRow) return [localRow];
+    const canonicalRow = canonicalById.get(rowId);
+    if (!canonicalRow) return [];
+    const next = { ...canonicalRow };
+    for (const field of Object.keys(localRow) as Array<keyof Row>) {
+      if (!Object.is(localRow[field], baselineRow[field])) next[field] = localRow[field];
+    }
+    return [next];
+  });
+  for (const canonicalRow of canonicalRows) {
+    const rowId = identity(canonicalRow);
+    if (!baselineById.has(rowId) && !localIds.has(rowId)) merged.push(canonicalRow);
+  }
+  return merged;
+}
+
 const ServerOffsetContext = createContext(0);
 const PlannerVersionContext = createContext(0);
 
@@ -387,8 +423,10 @@ function useVersionedDraft<T extends object = Record<never, never>>() {
       compositeDraftRef.current = next;
       setCompositeDraft(next);
     },
-    compose(canonical: T): T {
-      return composeCompositeDraft(canonical, compositeDraft);
+    compose(canonical: T, merge?: (canonical: T, draft: CompositeDraft<T>) => T): T {
+      return compositeDraft && merge
+        ? merge(canonical, compositeDraft)
+        : composeCompositeDraft(canonical, compositeDraft);
     },
     mutationOptions(onAccepted?: () => void): MutateOptions {
       const submittedRevision = editRevisionRef.current;
@@ -437,9 +475,6 @@ const GROCERY_SECTIONS: GroceryItem["section"][] = [
 ];
 const MAX_STEP_INPUT_TEXT_LENGTH =
   MAX_STEP_INPUTS * (MAX_STEP_INPUT_AMOUNT_LENGTH + MAX_STEP_INPUT_INGREDIENT_LENGTH + 4);
-const MAX_INGREDIENT_TEXT_LENGTH =
-  MAX_INGREDIENT_LINES * (MAX_INGREDIENT_LINE_LENGTH + 1);
-
 function formatCalendarDate(
   value: string,
   options: Intl.DateTimeFormatOptions,
@@ -825,9 +860,9 @@ function PlannerAppContent() {
       setPendingRetries(retries);
       setJournalError(null);
       const pendingMeal = retries.find((retry) =>
-        retry.kind === "planner" && retry.request.command.type === "updateMealSnapshot"
+        retry.kind === "planner" && retry.request.command.type === "editMealRecipe"
       );
-      if (pendingMeal?.kind === "planner" && pendingMeal.request.command.type === "updateMealSnapshot") {
+      if (pendingMeal?.kind === "planner" && pendingMeal.request.command.type === "editMealRecipe") {
         setSelectedWeekId(pendingMeal.request.command.weekId);
         setSelectedMealId(pendingMeal.request.command.mealId);
       }
@@ -1161,6 +1196,12 @@ function PlannerAppContent() {
       if (result.decision.status === "version_conflict") {
         options?.onConflict?.(result.workspace.plannerVersion);
         if (options?.conflictStrategy === "recompose") {
+          const resolvedOperation = readAuthorityOperations().find((operation) =>
+            operation.kind === "planner" &&
+            operation.requestId === request.requestId &&
+            operation.state === "resolved_conflict"
+          );
+          if (resolvedOperation) discardAuthorityOperation(resolvedOperation);
           clearPendingRetry("planner");
           setNotice({
             tone: "warning",
@@ -1433,13 +1474,13 @@ function PlannerAppContent() {
   const selectedMeal = week?.data.meals.find((meal) => meal.id === selectedMealId) ?? null;
   const recipeSummaryMeal = week?.data.meals.find((meal) => meal.id === recipeSummaryMealId) ?? null;
   const recoveryDraftCommand = plannerRetry?.kind === "planner" &&
-      (isMealSnapshotRecoveryCommand(plannerRetry.operation.editableDraft) ||
+      (isMealRecipeRecoveryCommand(plannerRetry.operation.editableDraft) ||
         isHouseholdCommand(plannerRetry.operation.editableDraft))
     ? plannerRetry.operation.editableDraft
     : plannerRetry?.kind === "planner"
       ? plannerRetry.request.command
       : null;
-  const recoveryMealCommand = recoveryDraftCommand?.type === "updateMealSnapshot" &&
+  const recoveryMealCommand = recoveryDraftCommand?.type === "editMealRecipe" &&
       selectedMeal && week &&
       recoveryDraftCommand.weekId === week.id &&
       recoveryDraftCommand.mealId === selectedMeal.id
@@ -2412,8 +2453,17 @@ function StepCard(props: {
   const controlTarget = stepControlTarget(meal, step, stepNumber);
   const [commentOpen, setCommentOpen] = useState(false);
   const [editAttempted, setEditAttempted] = useState(false);
-  const canonicalInstructionDraft = {
-    inputs: step.inputs.map((input) => `${input.amount} | ${input.ingredient}`).join("\n"),
+  const canonicalInstructionDraft: {
+    inputs: InstructionInputEdit[];
+    instruction: string;
+    timerMinutes: string;
+  } = {
+    inputs: step.inputs.map((input) => ({
+      kind: "retain" as const,
+      occurrenceId: input.occurrenceId,
+      amount: input.amount,
+      ingredient: input.ingredient,
+    })),
     instruction: step.instruction,
     timerMinutes: step.timerDurationSeconds ? String(step.timerDurationSeconds / 60) : "",
   };
@@ -2422,10 +2472,20 @@ function StepCard(props: {
     inputs: draftInputs,
     instruction: draftInstruction,
     timerMinutes: draftTimerMinutes,
-  } = instructionDraft.compose(canonicalInstructionDraft);
-  const parsedInputs = draftInputs.split("\n").filter((line) => line.trim()).map((line) => {
-    const [amount, ...ingredient] = line.split("|");
-    return { amount: amount.trim(), ingredient: ingredient.join("|").trim() };
+  } = instructionDraft.compose(canonicalInstructionDraft, (canonical, draft) => {
+    const composed = { ...canonical, ...draft.dirtyValues };
+    if (draft.dirtyValues.inputs) {
+      const identity = (input: InstructionInputEdit) => input.kind === "retain"
+        ? `retain:${input.occurrenceId}`
+        : `create:${input.correlationId}`;
+      composed.inputs = mergeIdentityRows(
+        canonical.inputs,
+        draft.baseline.inputs,
+        draft.dirtyValues.inputs,
+        identity,
+      );
+    }
+    return composed;
   });
   const timerMinutesNumber = draftTimerMinutes.trim() === "" ? null : Number(draftTimerMinutes);
   const timerSeconds = timerMinutesNumber === null ? null : Math.max(1, Math.round(timerMinutesNumber * 60));
@@ -2442,10 +2502,10 @@ function StepCard(props: {
     if (hasValidationIssues(editIssues)) return;
     void mutate(
       {
-        type: "updateInstructionStep",
+        type: "editInstructionStep",
         weekId: week.id,
         stepId: step.id,
-        changes: { inputs: parsedInputs, instruction: draftInstruction.trim(), timerDurationSeconds: timerSeconds },
+        changes: { inputs: draftInputs, instruction: draftInstruction.trim(), timerDurationSeconds: timerSeconds },
       },
       instructionDraft.mutationOptions(() => setEditAttempted(false)),
     );
@@ -2477,7 +2537,18 @@ function StepCard(props: {
         <details className="step-comment">
           <summary aria-label={`Edit ${controlTarget}`}><PencilLine size={14} /> Edit instruction</summary>
           <div className="step-comment-body">
-            <label className="full-field"><span>Amounts, one per line: amount | ingredient</span><textarea aria-label={`Amounts for ${controlTarget}`} maxLength={MAX_STEP_INPUT_TEXT_LENGTH} value={draftInputs} aria-invalid={editAttempted && Boolean(editIssues.inputs)} aria-describedby={editAttempted && editIssues.inputs ? inputErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", event.target.value)} />{editAttempted && editIssues.inputs ? <small id={inputErrorId} className="field-error" role="alert">{editIssues.inputs}</small> : null}</label>
+            <fieldset className="instruction-input-editor" aria-describedby={editAttempted && editIssues.inputs ? inputErrorId : undefined}>
+              <legend>Ingredient amounts</legend>
+              {draftInputs.map((input, index) => (
+                <div className="instruction-input-row" key={input.kind === "retain" ? input.occurrenceId : input.correlationId}>
+                  <input aria-label={`Amount ${index + 1} for ${controlTarget}`} maxLength={MAX_STEP_INPUT_AMOUNT_LENGTH} value={input.amount} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", draftInputs.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, amount: event.target.value } : candidate))} />
+                  <input aria-label={`Ingredient ${index + 1} for ${controlTarget}`} maxLength={MAX_STEP_INPUT_INGREDIENT_LENGTH} value={input.ingredient} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", draftInputs.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, ingredient: event.target.value } : candidate))} />
+                  <PlannerIconButton type="button" tone="attention" title={`Remove ingredient input ${index + 1}`} aria-label={`Remove ingredient input ${index + 1}`} disabled={disabled} onClick={() => instructionDraft.edit(canonicalInstructionDraft, "inputs", draftInputs.filter((_, candidateIndex) => candidateIndex !== index))}><Trash2 size={14} /></PlannerIconButton>
+                </div>
+              ))}
+              <PlannerActionButton tone="quiet" type="button" disabled={disabled} onClick={() => instructionDraft.edit(canonicalInstructionDraft, "inputs", [...draftInputs, { kind: "create" as const, correlationId: createRequestId(), amount: "", ingredient: "" }])}><Plus size={14} /> Add amount</PlannerActionButton>
+              {editAttempted && editIssues.inputs ? <small id={inputErrorId} className="field-error" role="alert">{editIssues.inputs}</small> : null}
+            </fieldset>
             <label className="full-field"><span>Instruction</span><textarea aria-label={`Instruction text for ${controlTarget}`} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftInstruction} aria-invalid={editAttempted && Boolean(editIssues.instruction)} aria-describedby={editAttempted && editIssues.instruction ? instructionErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "instruction", event.target.value)} />{editAttempted && editIssues.instruction ? <small id={instructionErrorId} className="field-error" role="alert">{editIssues.instruction}</small> : null}</label>
             <label className="full-field"><span>Timer minutes (optional, up to 1,440)</span><input aria-label={`Timer minutes for ${controlTarget}`} type="number" min="0.5" max="1440" step="0.5" value={draftTimerMinutes} aria-invalid={editAttempted && Boolean(editIssues.timer)} aria-describedby={editAttempted && editIssues.timer ? timerErrorId : undefined} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "timerMinutes", event.target.value)} />{editAttempted && editIssues.timer ? <small id={timerErrorId} className="field-error" role="alert">{editIssues.timer}</small> : null}</label>
             <PlannerActionButton
@@ -2663,12 +2734,13 @@ function PrepSessionStepRow(props: {
 }
 
 const GROCERY_SOURCE_LABELS = {
+  needs_source: "Needs source",
   shop: "Shop",
   farm_box: "Farm box",
   on_hand: "On hand",
 } as const;
 
-type GroceryFilter = "to_buy" | "all" | "shop" | "farm_box" | "on_hand" | "done";
+type GroceryFilter = "to_buy" | "all" | GroceryCoverage | "done";
 
 const GROCERY_FILTERS: Array<{ value: GroceryFilter; label: string }> = [
   { value: "to_buy", label: "To buy" },
@@ -2729,14 +2801,14 @@ function GroceryView({
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const [bulkSource, setBulkSource] = useState<GroceryItem["source"] | "">("");
-  const [moveNotice, setMoveNotice] = useState<{ source: GroceryItem["source"]; count: number } | null>(null);
+  const [bulkCoverage, setBulkCoverage] = useState<GroceryCoverage | "">("");
+  const [moveNotice, setMoveNotice] = useState<{ coverage: GroceryCoverage; count: number } | null>(null);
   const visible = week.data.groceries.filter((entry) => {
     if (filter === "all") return true;
     if (filter === "done") return entry.checked;
-    if (filter === "to_buy") return !entry.checked && entry.source === "shop";
-    if (filter === "shop") return entry.source === "shop";
-    return entry.source === filter;
+    if (filter === "to_buy") return !entry.checked && entry.coverage === "shop";
+    if (filter === "shop") return entry.coverage === "shop";
+    return entry.coverage === filter;
   });
   const selectedGroceries = week.data.groceries.filter((entry) => selectedIds.has(entry.id));
   const visibleIdsInDisplayOrder = GROCERY_SECTIONS.flatMap((group) =>
@@ -2746,7 +2818,7 @@ function GroceryView({
   const clearSelection = () => {
     setSelectedIds(new Set());
     setSelectionAnchorId(null);
-    setBulkSource("");
+    setBulkCoverage("");
   };
   const toggleSelectAllVisible = () => {
     if (allVisibleSelected) {
@@ -2785,28 +2857,28 @@ function GroceryView({
     });
     setSelectionAnchorId(itemId);
   };
-  const moveGroceriesToSource = (itemIds: string[], nextSource: GroceryItem["source"]) => {
+  const moveGroceriesToCoverage = (itemIds: string[], coverage: GroceryCoverage) => {
     if (!itemIds.length) return;
     void mutate(
       {
-        type: "moveGroceryItemsToSource",
+        type: "setGroceryItemsCoverage",
         weekId: week.id,
         itemIds,
-        source: nextSource,
+        coverage,
       },
       {
         onAccepted: () => {
-          setMoveNotice({ source: nextSource, count: itemIds.length });
+          setMoveNotice({ coverage, count: itemIds.length });
           clearSelection();
         },
       },
     );
   };
-  const moveSelectedToSource = (nextSource: GroceryItem["source"]) => {
+  const moveSelectedToCoverage = (coverage: GroceryCoverage) => {
     const itemIds = selectedGroceries
-      .filter((entry) => entry.source !== nextSource)
+      .filter((entry) => entry.coverage !== coverage)
       .map((entry) => entry.id);
-    moveGroceriesToSource(itemIds, nextSource);
+    moveGroceriesToCoverage(itemIds, coverage);
   };
   return (
     <div className="grocery-layout">
@@ -2824,11 +2896,11 @@ function GroceryView({
         </div>
         <div className="grocery-list-selection-header">
           <label className="grocery-select-all"><input type="checkbox" checked={allVisibleSelected} disabled={disabled || !visibleIdsInDisplayOrder.length} onChange={toggleSelectAllVisible} /> Select all</label>
-          {selectedGroceries.length ? <div className="grocery-selection-toolbar" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkSource} aria-label="Move selected groceries to source" onChange={(event) => setBulkSource(event.target.value as GroceryItem["source"] | "")}><option value="">Move to…</option>{GROCERY_SOURCES.map((targetSource) => <option key={targetSource} value={targetSource}>{GROCERY_SOURCE_LABELS[targetSource]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkSource || !selectedGroceries.some((entry) => entry.source !== bulkSource)} onClick={() => bulkSource && moveSelectedToSource(bulkSource)}>Move</PlannerActionButton></div> : null}
+          {selectedGroceries.length ? <div className="grocery-selection-toolbar" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkCoverage} aria-label="Set selected grocery coverage" onChange={(event) => setBulkCoverage(event.target.value as GroceryCoverage | "")}><option value="">Set coverage…</option>{GROCERY_COVERAGES.map((coverage) => <option key={coverage} value={coverage}>{GROCERY_SOURCE_LABELS[coverage]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkCoverage || !selectedGroceries.some((entry) => entry.coverage !== bulkCoverage)} onClick={() => bulkCoverage && moveSelectedToCoverage(bulkCoverage)}>Set coverage</PlannerActionButton></div> : null}
         </div>
         {moveNotice ? <div className="grocery-move-notice" role="status" data-testid="grocery-move-notice">
-          <span>Moved {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.source]}.</span>
-          <PlannerActionButton tone="quiet" type="button" onClick={() => { setFilter(moveNotice.source); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.source]}</PlannerActionButton>
+          <span>Set {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.coverage]}.</span>
+          <PlannerActionButton tone="quiet" type="button" onClick={() => { setFilter(moveNotice.coverage); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.coverage]}</PlannerActionButton>
         </div> : null}
         {GROCERY_SECTIONS.map((group) => {
           const entries = visible.filter((entry) => entry.section === group);
@@ -2860,7 +2932,7 @@ function GroceryView({
                     <div className="grocery-item-copy">
                       <div className="grocery-primary-line">
                         <div className="grocery-select-target"><strong>{item}</strong><span className="grocery-detail">{detail || "No amount noted"}</span></div>
-                        <span className="grocery-source-badge" title={`Source: ${GROCERY_SOURCE_LABELS[entry.source]}`}>{GROCERY_SOURCE_LABELS[entry.source]}</span>
+                        <span className="grocery-source-badge" title={`Coverage: ${GROCERY_SOURCE_LABELS[entry.coverage]}`}>{GROCERY_SOURCE_LABELS[entry.coverage]}</span>
                       </div>
                       <div className="grocery-recipe-links"><span>For</span><RecipeSummaryLink meal={linkedMeal} onOpenRecipeSummary={onOpenRecipeSummary} /></div>
                     </div>
@@ -3024,9 +3096,9 @@ function MealDrawer(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
-  recoveryCommand: Extract<HouseholdCommand, { type: "updateMealSnapshot" }> | null;
+  recoveryCommand: Extract<HouseholdCommand, { type: "editMealRecipe" }> | null;
   onRecoveryDraftChange: (
-    command: Extract<HouseholdCommand, { type: "updateMealSnapshot" }>,
+    command: Extract<HouseholdCommand, { type: "editMealRecipe" }>,
   ) => void;
   restoreFocusRef: { current: HTMLElement | null };
   onClose: () => void;
@@ -3059,6 +3131,16 @@ function MealDrawer(props: {
   const [newTimer, setNewTimer] = useState("");
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [newStepAttempted, setNewStepAttempted] = useState(false);
+  const occurrenceDrafts = visibleRecoveryCommand?.occurrences ?? meal.ingredients.map((ingredient) => ({
+    kind: "retain" as const,
+    occurrenceId: ingredient.id,
+    source: ingredient.source,
+    amount: ingredient.amount,
+    unit: ingredient.unit,
+    ingredient: ingredient.ingredient,
+    qualifier: ingredient.qualifier,
+    conceptId: ingredient.conceptId,
+  }));
   const canonicalRecipeDraft = {
     title: visibleRecoveryCommand?.changes.title ?? meal.title,
     subtitle: visibleRecoveryCommand?.changes.subtitle ?? meal.subtitle,
@@ -3066,7 +3148,7 @@ function MealDrawer(props: {
     prepNote: visibleRecoveryCommand?.changes.prepNote ?? meal.prepNote,
     leftoverNote: visibleRecoveryCommand?.changes.leftoverNote ?? meal.leftoverNote,
     notes: visibleRecoveryCommand?.changes.notes ?? meal.notes,
-    ingredients: (visibleRecoveryCommand?.changes.ingredients ?? meal.ingredients.map((ingredient) => [ingredient.amount, ingredient.ingredient].filter(Boolean).join(" "))).join("\n"),
+    occurrences: occurrenceDrafts,
   };
   const recipeDraft = useVersionedDraft<typeof canonicalRecipeDraft>();
   const moveDraft = useVersionedDraft();
@@ -3078,8 +3160,22 @@ function MealDrawer(props: {
     prepNote: draftPrepNote,
     leftoverNote: draftLeftoverNote,
     notes: draftNotes,
-    ingredients: draftIngredients,
-  } = recipeDraft.compose(canonicalRecipeDraft);
+    occurrences: draftOccurrences,
+  } = recipeDraft.compose(canonicalRecipeDraft, (canonical, draft) => {
+    const composed = { ...canonical, ...draft.dirtyValues };
+    if (draft.dirtyValues.occurrences) {
+      const identity = (occurrence: (typeof canonical.occurrences)[number]) => occurrence.kind === "retain"
+        ? `retain:${occurrence.occurrenceId}`
+        : `create:${occurrence.correlationId}`;
+      composed.occurrences = mergeIdentityRows(
+        canonical.occurrences,
+        draft.baseline.occurrences,
+        draft.dirtyValues.occurrences,
+        identity,
+      );
+    }
+    return composed;
+  });
   const draftTargetDate = moveDraft.versionRef.current === null ? meal.date : targetDate;
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   const newTimerMinutes = newTimer.trim() === "" ? null : Number(newTimer);
@@ -3090,7 +3186,13 @@ function MealDrawer(props: {
     prepNote: draftPrepNote,
     leftoverNote: draftLeftoverNote,
     notes: draftNotes,
-    ingredients: draftIngredients,
+    ingredients: draftOccurrences.map((occurrence) => ({
+      source: occurrence.source ?? "",
+      amount: occurrence.amount,
+      unit: occurrence.unit ?? "",
+      ingredient: occurrence.ingredient,
+      qualifier: occurrence.qualifier ?? "",
+    })),
   });
   const newStepIssues = validateStepDraft({ inputs: newInputs, instruction: newInstruction, timerMinutes: newTimer });
   const editRecipeField = <Key extends keyof typeof canonicalRecipeDraft>(
@@ -3106,7 +3208,7 @@ function MealDrawer(props: {
       prepNote: draftPrepNote,
       leftoverNote: draftLeftoverNote,
       notes: draftNotes,
-      ingredients: draftIngredients,
+      occurrences: draftOccurrences,
       [field]: value,
     };
     onRecoveryDraftChange({
@@ -3118,24 +3220,99 @@ function MealDrawer(props: {
         prepNote: next.prepNote.trim(),
         leftoverNote: next.leftoverNote.trim(),
         notes: next.notes.trim(),
-        ingredients: next.ingredients.split("\n").map((line) => line.trim()).filter(Boolean),
         yieldText: visibleRecoveryCommand.changes.yieldText ?? null,
       },
+      occurrences: next.occurrences,
+      removedOccurrenceIds: meal.ingredients
+        .map((ingredient) => ingredient.id)
+        .filter((occurrenceId) => !next.occurrences.some((occurrence) =>
+          occurrence.kind === "retain" && occurrence.occurrenceId === occurrenceId
+        )),
     });
+  };
+  const updateOccurrence = (
+    index: number,
+    field: "source" | "amount" | "unit" | "ingredient" | "qualifier",
+    value: string,
+  ) => {
+    const occurrences = draftOccurrences.map((occurrence, currentIndex) =>
+      currentIndex === index
+        ? {
+            ...occurrence,
+            [field]: value || null,
+            ...(field === "ingredient" && occurrence.kind === "retain" &&
+              normalizedCoreIngredientLiteral(occurrence.ingredient) !== normalizedCoreIngredientLiteral(value)
+              ? { conceptId: null }
+              : {}),
+          }
+        : occurrence,
+    );
+    // Amount and core are strings in the wire contract, including an empty amount.
+    if (field === "amount" || field === "ingredient") {
+      occurrences[index] = { ...occurrences[index], [field]: value };
+    }
+    editRecipeField("occurrences", occurrences);
+  };
+  const addOccurrence = () => editRecipeField("occurrences", [
+    ...draftOccurrences,
+    {
+      kind: "create" as const,
+      correlationId: createRequestId(),
+      source: null,
+      amount: "",
+      unit: null,
+      ingredient: "",
+      qualifier: null,
+      conceptId: null,
+      canonicalIngredientId: null,
+    },
+  ]);
+  const copyOccurrence = (index: number) => {
+    const source = draftOccurrences[index];
+    const copy = {
+      kind: "create" as const,
+      correlationId: createRequestId(),
+      source: source.source,
+      amount: source.amount,
+      unit: source.unit,
+      ingredient: source.ingredient,
+      qualifier: source.qualifier,
+      conceptId: source.conceptId,
+      canonicalIngredientId: null,
+    };
+    editRecipeField("occurrences", [
+      ...draftOccurrences.slice(0, index + 1),
+      copy,
+      ...draftOccurrences.slice(index + 1),
+    ]);
+  };
+  const removeOccurrence = (index: number) => {
+    editRecipeField("occurrences", draftOccurrences.filter((_, currentIndex) => currentIndex !== index));
+  };
+  const moveOccurrence = (index: number, targetIndex: number) => {
+    const occurrences = [...draftOccurrences];
+    const [moved] = occurrences.splice(index, 1);
+    occurrences.splice(targetIndex, 0, moved);
+    editRecipeField("occurrences", occurrences);
   };
   const save = () => {
     setSaveAttempted(true);
     if (hasValidationIssues(mealIssues)) return;
     void mutate(
       {
-        type: "updateMealSnapshot",
+        type: "editMealRecipe",
         weekId: week.id,
         mealId: meal.id,
         changes: {
           title: draftTitle.trim(), subtitle: draftSubtitle.trim(), venue: draftVenue.trim(), prepNote: draftPrepNote.trim(), leftoverNote: draftLeftoverNote.trim(), notes: draftNotes.trim(),
-          ingredients: draftIngredients.split("\n").map((line) => line.trim()).filter(Boolean),
           yieldText: meal.yieldText ?? null,
         },
+        occurrences: draftOccurrences,
+        removedOccurrenceIds: meal.ingredients
+          .map((ingredient) => ingredient.id)
+          .filter((occurrenceId) => !draftOccurrences.some((occurrence) =>
+            occurrence.kind === "retain" && occurrence.occurrenceId === occurrenceId
+          )),
       },
       recipeDraft.mutationOptions(() => setSaveAttempted(false)),
     );
@@ -3144,15 +3321,31 @@ function MealDrawer(props: {
     setNewStepAttempted(true);
     if (hasValidationIssues(newStepIssues)) return;
     const timer = newTimerMinutes === null ? undefined : Math.max(1, Math.round(newTimerMinutes * 60));
+    const inputs = newInputs.split("\n")
+      .filter((line) => line.trim())
+      .map((line) => {
+        const [amount, ...ingredient] = line.split("|");
+        return {
+          kind: "create" as const,
+          correlationId: createRequestId(),
+          amount: amount.trim(),
+          ingredient: ingredient.join("|").trim(),
+        };
+      });
     void mutate(
       {
-        type: "addInstructionStep", weekId: week.id, mealId: meal.id, position: meal.instructions.length,
-        step: {
-          inputs: newInputs.split("\n").filter((line) => line.trim()).map((line) => { const [amount, ...ingredient] = line.split("|"); return { amount: amount.trim(), ingredient: ingredient.join("|").trim() }; }),
-          instruction: newInstruction.trim(), ...(timer ? { timerDurationSeconds: timer } : {}),
-        },
+        type: "addInstructionStep",
+        weekId: week.id,
+        mealId: meal.id,
+        position: meal.instructions.length,
+        step: { inputs, instruction: newInstruction.trim(), ...(timer ? { timerDurationSeconds: timer } : {}) },
       },
-      newStepDraft.mutationOptions(() => { setNewInstruction(""); setNewInputs(""); setNewTimer(""); setNewStepAttempted(false); }),
+      newStepDraft.mutationOptions(() => {
+        setNewInstruction("");
+        setNewInputs("");
+        setNewTimer("");
+        setNewStepAttempted(false);
+      }),
     );
   };
   return (
@@ -3177,7 +3370,31 @@ function MealDrawer(props: {
           <label><span>Venue</span><input aria-label="Venue" disabled={archived} maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => editRecipeField("venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
         </div>
         <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" disabled={archived} maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => editRecipeField("subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
-        <label className="full-field"><span>Ingredients, one per line</span><textarea aria-label="Ingredients" disabled={archived} rows={5} maxLength={MAX_INGREDIENT_TEXT_LENGTH} value={draftIngredients} aria-invalid={saveAttempted && Boolean(mealIssues.ingredients)} aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined} onChange={(event) => editRecipeField("ingredients", event.target.value)} /><FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} /></label>
+        <section className="full-field occurrence-editor" aria-labelledby="meal-ingredients-heading">
+          <div className="occurrence-editor-heading">
+            <span id="meal-ingredients-heading">Ingredients</span>
+            <small>Each row is one recipe occurrence. Editing a row keeps its identity; removing it also removes linked instruction inputs.</small>
+          </div>
+          <div className="occurrence-editor-rows" aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined}>
+            {draftOccurrences.map((occurrence, index) => (
+              <fieldset className="occurrence-editor-row" key={occurrence.kind === "retain" ? occurrence.occurrenceId : occurrence.correlationId}>
+                <legend className="sr-only">Ingredient {index + 1}</legend>
+                <label><span>Source</span><input aria-label={`Ingredient ${index + 1} source`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.source ?? ""} onChange={(event) => updateOccurrence(index, "source", event.target.value)} /></label>
+                <label><span>Amount</span><input aria-label={`Ingredient ${index + 1} amount`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.amount} onChange={(event) => updateOccurrence(index, "amount", event.target.value)} /></label>
+                <label><span>Unit</span><input aria-label={`Ingredient ${index + 1} unit`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.unit ?? ""} onChange={(event) => updateOccurrence(index, "unit", event.target.value)} /></label>
+                <label><span>Ingredient</span><input aria-label={`Ingredient ${index + 1} core`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.ingredient} onChange={(event) => updateOccurrence(index, "ingredient", event.target.value)} /></label>
+                <label><span>Qualifier</span><input aria-label={`Ingredient ${index + 1} qualifier`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.qualifier ?? ""} onChange={(event) => updateOccurrence(index, "qualifier", event.target.value)} /></label>
+                <PlannerIconButton type="button" title={`Move ingredient ${index + 1} up`} aria-label={`Move ingredient ${index + 1} up`} disabled={disabled || index === 0} onClick={() => moveOccurrence(index, index - 1)}><ArrowUp size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" title={`Move ingredient ${index + 1} down`} aria-label={`Move ingredient ${index + 1} down`} disabled={disabled || index === draftOccurrences.length - 1} onClick={() => moveOccurrence(index, index + 1)}><ArrowDown size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" title={`Duplicate ingredient ${index + 1}`} aria-label={`Duplicate ingredient ${index + 1} as a new occurrence`} disabled={disabled} onClick={() => copyOccurrence(index)}><Copy size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" title={`Split ingredient ${index + 1}`} aria-label={`Split ingredient ${index + 1}; this row keeps its identity`} disabled={disabled} onClick={() => copyOccurrence(index)}><Split size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" tone="attention" title={`Remove ingredient ${index + 1}`} aria-label={`Remove ingredient ${index + 1} and linked instruction inputs`} disabled={disabled} onClick={() => removeOccurrence(index)}><Trash2 size={14} /></PlannerIconButton>
+              </fieldset>
+            ))}
+          </div>
+          <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={addOccurrence}><Plus size={15} /> Add ingredient</PlannerActionButton>
+          <FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} />
+        </section>
         <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" disabled={archived} rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => editRecipeField("notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
         <div className="field-grid">
           <label><span>Prep note</span><textarea aria-label="Prep note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => editRecipeField("prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>

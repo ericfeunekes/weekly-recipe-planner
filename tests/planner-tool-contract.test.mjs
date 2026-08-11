@@ -145,7 +145,21 @@ test("sourced replacement remains typed but is withheld pending host admission",
           url: "https://example.com/recipes/rice",
           retrievedAt: 1_750_000_000_000,
         },
-        steps: [{ inputs: [{ amount: "1 cup", ingredient: "rice" }], instruction: "Cook the rice." }],
+        occurrences: [{
+          kind: "create",
+          correlationId: "rice-1",
+          source: "1 cup rice",
+          amount: "1",
+          unit: "cup",
+          ingredient: "rice",
+          qualifier: null,
+          conceptId: null,
+          canonicalIngredientId: null,
+        }],
+        steps: [{
+          inputs: [{ occurrenceCorrelationId: "rice-1", amount: "1 cup", ingredient: "rice" }],
+          instruction: "Cook the rice.",
+        }],
       },
     },
   };
@@ -295,6 +309,7 @@ test("stored successful results are validated against the originating tool contr
         summary: "Updated the meal.",
         target: "meal-1",
         changes: ["Changed one field."],
+        occurrences: [],
       }],
     },
   };
@@ -303,6 +318,7 @@ test("stored successful results are validated against the originating tool contr
     data: {
       status: "accepted",
       eventId: "event-accepted",
+      occurrenceResults: [],
       readback: projectPlannerRead(source, { kind: "meal", weekId: "2026-07-06", mealId: "meal-1" }),
     },
   };

@@ -8,6 +8,10 @@ import {
   MAX_STEP_INPUTS,
 } from "../lib/household-command-contract.ts";
 import {
+  MAX_OCCURRENCE_AMOUNT_LENGTH,
+  MAX_OCCURRENCE_LITERAL_LENGTH,
+} from "../lib/ingredient-occurrence.ts";
+import {
   hasValidationIssues,
   validateMealDraft,
   validateStepDraft,
@@ -59,4 +63,24 @@ test("meal draft validation covers required fields and per-line ingredient limit
     }).ingredients,
     /no more than 128 ingredient lines/i,
   );
+});
+
+test("structured ingredient rows use occurrence field bounds", () => {
+  const base = {
+    title: "Dinner",
+    subtitle: "",
+    venue: "Home",
+    prepNote: "",
+    leftoverNote: "",
+    notes: "",
+    ingredients: [{ source: "", amount: "1", unit: "", ingredient: "rice", qualifier: "" }],
+  };
+  assert.deepEqual(validateMealDraft(base), {});
+  assert.match(validateMealDraft({ ...base, ingredients: [{ ...base.ingredients[0], ingredient: "   " }] }).ingredients, /core ingredient/i);
+  assert.match(validateMealDraft({ ...base, ingredients: [{ ...base.ingredients[0], amount: "x".repeat(MAX_OCCURRENCE_AMOUNT_LENGTH + 1) }] }).ingredients, /amount/i);
+  assert.deepEqual(validateMealDraft({
+    ...base,
+    ingredients: [{ ...base.ingredients[0], source: "s".repeat(600), ingredient: "i".repeat(600) }],
+  }), {});
+  assert.match(validateMealDraft({ ...base, ingredients: [{ ...base.ingredients[0], qualifier: "q".repeat(MAX_OCCURRENCE_LITERAL_LENGTH + 1) }] }).ingredients, /other fields/i);
 });

@@ -1,10 +1,13 @@
 import {
   isHistoricalGroceryReconciliationCommand,
+  isHistoricalHouseholdCommand,
   isHouseholdCommand,
+  type HistoricalHouseholdCommand,
   type HistoricalGroceryReconciliationCommand,
   type HouseholdCommand,
 } from "./household-command-contract.ts";
 import type { InitializedWorkspace } from "./planner-api-contract.ts";
+import type { OccurrenceResolution } from "./ingredient-occurrence.ts";
 
 export const MIN_PLANNER_OPERATIONS = 1;
 export const MAX_PLANNER_OPERATIONS = 16;
@@ -12,7 +15,7 @@ export const GENERATED_AFTER_APPLY = "[generated after apply]" as const;
 
 export type PlannerOperation = { command: HouseholdCommand };
 export type HistoricalPlannerEventOperation = {
-  command: HouseholdCommand | HistoricalGroceryReconciliationCommand;
+  command: HouseholdCommand | HistoricalHouseholdCommand | HistoricalGroceryReconciliationCommand;
 };
 
 export type PlannerActor = "Household" | "Codex";
@@ -89,6 +92,12 @@ export type ApplyPlannerOperationsRequest = {
   operations: PlannerOperation[];
 };
 
+export type HistoricalApplyPlannerOperationsRequest = {
+  requestId: string;
+  basePlannerVersion: number;
+  operations: HistoricalPlannerEventOperation[];
+};
+
 export type PlannerMutationContext = {
   operationKind: PlannerApplyOperationKind;
   provenance: PlannerEventProvenance;
@@ -97,7 +106,15 @@ export type PlannerMutationContext = {
 };
 
 export type PlannerOperationsDecision =
-  | { status: "accepted"; eventId: string; plannerVersion: number }
+  | {
+      status: "accepted";
+      eventId: string;
+      plannerVersion: number;
+      occurrenceResults: Array<{
+        operationIndex: number;
+        occurrences: OccurrenceResolution[];
+      }>;
+    }
   | {
       status: "version_conflict";
       expectedVersion: number;
@@ -120,6 +137,7 @@ export type PlannerOperationPreview = {
   summary: string;
   target: string;
   changes: string[];
+  occurrences: OccurrenceResolution[];
 };
 
 export type PreviewPlannerOperationsDecision =
@@ -154,6 +172,49 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+function isSafeVersion(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isOccurrenceResolution(value: unknown): value is OccurrenceResolution {
+  return isRecord(value) && hasExactKeys(value, ["correlationId", "occurrenceId"]) &&
+    typeof value.correlationId === "string" && value.correlationId.trim().length > 0 && value.correlationId.length <= 200 &&
+    typeof value.occurrenceId === "string" && value.occurrenceId.trim().length > 0 && value.occurrenceId.length <= 200;
+}
+
+export function isPlannerOperationsDecision(
+  value: unknown,
+  operationCount?: number,
+): value is PlannerOperationsDecision {
+  if (!isRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "accepted") {
+    if (!hasExactKeys(value, ["status", "eventId", "plannerVersion", "occurrenceResults"]) ||
+        typeof value.eventId !== "string" || value.eventId.trim().length === 0 || value.eventId.length > 200 ||
+        !isSafeVersion(value.plannerVersion) || !Array.isArray(value.occurrenceResults)) return false;
+    if (operationCount !== undefined && value.occurrenceResults.length !== operationCount) return false;
+    const valid = value.occurrenceResults.every((result, resultIndex) => {
+      if (!isRecord(result) || !hasExactKeys(result, ["operationIndex", "occurrences"]) ||
+          !Number.isSafeInteger(result.operationIndex) || Number(result.operationIndex) < 0 ||
+          !Array.isArray(result.occurrences) || !result.occurrences.every(isOccurrenceResolution)) return false;
+      const index = Number(result.operationIndex);
+      if (operationCount !== undefined && index >= operationCount) return false;
+      if (index !== resultIndex) return false;
+      const correlationIds = new Set(result.occurrences.map(({ correlationId }) => correlationId));
+      return correlationIds.size === result.occurrences.length;
+    });
+    return valid;
+  }
+  if (value.status === "version_conflict") {
+    return hasExactKeys(value, ["status", "expectedVersion", "actualVersion"]) &&
+      isSafeVersion(value.expectedVersion) && isSafeVersion(value.actualVersion);
+  }
+  return value.status === "domain_rejected" &&
+    hasExactKeys(value, ["status", "operationIndex", "message"]) &&
+    Number.isSafeInteger(value.operationIndex) && Number(value.operationIndex) >= 0 &&
+    (operationCount === undefined || Number(value.operationIndex) < operationCount) &&
+    typeof value.message === "string";
+}
+
 export function isPlannerOperation(value: unknown): value is PlannerOperation {
   return isRecord(value) && hasExactKeys(value, ["command"]) && isHouseholdCommand(value.command);
 }
@@ -169,7 +230,7 @@ function isHistoricalPlannerEventOperation(
   value: unknown,
 ): value is HistoricalPlannerEventOperation {
   return isRecord(value) && hasExactKeys(value, ["command"]) &&
-    (isHouseholdCommand(value.command) || isHistoricalGroceryReconciliationCommand(value.command));
+    (isHouseholdCommand(value.command) || isHistoricalHouseholdCommand(value.command) || isHistoricalGroceryReconciliationCommand(value.command));
 }
 
 export function isHistoricalPlannerEventOperationList(

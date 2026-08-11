@@ -19,6 +19,7 @@ import type {
 import type {
   ApplyPlannerOperationsRequest,
   ApplyPlannerOperationsResponse,
+  HistoricalApplyPlannerOperationsRequest,
   PlannerMutationContext,
   PreviewPlannerOperationsRequest,
   PreviewPlannerOperationsResponse,
@@ -38,6 +39,11 @@ export interface PlannerMutationKernel<Transaction> {
     request: ApplyPlannerOperationsRequest,
     context: PlannerMutationContext,
   ): ApplyPlannerOperationsResponse;
+  replayHistoricalPlannerOperations(
+    transaction: Transaction,
+    request: HistoricalApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse;
 }
 
 export interface PlannerApplicationService {
@@ -47,6 +53,10 @@ export interface PlannerApplicationService {
   applyCommand(request: ApplyPlannerCommandRequest): ApplyPlannerCommandResponse;
   applyOperations(
     request: ApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse;
+  replayHistoricalOperations(
+    request: HistoricalApplyPlannerOperationsRequest,
     context: PlannerMutationContext,
   ): ApplyPlannerOperationsResponse;
   previewOperations(

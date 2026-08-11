@@ -7,6 +7,7 @@ import {
   isWeekId,
   type FeedbackValue,
   type GrocerySource,
+  type GroceryCoverage,
   type InstructionStepContentInput,
   type InstructionStepPlanInput,
   type IsoDate,
@@ -15,10 +16,23 @@ import {
   type MealStatus,
   type WeekId,
   type WeekPlanInput,
+  type OccurrenceAwareWeekPlanInput,
 } from "./household-contract.ts";
+import {
+  isIngredientOccurrenceEdit,
+  isInstructionInputEdit,
+  instructionInputCorrelationsAreUnique,
+  MAX_OCCURRENCE_AMOUNT_LENGTH,
+  MAX_OCCURRENCE_LITERAL_LENGTH,
+  occurrenceEditIdentitiesAreUnique,
+  type IngredientOccurrenceEdit,
+  type InstructionInputEdit,
+} from "./ingredient-occurrence.ts";
 import {
   SOURCED_RECIPE_REPLACEMENT_SCHEMA,
   isSourcedRecipeReplacement,
+  isLegacySourcedRecipeReplacement,
+  type LegacySourcedRecipeReplacement,
   type SourcedRecipeReplacement,
 } from "./sourced-recipe-contract.ts";
 
@@ -29,23 +43,14 @@ export type HouseholdCommand =
   | ({ type: "reorderMeals"; date: IsoDate; mealIds: string[] } & WeekScoped)
   | ({ type: "swapMealDays"; firstDate: IsoDate; secondDate: IsoDate } & WeekScoped)
   | ({ type: "updateMealStatus"; mealId: string; status: MealStatus } & WeekScoped)
-  | ({ type: "updateMealSnapshot"; mealId: string; changes: MealSnapshotInput } & WeekScoped)
+  | ({ type: "editMealRecipe"; mealId: string; changes: Pick<MealSnapshotInput, "title" | "subtitle" | "venue" | "prepNote" | "leftoverNote" | "notes" | "yieldText">; occurrences: IngredientOccurrenceEdit[]; removedOccurrenceIds: string[] } & WeekScoped)
   | ({
       type: "replaceMealRecipeFromSource";
       mealId: string;
       recipe: SourcedRecipeReplacement;
     } & WeekScoped)
-  | ({
-      type: "addInstructionStep";
-      mealId: string;
-      position: number;
-      step: InstructionStepPlanInput;
-    } & WeekScoped)
-  | ({
-      type: "updateInstructionStep";
-      stepId: string;
-      changes: InstructionStepContentInput;
-    } & WeekScoped)
+  | ({ type: "addInstructionStep"; mealId: string; position: number; step: { inputs: InstructionInputEdit[]; instruction: string; timerDurationSeconds?: number; note?: string } } & WeekScoped)
+  | ({ type: "editInstructionStep"; stepId: string; changes: { inputs: InstructionInputEdit[]; instruction: string; timerDurationSeconds: number | null } } & WeekScoped)
   | ({ type: "moveInstructionStep"; stepId: string; targetPosition: number } & WeekScoped)
   | ({ type: "removeInstructionStep"; stepId: string } & WeekScoped)
   | ({ type: "setInstructionStepComplete"; stepId: string; complete: boolean } & WeekScoped)
@@ -81,11 +86,7 @@ export type HouseholdCommand =
   | ({ type: "movePrepStepsToDate"; sourcePrepDate: IsoDate; prepDate: IsoDate; entryIds: string[]; targetPosition: number } & WeekScoped)
   | ({ type: "removePrepStepsFromDate"; prepDate: IsoDate; entryIds: string[]; discardFulfillment?: boolean } & WeekScoped)
   | ({ type: "clearPrepDate"; prepDate: IsoDate; discardFulfillment?: boolean } & WeekScoped)
-  | ({
-      type: "moveGroceryItemsToSource";
-      itemIds: string[];
-      source: GrocerySource;
-    } & WeekScoped)
+  | ({ type: "setGroceryItemsCoverage"; itemIds: string[]; coverage: GroceryCoverage } & WeekScoped)
   | ({ type: "setGroceryItemChecked"; itemId: string; checked: boolean } & WeekScoped)
   | ({ type: "captureFeedback"; mealId: string; value: FeedbackValue } & WeekScoped)
   | ({ type: "captureWeekLesson"; weekLesson: string } & WeekScoped)
@@ -101,7 +102,7 @@ export type HouseholdCommand =
     } & WeekScoped)
   | ({ type: "consumeLeftover"; leftoverId: string } & WeekScoped)
   | ({ type: "archiveWeek" } & WeekScoped)
-  | { type: "createWeekPlan"; weekStartDate: WeekId; plan: WeekPlanInput }
+  | { type: "createWeekPlan"; weekStartDate: WeekId; plan: OccurrenceAwareWeekPlanInput }
   | { type: "activateWeek"; weekId: WeekId }
   | { type: "handoffWeek"; currentWeekId: WeekId; nextWeekId: WeekId };
 
@@ -122,6 +123,14 @@ export type HistoricalGroceryReconciliationCommand = {
     farmBox: boolean;
   }>;
 };
+
+export type HistoricalHouseholdCommand =
+  | ({ type: "updateMealSnapshot"; mealId: string; changes: MealSnapshotInput } & WeekScoped)
+  | ({ type: "addInstructionStep"; mealId: string; position: number; step: InstructionStepPlanInput } & WeekScoped)
+  | ({ type: "updateInstructionStep"; stepId: string; changes: InstructionStepContentInput } & WeekScoped)
+  | ({ type: "moveGroceryItemsToSource"; itemIds: string[]; source: GrocerySource } & WeekScoped)
+  | ({ type: "replaceMealRecipeFromSource"; mealId: string; recipe: LegacySourcedRecipeReplacement } & WeekScoped)
+  | { type: "createWeekPlan"; weekStartDate: WeekId; plan: WeekPlanInput };
 
 export const MAX_COMMAND_TEXT_LENGTH = 4_000;
 export const MAX_ID_LENGTH = 200;
@@ -147,12 +156,13 @@ export const MAX_STEP_INPUT_AMOUNT_LENGTH = 300;
 export const MAX_STEP_INPUT_INGREDIENT_LENGTH = 1_000;
 export const MAX_INGREDIENT_LINE_LENGTH = 1_000;
 
-const idSchema = { type: "string", minLength: 1, maxLength: MAX_ID_LENGTH };
+const idSchema = { type: "string", minLength: 1, maxLength: MAX_ID_LENGTH, pattern: "\\S" };
 const textSchema = { type: "string", maxLength: MAX_COMMAND_TEXT_LENGTH };
 const nonemptyTextSchema = {
   type: "string",
   minLength: 1,
   maxLength: MAX_COMMAND_TEXT_LENGTH,
+  pattern: "\\S",
 };
 const isoDateSchema = {
   type: "string",
@@ -237,32 +247,75 @@ const mealSnapshotSchema = {
     },
   },
 };
-const mealPlanSchema = {
+const nullableOccurrenceLiteralSchema = { anyOf: [{ type: "string", maxLength: MAX_OCCURRENCE_LITERAL_LENGTH }, { type: "null" }] };
+const occurrenceAmountSchema = { type: "string", maxLength: MAX_OCCURRENCE_AMOUNT_LENGTH };
+const occurrenceCoreSchema = { type: "string", minLength: 1, maxLength: MAX_OCCURRENCE_LITERAL_LENGTH, pattern: "\\S" };
+const occurrenceEditSchema = {
+  anyOf: [
+    { type: "object", additionalProperties: false, required: ["kind", "occurrenceId", "source", "amount", "unit", "ingredient", "qualifier", "conceptId"], properties: { kind: { const: "retain" }, occurrenceId: idSchema, source: nullableOccurrenceLiteralSchema, amount: occurrenceAmountSchema, unit: nullableOccurrenceLiteralSchema, ingredient: occurrenceCoreSchema, qualifier: nullableOccurrenceLiteralSchema, conceptId: nullableOccurrenceLiteralSchema } },
+    { type: "object", additionalProperties: false, required: ["kind", "correlationId", "source", "amount", "unit", "ingredient", "qualifier", "conceptId", "canonicalIngredientId"], properties: { kind: { const: "create" }, correlationId: idSchema, source: nullableOccurrenceLiteralSchema, amount: occurrenceAmountSchema, unit: nullableOccurrenceLiteralSchema, ingredient: occurrenceCoreSchema, qualifier: nullableOccurrenceLiteralSchema, conceptId: nullableOccurrenceLiteralSchema, canonicalIngredientId: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] } } },
+  ],
+};
+const recipeEditChangesSchema = {
+  type: "object", additionalProperties: false,
+  required: ["title", "subtitle", "venue", "prepNote", "leftoverNote", "notes", "yieldText"],
+  properties: { title: { type: "string", minLength: 1, maxLength: MAX_MEAL_TITLE_LENGTH, pattern: "\\S" }, subtitle: { type: "string", maxLength: MAX_MEAL_SUBTITLE_LENGTH }, venue: { type: "string", minLength: 1, maxLength: MAX_MEAL_VENUE_LENGTH, pattern: "\\S" }, prepNote: textSchema, leftoverNote: textSchema, notes: textSchema, yieldText: { anyOf: [{ type: "string", minLength: 1, maxLength: 80, pattern: "\\S" }, { type: "null" }] } },
+};
+const instructionInputEditSchema = { anyOf: [
+  { type: "object", additionalProperties: false, required: ["kind", "occurrenceId", "amount", "ingredient"], properties: { kind: { const: "retain" }, occurrenceId: idSchema, amount: occurrenceAmountSchema, ingredient: { type: "string", maxLength: MAX_OCCURRENCE_LITERAL_LENGTH } } },
+  { type: "object", additionalProperties: false, required: ["kind", "correlationId", "amount", "ingredient"], properties: { kind: { const: "create" }, correlationId: idSchema, amount: occurrenceAmountSchema, ingredient: { type: "string", maxLength: MAX_OCCURRENCE_LITERAL_LENGTH } } },
+] };
+const occurrenceAwareMealPlanSchema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "date",
-    "title",
-    "subtitle",
-    "venue",
-    "protein",
-    "prepNote",
-    "leftoverNote",
-    "notes",
-    "ingredients",
-    "instructions",
+    "date", "title", "subtitle", "venue", "protein", "prepNote",
+    "leftoverNote", "notes", "occurrences", "instructions",
   ],
   properties: {
-    ...mealSnapshotSchema.properties,
     date: isoDateSchema,
+    title: { type: "string", minLength: 1, maxLength: MAX_MEAL_TITLE_LENGTH, pattern: "\\S" },
+    subtitle: { type: "string", maxLength: MAX_MEAL_SUBTITLE_LENGTH },
+    venue: { type: "string", minLength: 1, maxLength: MAX_MEAL_VENUE_LENGTH, pattern: "\\S" },
     status: { type: "string", enum: [...MEAL_STATUSES] },
     protein: { type: "string", enum: ["chicken", "salmon", "none"] },
+    prepNote: textSchema,
+    leftoverNote: textSchema,
+    notes: textSchema,
+    occurrences: {
+      type: "array",
+      maxItems: MAX_INGREDIENT_LINES,
+      items: occurrenceEditSchema.anyOf[1],
+    },
     instructions: {
       type: "array",
       maxItems: MAX_STEPS_PER_MEAL,
-      items: stepPlanSchema,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["inputs", "instruction"],
+        properties: {
+          inputs: {
+            type: "array",
+            maxItems: MAX_STEP_INPUTS,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["occurrenceCorrelationId", "amount", "ingredient"],
+              properties: {
+                occurrenceCorrelationId: idSchema,
+                amount: occurrenceAmountSchema,
+                ingredient: { type: "string", minLength: 1, maxLength: MAX_OCCURRENCE_LITERAL_LENGTH, pattern: "\\S" },
+              },
+            },
+          },
+          instruction: nonemptyTextSchema,
+          timerDurationSeconds: timerDurationSchema,
+          note: textSchema,
+        },
+      },
     },
-    yieldText: { type: "string", minLength: 1, maxLength: 80 },
+    yieldText: { type: "string", minLength: 1, maxLength: 80, pattern: "\\S" },
   },
 };
 const weekPlanSchema = {
@@ -270,7 +323,7 @@ const weekPlanSchema = {
   additionalProperties: false,
   required: ["meals"],
   properties: {
-    meals: { type: "array", maxItems: MAX_MEALS_PER_WEEK, items: mealPlanSchema },
+    meals: { type: "array", maxItems: MAX_MEALS_PER_WEEK, items: occurrenceAwareMealPlanSchema },
     weekLesson: textSchema,
   },
 };
@@ -312,12 +365,14 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
   swapMealDays: weekCommandSchema("swapMealDays", { firstDate: isoDateSchema, secondDate: isoDateSchema }),
   updateMealStatus: weekCommandSchema("updateMealStatus", { mealId: idSchema, status: { type: "string", enum: [...MEAL_STATUSES] } }),
   updateMealSnapshot: weekCommandSchema("updateMealSnapshot", { mealId: idSchema, changes: mealSnapshotSchema }),
+  editMealRecipe: weekCommandSchema("editMealRecipe", { mealId: idSchema, changes: recipeEditChangesSchema, occurrences: { type: "array", maxItems: MAX_INGREDIENT_LINES, items: occurrenceEditSchema }, removedOccurrenceIds: { type: "array", maxItems: MAX_INGREDIENT_LINES, uniqueItems: true, items: idSchema } }),
   replaceMealRecipeFromSource: weekCommandSchema("replaceMealRecipeFromSource", {
     mealId: idSchema,
     recipe: SOURCED_RECIPE_REPLACEMENT_SCHEMA,
   }),
-  addInstructionStep: weekCommandSchema("addInstructionStep", { mealId: idSchema, position: { type: "integer", minimum: 0, maximum: MAX_STEPS_PER_MEAL - 1 }, step: stepPlanSchema }),
+  addInstructionStep: weekCommandSchema("addInstructionStep", { mealId: idSchema, position: { type: "integer", minimum: 0, maximum: MAX_STEPS_PER_MEAL - 1 }, step: { type: "object", additionalProperties: false, required: ["inputs", "instruction"], properties: { inputs: { type: "array", maxItems: MAX_STEP_INPUTS, items: instructionInputEditSchema }, instruction: nonemptyTextSchema, timerDurationSeconds: timerDurationSchema, note: textSchema } } }),
   updateInstructionStep: weekCommandSchema("updateInstructionStep", { stepId: idSchema, changes: stepContentSchema }),
+  editInstructionStep: weekCommandSchema("editInstructionStep", { stepId: idSchema, changes: { type: "object", additionalProperties: false, required: ["inputs", "instruction", "timerDurationSeconds"], properties: { inputs: { type: "array", maxItems: MAX_STEP_INPUTS, items: instructionInputEditSchema }, instruction: nonemptyTextSchema, timerDurationSeconds: nullableTimerDurationSchema } } }),
   moveInstructionStep: weekCommandSchema("moveInstructionStep", { stepId: idSchema, targetPosition: { type: "integer", minimum: 0, maximum: MAX_STEPS_PER_MEAL - 1 } }),
   removeInstructionStep: weekCommandSchema("removeInstructionStep", { stepId: idSchema }),
   setInstructionStepComplete: weekCommandSchema("setInstructionStepComplete", { stepId: idSchema, complete: { type: "boolean" } }),
@@ -376,6 +431,7 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
     itemIds: groceryItemIdsSchema,
     source: { type: "string", enum: [...GROCERY_SOURCES] },
   }),
+  setGroceryItemsCoverage: weekCommandSchema("setGroceryItemsCoverage", { itemIds: groceryItemIdsSchema, coverage: { type: "string", enum: ["needs_source", ...GROCERY_SOURCES] } }),
   setGroceryItemChecked: weekCommandSchema("setGroceryItemChecked", { itemId: idSchema, checked: { type: "boolean" } }),
   captureFeedback: weekCommandSchema("captureFeedback", { mealId: idSchema, value: { type: "string", enum: [...FEEDBACK_VALUES] } }),
   captureWeekLesson: weekCommandSchema("captureWeekLesson", { weekLesson: textSchema }),
@@ -418,6 +474,17 @@ function isStepInput(value: unknown) {
   return hasKeys(value, ["amount", "ingredient"]) &&
     isText(value.amount, MAX_STEP_INPUT_AMOUNT_LENGTH) &&
     isText(value.ingredient, MAX_STEP_INPUT_INGREDIENT_LENGTH);
+}
+
+function isRecipeEditChanges(value: unknown): boolean {
+  if (!hasKeys(value, ["title", "subtitle", "venue", "prepNote", "leftoverNote", "notes", "yieldText"])) return false;
+  return isText(value.title, MAX_MEAL_TITLE_LENGTH, false) &&
+    isText(value.subtitle, MAX_MEAL_SUBTITLE_LENGTH) &&
+    isText(value.venue, MAX_MEAL_VENUE_LENGTH, false) &&
+    isText(value.prepNote) &&
+    isText(value.leftoverNote) &&
+    isText(value.notes) &&
+    (value.yieldText === null || isText(value.yieldText, 80, false));
 }
 
 function isStepPlan(value: unknown, { allowNullDuration = false } = {}) {
@@ -484,6 +551,57 @@ function isWeekPlan(value: unknown): value is WeekPlanInput {
   );
 }
 
+function isCorrelatedInstructionInput(value: unknown): boolean {
+  return hasKeys(value, ["occurrenceCorrelationId", "amount", "ingredient"]) &&
+    isId(value.occurrenceCorrelationId) &&
+    isText(value.amount, MAX_STEP_INPUT_AMOUNT_LENGTH) &&
+    isText(value.ingredient, MAX_STEP_INPUT_INGREDIENT_LENGTH, false);
+}
+
+function isOccurrenceAwareMealPlan(value: unknown): boolean {
+  if (!hasKeys(
+    value,
+    ["date", "title", "subtitle", "venue", "protein", "prepNote", "leftoverNote", "notes", "occurrences", "instructions"],
+    ["status", "yieldText"],
+  )) return false;
+  if (!isIsoDate(value.date) ||
+    (value.status !== undefined && !MEAL_STATUSES.includes(value.status as MealStatus)) ||
+    !["chicken", "salmon", "none"].includes(value.protein as string) ||
+    !isText(value.title, MAX_MEAL_TITLE_LENGTH, false) ||
+    !isText(value.subtitle, MAX_MEAL_SUBTITLE_LENGTH) ||
+    !isText(value.venue, MAX_MEAL_VENUE_LENGTH, false) ||
+    !isText(value.prepNote) || !isText(value.leftoverNote) || !isText(value.notes) ||
+    (value.yieldText !== undefined && !isText(value.yieldText, 80, false)) ||
+    !Array.isArray(value.occurrences) || value.occurrences.length > MAX_INGREDIENT_LINES ||
+    !value.occurrences.every((occurrence) =>
+      isRecord(occurrence) && occurrence.kind === "create" && isIngredientOccurrenceEdit(occurrence)) ||
+    !Array.isArray(value.instructions) || value.instructions.length > MAX_STEPS_PER_MEAL
+  ) return false;
+  const correlations = new Set(value.occurrences.map((occurrence) => occurrence.correlationId));
+  if (correlations.size !== value.occurrences.length) return false;
+  return value.instructions.every((step) =>
+    hasKeys(step, ["inputs", "instruction"], ["timerDurationSeconds", "note"]) &&
+    Array.isArray(step.inputs) && step.inputs.length <= MAX_STEP_INPUTS &&
+    step.inputs.every((input) =>
+      isCorrelatedInstructionInput(input) && correlations.has(input.occurrenceCorrelationId)) &&
+    isText(step.instruction, MAX_COMMAND_TEXT_LENGTH, false) &&
+    (step.timerDurationSeconds === undefined ||
+      isIntegerInRange(step.timerDurationSeconds, 1, MAX_TIMER_DURATION_SECONDS)) &&
+    (step.note === undefined || isText(step.note))
+  );
+}
+
+function isOccurrenceAwareWeekPlan(value: unknown): value is OccurrenceAwareWeekPlanInput {
+  if (!(hasKeys(value, ["meals"], ["weekLesson"]) &&
+    Array.isArray(value.meals) && value.meals.length <= MAX_MEALS_PER_WEEK &&
+    value.meals.every(isOccurrenceAwareMealPlan) &&
+    (value.weekLesson === undefined || isText(value.weekLesson)))) return false;
+  const plan = value as OccurrenceAwareWeekPlanInput;
+  const correlations = plan.meals.flatMap((meal) =>
+    meal.occurrences.map((occurrence) => occurrence.correlationId));
+  return new Set(correlations).size === correlations.length;
+}
+
 function isWeekCommand(value: Record<string, unknown>, fields: string[]) {
   return hasKeys(value, ["type", "weekId", ...fields]) && isWeekId(value.weekId);
 }
@@ -511,12 +629,12 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   reorderMeals: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reorderMeals, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["date", "mealIds"]) && isIsoDate(value.date) && Array.isArray(value.mealIds) && value.mealIds.length >= 1 && value.mealIds.length <= MAX_MEALS_PER_WEEK && value.mealIds.every(isId) && new Set(value.mealIds).size === value.mealIds.length },
   swapMealDays: { schema: HOUSEHOLD_COMMAND_SCHEMAS.swapMealDays, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["firstDate", "secondDate"]) && isIsoDate(value.firstDate) && isIsoDate(value.secondDate) && value.firstDate !== value.secondDate },
   updateMealStatus: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateMealStatus, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "status"]) && isId(value.mealId) && MEAL_STATUSES.includes(value.status as MealStatus) },
-  updateMealSnapshot: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateMealSnapshot, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "changes"]) && isId(value.mealId) && isMealSnapshot(value.changes) },
+  editMealRecipe: { schema: HOUSEHOLD_COMMAND_SCHEMAS.editMealRecipe, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "changes", "occurrences", "removedOccurrenceIds"]) && isId(value.mealId) && isRecipeEditChanges(value.changes) && Array.isArray(value.occurrences) && value.occurrences.length <= MAX_INGREDIENT_LINES && value.occurrences.every(isIngredientOccurrenceEdit) && occurrenceEditIdentitiesAreUnique(value.occurrences) && Array.isArray(value.removedOccurrenceIds) && value.removedOccurrenceIds.length <= MAX_INGREDIENT_LINES && value.removedOccurrenceIds.every(isId) && new Set(value.removedOccurrenceIds).size === value.removedOccurrenceIds.length },
   // The typed command remains the informational-source contract for direct callers.
   // The embedded host must not expose or admit it until it can bind an exact observed candidate.
   replaceMealRecipeFromSource: { schema: HOUSEHOLD_COMMAND_SCHEMAS.replaceMealRecipeFromSource, scope: "week", exposure: "host_admission_required", validate: (value) => isWeekCommand(value, ["mealId", "recipe"]) && isId(value.mealId) && isSourcedRecipeReplacement(value.recipe) },
-  addInstructionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addInstructionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "position", "step"]) && isId(value.mealId) && isIntegerInRange(value.position, 0, MAX_STEPS_PER_MEAL - 1) && isStepPlan(value.step) },
-  updateInstructionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.updateInstructionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "changes"]) && isId(value.stepId) && isStepContent(value.changes) },
+  addInstructionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addInstructionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "position", "step"]) && isId(value.mealId) && isIntegerInRange(value.position, 0, MAX_STEPS_PER_MEAL - 1) && isRecord(value.step) && hasKeys(value.step, ["inputs", "instruction"], ["timerDurationSeconds", "note"]) && Array.isArray(value.step.inputs) && value.step.inputs.length <= MAX_STEP_INPUTS && value.step.inputs.every(isInstructionInputEdit) && instructionInputCorrelationsAreUnique(value.step.inputs) && isText(value.step.instruction, MAX_COMMAND_TEXT_LENGTH, false) && (value.step.timerDurationSeconds === undefined || isIntegerInRange(value.step.timerDurationSeconds, 1, MAX_TIMER_DURATION_SECONDS)) && (value.step.note === undefined || isText(value.step.note, MAX_COMMAND_TEXT_LENGTH)) },
+  editInstructionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.editInstructionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "changes"]) && isId(value.stepId) && hasKeys(value.changes, ["inputs", "instruction", "timerDurationSeconds"]) && Array.isArray(value.changes.inputs) && value.changes.inputs.length <= MAX_STEP_INPUTS && value.changes.inputs.every(isInstructionInputEdit) && instructionInputCorrelationsAreUnique(value.changes.inputs) && isText(value.changes.instruction, MAX_COMMAND_TEXT_LENGTH, false) && (value.changes.timerDurationSeconds === null || isIntegerInRange(value.changes.timerDurationSeconds, 1, MAX_TIMER_DURATION_SECONDS)) },
   moveInstructionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveInstructionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "targetPosition"]) && isId(value.stepId) && isIntegerInRange(value.targetPosition, 0, MAX_STEPS_PER_MEAL - 1) },
   removeInstructionStep: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removeInstructionStep, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId"]) && isId(value.stepId) },
   setInstructionStepComplete: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setInstructionStepComplete, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["stepId", "complete"]) && isId(value.stepId) && typeof value.complete === "boolean" },
@@ -533,7 +651,7 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   movePrepStepsToDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.movePrepStepsToDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["sourcePrepDate", "prepDate", "entryIds", "targetPosition"]) && isIsoDate(value.sourcePrepDate) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && isIntegerInRange(value.targetPosition, 0, MAX_PREP_ENTRIES) },
   removePrepStepsFromDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepStepsFromDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["prepDate", "entryIds"], ["discardFulfillment"]) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
   clearPrepDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.clearPrepDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["prepDate"], ["discardFulfillment"]) && isIsoDate(value.prepDate) && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
-  moveGroceryItemsToSource: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveGroceryItemsToSource, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "source"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && GROCERY_SOURCES.includes(value.source as GrocerySource) },
+  setGroceryItemsCoverage: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemsCoverage, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "coverage"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && ["needs_source", ...GROCERY_SOURCES].includes(value.coverage as GroceryCoverage) },
   setGroceryItemChecked: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemChecked, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId", "checked"]) && isId(value.itemId) && typeof value.checked === "boolean" },
   captureFeedback: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureFeedback, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "value"]) && isId(value.mealId) && FEEDBACK_VALUES.includes(value.value as FeedbackValue) },
   captureWeekLesson: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureWeekLesson, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["weekLesson"]) && isText(value.weekLesson) },
@@ -541,7 +659,7 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   assignLeftover: { schema: HOUSEHOLD_COMMAND_SCHEMAS.assignLeftover, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId", "targetDate"]) && isId(value.leftoverId) && isIsoDate(value.targetDate) },
   consumeLeftover: { schema: HOUSEHOLD_COMMAND_SCHEMAS.consumeLeftover, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["leftoverId"]) && isId(value.leftoverId) },
   archiveWeek: { schema: HOUSEHOLD_COMMAND_SCHEMAS.archiveWeek, scope: "week", exposure: "explicit_foreground", validate: (value) => isWeekCommand(value, []) },
-  createWeekPlan: { schema: HOUSEHOLD_COMMAND_SCHEMAS.createWeekPlan, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "weekStartDate", "plan"]) && isWeekId(value.weekStartDate) && isWeekPlan(value.plan) },
+  createWeekPlan: { schema: HOUSEHOLD_COMMAND_SCHEMAS.createWeekPlan, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "weekStartDate", "plan"]) && isWeekId(value.weekStartDate) && isOccurrenceAwareWeekPlan(value.plan) },
   activateWeek: { schema: HOUSEHOLD_COMMAND_SCHEMAS.activateWeek, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "weekId"]) && isWeekId(value.weekId) },
   handoffWeek: { schema: HOUSEHOLD_COMMAND_SCHEMAS.handoffWeek, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "currentWeekId", "nextWeekId"]) && isWeekId(value.currentWeekId) && isWeekId(value.nextWeekId) && value.currentWeekId !== value.nextWeekId },
 } satisfies Record<HouseholdCommand["type"], HouseholdCommandRegistryEntry>;
@@ -665,4 +783,18 @@ export function isHistoricalGroceryReconciliationCommand(
       typeof item.farmBox === "boolean" &&
       (item.id === undefined || isId(item.id));
   });
+}
+
+/** Retired wire grammars are readable/replay-only and are never provider-admitted. */
+export function isHistoricalHouseholdCommand(value: unknown): value is HistoricalHouseholdCommand {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  switch (value.type) {
+    case "updateMealSnapshot": return isWeekCommand(value, ["mealId", "changes"]) && isId(value.mealId) && isMealSnapshot(value.changes);
+    case "addInstructionStep": return isWeekCommand(value, ["mealId", "position", "step"]) && isId(value.mealId) && isIntegerInRange(value.position, 0, MAX_STEPS_PER_MEAL - 1) && isStepPlan(value.step);
+    case "updateInstructionStep": return isWeekCommand(value, ["stepId", "changes"]) && isId(value.stepId) && isStepContent(value.changes);
+    case "moveGroceryItemsToSource": return isWeekCommand(value, ["itemIds", "source"]) && Array.isArray(value.itemIds) && value.itemIds.every(isId) && GROCERY_SOURCES.includes(value.source as GrocerySource);
+    case "replaceMealRecipeFromSource": return isWeekCommand(value, ["mealId", "recipe"]) && isId(value.mealId) && isLegacySourcedRecipeReplacement(value.recipe);
+    case "createWeekPlan": return hasKeys(value, ["type", "weekStartDate", "plan"]) && isWeekId(value.weekStartDate) && isWeekPlan(value.plan);
+    default: return false;
+  }
 }

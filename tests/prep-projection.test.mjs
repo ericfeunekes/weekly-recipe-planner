@@ -19,18 +19,18 @@ function state() {
         meals: [
           {
             id: "meal-one", date: "2026-07-06", title: "Curry", subtitle: "", venue: "Home", status: "planned", protein: "none", prepNote: "", leftoverNote: "", notes: "",
-            ingredients: [{ id: "rice-one", amount: "1 cup", ingredient: "Jasmine Rice" }],
-            instructions: [{ id: "step-one", inputs: [{ ingredientId: "rice-one", amount: "1 cup", ingredient: "Jasmine Rice" }], instruction: "Cook rice.", complete: false }],
+            ingredients: [{ id: "rice-one", source: "1 cup Jasmine Rice", amount: "1 cup", unit: null, ingredient: "Jasmine Rice", qualifier: null, conceptId: null, role: "weekly_requirement", canonicalIngredientId: null }],
+            instructions: [{ id: "step-one", inputs: [{ occurrenceId: "rice-one", amount: "1 cup", ingredient: "Jasmine Rice" }], instruction: "Cook rice.", complete: false }],
           },
           {
             id: "meal-two", date: "2026-07-07", title: "Bowls", subtitle: "", venue: "Home", status: "planned", protein: "none", prepNote: "", leftoverNote: "", notes: "",
-            ingredients: [{ id: "rice-two", amount: "1/2 cup", ingredient: " jasmine   rice " }],
-            instructions: [{ id: "step-two", inputs: [{ ingredientId: "rice-two", amount: "1/2 cup", ingredient: " jasmine   rice " }], instruction: "Cook more rice.", complete: false }],
+            ingredients: [{ id: "rice-two", source: "1/2 cup jasmine rice", amount: "1/2 cup", unit: null, ingredient: " jasmine   rice ", qualifier: null, conceptId: null, role: "weekly_requirement", canonicalIngredientId: null }],
+            instructions: [{ id: "step-two", inputs: [{ occurrenceId: "rice-two", amount: "1/2 cup", ingredient: " jasmine   rice " }], instruction: "Cook more rice.", complete: false }],
           },
           {
             id: "meal-three", date: "2026-07-08", title: "Salad", subtitle: "", venue: "Home", status: "planned", protein: "none", prepNote: "", leftoverNote: "", notes: "",
-            ingredients: [{ id: "herb", amount: "1 bunch", ingredient: "Cilantro" }],
-            instructions: [{ id: "step-three", inputs: [{ ingredientId: "herb", amount: "1 bunch", ingredient: "Cilantro" }], instruction: "Chop cilantro.", complete: false }],
+            ingredients: [{ id: "herb", source: "1 bunch Cilantro", amount: "1 bunch", unit: null, ingredient: "Cilantro", qualifier: null, conceptId: null, role: "weekly_requirement", canonicalIngredientId: null }],
+            instructions: [{ id: "step-three", inputs: [{ occurrenceId: "herb", amount: "1 bunch", ingredient: "Cilantro" }], instruction: "Chop cilantro.", complete: false }],
           },
         ],
         prepSessions: [], groceries: [], leftovers: [], feedback: {}, weekLesson: "",
@@ -104,7 +104,7 @@ test("draft projection and prepared badges are independent from canonical comple
 test("draft projection deduplicates ingredient occurrences like canonical materialization", () => {
   const workspace = state();
   workspace.weeks[0].data.meals[0].instructions[0].inputs.push({
-    ingredientId: "rice-one", amount: "1 cup", ingredient: "Jasmine Rice",
+    occurrenceId: "rice-one", amount: "1 cup", ingredient: "Jasmine Rice",
   });
   const draft = projectCombinedPrepDraft(workspace, ["step-one", "step-two"]);
   assert.equal(draft.aggregates[0].display, "1 1/2 cups Jasmine Rice");
@@ -126,8 +126,8 @@ test("entry and draft projections cannot resolve colliding step IDs from another
         ...workspace.weeks[0].data.meals[0],
         id: "other-meal",
         title: "Wrong week",
-        ingredients: [{ id: "rice-one", amount: "99 cups", ingredient: "Jasmine Rice" }],
-        instructions: [{ id: "step-one", inputs: [{ ingredientId: "rice-one", amount: "99 cups", ingredient: "Jasmine Rice" }], instruction: "Wrong step.", complete: false }],
+        ingredients: [{ id: "rice-one", source: "99 cups Jasmine Rice", amount: "99 cups", unit: null, ingredient: "Jasmine Rice", qualifier: null, conceptId: null, role: "weekly_requirement", canonicalIngredientId: null }],
+        instructions: [{ id: "step-one", inputs: [{ occurrenceId: "rice-one", amount: "99 cups", ingredient: "Jasmine Rice" }], instruction: "Wrong step.", complete: false }],
       }],
     },
   });

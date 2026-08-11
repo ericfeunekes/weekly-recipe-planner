@@ -188,7 +188,8 @@ async function openPrepRecipeSummary(step: Locator) {
 
 async function openRecipeEditor(page: Page, title: string) {
   await openView(page, "Week");
-  await page.getByRole("article", { name: new RegExp(`^${title} dinner on `) }).getByRole("button", { name: "Edit meal" }).click();
+  await page.getByRole("article", { name: new RegExp(`^${title} on `) }).getByRole("button", { name: /^Open .* day$/ }).click();
+  await page.getByRole("button", { name: "Edit meal" }).click();
 }
 
 function apiPath(url: string) {
@@ -431,16 +432,20 @@ test.describe.serial("family dinner authority", () => {
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     const ambiguousMealDrawer = pageA.locator(".meal-drawer");
     let lostRecipeResponses = 0;
+    let ambiguousOccurrenceIds: string[] = [];
     runtimeA.setExpectedFailurePhase("recipe-loss");
     await pageA.route("**/api/commands", async (route) => {
       const body = route.request().postDataJSON();
       if (
-        body?.command?.type !== "updateMealSnapshot" ||
+        body?.command?.type !== "editMealRecipe" ||
         body.command.changes.title !== "Ambiguous recipe title"
       ) {
         await route.continue();
         return;
       }
+      ambiguousOccurrenceIds = body.command.occurrences
+        .filter((occurrence: { kind: string }) => occurrence.kind === "retain")
+        .map((occurrence: { occurrenceId: string }) => occurrence.occurrenceId);
       lostRecipeResponses += 1;
       if (lostRecipeResponses === 1) await route.fetch();
       await route.abort("failed");
@@ -466,6 +471,11 @@ test.describe.serial("family dinner authority", () => {
     await ambiguousMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(ambiguousRemoteDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Harissa chicken traybake");
     await expect(ambiguousRemoteDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Patio kitchen");
+    const conflictWorkspace = await (await pageA.request.get("/api/workspace")).json();
+    const conflictMeal = conflictWorkspace.state.weeks
+      .flatMap((candidate: { data: { meals: unknown[] } }) => candidate.data.meals)
+      .find((candidate: { title?: string }) => candidate.title === "Harissa chicken traybake");
+    expect(conflictMeal.ingredients.map(({ id }: { id: string }) => id)).toEqual(ambiguousOccurrenceIds);
     runtimeA.setExpectedFailurePhase("normal");
     await ambiguousMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
     await ambiguousRemoteDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
@@ -485,10 +495,11 @@ test.describe.serial("family dinner authority", () => {
     await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(staleMealDrawer.getByText(/Someone else changed the plan/)).toBeVisible();
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Remote accepted dinner title");
+    await expect(staleMealDrawer.getByRole("button", { name: "Retry action" })).toHaveCount(0);
+    await expect(staleTitle).toHaveValue("Stale local dinner title");
+    await expect(staleMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleTitle.fill("Harissa chicken traybake");
-    const retryEditedRecipe = staleMealDrawer.getByRole("button", { name: "Retry Save recipe details" });
-    await expect(retryEditedRecipe).toBeVisible();
-    await retryEditedRecipe.click();
+    await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(pageB.getByRole("dialog", { name: "Harissa chicken traybake" })).toBeVisible({ timeout: 8_000 });
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
