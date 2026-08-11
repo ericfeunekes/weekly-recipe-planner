@@ -1,0 +1,22 @@
+{
+  "name": "image-size",
+  "version": "2.0.3-security.0",
+  "private": true,
+  "description": "Secure image-size compatibility adapter for Vinext static image metadata",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
+  "files": [
+    "index.d.ts",
+    "index.mjs"
+  ],
+  "dependencies": {
+    "image-meta": "0.2.2"
+  }
+}
