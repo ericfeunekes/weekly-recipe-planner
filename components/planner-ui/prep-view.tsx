@@ -700,8 +700,8 @@ export function PrepView(props: PrepViewProps) {
           </section>
         </div>
       </div>
-      {sourceOpen && typeof document !== "undefined" ? createPortal(<div className="prep-source-backdrop" onMouseDown={closeSourceDialog}>
-        <aside ref={sourceDialogRef} className="prep-source-window" role="dialog" aria-modal="true" aria-label="Recipe instructions" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+      {sourceOpen && typeof document !== "undefined" ? createPortal(<div className="prep-source-backdrop">
+        <aside ref={sourceDialogRef} className="prep-source-window" role="dialog" aria-label="Recipe instructions" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <header className="prep-source-window-heading">
           <div><p className="eyebrow">Batch prep</p><h3>Recipe instructions</h3></div>
           <PlannerIconButton type="button" title="Close recipe steps" aria-label="Close recipe steps" onClick={closeSourceDialog}><X size={16} /></PlannerIconButton>

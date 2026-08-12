@@ -978,8 +978,13 @@ svg {
 .prep-source-backdrop {
   background: rgb(23 37 31 / 10%);
   inset: 0;
+  pointer-events: none;
   position: fixed;
   z-index: 27;
+}
+
+.prep-source-window {
+  pointer-events: auto;
 }
 
 .prep-source-window-heading {

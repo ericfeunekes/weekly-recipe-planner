@@ -76,3 +76,23 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   const transferredRows = page.getByTestId("prep-session-step");
   await expect(transferredRows).toHaveCount(1);
 });
+
+test("recipe steps can drop through the decorative source backdrop onto a visible Prep date", async ({ page }) => {
+  await resetPlanner(page);
+  await page.getByRole("button", { name: "Prep", exact: true }).click();
+
+  const prepDates = page.getByRole("tablist", { name: "Prep dates" });
+  const destination = prepDates.getByRole("tab").last();
+  await expect(destination).toBeVisible();
+  await page.getByRole("button", { name: /Add recipe steps to/ }).click();
+  const recipeSteps = page.getByRole("dialog", { name: "Recipe instructions" });
+  const source = recipeSteps.getByRole("button", {
+    name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through\. onto a prep date/,
+  });
+  await expect(source).toBeVisible();
+
+  await source.dragTo(destination);
+
+  await expect(destination).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("prep-session-step")).toHaveCount(2);
+});
