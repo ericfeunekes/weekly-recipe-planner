@@ -3,12 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { householdDomain } from "../lib/household-domain.ts";
 import { isPlannerReadProjection } from "../lib/global-codex-contract.ts";
 import {
   normalizeLegacyHouseholdPayload,
-  normalizeLegacyHouseholdState,
   upgradeHouseholdPayloadToIngredientOccurrences,
   upgradeHouseholdStateToIngredientOccurrences,
 } from "../lib/household-persistence-upgrade.ts";
@@ -130,14 +130,8 @@ test("legacy household normalization is atomic and idempotent before current-sch
   const currentLegacyState = legacyState("After legacy event");
   installAmbiguousLegacyLentils(beforeLegacyState);
   installAmbiguousLegacyLentils(currentLegacyState);
-  const normalizeForCurrentSchema = (state) => {
-    const legacy = normalizeLegacyHouseholdState(state);
-    const occurrence = upgradeHouseholdStateToIngredientOccurrences(legacy.state);
-    assert.equal(occurrence.ok, true);
-    return occurrence.state;
-  };
-  const beforeState = normalizeForCurrentSchema(beforeLegacyState);
-  const currentState = normalizeForCurrentSchema(currentLegacyState);
+  const beforeState = beforeLegacyState;
+  const currentState = currentLegacyState;
   const normalizedPayload = normalizeLegacyHouseholdPayload({
     result: { state: currentLegacyState.weeks[0].data },
   });
@@ -201,10 +195,18 @@ test("legacy household normalization is atomic and idempotent before current-sch
   });
   legacyStore.close();
 
+  const legacyDatabase = new DatabaseSync(filename);
+  try {
+    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version > 8").run();
+    legacyDatabase.prepare("UPDATE workspace SET schema_version = 8 WHERE id = 'household'").run();
+  } finally {
+    legacyDatabase.close();
+  }
+
   const upgraded = openPlannerStore({ filename });
   const firstRead = upgraded.readInitializedWorkspace();
   assert.equal(firstRead.plannerVersion, 1);
-  assert.equal(firstRead.syncRevision, 2);
+  assert.equal(firstRead.syncRevision, 3, "schema-10 occurrence migration advances the durable read revision once");
   assert.equal(firstRead.events.length, 1);
   assert.equal(firstRead.events[0].command.type, "reconcileGroceries");
   assert.equal(isPlannerReadProjection({
@@ -278,7 +280,7 @@ test("legacy household normalization is atomic and idempotent before current-sch
   upgraded.close();
 
   const reopened = openPlannerStore({ filename });
-  assert.equal(reopened.readInitializedWorkspace().syncRevision, 2);
+  assert.equal(reopened.readInitializedWorkspace().syncRevision, 3);
   let id = 0;
   const service = createPlannerApplicationService({
     store: reopened,

@@ -527,12 +527,14 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
   integrity.close();
 
   const beforeSecondMigration = logicalInventory(filename);
+  const artifactsBeforeSecondMigration = artifactInventory(filename);
   const secondBackup = join(directory, "second.sqlite");
-  assert.throws(
-    () => migratePlannerStoreV9ToV10({ filename, backupFilename: secondBackup }),
-    (error) => error instanceof PlannerStoreError && error.code === "MIGRATION_FAILED",
-  );
+  const secondMigration = migratePlannerStoreV9ToV10({ filename, backupFilename: secondBackup });
+  assert.equal(secondMigration.backup, null);
+  assert.deepEqual(secondMigration.migration, { from: 10, to: 10, allowedChanges: [] });
+  assert.equal(secondMigration.database.schemaVersion, 10);
   assert.deepEqual(logicalInventory(filename), beforeSecondMigration);
+  assert.deepEqual(artifactInventory(filename), artifactsBeforeSecondMigration);
   assert.equal(existsSync(secondBackup), false);
 });
 
@@ -632,6 +634,32 @@ test("an ambiguous schema-9 source fails before a backup or sidecar can be creat
   assert.throws(
     () => migratePlannerStoreV9ToV10({ filename, backupFilename }),
     (error) => error instanceof PlannerStoreError && error.code === "MIGRATION_FAILED" && /ambiguous/i.test(error.message),
+  );
+  assert.deepEqual(readFileSync(filename), before);
+  assert.deepEqual(artifactInventory(filename), inventoryBefore);
+  assert.equal(existsSync(backupFilename), false);
+  assert.equal(existsSync(`${filename}-wal`), false);
+  assert.equal(existsSync(`${filename}-shm`), false);
+});
+
+test("an invalid purported schema-10 occurrence fails closed before any migration artifact is created", (t) => {
+  const directory = temporaryDirectory(t);
+  const filename = join(directory, "invalid-current-occurrence.sqlite");
+  const backupFilename = join(directory, "invalid-current-occurrence.pre-v10.sqlite");
+  const invalid = v9State();
+  invalid.weeks[0].data.meals[0].ingredients[2].unsupportedIdentityHint = "fennel";
+  createV9Store(filename, invalid);
+  const before = readFileSync(filename);
+  const inventoryBefore = artifactInventory(filename);
+
+  assert.throws(
+    () => migratePlannerStoreV9ToV10({ filename, backupFilename }),
+    (error) => {
+      assert.equal(error instanceof PlannerStoreError, true);
+      assert.equal(error.code, "MIGRATION_FAILED");
+      assert.match(error.message, /workspace\.state_json.*ingredients\[2\].*partial or unsupported occurrence shape/iu);
+      return true;
+    },
   );
   assert.deepEqual(readFileSync(filename), before);
   assert.deepEqual(artifactInventory(filename), inventoryBefore);

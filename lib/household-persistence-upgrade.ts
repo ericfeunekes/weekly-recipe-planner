@@ -1,4 +1,5 @@
 import {
+  INGREDIENT_ROLES,
   MEAL_STATUSES,
   type GroceryItem,
   type GroceryCoverage,
@@ -7,6 +8,7 @@ import {
   type HouseholdPlannerState,
   type MealStatus,
 } from "./household-contract.ts";
+import { MAX_ID_LENGTH } from "./household-command-contract.ts";
 import {
   isGroceryRequirementRole,
   matchOccurrenceByCore,
@@ -398,16 +400,38 @@ function occurrenceDefaults(record: Record<string, unknown>): Record<string, unk
   };
 }
 
+const SCHEMA_TEN_OCCURRENCE_KEYS = [
+  "id",
+  "source",
+  "amount",
+  "unit",
+  "ingredient",
+  "qualifier",
+  "conceptId",
+  "role",
+  "canonicalIngredientId",
+] as const;
+
+function isBoundedText(value: unknown, maxLength: number, nonempty = false): value is string {
+  return typeof value === "string" && value.length <= maxLength && (!nonempty || value.trim().length > 0);
+}
+
+function isNullableBoundedText(value: unknown): value is string | null {
+  return value === null || isBoundedText(value, 1_000);
+}
+
 function isSchemaTenOccurrence(record: Record<string, unknown>): boolean {
   return (
-    typeof record.id === "string" &&
-    (record.source === null || typeof record.source === "string") &&
-    typeof record.amount === "string" &&
-    (record.unit === null || typeof record.unit === "string") &&
-    typeof record.ingredient === "string" &&
-    (record.qualifier === null || typeof record.qualifier === "string") &&
-    (record.conceptId === null || typeof record.conceptId === "string") &&
-    ["weekly_requirement", "output", "leftover"].includes(String(record.role)) &&
+    Object.keys(record).length === SCHEMA_TEN_OCCURRENCE_KEYS.length &&
+    SCHEMA_TEN_OCCURRENCE_KEYS.every((key) => Object.hasOwn(record, key)) &&
+    isBoundedText(record.id, MAX_ID_LENGTH, true) &&
+    isNullableBoundedText(record.source) &&
+    isBoundedText(record.amount, 300) &&
+    isNullableBoundedText(record.unit) &&
+    isBoundedText(record.ingredient, 1_000, true) &&
+    isNullableBoundedText(record.qualifier) &&
+    isNullableBoundedText(record.conceptId) &&
+    INGREDIENT_ROLES.includes(record.role as (typeof INGREDIENT_ROLES)[number]) &&
     (record.canonicalIngredientId === null ||
       (Number.isSafeInteger(record.canonicalIngredientId) && Number(record.canonicalIngredientId) > 0))
   );

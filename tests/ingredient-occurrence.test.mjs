@@ -45,6 +45,28 @@ test("explicit occurrence partitions retain only named IDs and create hard-coded
   ], ["pepper-a"]), /retained and removed/);
 });
 
+test("occurrence partition rejects every ambiguous identity class", () => {
+  const retain = (occurrenceId) => ({
+    kind: "retain", occurrenceId, source: null, amount: "2", unit: null,
+    ingredient: "red pepper", qualifier: null, conceptId: null,
+  });
+  const cases = [
+    { previous: ["a", "a"], edits: [retain("a")], removed: [], message: /Existing occurrence IDs/ },
+    { previous: ["a"], edits: [retain("a"), retain("a")], removed: [], message: /retained occurrence ID/ },
+    { previous: ["a"], edits: [], removed: ["a", "a"], message: /removed occurrence ID/ },
+    { previous: [], edits: [create("new"), create("new")], removed: [], message: /create correlation/ },
+    { previous: ["a"], edits: [retain("unknown")], removed: ["a"], message: /unknown occurrence ID/ },
+    { previous: ["a"], edits: [], removed: ["unknown"], message: /unknown occurrence ID/ },
+    { previous: ["a"], edits: [retain("a")], removed: ["a"], message: /retained and removed/ },
+    { previous: ["a", "b"], edits: [retain("a")], removed: [], message: /exactly once/ },
+  ];
+  for (const { previous, edits, removed, message } of cases) {
+    assert.match(validateOccurrencePartition(previous, edits, removed), message);
+  }
+  assert.equal(validateOccurrencePartition(["a", "b"], [retain("b"), retain("a"), create("new")], []), null);
+  assert.equal(validateOccurrencePartition(["a", "b"], [], ["b", "a"]), null);
+});
+
 test("new instruction matching only reuses one normalized occurrence", () => {
   const input = { kind: "create", correlationId: "input-1", amount: "1", ingredient: " Red   Pepper " };
   const one = [materializeOccurrence(create("new-pepper"), "hard-coded-pepper-id")];

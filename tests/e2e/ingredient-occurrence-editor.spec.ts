@@ -13,6 +13,198 @@ async function resetPlanner(page: import("@playwright/test").Page): Promise<void
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
 }
 
+test("Duplicate keeps the source occurrence and creates a distinct copied occurrence", async ({ page }) => {
+  await resetPlanner(page);
+  const before = await (await page.request.get("/api/workspace")).json() as {
+    state: {
+      activeWeekId: string;
+      weeks: Array<{ id: string; data: { meals: Array<{
+        id: string;
+        ingredients: Array<{ id: string; source: string | null; amount: string; unit: string | null; ingredient: string; qualifier: string | null }>;
+      }> } }>;
+    };
+  };
+  const meal = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals[0]!;
+  const source = meal.ingredients[0]!;
+
+  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
+  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  const drawer = page.locator(".meal-drawer");
+  await drawer.getByRole("button", { name: "Duplicate ingredient 1 as a new occurrence" }).click();
+  await expect(drawer.locator(".occurrence-editor-row")).toHaveCount(meal.ingredients.length + 1);
+
+  const request = page.waitForRequest((candidate) => {
+    if (!candidate.url().endsWith("/api/commands") || candidate.method() !== "POST") return false;
+    return (candidate.postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe";
+  });
+  const response = page.waitForResponse((candidate) => {
+    if (!candidate.url().endsWith("/api/commands") || candidate.request().method() !== "POST") return false;
+    return (candidate.request().postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe";
+  });
+  await drawer.getByRole("button", { name: "Save recipe details" }).click();
+  const body = (await request).postDataJSON() as {
+    command: { occurrences: Array<Record<string, unknown>> };
+  };
+  expect(body.command.occurrences[0]).toMatchObject({ kind: "retain", occurrenceId: source.id });
+  expect(body.command.occurrences[1]).toMatchObject({
+    kind: "create",
+    source: source.source,
+    amount: source.amount,
+    unit: source.unit,
+    ingredient: source.ingredient,
+    qualifier: source.qualifier,
+  });
+  const correlationId = body.command.occurrences[1]!.correlationId;
+  expect(correlationId).toEqual(expect.any(String));
+  const accepted = await response;
+  expect(accepted.status()).toBe(200);
+  const decision = await accepted.json() as {
+    decision: { occurrenceResults: Array<{ occurrences: Array<{ correlationId: string; occurrenceId: string }> }> };
+  };
+  const copiedId = decision.decision.occurrenceResults
+    .flatMap(({ occurrences }) => occurrences)
+    .find((result) => result.correlationId === correlationId)?.occurrenceId;
+  expect(copiedId).toEqual(expect.any(String));
+  expect(copiedId).not.toBe(source.id);
+
+  const after = await (await page.request.get("/api/workspace")).json() as typeof before;
+  const saved = after.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals
+    .find(({ id }) => id === meal.id)!;
+  expect(saved.ingredients.slice(0, 2).map(({ id }) => id)).toEqual([source.id, copiedId]);
+  expect(saved.ingredients[1]).toMatchObject({
+    source: source.source,
+    amount: source.amount,
+    unit: source.unit,
+    ingredient: source.ingredient,
+    qualifier: source.qualifier,
+  });
+});
+
+test("Split keeps the labeled row's identity while both resulting literals can diverge", async ({ page }) => {
+  await resetPlanner(page);
+  const before = await (await page.request.get("/api/workspace")).json() as {
+    state: {
+      activeWeekId: string;
+      weeks: Array<{ id: string; data: { meals: Array<{ id: string; ingredients: Array<{ id: string; ingredient: string }> }> } }>;
+    };
+  };
+  const meal = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals[0]!;
+  const sourceId = meal.ingredients[0]!.id;
+
+  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
+  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  const drawer = page.locator(".meal-drawer");
+  await drawer.getByRole("button", { name: "Split ingredient 1; this row keeps its identity" }).click();
+  await drawer.getByLabel("Ingredient 1 core").fill("split survivor literal");
+  await drawer.getByLabel("Ingredient 2 core").fill("split created literal");
+
+  const request = page.waitForRequest((candidate) => {
+    if (!candidate.url().endsWith("/api/commands") || candidate.method() !== "POST") return false;
+    return (candidate.postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe";
+  });
+  const response = page.waitForResponse((candidate) => {
+    if (!candidate.url().endsWith("/api/commands") || candidate.request().method() !== "POST") return false;
+    return (candidate.request().postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe";
+  });
+  await drawer.getByRole("button", { name: "Save recipe details" }).click();
+  const body = (await request).postDataJSON() as {
+    command: { occurrences: Array<Record<string, unknown>> };
+  };
+  expect(body.command.occurrences[0]).toMatchObject({
+    kind: "retain",
+    occurrenceId: sourceId,
+    ingredient: "split survivor literal",
+  });
+  expect(body.command.occurrences[1]).toMatchObject({
+    kind: "create",
+    ingredient: "split created literal",
+  });
+  const correlationId = body.command.occurrences[1]!.correlationId;
+  const accepted = await response;
+  expect(accepted.status()).toBe(200);
+  const decision = await accepted.json() as {
+    decision: { occurrenceResults: Array<{ occurrences: Array<{ correlationId: string; occurrenceId: string }> }> };
+  };
+  const splitId = decision.decision.occurrenceResults
+    .flatMap(({ occurrences }) => occurrences)
+    .find((result) => result.correlationId === correlationId)?.occurrenceId;
+  expect(splitId).toEqual(expect.any(String));
+  expect(splitId).not.toBe(sourceId);
+
+  const after = await (await page.request.get("/api/workspace")).json() as typeof before;
+  const saved = after.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals
+    .find(({ id }) => id === meal.id)!;
+  expect(saved.ingredients.slice(0, 2).map(({ id, ingredient }) => ({ id, ingredient }))).toEqual([
+    { id: sourceId, ingredient: "split survivor literal" },
+    { id: splitId, ingredient: "split created literal" },
+  ]);
+});
+
+test("Split identity follows the survivor when the created result moves before it", async ({ page }) => {
+  await resetPlanner(page);
+  const before = await (await page.request.get("/api/workspace")).json() as {
+    state: {
+      activeWeekId: string;
+      weeks: Array<{ id: string; data: { meals: Array<{ id: string; ingredients: Array<{ id: string }> }> } }>;
+    };
+  };
+  const meal = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals[0]!;
+  const sourceId = meal.ingredients[0]!.id;
+
+  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
+  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  const drawer = page.locator(".meal-drawer");
+  await drawer.getByRole("button", { name: "Split ingredient 1; this row keeps its identity" }).click();
+  await drawer.getByRole("button", { name: "Move ingredient 2 up" }).click();
+  await drawer.getByLabel("Ingredient 1 core").fill("created result first");
+  await drawer.getByLabel("Ingredient 2 core").fill("survivor result second");
+
+  const request = page.waitForRequest((candidate) => {
+    if (!candidate.url().endsWith("/api/commands") || candidate.method() !== "POST") return false;
+    return (candidate.postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe";
+  });
+  const response = page.waitForResponse((candidate) => {
+    if (!candidate.url().endsWith("/api/commands") || candidate.request().method() !== "POST") return false;
+    return (candidate.request().postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe";
+  });
+  await drawer.getByRole("button", { name: "Save recipe details" }).click();
+  const body = (await request).postDataJSON() as {
+    command: { occurrences: Array<Record<string, unknown>> };
+  };
+  expect(body.command.occurrences[0]).toMatchObject({ kind: "create", ingredient: "created result first" });
+  expect(body.command.occurrences[1]).toMatchObject({
+    kind: "retain",
+    occurrenceId: sourceId,
+    ingredient: "survivor result second",
+  });
+  const correlationId = body.command.occurrences[0]!.correlationId;
+  const accepted = await response;
+  expect(accepted.status()).toBe(200);
+  const decision = await accepted.json() as {
+    decision: { occurrenceResults: Array<{ occurrences: Array<{ correlationId: string; occurrenceId: string }> }> };
+  };
+  const splitId = decision.decision.occurrenceResults
+    .flatMap(({ occurrences }) => occurrences)
+    .find((result) => result.correlationId === correlationId)?.occurrenceId;
+  expect(splitId).toEqual(expect.any(String));
+  expect(splitId).not.toBe(sourceId);
+
+  const after = await (await page.request.get("/api/workspace")).json() as {
+    state: {
+      weeks: Array<{ id: string; data: { meals: Array<{
+        id: string;
+        ingredients: Array<{ id: string; ingredient: string }>;
+      }> } }>;
+    };
+  };
+  const saved = after.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals
+    .find(({ id }) => id === meal.id)!;
+  expect(saved.ingredients.slice(0, 2).map(({ id, ingredient }) => ({ id, ingredient }))).toEqual([
+    { id: splitId, ingredient: "created result first" },
+    { id: sourceId, ingredient: "survivor result second" },
+  ]);
+});
+
 test("recipe editor sends retained IDs, creation correlations, and explicit removal intent", async ({ page }) => {
   await resetPlanner(page);
   const workspaceResponse = await page.request.get("/api/workspace");

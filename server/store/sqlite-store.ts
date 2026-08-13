@@ -48,6 +48,7 @@ import {
   type PlannerToolResult,
 } from "../../lib/planner-tool-contract.ts";
 import type { HouseholdPlannerState } from "../../lib/household-contract.ts";
+import { validateHouseholdState } from "../../lib/household-domain.ts";
 import {
   normalizeLegacyHouseholdPayload,
   normalizeLegacyHouseholdState,
@@ -160,18 +161,21 @@ export type PlannerStoreV9ToV10MigrationResult = Readonly<{
     workspaceSchemaVersion: 10;
     rowCounts: Readonly<Record<string, number>>;
   }>;
-  backup: VerifiedPlannerSnapshotInspection;
-  migration: Readonly<{
-    from: 9;
-    to: 10;
-    allowedChanges: readonly [
-      "schema_migrations:10",
-      "workspace:household.schema_version,state_json,sync_revision,updated_at",
-      "planner_events:before_state_json",
-      "planner_tool_calls:result_envelope_json",
-      "codex_native_tool_calls:result_envelope_json",
-    ];
-  }>;
+  backup: VerifiedPlannerSnapshotInspection | null;
+  migration: Readonly<
+    | {
+      from: 9;
+      to: 10;
+      allowedChanges: readonly [
+        "schema_migrations:10",
+        "workspace:household.schema_version,state_json,sync_revision,updated_at",
+        "planner_events:before_state_json",
+        "planner_tool_calls:result_envelope_json",
+        "codex_native_tool_calls:result_envelope_json",
+      ];
+    }
+    | { from: 10; to: 10; allowedChanges: readonly [] }
+  >;
 }>;
 
 export class PlannerStoreError extends Error {
@@ -413,6 +417,21 @@ function occurrenceUpgradeFailure(issues: readonly IngredientOccurrenceUpgradeIs
   );
 }
 
+function appendHouseholdStateValidationIssues(
+  state: HouseholdPlannerState,
+  path: string,
+  issues: IngredientOccurrenceUpgradeIssue[],
+): void {
+  const validation = validateHouseholdState(state);
+  if (validation.ok) return;
+  for (const issue of validation.issues) {
+    issues.push({
+      path: `${path}${issue.path === "$" ? "" : issue.path.slice(1)}`,
+      message: issue.message,
+    });
+  }
+}
+
 function persistedEventOperationCount(database: DatabaseSync, eventId: string | null): number {
   if (eventId === null) return 1;
   const row = database.prepare("SELECT command_json FROM planner_events WHERE event_id = ?").get(eventId) as { command_json: string } | undefined;
@@ -491,6 +510,8 @@ function preflightV9IngredientOccurrenceUpgrade(filename: string): void {
         for (const issue of upgraded.issues) {
           issues.push({ path: `${path}${issue.path ? `.${issue.path}` : ""}`, message: issue.message });
         }
+      } else {
+        appendHouseholdStateValidationIssues(upgraded.state, path, issues);
       }
     };
     const inspectPayload = (text: string, path: string, operationCount = 1) => {
@@ -536,6 +557,9 @@ function preflightPreV9HouseholdNormalization(filename: string): void {
             message: issue.message,
           })));
         }
+        const validationIssues: IngredientOccurrenceUpgradeIssue[] = [];
+        appendHouseholdStateValidationIssues(upgraded.state, label, validationIssues);
+        if (validationIssues.length > 0) throw occurrenceUpgradeFailure(validationIssues);
       } catch (error) {
         if (error instanceof PlannerStoreError) throw error;
         const detail = error instanceof Error ? ` ${error.message}` : "";
@@ -596,6 +620,7 @@ function applyV9IngredientOccurrenceUpgrade(database: DatabaseSync, write = true
       })));
       return null;
     }
+    appendHouseholdStateValidationIssues(upgraded.state, path, issues);
     return upgraded;
   };
   const upgradePayload = (text: string, path: string, operationCount = 1) => {
@@ -1714,9 +1739,18 @@ function readCommittedV9Summary(
 function readCommittedV10Summary(
   filename: string,
 ): PlannerStoreV9ToV10MigrationResult["database"] {
-  const database = new DatabaseSync(filename, { readOnly: true });
-  try {
+  return withClosedPreflightDatabase(filename, (database) => {
     assertCoherentV10Store(database);
+    const workspace = database.prepare(
+      "SELECT state_json FROM workspace WHERE id = 'household'",
+    ).get() as { state_json: string };
+    const validationIssues: IngredientOccurrenceUpgradeIssue[] = [];
+    appendHouseholdStateValidationIssues(
+      parseJson<HouseholdPlannerState>(workspace.state_json, "workspace.state_json"),
+      "workspace.state_json",
+      validationIssues,
+    );
+    if (validationIssues.length > 0) throw occurrenceUpgradeFailure(validationIssues);
     return Object.freeze({
       filename,
       quickCheck: "ok" as const,
@@ -1725,9 +1759,7 @@ function readCommittedV10Summary(
       workspaceSchemaVersion: 10 as const,
       rowCounts: readRowCounts(database),
     });
-  } finally {
-    database.close();
-  }
+  });
 }
 
 export function migratePlannerStoreV8ToV9({
@@ -1829,6 +1861,14 @@ export function migratePlannerStoreV9ToV10({
   const canonicalBackup = canonicalSnapshotDestination(backupFilename);
   if (canonicalFilename === canonicalBackup) {
     throw new TypeError("The SQLite backup path must differ from its database path.");
+  }
+
+  if (readCurrentMigrationVersionReadOnly(canonicalFilename) === 10) {
+    return Object.freeze({
+      database: readCommittedV10Summary(canonicalFilename),
+      backup: null,
+      migration: Object.freeze({ from: 10 as const, to: 10 as const, allowedChanges: Object.freeze([] as const) }),
+    });
   }
 
   // This must precede the writer reservation: an ambiguous source is left
@@ -2756,7 +2796,7 @@ export function openPlannerStore(options: OpenPlannerStoreOptions = {}): SqliteP
         filename: realpathSync(filename),
         backupFilename: nextBackupPath(filename, 9),
       });
-      migrationBackupPath = migration.backup.filename;
+      migrationBackupPath = migration.backup?.filename ?? null;
     } else if (existingVersion < 9) {
       preflightPreV9HouseholdNormalization(realpathSync(filename));
     }
