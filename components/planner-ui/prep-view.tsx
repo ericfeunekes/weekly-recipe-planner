@@ -247,29 +247,6 @@ export function PrepView(props: PrepViewProps) {
       if (event.key === "Escape") {
         event.preventDefault();
         closeSourceDialog();
-        return;
-      }
-      if (event.key === "Tab") {
-        const dialog = sourceDialogRef.current;
-        if (!dialog) return;
-        const focusable = [...dialog.querySelectorAll<HTMLElement>(
-          "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])",
-        )].filter((element) => element.getAttribute("aria-hidden") !== "true");
-        if (!focusable.length) {
-          event.preventDefault();
-          dialog.focus();
-          return;
-        }
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        const active = document.activeElement;
-        if (event.shiftKey && (active === first || !dialog.contains(active))) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
-          event.preventDefault();
-          first.focus();
-        }
       }
     };
     window.addEventListener("keydown", onKeyDown);

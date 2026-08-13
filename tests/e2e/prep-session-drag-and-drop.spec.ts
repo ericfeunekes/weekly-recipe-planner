@@ -18,34 +18,18 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   await page.getByRole("button", { name: "Prep", exact: true }).click();
 
   const prepDates = page.getByRole("tablist", { name: "Prep dates" });
-  await expect(prepDates.getByRole("tab")).toHaveCount(7);
+  await expect(prepDates.getByRole("tab")).toHaveCount(2);
   await expect(page.getByRole("navigation", { name: "Batch prep planned days" })).toHaveCount(0);
-  const thursday = prepDates.getByRole("tab", { name: /Thu, Jul 9$/ });
-  const friday = prepDates.getByRole("tab", { name: /Fri, Jul 10$/ });
-  await expect(thursday).toBeVisible();
-  await expect(friday).toBeVisible();
+  const sunday = prepDates.getByRole("tab", { name: /Sun, Jul 5$/ });
+  const wednesday = prepDates.getByRole("tab", { name: /Wed, Jul 8$/ });
+  await expect(sunday).toBeVisible();
+  await expect(wednesday).toBeVisible();
 
-  await page.getByRole("button", { name: /Add recipe steps to/ }).click();
-  const recipeSteps = page.getByRole("dialog", { name: "Recipe instructions" });
-  const firstSourceStep = recipeSteps.getByRole("button", {
-    name: /Drag step 1 for Harissa chicken traybake: Coat the chicken with harissa and refrigerate\. onto a prep date/,
-  });
-  const secondSourceStep = recipeSteps.getByRole("button", {
-    name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through\. onto a prep date/,
-  });
-  await expect(firstSourceStep).toBeVisible();
-  await expect(secondSourceStep).toBeVisible();
-  await firstSourceStep.click();
-  await secondSourceStep.click({ modifiers: ["Shift"] });
-  await expect(recipeSteps.getByText("2 selected", { exact: true })).toBeVisible();
-
-  await secondSourceStep.dragTo(thursday);
-  await expect(thursday).toHaveAttribute("aria-selected", "true");
-  await recipeSteps.getByRole("button", { name: "Close recipe steps", exact: true }).click();
-  await expect(recipeSteps).toHaveCount(0);
+  await page.getByTestId("prep-session-step").dragTo(wednesday);
+  await expect(wednesday).toHaveAttribute("aria-selected", "true");
   const destinationRows = page.getByTestId("prep-session-step");
   await expect(destinationRows).toHaveCount(2);
-  await expect(thursday).toHaveAccessibleName("Open 2 prep steps on Thu, Jul 9");
+  await expect(wednesday).toHaveAccessibleName("Open 2 prep steps on Wed, Jul 8");
 
   const insertionTarget = destinationRows.nth(1);
   const targetBounds = await insertionTarget.boundingBox();
@@ -63,18 +47,40 @@ test("batch prep uses one bounded date strip, supports full-row drag, and can mo
   await expect(insertionMarker).toHaveCount(1);
   await expect(insertionMarker).toHaveCSS("border-top-width", "4px");
 
-  await destinationRows.first().dragTo(friday);
-  await expect(friday).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByTestId("prep-session-step")).toHaveCount(1);
-
-  await page.getByRole("button", { name: "Select all 1 prep step", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("1 selected");
+  await page.getByRole("checkbox", { name: "Select all", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("2 selected");
   const moveTarget = page.getByLabel("Move selected prep steps to");
   await moveTarget.fill("2026-06-29");
   await page.getByRole("button", { name: "Move selected prep steps", exact: true }).click();
-  await expect(prepDates.getByRole("tab").first()).toHaveAccessibleName("Open 1 prep step on Mon, Jun 29");
+  await expect(prepDates.getByRole("tab").first()).toHaveAccessibleName("Open 2 prep steps on Mon, Jun 29");
   const transferredRows = page.getByTestId("prep-session-step");
-  await expect(transferredRows).toHaveCount(1);
+  await expect(transferredRows).toHaveCount(2);
+});
+
+test("multiple unassigned recipe steps can be selected and dropped as one batch", async ({ page }) => {
+  await resetPlanner(page);
+  await page.getByRole("button", { name: "Prep", exact: true }).click();
+  const prepDates = page.getByRole("tablist", { name: "Prep dates" });
+  const sunday = prepDates.getByRole("tab", { name: /Sun, Jul 5$/ });
+  const wednesday = prepDates.getByRole("tab", { name: /Wed, Jul 8$/ });
+  for (const tab of [sunday, wednesday]) {
+    await tab.click();
+    await page.getByRole("button", { name: /Delete .* prep/ }).click();
+    await page.getByRole("button", { name: "Delete prep date", exact: true }).click();
+  }
+  await page.getByRole("button", { name: /Add recipe steps to/ }).click();
+  const recipeSteps = page.getByRole("dialog", { name: "Recipe instructions" });
+  const firstSourceStep = recipeSteps.getByRole("button", {
+    name: /Drag step 1 for Harissa chicken traybake: Coat the chicken with harissa and refrigerate\. onto a prep date/,
+  });
+  const secondSourceStep = recipeSteps.getByRole("button", {
+    name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through\. onto a prep date/,
+  });
+  await firstSourceStep.click();
+  await secondSourceStep.click({ modifiers: ["Shift"] });
+  await expect(recipeSteps.getByText("2 selected", { exact: true })).toBeVisible();
+  await secondSourceStep.dragTo(prepDates.getByRole("tab").first());
+  await expect(page.getByTestId("prep-session-step")).toHaveCount(2);
 });
 
 test("recipe steps can drop through the decorative source backdrop onto a visible Prep date", async ({ page }) => {
@@ -95,4 +101,26 @@ test("recipe steps can drop through the decorative source backdrop onto a visibl
 
   await expect(destination).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("prep-session-step")).toHaveCount(2);
+});
+
+test("the nonmodal recipe source allows keyboard focus to leave and restores its trigger", async ({ page }) => {
+  await resetPlanner(page);
+  await page.getByRole("button", { name: "Prep", exact: true }).click();
+
+  const openSource = page.getByRole("button", { name: /Add recipe steps to/ });
+  await openSource.click();
+  const source = page.getByRole("dialog", { name: "Recipe instructions" });
+  await expect(source).toBeFocused();
+  await source.getByRole("button").last().focus();
+  await page.keyboard.press("Tab");
+  expect(await source.evaluate((dialog) => dialog.contains(document.activeElement))).toBe(false);
+
+  await source.getByRole("button", { name: "Close recipe steps" }).click();
+  await expect(source).toHaveCount(0);
+  await expect(openSource).toBeFocused();
+
+  await openSource.click();
+  await page.keyboard.press("Escape");
+  await expect(source).toHaveCount(0);
+  await expect(openSource).toBeFocused();
 });

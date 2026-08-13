@@ -235,3 +235,265 @@ test("known two-client conflicts recompose into an editable occurrence draft wit
   expect(saved?.ingredients[0].ingredient).toBe("remote renamed ingredient");
   await peerContext.close();
 });
+
+test("two-client conflict preserves separate edits to repeated uses of one occurrence", async ({ browser, page }) => {
+  await resetPlanner(page);
+  const before = await (await page.request.get("/api/workspace")).json() as {
+    plannerVersion: number;
+    state: {
+      activeWeekId: string;
+      weeks: Array<{ id: string; data: { meals: Array<{
+        id: string;
+        instructions: Array<{
+          id: string;
+          inputs: Array<{ occurrenceId: string; amount: string; ingredient: string }>;
+          instruction: string;
+          timerDurationSeconds?: number;
+        }>;
+      }> } }>;
+    };
+  };
+  const week = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!;
+  const step = week.data.meals[0]!.instructions[0]!;
+  const sourceInput = step.inputs[0]!;
+  const seeded = await page.request.post("/api/commands", {
+    headers: { Origin: new URL(page.url()).origin },
+    data: {
+      requestId: crypto.randomUUID(),
+      basePlannerVersion: before.plannerVersion,
+      command: {
+        type: "editInstructionStep",
+        weekId: week.id,
+        stepId: step.id,
+        changes: {
+          inputs: [
+            { kind: "retain", occurrenceId: sourceInput.occurrenceId, amount: "1", ingredient: sourceInput.ingredient },
+            { kind: "retain", occurrenceId: sourceInput.occurrenceId, amount: "2", ingredient: sourceInput.ingredient },
+          ],
+          instruction: step.instruction,
+          timerDurationSeconds: step.timerDurationSeconds ?? null,
+        },
+      },
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  const peerContext = await browser.newContext();
+  const peer = await peerContext.newPage();
+  await peer.goto("/");
+  await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+
+  for (const candidate of [page, peer]) {
+    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
+    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
+    await candidate.getByRole("dialog").getByLabel(/^Edit step 1 /u).click();
+  }
+  const localStep = page.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const remoteStep = peer.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const remoteAmounts = remoteStep.locator(".instruction-input-row input[aria-label^='Amount']");
+  await expect(localStep.locator(".instruction-input-row")).toHaveCount(2);
+  await localStep.locator(".instruction-input-row").nth(0).getByRole("textbox").first().fill("2");
+  await remoteAmounts.nth(1).fill("3");
+  const remoteAccepted = peer.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST",
+  );
+  await remoteStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await remoteAccepted).status()).toBe(200);
+
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(localStep.locator(".instruction-input-row").nth(0).getByRole("textbox").first()).toHaveValue("2");
+  await expect(localStep.locator(".instruction-input-row").nth(1).getByRole("textbox").first()).toHaveValue("3");
+  const localConflict = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST",
+  );
+  await localStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await localConflict).status()).toBe(409);
+  await expect(page.locator(".meal-drawer").getByText(/Someone else changed the plan/u)).toBeVisible();
+  await expect(localStep.locator(".instruction-input-row").nth(0).getByRole("textbox").first()).toHaveValue("2");
+  await expect(localStep.locator(".instruction-input-row").nth(1).getByRole("textbox").first()).toHaveValue("3");
+
+  const localAccepted = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST",
+  );
+  await localStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await localAccepted).status()).toBe(200);
+  const after = await (await page.request.get("/api/workspace")).json() as typeof before;
+  const savedStep = after.state.weeks.find(({ id }) => id === before.state.activeWeekId)?.data.meals[0]?.instructions[0];
+  expect(savedStep?.inputs).toEqual([
+    { occurrenceId: sourceInput.occurrenceId, amount: "2", ingredient: sourceInput.ingredient },
+    { occurrenceId: sourceInput.occurrenceId, amount: "3", ingredient: sourceInput.ingredient },
+  ]);
+  await peerContext.close();
+});
+
+test("two-client conflict preserves a local edit when identical repeated uses make peer deletion ambiguous", async ({ browser, page }) => {
+  await resetPlanner(page);
+  const before = await (await page.request.get("/api/workspace")).json() as {
+    plannerVersion: number;
+    state: {
+      activeWeekId: string;
+      weeks: Array<{ id: string; data: { meals: Array<{
+        id: string;
+        instructions: Array<{
+          id: string;
+          inputs: Array<{ occurrenceId: string; amount: string; ingredient: string }>;
+          instruction: string;
+          timerDurationSeconds?: number;
+        }>;
+      }> } }>;
+    };
+  };
+  const week = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!;
+  const step = week.data.meals[0]!.instructions[0]!;
+  const sourceInput = step.inputs[0]!;
+  const seeded = await page.request.post("/api/commands", {
+    headers: { Origin: new URL(page.url()).origin },
+    data: {
+      requestId: crypto.randomUUID(),
+      basePlannerVersion: before.plannerVersion,
+      command: {
+        type: "editInstructionStep",
+        weekId: week.id,
+        stepId: step.id,
+        changes: {
+          inputs: [
+            { kind: "retain", occurrenceId: sourceInput.occurrenceId, amount: "1", ingredient: sourceInput.ingredient },
+            { kind: "retain", occurrenceId: sourceInput.occurrenceId, amount: "1", ingredient: sourceInput.ingredient },
+          ],
+          instruction: step.instruction,
+          timerDurationSeconds: step.timerDurationSeconds ?? null,
+        },
+      },
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  const peerContext = await browser.newContext();
+  const peer = await peerContext.newPage();
+  await peer.goto("/");
+  await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  for (const candidate of [page, peer]) {
+    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
+    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
+    await candidate.getByRole("dialog").getByLabel(/^Edit step 1 /u).click();
+  }
+  const localStep = page.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const remoteStep = peer.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  await localStep.locator(".instruction-input-row").nth(1).getByRole("textbox").first().fill("5");
+  await remoteStep.getByRole("button", { name: "Remove ingredient input 1" }).click();
+  const remoteAccepted = peer.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST");
+  await remoteStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await remoteAccepted).status()).toBe(200);
+
+  const localConflict = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST");
+  await localStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await localConflict).status()).toBe(409);
+  await expect(page.locator(".meal-drawer").getByText(/Someone else changed the plan/u)).toBeVisible();
+  await expect(localStep.locator(".instruction-input-row")).toHaveCount(2);
+  await expect(localStep.locator(".instruction-input-row").nth(0).getByRole("textbox").first()).toHaveValue("1");
+  await expect(localStep.locator(".instruction-input-row").nth(1).getByRole("textbox").first()).toHaveValue("5");
+
+  const localAccepted = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST");
+  await localStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await localAccepted).status()).toBe(200);
+  const after = await (await page.request.get("/api/workspace")).json() as typeof before;
+  const savedStep = after.state.weeks.find(({ id }) => id === before.state.activeWeekId)?.data.meals[0]?.instructions[0];
+  expect(savedStep?.inputs).toEqual([
+    { occurrenceId: sourceInput.occurrenceId, amount: "1", ingredient: sourceInput.ingredient },
+    { occurrenceId: sourceInput.occurrenceId, amount: "5", ingredient: sourceInput.ingredient },
+  ]);
+  await peerContext.close();
+});
+
+test("two-client conflict preserves edited peer multiplicity beside an ambiguous local edit", async ({ browser, page }) => {
+  await resetPlanner(page);
+  const before = await (await page.request.get("/api/workspace")).json() as {
+    plannerVersion: number;
+    state: {
+      activeWeekId: string;
+      weeks: Array<{ id: string; data: { meals: Array<{
+        instructions: Array<{
+          id: string;
+          inputs: Array<{ occurrenceId: string; amount: string; ingredient: string }>;
+          instruction: string;
+          timerDurationSeconds?: number;
+        }>;
+      }> } }>;
+    };
+  };
+  const week = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!;
+  const step = week.data.meals[0]!.instructions[0]!;
+  const sourceInput = step.inputs[0]!;
+  const retainedInput = (amount: string) => ({
+    kind: "retain" as const,
+    occurrenceId: sourceInput.occurrenceId,
+    amount,
+    ingredient: sourceInput.ingredient,
+  });
+  const seeded = await page.request.post("/api/commands", {
+    headers: { Origin: new URL(page.url()).origin },
+    data: {
+      requestId: crypto.randomUUID(),
+      basePlannerVersion: before.plannerVersion,
+      command: {
+        type: "editInstructionStep",
+        weekId: week.id,
+        stepId: step.id,
+        changes: {
+          inputs: [retainedInput("1"), retainedInput("1"), retainedInput("1")],
+          instruction: step.instruction,
+          timerDurationSeconds: step.timerDurationSeconds ?? null,
+        },
+      },
+    },
+  });
+  expect(seeded.ok(), await seeded.text()).toBe(true);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  const peerContext = await browser.newContext();
+  const peer = await peerContext.newPage();
+  await peer.goto("/");
+  await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  for (const candidate of [page, peer]) {
+    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
+    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
+    await candidate.getByRole("dialog").getByLabel(/^Edit step 1 /u).click();
+  }
+  const localStep = page.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const remoteStep = peer.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  await localStep.locator(".instruction-input-row").nth(2).getByRole("textbox").first().fill("5");
+  await remoteStep.getByRole("button", { name: "Remove ingredient input 1" }).click();
+  for (const row of await remoteStep.locator(".instruction-input-row").all()) {
+    await row.getByRole("textbox").first().fill("2");
+  }
+  const remoteAccepted = peer.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST");
+  await remoteStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await remoteAccepted).status()).toBe(200);
+
+  const localConflict = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST");
+  await localStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await localConflict).status()).toBe(409);
+  await expect(localStep.locator(".instruction-input-row")).toHaveCount(3);
+  await expect(localStep.locator(".instruction-input-row").nth(0).getByRole("textbox").first()).toHaveValue("2");
+  await expect(localStep.locator(".instruction-input-row").nth(1).getByRole("textbox").first()).toHaveValue("2");
+  await expect(localStep.locator(".instruction-input-row").nth(2).getByRole("textbox").first()).toHaveValue("5");
+
+  const localAccepted = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") && response.request().method() === "POST");
+  await localStep.getByRole("button", { name: /Save step/u }).click();
+  expect((await localAccepted).status()).toBe(200);
+  const after = await (await page.request.get("/api/workspace")).json() as typeof before;
+  const savedInputs = after.state.weeks.find(({ id }) => id === before.state.activeWeekId)?.data.meals[0]?.instructions[0]?.inputs;
+  expect(savedInputs?.map(({ amount }) => amount)).toEqual(["2", "2", "5"]);
+  await peerContext.close();
+});

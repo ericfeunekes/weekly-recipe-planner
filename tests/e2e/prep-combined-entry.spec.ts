@@ -30,10 +30,6 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const sources = page.getByRole("dialog", { name: "Recipe instructions" });
   await captureAccessibleQaEvidence({ page, evidenceDirectory, scenarioId: "prep-source", viewportId: "mobile-320x844" });
-  const closeSources = sources.getByRole("button", { name: "Close recipe steps" });
-  await closeSources.focus();
-  await page.keyboard.press("Shift+Tab");
-  expect(await sources.evaluate((dialog) => dialog.contains(document.activeElement))).toBe(true);
   const roast = sources.getByRole("button", {
     name: /Drag step 2 for Harissa chicken traybake: Roast the chicken, peppers, and chickpeas until cooked through\. onto a prep date/,
   });

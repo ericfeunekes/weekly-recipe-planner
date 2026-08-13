@@ -27,6 +27,10 @@ import {
   isGlobalCodexResponse,
 } from "../lib/global-codex-contract.ts";
 import { householdDomain } from "../lib/household-domain.ts";
+import {
+  isPlannerOperationsDecision,
+  isPreviewPlannerOperationsDecision,
+} from "../lib/planner-operation-contract.ts";
 import { createGlobalCodexClientForHostTesting } from "../scripts/planner-global-client.ts";
 import { createPlannerApplicationService, hashCanonicalPayload } from "../server/application/planner-service.ts";
 import {
@@ -303,6 +307,57 @@ test("the global contract rejects unknown keys, non-UUID IDs, and chat-bearing p
   assert.equal("transcriptEntries" in projected, false);
   assert.equal("chatTurns" in projected, false);
   assert.equal(isGlobalCodexResponse({ contractVersion: 1, planner: projected }), true);
+
+  const response = (decision) => ({ contractVersion: 1, decision, planner: projected });
+  const occurrence = { correlationId: "correlation-1", occurrenceId: "occurrence-1" };
+  const accepted = {
+    status: "accepted",
+    eventId: "event-1",
+    plannerVersion: 1,
+    occurrenceResults: [{ operationIndex: 0, occurrences: [occurrence] }],
+  };
+  assert.equal(isPlannerOperationsDecision(accepted), true);
+  assert.equal(isPreviewPlannerOperationsDecision(accepted), false);
+  assert.equal(isGlobalCodexResponse(response(accepted)), true);
+  assert.equal(isGlobalCodexResponse(response({ ...accepted, occurrenceResults: [] })), false);
+  const malformedAccepted = {
+    status: "accepted",
+    eventId: "event-1",
+    plannerVersion: 1,
+    occurrenceResults: [
+      { operationIndex: 0, occurrences: [occurrence] },
+      { operationIndex: 0, occurrences: [] },
+    ],
+  };
+  assert.equal(isPlannerOperationsDecision(malformedAccepted), false);
+  assert.equal(isGlobalCodexResponse(response(malformedAccepted)), false);
+  const previewed = {
+    status: "previewed",
+    plannerVersion: 1,
+    outcomes: [{
+      operationIndex: 0,
+      summary: "Preview",
+      target: "meal",
+      changes: [],
+      occurrences: [occurrence],
+    }],
+  };
+  assert.equal(isPreviewPlannerOperationsDecision(previewed), true);
+  assert.equal(isGlobalCodexResponse(response(previewed)), true);
+  assert.equal(isGlobalCodexResponse(response({ ...previewed, outcomes: [] })), false);
+  const malformedPreview = {
+    status: "previewed",
+    plannerVersion: 1,
+    outcomes: [{
+      operationIndex: 0,
+      summary: "Preview",
+      target: "meal",
+      changes: [],
+      occurrences: [occurrence, occurrence],
+    }],
+  };
+  assert.equal(isPreviewPlannerOperationsDecision(malformedPreview), false);
+  assert.equal(isGlobalCodexResponse(response(malformedPreview)), false);
 });
 
 test("real UDS and SQLite preserve apply, replay, conflict, provenance, and planner-only readback", async (t) => {

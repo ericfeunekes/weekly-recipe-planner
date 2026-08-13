@@ -379,24 +379,124 @@ function mergeIdentityRows<Row extends object>(
   localRows: readonly Row[],
   identity: (row: Row) => string,
 ): Row[] {
-  const baselineById = new Map(baselineRows.map((row) => [identity(row), row]));
-  const canonicalById = new Map(canonicalRows.map((row) => [identity(row), row]));
-  const localIds = new Set(localRows.map(identity));
-  const merged = localRows.flatMap((localRow) => {
-    const rowId = identity(localRow);
-    const baselineRow = baselineById.get(rowId);
-    if (!baselineRow) return [localRow];
-    const canonicalRow = canonicalById.get(rowId);
-    if (!canonicalRow) return [];
+  const rowsEqual = (left: Row, right: Row) => {
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)] as Array<keyof Row>);
+    return [...keys].every((key) => Object.is(left[key], right[key]));
+  };
+  const baselineIds = baselineRows.map(identity);
+  if (new Set(baselineIds).size === baselineIds.length) {
+    const baselineById = new Map(baselineRows.map((row) => [identity(row), row]));
+    const canonicalById = new Map(canonicalRows.map((row) => [identity(row), row]));
+    const localIds = new Set(localRows.map(identity));
+    const merged = localRows.flatMap((localRow) => {
+      const rowId = identity(localRow);
+      const baselineRow = baselineById.get(rowId);
+      if (!baselineRow) return [localRow];
+      const canonicalRow = canonicalById.get(rowId);
+      if (!canonicalRow) return [];
+      const next = { ...canonicalRow };
+      for (const field of Object.keys(localRow) as Array<keyof Row>) {
+        if (!Object.is(localRow[field], baselineRow[field])) next[field] = localRow[field];
+      }
+      return [next];
+    });
+    for (const canonicalRow of canonicalRows) {
+      const rowId = identity(canonicalRow);
+      if (!baselineById.has(rowId) && !localIds.has(rowId)) merged.push(canonicalRow);
+    }
+    return merged;
+  }
+  const alignToBaseline = (rows: readonly Row[]) => {
+    type Cell = { cost: number; matches: Array<number | null> };
+    const table: Cell[][] = Array.from({ length: baselineRows.length + 1 }, () =>
+      Array.from({ length: rows.length + 1 }, () => ({ cost: Number.POSITIVE_INFINITY, matches: [] })));
+    table[0][0] = { cost: 0, matches: [] };
+    for (let baselineIndex = 0; baselineIndex <= baselineRows.length; baselineIndex += 1) {
+      for (let rowIndex = 0; rowIndex <= rows.length; rowIndex += 1) {
+        const current = table[baselineIndex][rowIndex];
+        if (!Number.isFinite(current.cost)) continue;
+        if (baselineIndex < baselineRows.length) {
+          const next = table[baselineIndex + 1][rowIndex];
+          if (current.cost + 1 < next.cost) table[baselineIndex + 1][rowIndex] = { cost: current.cost + 1, matches: current.matches };
+        }
+        if (rowIndex < rows.length) {
+          const next = table[baselineIndex][rowIndex + 1];
+          if (current.cost + 1 < next.cost) table[baselineIndex][rowIndex + 1] = { cost: current.cost + 1, matches: [...current.matches, null] };
+        }
+        if (baselineIndex < baselineRows.length && rowIndex < rows.length &&
+            identity(baselineRows[baselineIndex]) === identity(rows[rowIndex])) {
+          const matchCost = rowsEqual(baselineRows[baselineIndex], rows[rowIndex]) ? 0 : 2;
+          const next = table[baselineIndex + 1][rowIndex + 1];
+          if (current.cost + matchCost <= next.cost) {
+            table[baselineIndex + 1][rowIndex + 1] = {
+              cost: current.cost + matchCost,
+              matches: [...current.matches, baselineIndex],
+            };
+          }
+        }
+      }
+    }
+    return rows.map((row, index) => ({ row, baselineIndex: table[baselineRows.length][rows.length].matches[index] ?? null }));
+  };
+  const canonicalEntries = alignToBaseline(canonicalRows);
+  const canonicalByBaseline = new Map(canonicalEntries.flatMap(({ row, baselineIndex }) =>
+    baselineIndex === null ? [] : [[baselineIndex, row] as const]));
+  const localEntries = alignToBaseline(localRows);
+  const merged = localEntries.flatMap(({ row: localRow, baselineIndex }) => {
+    if (baselineIndex === null) return [localRow];
+    const baselineRow = baselineRows[baselineIndex];
+    const canonicalRow = canonicalByBaseline.get(baselineIndex);
+    if (!canonicalRow) return rowsEqual(localRow, baselineRow) ? [] : [localRow];
     const next = { ...canonicalRow };
     for (const field of Object.keys(localRow) as Array<keyof Row>) {
       if (!Object.is(localRow[field], baselineRow[field])) next[field] = localRow[field];
     }
     return [next];
   });
-  for (const canonicalRow of canonicalRows) {
-    const rowId = identity(canonicalRow);
-    if (!baselineById.has(rowId) && !localIds.has(rowId)) merged.push(canonicalRow);
+  const localAdditions = localEntries.filter(({ baselineIndex }) => baselineIndex === null).map(({ row }) => row);
+  for (const { row: canonicalRow, baselineIndex } of canonicalEntries) {
+    if (baselineIndex === null && !localAdditions.some((localRow) =>
+      identity(localRow) === identity(canonicalRow) && rowsEqual(localRow, canonicalRow))) merged.push(canonicalRow);
+  }
+  const baselineIdentityCounts = new Map<string, number>();
+  const canonicalIdentityCounts = new Map<string, number>();
+  for (const row of baselineRows) {
+    const key = identity(row);
+    baselineIdentityCounts.set(key, (baselineIdentityCounts.get(key) ?? 0) + 1);
+  }
+  for (const row of canonicalRows) {
+    const key = identity(row);
+    canonicalIdentityCounts.set(key, (canonicalIdentityCounts.get(key) ?? 0) + 1);
+  }
+  const restoredAmbiguousGroups = new Set<string>();
+  for (const localRow of localRows) {
+    const key = identity(localRow);
+    const identicalBaselines = baselineRows.filter((row) => identity(row) === key);
+    const canonicalGroup = canonicalRows.filter((row) => identity(row) === key);
+    const deletionIsAmbiguous = identicalBaselines.length > 1 &&
+      identicalBaselines.every((row) => rowsEqual(row, identicalBaselines[0])) &&
+      (canonicalIdentityCounts.get(key) ?? 0) < (baselineIdentityCounts.get(key) ?? 0);
+    const isDistinctLocalEdit = !identicalBaselines.some((row) => rowsEqual(row, localRow));
+    if (!deletionIsAmbiguous || !isDistinctLocalEdit || restoredAmbiguousGroups.has(key)) continue;
+    const localGroup = localRows.filter((row) => identity(row) === key);
+    const canonicalOnlyDeleted = canonicalGroup.every((row) => rowsEqual(row, identicalBaselines[0]));
+    const reconciledGroup = canonicalOnlyDeleted
+      ? localGroup
+      : (() => {
+          const unmatchedCanonical = [...canonicalGroup];
+          const unmatchedLocalEdits = localGroup.filter((row) => !rowsEqual(row, identicalBaselines[0])).filter((row) => {
+            const representedIndex = unmatchedCanonical.findIndex((canonicalRow) => rowsEqual(canonicalRow, row));
+            if (representedIndex < 0) return true;
+            unmatchedCanonical.splice(representedIndex, 1);
+            return false;
+          });
+          return [...canonicalGroup, ...unmatchedLocalEdits];
+        })();
+    const firstMatchingIndex = merged.findIndex((row) => identity(row) === key);
+    const retained = merged.filter((row) => identity(row) !== key);
+    retained.splice(firstMatchingIndex < 0 ? retained.length : firstMatchingIndex, 0, ...reconciledGroup);
+    merged.splice(0, merged.length, ...retained);
+    restoredAmbiguousGroups.add(key);
   }
   return merged;
 }
@@ -1756,7 +1856,7 @@ function PlannerAppContent() {
 
       {activeOverlay === "meal" && selectedMeal && week ? (
           <MealDrawer
-            key={`${selectedMeal.id}:${plannerRetry?.operation.state === "resolved_conflict"
+            key={`${selectedMeal.id}:${recoveryMealCommand && plannerRetry?.operation.state === "resolved_conflict"
               ? plannerRetry.operation.requestId
               : "stable"}`}
             meal={selectedMeal}
@@ -2540,7 +2640,7 @@ function StepCard(props: {
             <fieldset className="instruction-input-editor" aria-describedby={editAttempted && editIssues.inputs ? inputErrorId : undefined}>
               <legend>Ingredient amounts</legend>
               {draftInputs.map((input, index) => (
-                <div className="instruction-input-row" key={input.kind === "retain" ? input.occurrenceId : input.correlationId}>
+                <div className="instruction-input-row" key={`${input.kind === "retain" ? input.occurrenceId : input.correlationId}:${index}`}>
                   <input aria-label={`Amount ${index + 1} for ${controlTarget}`} maxLength={MAX_STEP_INPUT_AMOUNT_LENGTH} value={input.amount} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", draftInputs.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, amount: event.target.value } : candidate))} />
                   <input aria-label={`Ingredient ${index + 1} for ${controlTarget}`} maxLength={MAX_STEP_INPUT_INGREDIENT_LENGTH} value={input.ingredient} onChange={(event) => instructionDraft.edit(canonicalInstructionDraft, "inputs", draftInputs.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, ingredient: event.target.value } : candidate))} />
                   <PlannerIconButton type="button" tone="attention" title={`Remove ingredient input ${index + 1}`} aria-label={`Remove ingredient input ${index + 1}`} disabled={disabled} onClick={() => instructionDraft.edit(canonicalInstructionDraft, "inputs", draftInputs.filter((_, candidateIndex) => candidateIndex !== index))}><Trash2 size={14} /></PlannerIconButton>

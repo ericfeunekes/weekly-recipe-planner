@@ -215,6 +215,32 @@ export function isPlannerOperationsDecision(
     typeof value.message === "string";
 }
 
+export function isPreviewPlannerOperationsDecision(
+  value: unknown,
+  operationCount?: number,
+): value is PreviewPlannerOperationsDecision {
+  if (!isRecord(value) || typeof value.status !== "string") return false;
+  if (value.status !== "previewed") {
+    return value.status !== "accepted" && isPlannerOperationsDecision(value, operationCount);
+  }
+  if (!hasExactKeys(value, ["status", "plannerVersion", "outcomes"]) ||
+      !isSafeVersion(value.plannerVersion) || !Array.isArray(value.outcomes)) return false;
+  if (operationCount !== undefined && value.outcomes.length !== operationCount) return false;
+  return value.outcomes.every((outcome, outcomeIndex) => {
+    if (!isRecord(outcome) ||
+        !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes", "occurrences"]) ||
+        !Number.isSafeInteger(outcome.operationIndex) || Number(outcome.operationIndex) < 0 ||
+        typeof outcome.summary !== "string" || typeof outcome.target !== "string" ||
+        !Array.isArray(outcome.changes) || !outcome.changes.every((change) => typeof change === "string") ||
+        !Array.isArray(outcome.occurrences) || !outcome.occurrences.every(isOccurrenceResolution)) return false;
+    const index = Number(outcome.operationIndex);
+    if (operationCount !== undefined && index >= operationCount) return false;
+    if (index !== outcomeIndex) return false;
+    const correlationIds = new Set(outcome.occurrences.map(({ correlationId }) => correlationId));
+    return correlationIds.size === outcome.occurrences.length;
+  });
+}
+
 export function isPlannerOperation(value: unknown): value is PlannerOperation {
   return isRecord(value) && hasExactKeys(value, ["command"]) && isHouseholdCommand(value.command);
 }
