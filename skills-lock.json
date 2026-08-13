@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "skills": {
+    "frontend-testing-debugging": {
+      "source": "openai/plugins",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "plugins/build-web-apps/skills/frontend-testing-debugging/SKILL.md",
+      "computedHash": "90ad2857700dd59a1c57f1e815323eaee326a41e9f5ce025133496cbcb7dd8d5"
+    },
+    "react-webapp-architecture": {
+      "source": "ericfeunekes/ai-marketplace",
+      "sourceType": "github",
+      "skillPath": "skills/react-webapp-architecture/SKILL.md",
+      "computedHash": "a6a6370d1f188267de6016f11be7e7ee7c6d1ea543aca80b9ed353a3ffcd0ad8"
+    },
+    "shadcn": {
+      "source": "openai/plugins",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "plugins/build-web-apps/skills/shadcn-best-practices/SKILL.md",
+      "computedHash": "a43093398ed90c769294fd6fe74f22f77fb1aaa1e0c17b621edc3ef5b98c6a48"
+    },
+    "storybook": {
+      "source": "ericfeunekes/ai-marketplace",
+      "sourceType": "github",
+      "skillPath": "plugins/repo-setup-improve/skills/storybook/SKILL.md",
+      "computedHash": "41d11d50ecff93a2e4c6287c32c5f9b946c63698371d44159b04dec351c2892a"
+    },
+    "vercel-composition-patterns": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/composition-patterns/SKILL.md",
+      "computedHash": "575757e3e25761c8c562d6e395d29f0b76c98b1273c0bd72d88e6ab1bc9c7d42"
+    },
+    "vercel-react-best-practices": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/react-best-practices/SKILL.md",
+      "computedHash": "ca7b0c0c6e5f2750043f7f0cd72d16ac4e2abc48f9b5500d047a4b77a2506212"
+    },
+    "web-design-guidelines": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/web-design-guidelines/SKILL.md",
+      "computedHash": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
+    }
+  }
+}
