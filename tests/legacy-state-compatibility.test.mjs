@@ -3,12 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { householdDomain } from "../lib/household-domain.ts";
 import { isPlannerReadProjection } from "../lib/global-codex-contract.ts";
 import {
   normalizeLegacyHouseholdPayload,
-  normalizeLegacyHouseholdState,
+  upgradeHouseholdPayloadToIngredientOccurrences,
+  upgradeHouseholdStateToIngredientOccurrences,
 } from "../lib/household-persistence-upgrade.ts";
 import { BROWSER_PROVENANCE } from "../lib/planner-operation-contract.ts";
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
@@ -119,17 +121,19 @@ function installAmbiguousLegacyLentils(state) {
   ];
 }
 
-test("legacy leftover sources normalize atomically and idempotently before startup validation", (t) => {
+test("legacy household normalization is atomic and idempotent before current-schema persistence", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "weekly-recipe-legacy-state-"));
   const filename = join(directory, "planner.sqlite");
   t.after(() => rmSync(directory, { recursive: true, force: true }));
 
-  const beforeState = legacyState("Before legacy event");
-  const currentState = legacyState("After legacy event");
-  installAmbiguousLegacyLentils(beforeState);
-  installAmbiguousLegacyLentils(currentState);
+  const beforeLegacyState = legacyState("Before legacy event");
+  const currentLegacyState = legacyState("After legacy event");
+  installAmbiguousLegacyLentils(beforeLegacyState);
+  installAmbiguousLegacyLentils(currentLegacyState);
+  const beforeState = beforeLegacyState;
+  const currentState = currentLegacyState;
   const normalizedPayload = normalizeLegacyHouseholdPayload({
-    result: { state: currentState.weeks[0].data },
+    result: { state: currentLegacyState.weeks[0].data },
   });
   assert.equal(normalizedPayload.changed, true);
   assert.deepEqual(normalizedPayload.value.result.state.groceries, [{
@@ -137,7 +141,7 @@ test("legacy leftover sources normalize atomically and idempotently before start
     mealId: "meal-1",
     ingredientId: "meal-1:ingredient:0",
     section: "Pantry",
-    source: "shop",
+    coverage: "needs_source",
     checked: false,
   }], "nested persisted payloads also drop ambiguous legacy classification");
   const legacyStore = openPlannerStore({ filename });
@@ -191,10 +195,18 @@ test("legacy leftover sources normalize atomically and idempotently before start
   });
   legacyStore.close();
 
+  const legacyDatabase = new DatabaseSync(filename);
+  try {
+    legacyDatabase.prepare("DELETE FROM schema_migrations WHERE version > 8").run();
+    legacyDatabase.prepare("UPDATE workspace SET schema_version = 8 WHERE id = 'household'").run();
+  } finally {
+    legacyDatabase.close();
+  }
+
   const upgraded = openPlannerStore({ filename });
   const firstRead = upgraded.readInitializedWorkspace();
   assert.equal(firstRead.plannerVersion, 1);
-  assert.equal(firstRead.syncRevision, 3);
+  assert.equal(firstRead.syncRevision, 3, "schema-10 occurrence migration advances the durable read revision once");
   assert.equal(firstRead.events.length, 1);
   assert.equal(firstRead.events[0].command.type, "reconcileGroceries");
   assert.equal(isPlannerReadProjection({
@@ -226,10 +238,10 @@ test("legacy leftover sources normalize atomically and idempotently before start
   assert.equal(firstRead.state.weeks[0].data.leftovers.length, LEGACY_SOURCE_STATUSES.length);
   const migratedMeal = firstRead.state.weeks[0].data.meals[0];
   assert.deepEqual(
-    migratedMeal.ingredients.map(({ amount, ingredient }) => ({ amount, ingredient })),
-    [{ amount: "1 cup", ingredient: "lentils" }],
+    migratedMeal.ingredients.map(({ amount, unit, ingredient }) => ({ amount, unit, ingredient })),
+    [{ amount: "1", unit: "cup", ingredient: "lentils" }],
   );
-  assert.equal(migratedMeal.instructions[0].inputs[0].ingredientId, migratedMeal.ingredients[0].id);
+  assert.equal(migratedMeal.instructions[0].inputs[0].occurrenceId, migratedMeal.ingredients[0].id);
   assert.deepEqual(firstRead.state.weeks[0].data.prepSessions, [{
     id: "legacy-prep-session-2026-07-05",
     prepDate: "2026-07-05",
@@ -242,7 +254,7 @@ test("legacy leftover sources normalize atomically and idempotently before start
     ingredientId: migratedMeal.ingredients[0].id,
     section: "Pantry",
     checked: false,
-    source: "shop",
+    coverage: "needs_source",
   }, "lentils gains its derived grocery execution row");
   assert.equal("farmBoxReconciled" in firstRead.state.weeks[0].data, false);
   assertSourcesCooked(firstRead.state);
@@ -255,7 +267,7 @@ test("legacy leftover sources normalize atomically and idempotently before start
       mealId: migratedMeal.id,
       ingredientId: migratedMeal.ingredients[0].id,
       section: "Pantry",
-      source: "shop",
+      coverage: "needs_source",
       checked: false,
     }, "undo snapshots drop ambiguous legacy classifications too");
     assert.equal(latest.event.command.type, "reconcileGroceries");
@@ -295,8 +307,8 @@ test("legacy leftover sources normalize atomically and idempotently before start
   reopened.close();
 });
 
-test("canonical-looking legacy ingredient records are merged before their step links are reused", () => {
-  const state = legacyState("Merge ingredient records");
+test("structured legacy ingredient records become distinct occurrences without reparsing or merging", () => {
+  const state = legacyState("Preserve ingredient records");
   const meal = state.weeks[0].data.meals[0];
   meal.ingredients = [
     { id: "ingredient-peppers-legacy", amount: "2 red", ingredient: "peppers" },
@@ -310,11 +322,37 @@ test("canonical-looking legacy ingredient records are merged before their step l
   }];
   state.weeks[0].data.prep = [];
 
-  const normalized = normalizeLegacyHouseholdState(state);
-  assert.equal(normalized.changed, true);
-  const normalizedMeal = normalized.state.weeks[0].data.meals[0];
-  assert.deepEqual(normalizedMeal.ingredients, [
-    { id: "ingredient-peppers-legacy", amount: "2", ingredient: "red peppers" },
+  const upgraded = upgradeHouseholdStateToIngredientOccurrences(state);
+  assert.equal(upgraded.ok, true);
+  assert.equal(upgraded.changed, true);
+  const upgradedMeal = upgraded.state.weeks[0].data.meals[0];
+  assert.deepEqual(upgradedMeal.ingredients.map(({ id, amount, ingredient }) => ({ id, amount, ingredient })), [
+    { id: "ingredient-peppers-legacy", amount: "2 red", ingredient: "peppers" },
+    { id: "ingredient-red-peppers", amount: "2", ingredient: "red peppers" },
   ]);
-  assert.equal(normalizedMeal.instructions[0].inputs[0].ingredientId, "ingredient-peppers-legacy");
+  assert.equal(upgradedMeal.instructions[0].inputs[0].occurrenceId, "ingredient-red-peppers");
+});
+
+test("payload upgrade changes only closed planner tool result slots", () => {
+  const report = {
+    schemaVersion: 1,
+    ok: true,
+    callId: "diagnostic-call",
+    plannerVersion: 4,
+    syncRevision: 7,
+    serverTime: 9,
+    data: {
+      kind: "diagnostic",
+      report: {
+        id: "not-a-meal",
+        ingredients: [{ id: "ingredient", amount: "2", ingredient: "peppers" }],
+        instructions: [],
+      },
+    },
+  };
+  assert.deepEqual(upgradeHouseholdPayloadToIngredientOccurrences(report), {
+    ok: true,
+    value: report,
+    changed: false,
+  });
 });

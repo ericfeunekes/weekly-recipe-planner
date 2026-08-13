@@ -10,9 +10,32 @@ import {
   MAX_STEP_INPUTS,
   MAX_TIMER_DURATION_SECONDS,
 } from "../lib/household-command-contract.ts";
+import {
+  MAX_OCCURRENCE_AMOUNT_LENGTH,
+  MAX_OCCURRENCE_LITERAL_LENGTH,
+} from "../lib/ingredient-occurrence.ts";
 
 export type ValidationIssues = Record<string, string>;
 const MIN_TIMER_MINUTES = 0.5;
+
+/**
+ * The recipe editor keeps these fields as rows rather than flattening them
+ * back into display text. `occurrenceId` and `correlationId` are deliberately
+ * not validated here: they are opaque command identities owned by the
+ * occurrence command validator.
+ */
+export type IngredientOccurrenceDraft = {
+  source: string;
+  amount: string;
+  unit: string;
+  ingredient: string;
+  qualifier: string;
+};
+
+export type InstructionInputDraft = {
+  amount: string;
+  ingredient: string;
+};
 
 function limitMessage(label: string, limit: number): string {
   return `${label} must be ${limit.toLocaleString("en-CA")} characters or fewer.`;
@@ -23,7 +46,7 @@ export function hasValidationIssues(issues: ValidationIssues): boolean {
 }
 
 export function validateStepDraft(input: {
-  inputs: string;
+  inputs: string | readonly InstructionInputDraft[];
   instruction: string;
   timerMinutes: string;
 }): ValidationIssues {
@@ -34,12 +57,16 @@ export function validateStepDraft(input: {
     issues.instruction = limitMessage("Instruction", MAX_COMMAND_TEXT_LENGTH);
   }
 
-  const lines = input.inputs.split("\n").filter((line) => line.trim());
+  const lines = typeof input.inputs === "string"
+    ? input.inputs.split("\n").filter((line) => line.trim())
+    : input.inputs;
   if (lines.length > MAX_STEP_INPUTS) {
     issues.inputs = `Use no more than ${MAX_STEP_INPUTS} amount lines.`;
   } else {
     const invalidLine = lines.findIndex((line) => {
-      const [amount, ...ingredient] = line.split("|");
+      const [amount, ...ingredient] = typeof line === "string"
+        ? line.split("|")
+        : [line.amount, line.ingredient];
       return amount.trim().length > MAX_STEP_INPUT_AMOUNT_LENGTH ||
         ingredient.join("|").trim().length > MAX_STEP_INPUT_INGREDIENT_LENGTH;
     });
@@ -65,7 +92,7 @@ export function validateMealDraft(input: {
   prepNote: string;
   leftoverNote: string;
   notes: string;
-  ingredients: string;
+  ingredients: string | readonly IngredientOccurrenceDraft[];
 }): ValidationIssues {
   const issues: ValidationIssues = {};
   const title = input.title.trim();
@@ -91,11 +118,23 @@ export function validateMealDraft(input: {
     }
   }
 
-  const ingredients = input.ingredients.split("\n").filter((line) => line.trim());
+  const ingredients = typeof input.ingredients === "string"
+    ? input.ingredients.split("\n").filter((line) => line.trim())
+    : input.ingredients;
   if (ingredients.length > MAX_INGREDIENT_LINES) {
     issues.ingredients = `Use no more than ${MAX_INGREDIENT_LINES} ingredient lines.`;
+  } else if (typeof input.ingredients !== "string") {
+    const invalidRow = input.ingredients.findIndex((ingredient) =>
+      ingredient.ingredient.trim().length === 0 ||
+      ingredient.amount.length > MAX_OCCURRENCE_AMOUNT_LENGTH ||
+      [ingredient.source, ingredient.unit, ingredient.ingredient, ingredient.qualifier]
+        .some((field) => field.length > MAX_OCCURRENCE_LITERAL_LENGTH)
+    );
+    if (invalidRow >= 0) {
+      issues.ingredients = `Ingredient row ${invalidRow + 1} needs a core ingredient, an amount of ${MAX_OCCURRENCE_AMOUNT_LENGTH.toLocaleString("en-CA")} characters or fewer, and other fields of ${MAX_OCCURRENCE_LITERAL_LENGTH.toLocaleString("en-CA")} characters or fewer.`;
+    }
   } else {
-    const invalidLine = ingredients.findIndex(
+    const invalidLine = input.ingredients.split("\n").filter((line) => line.trim()).findIndex(
       (line) => line.trim().length > MAX_INGREDIENT_LINE_LENGTH,
     );
     if (invalidLine >= 0) {

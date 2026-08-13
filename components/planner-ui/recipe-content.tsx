@@ -1,6 +1,10 @@
 import { Check } from "lucide-react";
 
 import type { IngredientAmountLine, InstructionStep } from "@/lib/household-contract";
+import {
+  ingredientOccurrenceDisplayText,
+  isGroceryRequirementRole,
+} from "@/lib/ingredient-occurrence";
 
 type RecipeIngredientListProps = {
   items: readonly IngredientAmountLine[];
@@ -31,7 +35,7 @@ export function RecipeIngredientList({
     return (
       <div className="step-inputs">
         {items.map((item, index) => (
-          <span key={`${item.amount}-${item.ingredient}-${index}`}>
+          <span key={"occurrenceId" in item && typeof item.occurrenceId === "string" ? `${item.occurrenceId}:${index}` : `${item.amount}-${item.ingredient}-${index}`}>
             <strong>{item.amount}</strong> {item.ingredient}
           </span>
         ))}
@@ -43,19 +47,24 @@ export function RecipeIngredientList({
     <ul className="ingredient-list">
       {items.map((item, index) => {
         const ingredientId = "id" in item && typeof item.id === "string" ? item.id : null;
+        const groceryControlId = ingredientId !== null &&
+          "role" in item && isGroceryRequirementRole(item.role) &&
+          checkedById?.has(ingredientId) === true
+          ? ingredientId
+          : null;
         return (
-        <li key={`${item.amount}-${item.ingredient}-${index}`}>
-          {ingredientId && onCheckedChange ? (
+        <li key={ingredientId ?? `${item.amount}-${item.ingredient}-${index}`}>
+          {groceryControlId && onCheckedChange ? (
             <input
               className="mt-0.5 size-4 shrink-0 accent-[var(--green)]"
               type="checkbox"
-              checked={checkedById?.get(ingredientId) ?? false}
+              checked={checkedById?.get(groceryControlId) ?? false}
               disabled={disabled}
               aria-label={`Check ${item.ingredient}`}
-              onChange={(event) => onCheckedChange(ingredientId, event.target.checked)}
+              onChange={(event) => onCheckedChange(groceryControlId, event.target.checked)}
             />
           ) : <Check size={13} />}
-          {[item.amount, item.ingredient].filter(Boolean).join(" ")}
+          {ingredientOccurrenceDisplayText(item)}
         </li>
         );
       })}

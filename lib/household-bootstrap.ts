@@ -30,7 +30,14 @@ import {
   mondayForIsoDate,
   type HouseholdCommandContext,
 } from "./household-domain.ts";
-import { normalizeLegacyHouseholdState } from "./household-persistence-upgrade.ts";
+import {
+  normalizeLegacyHouseholdState,
+  upgradeHouseholdStateToIngredientOccurrences,
+} from "./household-persistence-upgrade.ts";
+import {
+  matchOccurrenceByCore,
+  parseLegacyIngredientLine,
+} from "./ingredient-occurrence.ts";
 import {
   LEGACY_V2_WEEK_START_DATE,
   type LegacyV2Payload,
@@ -274,42 +281,62 @@ function decodeLegacyMeal(
   };
 }
 
-function legacyIngredientLineParts(line: string): { amount: string; ingredient: string } {
-  const trimmed = line.trim();
-  const match = /^((?:\d+\s+)?(?:\d+(?:[./]\d+)?|[¼½¾⅓⅔]))(?:\s+(cups?|tbsp|tsp|ml|l|g|kg|lb|lbs|oz|cans?|cloves?|bunch(?:es)?|pinches?|packages?|pkgs?|sprigs?|heads?|slices?))?\s+(.+)$/i.exec(trimmed);
-  if (!match) return { amount: "", ingredient: trimmed };
-  return { amount: [match[1], match[2]].filter(Boolean).join(" "), ingredient: match[3].trim() };
-}
-
-function legacyIngredientKey(ingredient: string): string {
-  return ingredient.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-CA");
-}
-
-function canonicalizeLegacyMeal(legacy: LegacyMeal): Meal {
+function canonicalizeLegacyMeal(
+  legacy: LegacyMeal,
+  decoder: LegacyDecoder,
+  path: string,
+): Meal {
   let nextIngredientIndex = 0;
   const ingredients: Meal["ingredients"] = [];
-  const addIngredient = (amount: string, ingredient: string) => {
-    const existing = ingredients.find((candidate) => legacyIngredientKey(candidate.ingredient) === legacyIngredientKey(ingredient));
-    if (existing) return existing;
+  const addUnresolvedIngredient = (amount: string, ingredient: string) => {
     const id = `${legacy.id}:ingredient:${nextIngredientIndex}`;
     nextIngredientIndex += 1;
-    const next = { id, amount, ingredient };
+    const next: Meal["ingredients"][number] = {
+      id,
+      source: null,
+      amount,
+      unit: null,
+      ingredient,
+      qualifier: null,
+      conceptId: null,
+      role: "weekly_requirement",
+      canonicalIngredientId: null,
+    };
     ingredients.push(next);
     return next;
   };
   legacy.ingredients.forEach((line) => {
-    const parsed = legacyIngredientLineParts(line);
-    if (parsed.ingredient) addIngredient(parsed.amount, parsed.ingredient);
+    const parsed = parseLegacyIngredientLine(line);
+    const id = `${legacy.id}:ingredient:${nextIngredientIndex}`;
+    nextIngredientIndex += 1;
+    ingredients.push({
+      id,
+      ...parsed,
+      conceptId: null,
+      role: "weekly_requirement",
+      canonicalIngredientId: null,
+    });
   });
   return {
     ...legacy,
     ingredients,
-    instructions: legacy.instructions.map((step) => ({
+    instructions: legacy.instructions.map((step, stepIndex) => ({
       ...step,
-      inputs: step.inputs.map((input) => ({
-        ...input,
-        ingredientId: addIngredient(input.amount, input.ingredient).id,
-      })),
+      inputs: step.inputs.map((input, inputIndex) => {
+        const match = matchOccurrenceByCore(input.ingredient, ingredients);
+        if (match.kind === "ambiguous") {
+          decoder.error(
+            `${path}.instructions[${stepIndex}].inputs[${inputIndex}]`,
+            `Ambiguously matches occurrences ${match.occurrenceIds.join(", ")}.`,
+          );
+        }
+        const occurrence = match.kind === "unique"
+          ? ingredients.find((candidate) => candidate.id === match.occurrenceId)!
+          : match.kind === "missing"
+            ? addUnresolvedIngredient(input.amount, input.ingredient)
+            : ingredients.find((candidate) => candidate.id === match.occurrenceIds[0])!;
+        return { ...input, occurrenceId: occurrence.id };
+      }),
     })),
   };
 }
@@ -546,7 +573,11 @@ export function transformLegacyV2(
   const weekId = parseWeekId(LEGACY_V2_WEEK_START_DATE);
   const meals = decoder
     .array(data.meals, "payload.data.meals", MAX_MEALS_PER_WEEK)
-    .map((meal, index) => canonicalizeLegacyMeal(decodeLegacyMeal(decoder, meal, `payload.data.meals[${index}]`, weekId)));
+    .map((meal, index) => canonicalizeLegacyMeal(
+      decodeLegacyMeal(decoder, meal, `payload.data.meals[${index}]`, weekId),
+      decoder,
+      `payload.data.meals[${index}]`,
+    ));
   const prep = normalizeLegacyPrep(
     decoder
       .array(data.prep, "payload.data.prep", MAX_PREP_ENTRIES)
@@ -628,7 +659,14 @@ export function transformLegacyV2(
       },
     ],
   };
-  const state = normalizeLegacyHouseholdState(legacyState).state;
+  const normalized = normalizeLegacyHouseholdState(legacyState).state;
+  const upgraded = upgradeHouseholdStateToIngredientOccurrences(normalized);
+  if (!upgraded.ok) {
+    throw new LegacyV2ImportError(
+      Object.fromEntries(upgraded.issues.map((issue) => [`payload.canonical${issue.path.slice(1)}`, issue.message])),
+    );
+  }
+  const state = upgraded.state;
   const validation = householdDomain.validateState(state);
   if (!validation.ok) {
     throw new LegacyV2ImportError(
@@ -688,23 +726,24 @@ export function createCanonicalSeed(
             prepNote: "Marinate on Sunday",
             leftoverNote: "Makes 2 extra portions",
             notes: "Keep one tray mild.",
-            ingredients: [
-              "900 g boneless chicken thighs",
-              "2 red peppers",
-              "1 can chickpeas",
+            occurrences: [
+              { kind: "create", correlationId: "chicken", source: "900 g boneless chicken thighs", amount: "900", unit: "g", ingredient: "boneless chicken thighs", qualifier: null, conceptId: null, canonicalIngredientId: null },
+              { kind: "create", correlationId: "peppers", source: "2 red peppers", amount: "2", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },
+              { kind: "create", correlationId: "chickpeas", source: "1 can chickpeas", amount: "1", unit: "can", ingredient: "chickpeas", qualifier: null, conceptId: null, canonicalIngredientId: null },
+              { kind: "create", correlationId: "harissa", source: null, amount: "3", unit: "tbsp", ingredient: "harissa paste", qualifier: null, conceptId: null, canonicalIngredientId: null },
             ],
             instructions: [
               {
                 inputs: [
-                  { amount: "900 g", ingredient: "boneless chicken thighs" },
-                  { amount: "3 tbsp", ingredient: "harissa paste" },
+                  { occurrenceCorrelationId: "chicken", amount: "900 g", ingredient: "boneless chicken thighs" },
+                  { occurrenceCorrelationId: "harissa", amount: "3 tbsp", ingredient: "harissa paste" },
                 ],
                 instruction: "Coat the chicken with harissa and refrigerate.",
               },
               {
                 inputs: [
-                  { amount: "2", ingredient: "red peppers" },
-                  { amount: "1 can", ingredient: "chickpeas" },
+                  { occurrenceCorrelationId: "peppers", amount: "2", ingredient: "red peppers" },
+                  { occurrenceCorrelationId: "chickpeas", amount: "1 can", ingredient: "chickpeas" },
                 ],
                 instruction: "Roast the chicken, peppers, and chickpeas until cooked through.",
                 timerDurationSeconds: 1_680,
@@ -721,17 +760,22 @@ export function createCanonicalSeed(
             prepNote: "Thaw salmon and cook rice",
             leftoverNote: "Reserve 2 salmon portions",
             notes: "Keep the cucumber crisp.",
-            ingredients: ["680 g salmon", "2 cups jasmine rice", "300 g snap peas"],
+            occurrences: [
+              { kind: "create", correlationId: "salmon", source: "680 g salmon", amount: "680", unit: "g", ingredient: "salmon", qualifier: null, conceptId: null, canonicalIngredientId: null },
+              { kind: "create", correlationId: "rice", source: "2 cups jasmine rice", amount: "2", unit: "cup", ingredient: "jasmine rice", qualifier: null, conceptId: null, canonicalIngredientId: null },
+              { kind: "create", correlationId: "snap-peas", source: "300 g snap peas", amount: "300", unit: "g", ingredient: "snap peas", qualifier: null, conceptId: null, canonicalIngredientId: null },
+              { kind: "create", correlationId: "miso", source: null, amount: "3", unit: "tbsp", ingredient: "white miso", qualifier: null, conceptId: null, canonicalIngredientId: null },
+            ],
             instructions: [
               {
-                inputs: [{ amount: "2 cups", ingredient: "jasmine rice" }],
+                inputs: [{ occurrenceCorrelationId: "rice", amount: "2 cups", ingredient: "jasmine rice" }],
                 instruction: "Rinse the rice and cook until tender.",
                 timerDurationSeconds: 1_080,
               },
               {
                 inputs: [
-                  { amount: "680 g", ingredient: "salmon" },
-                  { amount: "3 tbsp", ingredient: "white miso" },
+                  { occurrenceCorrelationId: "salmon", amount: "680 g", ingredient: "salmon" },
+                  { occurrenceCorrelationId: "miso", amount: "3 tbsp", ingredient: "white miso" },
                 ],
                 instruction: "Glaze the salmon and roast until just cooked.",
                 timerDurationSeconds: 600,
@@ -767,10 +811,10 @@ export function createCanonicalSeed(
     householdDomain.execute(
       state,
       {
-        type: "moveGroceryItemsToSource",
+        type: "setGroceryItemsCoverage",
         weekId,
         itemIds: [peppersGroceryId],
-        source: "farm_box",
+        coverage: "farm_box",
       },
       context,
     ),

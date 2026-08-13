@@ -1,7 +1,7 @@
 import {
   DEFAULT_HOUSEHOLD_TIME_ZONE,
   FEEDBACK_VALUES,
-  GROCERY_SOURCES,
+  GROCERY_COVERAGES,
   LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   PREP_DAYS_AFTER_WEEK_START,
@@ -38,6 +38,16 @@ import {
 } from "./household-command-contract.ts";
 import { isSourceRecipe } from "./sourced-recipe-contract.ts";
 import { projectCombinedPrepEntry } from "./prep-projection.ts";
+import {
+  isGroceryRequirementRole,
+  materializeOccurrence,
+  normalizedCoreIngredientLiteral,
+  resolveNewInstructionInput,
+  validateOccurrencePartition,
+  type IngredientOccurrenceEdit,
+  type InstructionInputEdit,
+  type OccurrenceResolution,
+} from "./ingredient-occurrence.ts";
 
 export type HouseholdStateValidation =
   | { ok: true }
@@ -54,6 +64,7 @@ export type HouseholdCommandExecution =
       target: string;
       changes: string[];
       createdIds: Record<string, string>;
+      occurrenceResolutions: OccurrenceResolution[];
     }
   | {
       ok: false;
@@ -215,11 +226,11 @@ function validateInstructionStep(
         addIssue(issues, inputPath, "Must be an amount and ingredient object.");
         return;
       }
-      requireExactShape(issues, input, inputPath, ["amount", "ingredient", "ingredientId"]);
+      requireExactShape(issues, input, inputPath, ["amount", "ingredient", "occurrenceId"]);
       if (!isText(input.amount, 300)) addIssue(issues, `${inputPath}.amount`, "Must be at most 300 characters.");
       if (!isText(input.ingredient, 1_000)) addIssue(issues, `${inputPath}.ingredient`, "Must be at most 1,000 characters.");
-      if (!isId(input.ingredientId) || !ingredientIds.has(input.ingredientId)) {
-        addIssue(issues, `${inputPath}.ingredientId`, "Must reference a recipe ingredient on this meal.");
+      if (!isId(input.occurrenceId) || !ingredientIds.has(input.occurrenceId)) {
+        addIssue(issues, `${inputPath}.occurrenceId`, "Must reference an ingredient occurrence on this meal.");
       }
     });
   }
@@ -326,12 +337,27 @@ function validateMeal(
         addIssue(issues, ingredientPath, "Must be a recipe ingredient object.");
         return;
       }
-      requireExactShape(issues, ingredient, ingredientPath, ["id", "amount", "ingredient"]);
+      requireExactShape(issues, ingredient, ingredientPath, [
+        "id", "source", "amount", "unit", "ingredient", "qualifier",
+        "conceptId", "role", "canonicalIngredientId",
+      ]);
       if (!isId(ingredient.id)) addIssue(issues, `${ingredientPath}.id`, "Must be a nonempty bounded ID.");
       else if (ingredientIds.has(ingredient.id)) addIssue(issues, `${ingredientPath}.id`, "Must be unique on this meal.");
       else ingredientIds.add(ingredient.id);
       if (!isText(ingredient.amount, 300)) addIssue(issues, `${ingredientPath}.amount`, "Must be at most 300 characters.");
       if (!isText(ingredient.ingredient, 1_000, { nonempty: true })) addIssue(issues, `${ingredientPath}.ingredient`, "Must be a nonempty ingredient name up to 1,000 characters.");
+      for (const field of ["source", "unit", "qualifier", "conceptId"] as const) {
+        if (ingredient[field] !== null && !isText(ingredient[field], 1_000)) {
+          addIssue(issues, `${ingredientPath}.${field}`, "Must be null or bounded text.");
+        }
+      }
+      if (!["weekly_requirement", "output", "leftover"].includes(String(ingredient.role))) {
+        addIssue(issues, `${ingredientPath}.role`, "Must be a supported ingredient role.");
+      }
+      if (ingredient.canonicalIngredientId !== null &&
+          (!Number.isSafeInteger(ingredient.canonicalIngredientId) || Number(ingredient.canonicalIngredientId) < 1)) {
+        addIssue(issues, `${ingredientPath}.canonicalIngredientId`, "Must be null or a positive integer correlation.");
+      }
     });
   }
   if (!Array.isArray(value.instructions) || value.instructions.length > MAX_STEPS_PER_MEAL) {
@@ -361,7 +387,7 @@ function validateGroceryItem(
     addIssue(issues, path, "Must be a grocery item object.");
     return null;
   }
-  requireExactShape(issues, value, path, ["id", "mealId", "ingredientId", "section", "checked", "source"]);
+  requireExactShape(issues, value, path, ["id", "mealId", "ingredientId", "section", "checked", "coverage"]);
   if (!isId(value.id)) addIssue(issues, `${path}.id`, "Must be a nonempty bounded ID.");
   if (!isId(value.mealId) || !ingredientsByMeal.has(value.mealId)) {
     addIssue(issues, `${path}.mealId`, "Must reference a meal in this week.");
@@ -375,7 +401,7 @@ function validateGroceryItem(
   }
   if (!GROCERY_SECTIONS.includes(value.section as (typeof GROCERY_SECTIONS)[number])) addIssue(issues, `${path}.section`, "Must be a supported grocery section.");
   if (typeof value.checked !== "boolean") addIssue(issues, `${path}.checked`, "Must be a Boolean.");
-  if (!GROCERY_SOURCES.includes(value.source as (typeof GROCERY_SOURCES)[number])) addIssue(issues, `${path}.source`, "Must be a supported grocery source.");
+  if (!GROCERY_COVERAGES.includes(value.coverage as (typeof GROCERY_COVERAGES)[number])) addIssue(issues, `${path}.coverage`, "Must be supported grocery coverage.");
   if (typeof value.mealId === "string" && typeof value.ingredientId === "string") {
     const key = `${value.mealId}\u0000${value.ingredientId}`;
     if (groceryKeys.has(key)) addIssue(issues, path, "May contain only one execution record per recipe ingredient.");
@@ -429,7 +455,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
             validated.id,
             new Set(
               meal.ingredients
-                .filter(isRecord)
+                .filter((ingredient) => isRecord(ingredient) && isGroceryRequirementRole(ingredient.role))
                 .map((ingredient) => ingredient.id)
                 .filter((ingredient): ingredient is string => typeof ingredient === "string"),
             ),
@@ -443,7 +469,7 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
               [...new Set(
                 step.inputs
                   .filter(isRecord)
-                  .map((input) => input.ingredientId)
+                  .map((input) => input.occurrenceId)
                   .filter((ingredientId): ingredientId is string => typeof ingredientId === "string"),
               )],
             );
@@ -735,12 +761,13 @@ function success(
   target: string,
   changes: string[],
   createdIds: Record<string, string> = {},
+  occurrenceResolutions: OccurrenceResolution[] = [],
 ): HouseholdCommandExecution {
   const validation = validateHouseholdState(next);
   if (!validation.ok) {
     return failure(original, "The command would produce invalid household state.", fieldErrorsFromValidation(validation));
   }
-  return { ok: true, state: next, summary, target, changes, createdIds };
+  return { ok: true, state: next, summary, target, changes, createdIds, occurrenceResolutions };
 }
 
 function findWeek(state: HouseholdPlannerState, weekId: WeekId): WeekPlan | null {
@@ -791,21 +818,6 @@ function findOrCreatePrepSessionForDate(
   return { session, created: true };
 }
 
-function ingredientKey(ingredient: string): string {
-  return ingredient.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-CA");
-}
-
-function ingredientLineParts(line: string): { amount: string; ingredient: string } {
-  const trimmed = line.trim();
-  const match = /^((?:\d+\s+)?(?:\d+(?:[./]\d+)?|[¼½¾⅓⅔]))(?:\s+(cups?|tbsp|tsp|ml|l|g|kg|lb|lbs|oz|cans?|cloves?|bunch(?:es)?|pinches?|packages?|pkgs?|sprigs?|heads?|slices?))?\s+(.+)$/i.exec(trimmed);
-  if (!match) return { amount: "", ingredient: trimmed };
-  return { amount: [match[1], match[2]].filter(Boolean).join(" "), ingredient: match[3].trim() };
-}
-
-function formatIngredientLine(ingredient: { amount: string; ingredient: string }): string {
-  return [ingredient.amount, ingredient.ingredient].filter(Boolean).join(" ");
-}
-
 function allIngredientIds(state: HouseholdPlannerState): Set<string> {
   return new Set(state.weeks.flatMap((week) => week.data.meals.flatMap((meal) => meal.ingredients.map((ingredient) => ingredient.id))));
 }
@@ -851,7 +863,9 @@ function reconcileGroceryProjection(
   week: WeekPlan,
 ): GroceryProjectionResult | null {
   const desired = week.data.meals.flatMap((meal) =>
-    meal.ingredients.map((ingredient) => ({ meal, ingredient })),
+    meal.ingredients
+      .filter((ingredient) => isGroceryRequirementRole(ingredient.role))
+      .map((ingredient) => ({ meal, ingredient })),
   );
   if (desired.length > MAX_GROCERY_ITEMS) return null;
 
@@ -878,7 +892,7 @@ function reconcileGroceryProjection(
       mealId: meal.id,
       ingredientId: ingredient.id,
       section: inferredGrocerySection(ingredient.ingredient),
-      source: "shop",
+      coverage: "needs_source",
       checked: false,
     });
     added += 1;
@@ -888,76 +902,118 @@ function reconcileGroceryProjection(
   return { added, removed };
 }
 
-function materializeRecipeIngredients(
+function materializeOccurrenceInputs(
   context: HouseholdCommandContext,
-  lines: string[],
+  creates: readonly Extract<IngredientOccurrenceEdit, { kind: "create" }>[],
   existingIds: Set<string>,
-): { ingredients: Meal["ingredients"] } | null {
+): { ingredients: Meal["ingredients"]; resolutions: OccurrenceResolution[] } | null {
   const ingredients: Meal["ingredients"] = [];
-  const seenKeys = new Set<string>();
-  for (const line of lines) {
-    const parsed = ingredientLineParts(line);
-    if (!parsed.ingredient || seenKeys.has(ingredientKey(parsed.ingredient))) continue;
+  const resolutions: OccurrenceResolution[] = [];
+  for (const create of creates) {
     const id = materializeId(context, "ingredient", existingIds);
     if (!id) return null;
-    seenKeys.add(ingredientKey(parsed.ingredient));
-    ingredients.push({ id, ...parsed });
+    ingredients.push(materializeOccurrence(create, id));
+    resolutions.push({ correlationId: create.correlationId, occurrenceId: id });
   }
-  return { ingredients };
+  return { ingredients, resolutions };
 }
 
-function reconcileRecipeIngredientLines(
+function applyOccurrenceEdits(
   context: HouseholdCommandContext,
   meal: Meal,
-  lines: string[],
+  edits: readonly IngredientOccurrenceEdit[],
+  removedOccurrenceIds: readonly string[],
   existingIds: Set<string>,
-): { ingredients: Meal["ingredients"]; ingredientIdAliases: Map<string, string> } | null {
+): {
+  ingredients: Meal["ingredients"];
+  removedIds: Set<string>;
+  coreChangedIds: Set<string>;
+  literalChangedIds: Set<string>;
+  resolutions: OccurrenceResolution[];
+} | { error: string } {
+  const partitionError = validateOccurrencePartition(
+    meal.ingredients.map((ingredient) => ingredient.id),
+    edits,
+    removedOccurrenceIds,
+  );
+  if (partitionError) return { error: partitionError };
+  const previousById = new Map(meal.ingredients.map((ingredient) => [ingredient.id, ingredient]));
   const ingredients: Meal["ingredients"] = [];
-  const seenKeys = new Set<string>();
-  for (const line of lines) {
-    const parsed = ingredientLineParts(line);
-    const key = ingredientKey(parsed.ingredient);
-    if (!parsed.ingredient || seenKeys.has(key)) continue;
-    const existing = meal.ingredients.find((candidate) => ingredientKey(candidate.ingredient) === key);
-    const id = existing?.id ?? materializeId(context, "ingredient", existingIds);
-    if (!id) return null;
-    seenKeys.add(key);
-    ingredients.push({ id, ...parsed });
+  const resolutions: OccurrenceResolution[] = [];
+  const coreChangedIds = new Set<string>();
+  const literalChangedIds = new Set<string>();
+  for (const edit of edits) {
+    if (edit.kind === "create") {
+      const id = materializeId(context, "ingredient", existingIds);
+      if (!id) return { error: "Could not materialize a unique ingredient occurrence ID." };
+      ingredients.push(materializeOccurrence(edit, id));
+      resolutions.push({ correlationId: edit.correlationId, occurrenceId: id });
+      continue;
+    }
+    const previous = previousById.get(edit.occurrenceId);
+    if (!previous) return { error: `Occurrence ${edit.occurrenceId} is not part of this meal.` };
+    const coreChanged = normalizedCoreIngredientLiteral(previous.ingredient) !==
+      normalizedCoreIngredientLiteral(edit.ingredient);
+    if (coreChanged) coreChangedIds.add(previous.id);
+    if (["source", "amount", "unit", "ingredient", "qualifier"].some((field) =>
+      previous[field as "source" | "amount" | "unit" | "ingredient" | "qualifier"] !==
+      edit[field as "source" | "amount" | "unit" | "ingredient" | "qualifier"])) {
+      literalChangedIds.add(previous.id);
+    }
+    ingredients.push({
+      ...previous,
+      source: edit.source,
+      amount: edit.amount,
+      unit: edit.unit,
+      ingredient: edit.ingredient,
+      qualifier: edit.qualifier,
+      conceptId: coreChanged ? edit.conceptId : previous.conceptId,
+    });
   }
-  const ingredientIdAliases = new Map<string, string>();
-  for (const existing of meal.ingredients) {
-    const parsed = ingredientLineParts(formatIngredientLine(existing));
-    const canonical = ingredients.find(
-      (candidate) => ingredientKey(candidate.ingredient) === ingredientKey(parsed.ingredient),
-    );
-    if (canonical && canonical.id !== existing.id) ingredientIdAliases.set(existing.id, canonical.id);
-  }
-  const retainedIds = new Set(ingredients.map((ingredient) => ingredient.id));
-  if (meal.instructions.some((step) => step.inputs.some((input) => !retainedIds.has(ingredientIdAliases.get(input.ingredientId) ?? input.ingredientId)))) {
-    return null;
-  }
-  return { ingredients, ingredientIdAliases };
+  return {
+    ingredients,
+    removedIds: new Set(removedOccurrenceIds),
+    coreChangedIds,
+    literalChangedIds,
+    resolutions,
+  };
 }
 
-function linkInstructionInputs(
+function resolveInstructionInputEdits(
   context: HouseholdCommandContext,
   meal: Meal,
-  inputs: Array<{ amount: string; ingredient: string }>,
+  inputs: readonly InstructionInputEdit[],
   existingIds: Set<string>,
-): InstructionStep["inputs"] | null {
+): { inputs: InstructionStep["inputs"]; resolutions: OccurrenceResolution[] } | null {
   const linked: InstructionStep["inputs"] = [];
+  const resolutions: OccurrenceResolution[] = [];
   for (const input of inputs) {
-    const key = ingredientKey(input.ingredient);
-    let ingredient = meal.ingredients.find((candidate) => ingredientKey(candidate.ingredient) === key);
-    if (!ingredient) {
+    if (input.kind === "retain") {
+      if (!meal.ingredients.some((candidate) => candidate.id === input.occurrenceId)) return null;
+      linked.push({ amount: input.amount, ingredient: input.ingredient, occurrenceId: input.occurrenceId });
+      continue;
+    }
+    let occurrenceId = resolveNewInstructionInput(input, meal.ingredients);
+    if (!occurrenceId) {
       const id = materializeId(context, "ingredient", existingIds);
       if (!id) return null;
-      ingredient = { id, amount: input.amount, ingredient: input.ingredient };
-      meal.ingredients.push(ingredient);
+      occurrenceId = id;
+      meal.ingredients.push({
+        id,
+        source: null,
+        amount: input.amount,
+        unit: null,
+        ingredient: input.ingredient,
+        qualifier: null,
+        conceptId: null,
+        role: "weekly_requirement",
+        canonicalIngredientId: null,
+      });
     }
-    linked.push({ ...input, ingredientId: ingredient.id });
+    linked.push({ amount: input.amount, ingredient: input.ingredient, occurrenceId });
+    resolutions.push({ correlationId: input.correlationId, occurrenceId });
   }
-  return linked;
+  return { inputs: linked, resolutions };
 }
 
 function prepEntrySourceStepIds(entry: PrepSessionStep): string[] {
@@ -979,7 +1035,7 @@ function combinedPrepOwnsStep(week: WeekPlan, stepId: string): boolean {
 }
 
 function currentStepIngredientIds(step: InstructionStep): string[] {
-  return [...new Set(step.inputs.map((input) => input.ingredientId))];
+  return [...new Set(step.inputs.map((input) => input.occurrenceId))];
 }
 
 function findCombinedPrepEntry(
@@ -1202,17 +1258,10 @@ export function executeHouseholdCommand(
       return success(state, next, `Marked ${meal.title} ${command.status}`, meal.id, changes, createdIds);
     }
 
-    case "updateMealSnapshot": {
+    case "editMealRecipe": {
       if (!week) return rejectMissingWeek(state, command.weekId);
       const meal = week.data.meals.find((item) => item.id === command.mealId);
       if (!meal) return failure(state, "Meal not found.", { mealId: "Choose a meal in the selected week." });
-      const ingredientLines = (command.changes.ingredients as unknown[]).map((ingredient) =>
-        typeof ingredient === "string"
-          ? ingredient
-          : isRecord(ingredient) && typeof ingredient.amount === "string" && typeof ingredient.ingredient === "string"
-            ? formatIngredientLine({ amount: ingredient.amount, ingredient: ingredient.ingredient })
-            : "",
-      );
       const previous = {
         title: meal.title,
         subtitle: meal.subtitle,
@@ -1220,36 +1269,47 @@ export function executeHouseholdCommand(
         prepNote: meal.prepNote,
         leftoverNote: meal.leftoverNote,
         notes: meal.notes,
-        ingredients: meal.ingredients.map(formatIngredientLine),
         yieldText: meal.yieldText ?? null,
       };
-      if (equalJson(previous, command.changes)) return failure(state, "Meal snapshot is unchanged.");
-      const prepIngredientsChanged = !equalJson(previous.ingredients, ingredientLines);
+      const occurrenceResult = applyOccurrenceEdits(
+        context,
+        meal,
+        command.occurrences,
+        command.removedOccurrenceIds,
+        allIngredientIds(next),
+      );
+      if ("error" in occurrenceResult) {
+        return failure(state, occurrenceResult.error, { occurrences: occurrenceResult.error });
+      }
+      const occurrenceChanged = !equalJson(meal.ingredients, occurrenceResult.ingredients);
+      if (!occurrenceChanged && equalJson(previous, command.changes)) {
+        return failure(state, "Meal recipe is unchanged.");
+      }
       meal.title = command.changes.title;
       meal.subtitle = command.changes.subtitle;
       meal.venue = command.changes.venue;
       meal.prepNote = command.changes.prepNote;
       meal.leftoverNote = command.changes.leftoverNote;
       meal.notes = command.changes.notes;
-      const reconciledIngredients = reconcileRecipeIngredientLines(context, meal, ingredientLines, allIngredientIds(next));
-      if (!reconciledIngredients) {
-        return failure(state, "Keep recipe ingredients that are still used by an instruction step.", {
-          ingredients: "Edit or remove the instruction use before removing its recipe ingredient.",
-        });
-      }
+      const affectedStepIds = new Set<string>();
       for (const step of meal.instructions) {
-        for (const input of step.inputs) {
-          const canonicalIngredientId = reconciledIngredients.ingredientIdAliases.get(input.ingredientId);
-          if (canonicalIngredientId) input.ingredientId = canonicalIngredientId;
+        const before = step.inputs.length;
+        step.inputs = step.inputs.filter((input) => !occurrenceResult.removedIds.has(input.occurrenceId));
+        if (step.inputs.length !== before || step.inputs.some((input) => occurrenceResult.literalChangedIds.has(input.occurrenceId))) {
+          affectedStepIds.add(step.id);
         }
       }
-      meal.ingredients = reconciledIngredients.ingredients;
-      const invalidatedPrepEntries = prepIngredientsChanged
-        ? meal.instructions.reduce(
-            (count, step) => count + invalidateCombinedPrepForStep(week, step.id),
-            0,
-          )
-        : 0;
+      meal.ingredients = occurrenceResult.ingredients;
+      for (const grocery of week.data.groceries) {
+        if (grocery.mealId === meal.id && occurrenceResult.coreChangedIds.has(grocery.ingredientId)) {
+          grocery.coverage = "needs_source";
+          grocery.checked = false;
+        }
+      }
+      const invalidatedPrepEntries = [...affectedStepIds].reduce(
+        (count, stepId) => count + invalidateCombinedPrepForStep(week, stepId),
+        0,
+      );
       if (command.changes.yieldText === null) delete meal.yieldText;
       else meal.yieldText = command.changes.yieldText;
       const groceryProjection = reconcileGroceryProjection(context, week);
@@ -1262,7 +1322,9 @@ export function executeHouseholdCommand(
         ...(invalidatedPrepEntries
           ? [`Combined Prep: ${invalidatedPrepEntries} reopened for review`]
           : []),
-      ]);
+      ], Object.fromEntries(
+        occurrenceResult.resolutions.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId]),
+      ), occurrenceResult.resolutions);
     }
 
     case "replaceMealRecipeFromSource": {
@@ -1274,29 +1336,40 @@ export function executeHouseholdCommand(
       const existingStepIds = new Set(
         week.data.meals.flatMap((item) => item.instructions.map((step) => step.id)),
       );
-      const ingredients = materializeRecipeIngredients(
+      const ingredients = materializeOccurrenceInputs(
         context,
-        command.recipe.steps.flatMap((step) => step.inputs.map(formatIngredientLine)),
+        command.recipe.occurrences,
         allIngredientIds(next),
       );
       if (!ingredients) return failure(state, "Could not materialize recipe ingredient IDs.");
       const recipeMeal = { ...meal, ingredients: ingredients.ingredients };
       const instructions: InstructionStep[] = [];
-      const createdIds: Record<string, string> = {};
+      const createdIds: Record<string, string> = Object.fromEntries(
+        ingredients.resolutions.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId]),
+      );
+      const occurrenceIdByCorrelation = new Map(
+        ingredients.resolutions.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId]),
+      );
       for (const [index, recipeStep] of command.recipe.steps.entries()) {
         const id = materializeId(context, "step", existingStepIds);
         if (!id) return failure(state, "Could not materialize a unique instruction-step ID.");
         createdIds[`instructionStep.${index}`] = id;
-        const inputs = linkInstructionInputs(context, recipeMeal, recipeStep.inputs, allIngredientIds(next));
-        if (!inputs) return failure(state, "Could not link recipe step ingredients.");
+        const inputs = recipeStep.inputs.map((input) => {
+          const occurrenceId = occurrenceIdByCorrelation.get(input.occurrenceCorrelationId);
+          return occurrenceId
+            ? { amount: input.amount, ingredient: input.ingredient, occurrenceId }
+            : null;
+        });
+        if (inputs.some((input) => input === null)) return failure(state, "Could not link recipe step occurrence correlations.");
         instructions.push({
           id,
-          inputs,
+          inputs: inputs as InstructionStep["inputs"],
           instruction: recipeStep.instruction,
           complete: false,
           ...(recipeStep.timerDurationSeconds === undefined
             ? {}
             : { timerDurationSeconds: recipeStep.timerDurationSeconds }),
+          ...(recipeStep.note === undefined || recipeStep.note === "" ? {} : { note: recipeStep.note }),
         });
       }
       meal.title = command.recipe.title;
@@ -1319,6 +1392,7 @@ export function executeHouseholdCommand(
             : []),
         ],
         createdIds,
+        ingredients.resolutions,
       );
     }
 
@@ -1330,11 +1404,11 @@ export function executeHouseholdCommand(
       const stepIds = new Set(week.data.meals.flatMap((item) => item.instructions.map((step) => step.id)));
       const id = materializeId(context, "step", stepIds);
       if (!id) return failure(state, "Could not materialize a unique instruction-step ID.");
-      const inputs = linkInstructionInputs(context, meal, command.step.inputs, allIngredientIds(next));
-      if (!inputs) return failure(state, "Could not link instruction-step ingredients.");
+      const linked = resolveInstructionInputEdits(context, meal, command.step.inputs, allIngredientIds(next));
+      if (!linked) return failure(state, "Could not link instruction-step occurrences.");
       const step: InstructionStep = {
         id,
-        inputs,
+        inputs: linked.inputs,
         instruction: command.step.instruction,
         complete: false,
       };
@@ -1348,10 +1422,13 @@ export function executeHouseholdCommand(
         ...(groceryProjection.added
           ? [`Groceries: ${groceryProjection.added} added`]
           : []),
-      ], { instructionStepId: id });
+      ], {
+        instructionStepId: id,
+        ...Object.fromEntries(linked.resolutions.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId])),
+      }, linked.resolutions);
     }
 
-    case "updateInstructionStep": {
+    case "editInstructionStep": {
       if (!week) return rejectMissingWeek(state, command.weekId);
       const resolved = findStep(week, command.stepId);
       if (!resolved) return failure(state, "Instruction step not found.", { stepId: "Choose a step in the selected week." });
@@ -1360,16 +1437,13 @@ export function executeHouseholdCommand(
         instruction: resolved.step.instruction,
         timerDurationSeconds: resolved.step.timerDurationSeconds ?? null,
       };
-      if (equalJson(previous, command.changes)) return failure(state, "Instruction step is unchanged.");
-      const prepRelevantChanged = previous.instruction !== command.changes.instruction ||
-        !equalJson(
-          previous.inputs.map(({ amount, ingredient }) => ({ amount, ingredient })),
-          command.changes.inputs,
-        );
       const durationChanged = (resolved.step.timerDurationSeconds ?? null) !== command.changes.timerDurationSeconds;
-      const inputs = linkInstructionInputs(context, resolved.meal, command.changes.inputs, allIngredientIds(next));
-      if (!inputs) return failure(state, "Could not link instruction-step ingredients.");
-      resolved.step.inputs = inputs;
+      const linked = resolveInstructionInputEdits(context, resolved.meal, command.changes.inputs, allIngredientIds(next));
+      if (!linked) return failure(state, "Could not link instruction-step occurrences.");
+      const prepRelevantChanged = previous.instruction !== command.changes.instruction ||
+        !equalJson(previous.inputs, linked.inputs);
+      if (!prepRelevantChanged && !durationChanged) return failure(state, "Instruction step is unchanged.");
+      resolved.step.inputs = linked.inputs;
       resolved.step.instruction = command.changes.instruction;
       if (command.changes.timerDurationSeconds === null) delete resolved.step.timerDurationSeconds;
       else resolved.step.timerDurationSeconds = command.changes.timerDurationSeconds;
@@ -1390,7 +1464,9 @@ export function executeHouseholdCommand(
         ...(invalidatedPrepEntries
           ? [`Combined Prep: ${invalidatedPrepEntries} reopened for review`]
           : []),
-      ]);
+      ], Object.fromEntries(
+        linked.resolutions.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId]),
+      ), linked.resolutions);
     }
 
     case "moveInstructionStep": {
@@ -1824,10 +1900,10 @@ export function executeHouseholdCommand(
       );
     }
 
-    case "moveGroceryItemsToSource": {
+    case "setGroceryItemsCoverage": {
       if (!week) return rejectMissingWeek(state, command.weekId);
-      if (!GROCERY_SOURCES.includes(command.source)) {
-        return failure(state, "Choose a supported grocery source.", { source: "Choose Shop, Farm box, or On hand." });
+      if (!GROCERY_COVERAGES.includes(command.coverage)) {
+        return failure(state, "Choose supported grocery coverage.", { coverage: "Choose Needs source, Shop, Farm box, or On hand." });
       }
       if (new Set(command.itemIds).size !== command.itemIds.length) {
         return failure(state, "Choose each grocery item only once.", { itemIds: "Remove duplicate grocery items." });
@@ -1836,17 +1912,17 @@ export function executeHouseholdCommand(
       const missingItemId = command.itemIds.find((_itemId, index) => !groceries[index]);
       if (missingItemId) return failure(state, "Grocery item not found.", { itemIds: `Could not find ${missingItemId} in the selected week.` });
       const moved = (groceries as GroceryItem[])
-        .filter((grocery) => grocery.source !== command.source)
-        .map((grocery) => ({ grocery, previousSource: grocery.source }));
-      if (!moved.length) return failure(state, "Selected groceries already have that source.");
-      for (const { grocery } of moved) grocery.source = command.source;
-      const sourceLabel = command.source === "farm_box" ? "Farm box" : command.source === "on_hand" ? "On hand" : "Shop";
+        .filter((grocery) => grocery.coverage !== command.coverage)
+        .map((grocery) => ({ grocery, previousCoverage: grocery.coverage }));
+      if (!moved.length) return failure(state, "Selected groceries already have that coverage.");
+      for (const { grocery } of moved) grocery.coverage = command.coverage;
+      const coverageLabel = command.coverage === "farm_box" ? "Farm box" : command.coverage === "on_hand" ? "On hand" : command.coverage === "needs_source" ? "Needs source" : "Shop";
       return success(
         state,
         next,
-        `Moved ${moved.length} ${moved.length === 1 ? "grocery" : "groceries"} to ${sourceLabel}`,
-        `${week.id}:grocery-source:${command.source}`,
-        moved.map(({ grocery, previousSource }) => `${groceryIngredientLabel(week, grocery)}: ${previousSource} to ${command.source}`),
+        `Set ${moved.length} ${moved.length === 1 ? "grocery" : "groceries"} to ${coverageLabel}`,
+        `${week.id}:grocery-coverage:${command.coverage}`,
+        moved.map(({ grocery, previousCoverage }) => `${groceryIngredientLabel(week, grocery)}: ${previousCoverage} to ${command.coverage}`),
       );
     }
 
@@ -1951,18 +2027,31 @@ export function executeHouseholdCommand(
 
     case "createWeekPlan": {
       if (next.weeks.some((item) => item.id === command.weekStartDate)) return failure(state, "A week already exists for that Monday.", { weekStartDate: "Choose a missing Monday." });
+      const occurrenceCorrelations = command.plan.meals.flatMap((meal) =>
+        meal.occurrences.map((occurrence) => occurrence.correlationId));
+      if (new Set(occurrenceCorrelations).size !== occurrenceCorrelations.length) {
+        return failure(state, "Occurrence correlations must be unique across the new week plan.");
+      }
       const mealIds = new Set<string>();
       const stepIds = new Set<string>();
       const ingredientIds = new Set<string>();
       const createdIds: Record<string, string> = {};
+      const occurrenceResolutions: OccurrenceResolution[] = [];
       const meals: Meal[] = [];
       for (let mealIndex = 0; mealIndex < command.plan.meals.length; mealIndex += 1) {
         const input = command.plan.meals[mealIndex];
         const mealId = materializeId(context, "meal", mealIds);
         if (!mealId) return failure(state, "Could not materialize a unique meal ID.");
         createdIds[`meal.${mealIndex}`] = mealId;
-        const materializedIngredients = materializeRecipeIngredients(context, input.ingredients, ingredientIds);
+        const materializedIngredients = materializeOccurrenceInputs(context, input.occurrences, ingredientIds);
         if (!materializedIngredients) return failure(state, "Could not materialize recipe ingredient IDs.");
+        const occurrenceIdByCorrelation = new Map(
+          materializedIngredients.resolutions.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId]),
+        );
+        for (const { correlationId, occurrenceId } of materializedIngredients.resolutions) {
+          createdIds[`occurrence.${mealIndex}.${correlationId}`] = occurrenceId;
+          occurrenceResolutions.push({ correlationId, occurrenceId });
+        }
         const meal: Meal = {
           id: mealId,
           date: input.date,
@@ -1983,9 +2072,14 @@ export function executeHouseholdCommand(
           const stepId = materializeId(context, "step", stepIds);
           if (!stepId) return failure(state, "Could not materialize a unique instruction-step ID.");
           createdIds[`step.${mealIndex}.${stepIndex}`] = stepId;
-          const inputs = linkInstructionInputs(context, meal, stepInput.inputs, ingredientIds);
-          if (!inputs) return failure(state, "Could not link recipe step ingredients.");
-          const step: InstructionStep = { id: stepId, inputs, instruction: stepInput.instruction, complete: false };
+          const inputs = stepInput.inputs.map((input) => {
+            const occurrenceId = occurrenceIdByCorrelation.get(input.occurrenceCorrelationId);
+            return occurrenceId
+              ? { amount: input.amount, ingredient: input.ingredient, occurrenceId }
+              : null;
+          });
+          if (inputs.some((input) => input === null)) return failure(state, "Could not link recipe step occurrence correlations.");
+          const step: InstructionStep = { id: stepId, inputs: inputs as InstructionStep["inputs"], instruction: stepInput.instruction, complete: false };
           if (stepInput.timerDurationSeconds !== undefined) step.timerDurationSeconds = stepInput.timerDurationSeconds;
           if (stepInput.note !== undefined && stepInput.note !== "") step.note = stepInput.note;
           meal.instructions.push(step);
@@ -2005,7 +2099,7 @@ export function executeHouseholdCommand(
       });
       next.weeks.push(createdWeek);
       next.weeks.sort((left, right) => left.id.localeCompare(right.id));
-      return success(state, next, `Created week plan for ${command.weekStartDate}`, command.weekStartDate, [`Created ${meals.length} meals and ${createdWeek.data.groceries.length} grocery items`, "Lifecycle: missing to planned"], createdIds);
+      return success(state, next, `Created week plan for ${command.weekStartDate}`, command.weekStartDate, [`Created ${meals.length} meals and ${createdWeek.data.groceries.length} grocery items`, "Lifecycle: missing to planned"], createdIds, occurrenceResolutions);
     }
 
     case "activateWeek": {

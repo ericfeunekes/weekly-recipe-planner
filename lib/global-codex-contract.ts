@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { validateHouseholdState } from "./household-domain.ts";
 import {
   isHistoricalGroceryReconciliationCommand,
+  isHistoricalHouseholdCommand,
   isHouseholdCommand,
 } from "./household-command-contract.ts";
 import type { HouseholdPlannerState } from "./household-contract.ts";
@@ -14,7 +15,10 @@ import type {
 import {
   isHistoricalPlannerEventOperationList,
   isPlannerOperationList,
+  isPlannerOperationsDecision,
+  isPreviewPlannerOperationsDecision,
   type PlannerEventProvenance,
+  type HistoricalPlannerEventOperation,
   type PlannerOperation,
   type PlannerOperationsDecision,
   type PreviewPlannerOperationsDecision,
@@ -43,6 +47,13 @@ export type GlobalCodexBatchRequest = {
   requestId: string;
   basePlannerVersion: number;
   operations: PlannerOperation[];
+};
+
+export type HistoricalGlobalCodexBatchRequest = {
+  contractVersion: 1;
+  requestId: string;
+  basePlannerVersion: number;
+  operations: HistoricalPlannerEventOperation[];
 };
 
 export type GlobalCodexPreviewRequest = {
@@ -149,6 +160,20 @@ export function isGlobalCodexBatchRequest(value: unknown): value is GlobalCodexB
     isPlannerOperationList(value.operations);
 }
 
+export function isHistoricalGlobalCodexBatchRequest(
+  value: unknown,
+): value is HistoricalGlobalCodexBatchRequest {
+  return isRecord(value) &&
+    hasExactKeys(value, ["contractVersion", "requestId", "basePlannerVersion", "operations"]) &&
+    value.contractVersion === GLOBAL_CODEX_CONTRACT_VERSION &&
+    isUuid(value.requestId) &&
+    isNonNegativeSafeInteger(value.basePlannerVersion) &&
+    isHistoricalPlannerEventOperationList(value.operations) &&
+    value.operations.some((operation) =>
+      isHistoricalHouseholdCommand(operation.command) ||
+      isHistoricalGroceryReconciliationCommand(operation.command));
+}
+
 export function isGlobalCodexPreviewRequest(value: unknown): value is GlobalCodexPreviewRequest {
   return isRecord(value) &&
     hasExactKeys(value, ["contractVersion", "basePlannerVersion", "operations"]) &&
@@ -168,6 +193,7 @@ function isProvenance(value: unknown): value is PlannerEventProvenance {
 
 function isPlannerEventCommand(value: unknown): value is PlannerEventCommand {
   if (isHouseholdCommand(value)) return true;
+  if (isHistoricalHouseholdCommand(value)) return true;
   if (isHistoricalGroceryReconciliationCommand(value)) return true;
   if (!isRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "plannerBatch") {
@@ -238,34 +264,6 @@ export function isPlannerReadProjection(value: unknown): value is PlannerReadPro
   }
 }
 
-function isDecision(value: unknown): value is PlannerOperationsDecision {
-  if (!isRecord(value) || typeof value.status !== "string") return false;
-  if (value.status === "accepted") {
-    return hasExactKeys(value, ["status", "eventId", "plannerVersion"]) &&
-      typeof value.eventId === "string" && isNonNegativeSafeInteger(value.plannerVersion);
-  }
-  if (value.status === "version_conflict") {
-    return hasExactKeys(value, ["status", "expectedVersion", "actualVersion"]) &&
-      isNonNegativeSafeInteger(value.expectedVersion) && isNonNegativeSafeInteger(value.actualVersion);
-  }
-  return value.status === "domain_rejected" &&
-    hasExactKeys(value, ["status", "operationIndex", "message"]) &&
-    isNonNegativeSafeInteger(value.operationIndex) && typeof value.message === "string";
-}
-
-function isPreviewDecision(value: unknown): value is PreviewPlannerOperationsDecision {
-  if (!isRecord(value) || typeof value.status !== "string") return false;
-  if (value.status === "previewed") {
-    return hasExactKeys(value, ["status", "plannerVersion", "outcomes"]) &&
-      isNonNegativeSafeInteger(value.plannerVersion) && Array.isArray(value.outcomes) &&
-      value.outcomes.every((outcome) => isRecord(outcome) &&
-        hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes"]) &&
-        isNonNegativeSafeInteger(outcome.operationIndex) && typeof outcome.summary === "string" &&
-        typeof outcome.target === "string" && isStringArray(outcome.changes));
-  }
-  return isDecision(value);
-}
-
 function isFieldErrors(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
@@ -284,8 +282,18 @@ export function isGlobalCodexResponse(value: unknown): value is GlobalCodexRespo
     return value.error.fieldErrors === undefined || isFieldErrors(value.error.fieldErrors);
   }
   if ("decision" in value) {
+    const decision = value.decision;
+    const hasOperationResult = isRecord(decision) && (
+      decision.status === "accepted"
+        ? Array.isArray(decision.occurrenceResults) && decision.occurrenceResults.length > 0
+        : decision.status === "previewed"
+          ? Array.isArray(decision.outcomes) && decision.outcomes.length > 0
+          : true
+    );
     return hasExactKeys(value, ["contractVersion", "decision", "planner"]) &&
-      isPreviewDecision(value.decision) && isPlannerReadProjection(value.planner);
+      hasOperationResult &&
+      (isPlannerOperationsDecision(decision) || isPreviewPlannerOperationsDecision(decision)) &&
+      isPlannerReadProjection(value.planner);
   }
   return hasExactKeys(value, ["contractVersion", "planner"]) &&
     isPlannerReadProjection(value.planner);

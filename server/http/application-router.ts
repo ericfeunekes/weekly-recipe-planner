@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { isHouseholdCommand } from "../../lib/household-command-contract.ts";
+import {
+  isHistoricalGroceryReconciliationCommand,
+  isHistoricalHouseholdCommand,
+  isHouseholdCommand,
+} from "../../lib/household-command-contract.ts";
+import { BROWSER_PROVENANCE } from "../../lib/planner-operation-contract.ts";
 import {
   API_ERROR_CODES,
   DIAGNOSTIC_EXPORT_FILENAME,
@@ -336,16 +341,29 @@ export function createApplicationRouter(
         if (
           !hasExactKeys(body, ["requestId", "basePlannerVersion", "command"]) ||
           !isId(body.requestId) ||
-          !isNonnegativeInteger(body.basePlannerVersion) ||
-          !isHouseholdCommand(body.command)
+          !isNonnegativeInteger(body.basePlannerVersion)
         ) {
           throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed planner command request.");
         }
-        const result = dependencies.planner.applyCommand({
-          requestId: body.requestId,
-          basePlannerVersion: body.basePlannerVersion,
-          command: body.command,
-        });
+        const result = isHouseholdCommand(body.command)
+          ? dependencies.planner.applyCommand({
+              requestId: body.requestId,
+              basePlannerVersion: body.basePlannerVersion,
+              command: body.command,
+            })
+          : isHistoricalHouseholdCommand(body.command) || isHistoricalGroceryReconciliationCommand(body.command)
+            ? dependencies.planner.replayHistoricalOperations(
+                {
+                  requestId: body.requestId,
+                  basePlannerVersion: body.basePlannerVersion,
+                  operations: [{ command: body.command }],
+                },
+                { operationKind: "planner_command", provenance: BROWSER_PROVENANCE },
+              )
+            : null;
+        if (!result) {
+          throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed planner command request.");
+        }
         sendJson(response, plannerDecisionStatus(result.decision.status), result);
         return;
       }

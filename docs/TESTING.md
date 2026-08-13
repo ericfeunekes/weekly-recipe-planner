@@ -121,6 +121,36 @@ verification, rehearsal result, production result, candidate commit, exact
 paths, release authorization, and remaining limitations. The migration command
 itself does not perform that recording or a post-commit source-file hash.
 
+### Schema-v10 ingredient-occurrence rehearsal
+
+Issue 13 adds the explicit v9-to-v10 occurrence-identity migration command. Its
+implementation and disposable proof do not authorize a household migration.
+Run the command only against a transactionally consistent disposable v9 copy,
+with a separate explicit backup destination:
+
+```sh
+npm --silent run planner:migrate-v9-v10 -- \
+  --database /absolute/path/to/planner-copy.sqlite \
+  --backup /absolute/path/to/planner-copy.pre-v10.sqlite
+```
+
+The command requires a coherent schema-v9 source, performs ambiguity preflight
+before modifying it, creates and verifies the v9 backup, bounds the committed
+delta to the occurrence-bearing JSON and schema ledger, then closes and reads
+the v10 database back. Verify the reported `quick_check`, schema/workspace
+version 10, migration ledger, backup identity, and allowed changes. Reopen the
+copy through the application, read the authoritative workspace, execute and
+undo one occurrence-aware edit, close it, reopen it again, and confirm the
+occurrence IDs and links remain unchanged.
+
+A real household run remains a separate `shipping:release` action for an exact
+committed candidate. It requires the same LaunchAgent and listener quiescence
+checks described above, retained verified v9 backup, separately named and
+verified SQLite restoration steps, the migration command with household paths,
+and final authoritative application readback. `make recover` still does not
+restore SQLite; do not treat this rehearsal or application promotion as data
+migration authorization.
+
 ## Merge Gate
 
 Every implementation merge must keep these deterministic cells green:

@@ -12,6 +12,7 @@ import {
   authorizePlannerOperations,
   createPlannerToolFailure,
   createPlannerToolSuccess,
+  isHistoricalPlannerApplyArguments,
   isPlannerApplyArguments,
   isPlannerPreviewArguments,
   isPlannerReadArguments,
@@ -390,7 +391,67 @@ export class NativePlannerEffectHost {
 
     let result: PlannerToolResult;
     let completion: NativePlannerToolCompletion;
-    if (!isPlannerApplyArguments(call.arguments)) {
+    if (!isPlannerApplyArguments(call.arguments) && isHistoricalPlannerApplyArguments(call.arguments)) {
+      const requestId = `native-codex:${identity.callbackIdentityHash}`;
+      if (!transaction) throw new Error("Native planner historical replay lost its shared transaction boundary.");
+      try {
+        const replayed = this.#options.planner.replayHistoricalPlannerOperations(
+          transaction,
+          {
+            requestId,
+            basePlannerVersion: call.arguments.basePlannerVersion,
+            operations: call.arguments.operations,
+          },
+          {
+            operationKind: "native_codex_apply_planner_operations_v1",
+            provenance: EMBEDDED_CODEX_PROVENANCE,
+            now,
+          },
+        );
+        if (replayed.decision.status !== "accepted") {
+          result = failure(
+            call.callId,
+            replayed.workspace,
+            now,
+            replayed.decision.status === "version_conflict" ? "VERSION_CONFLICT" : "DOMAIN_REJECTED",
+            replayed.decision.status === "version_conflict"
+              ? `Planner version changed from ${replayed.decision.expectedVersion} to ${replayed.decision.actualVersion}.`
+              : replayed.decision.message,
+            replayed.decision.status === "version_conflict" ? "refresh_new_call" : "revise_new_call",
+            replayed.decision.status === "domain_rejected" ? replayed.decision.operationIndex : undefined,
+          );
+          completion = completionBase(identity, result, now);
+        } else {
+          const readback = projectPlannerRead(replayed.workspace, call.arguments.readback) ??
+            projectPlannerRead(replayed.workspace, { kind: "workspace" });
+          if (!readback) throw new Error("Historical native planner replay lost canonical readback.");
+          result = createPlannerToolSuccess(call.callId, replayed.workspace, now, {
+            status: "replayed" as const,
+            eventId: replayed.decision.eventId,
+            occurrenceResults: replayed.decision.occurrenceResults,
+            readback,
+          });
+          completion = {
+            ...completionBase(identity, result, now),
+            operationKind: "native_codex_apply_planner_operations_v1",
+            requestId,
+            eventId: replayed.decision.eventId,
+            basePlannerVersion: call.arguments.basePlannerVersion,
+            resultPlannerVersion: replayed.decision.plannerVersion,
+          };
+        }
+      } catch (error) {
+        result = failure(
+          call.callId,
+          workspace,
+          now,
+          "INVALID_ARGUMENTS",
+          error instanceof Error ? error.message : "Historical planner receipt replay failed.",
+          "revise_new_call",
+        );
+        completion = completionBase(identity, result, now);
+      }
+    } else if (!isPlannerApplyArguments(call.arguments)) {
       result = failure(
         call.callId,
         workspace,
@@ -441,6 +502,7 @@ export class NativePlannerEffectHost {
           result = createPlannerToolSuccess(call.callId, applied.workspace, now, {
             status: "accepted" as const,
             eventId: applied.decision.eventId,
+            occurrenceResults: applied.decision.occurrenceResults,
             readback,
           });
           completion = {

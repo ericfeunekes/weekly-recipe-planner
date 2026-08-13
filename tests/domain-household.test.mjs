@@ -35,6 +35,33 @@ function activeWeek(state) {
   return state.weeks.find((week) => week.id === state.activeWeekId);
 }
 
+function retainOccurrences(meal, overrides = {}) {
+  return meal.ingredients.map((ingredient) => ({
+    kind: "retain",
+    occurrenceId: ingredient.id,
+    source: ingredient.source,
+    amount: ingredient.amount,
+    unit: ingredient.unit,
+    ingredient: ingredient.ingredient,
+    qualifier: ingredient.qualifier,
+    conceptId: ingredient.conceptId,
+    ...overrides[ingredient.id],
+  }));
+}
+
+function recipeChanges(meal, overrides = {}) {
+  return {
+    title: meal.title,
+    subtitle: meal.subtitle,
+    venue: meal.venue,
+    prepNote: meal.prepNote,
+    leftoverNote: meal.leftoverNote,
+    notes: meal.notes,
+    yieldText: meal.yieldText ?? null,
+    ...overrides,
+  };
+}
+
 test("date-first prep commands reject duplicate instruction selections before materializing references", () => {
   let createIdCalls = 0;
   const seedContext = createContext();
@@ -83,19 +110,14 @@ test("household domain executes every week-local command through one pure bounda
     householdDomain.execute(
       state,
       {
-        type: "updateMealSnapshot",
+        type: "editMealRecipe",
         weekId,
         mealId: chicken.id,
-        changes: {
-          title: "Harissa chicken and chickpeas",
-          subtitle: chicken.subtitle,
-          venue: "Picnic",
-          prepNote: chicken.prepNote,
-          leftoverNote: chicken.leftoverNote,
-          notes: "Pack the yogurt separately.",
-          ingredients: [...chicken.ingredients, "1 cup lemon yogurt"],
-          yieldText: chicken.yieldText ?? null,
-        },
+        changes: recipeChanges(chicken, { title: "Harissa chicken and chickpeas", venue: "Picnic", notes: "Pack the yogurt separately." }),
+        occurrences: [...retainOccurrences(chicken), {
+          kind: "create", correlationId: "lemon-yogurt", source: "1 cup lemon yogurt", amount: "1", unit: "cup", ingredient: "lemon yogurt", qualifier: null, conceptId: null, canonicalIngredientId: null,
+        }],
+        removedOccurrenceIds: [],
       },
       context,
     ),
@@ -103,6 +125,8 @@ test("household domain executes every week-local command through one pure bounda
   assert.deepEqual(state, original, "execution must not mutate the caller's state");
   state = result.state;
   assert.equal(activeWeek(state).data.meals[0].venue, "Picnic");
+  const lemonYogurtId = result.createdIds["lemon-yogurt"];
+  assert.ok(lemonYogurtId);
 
   week = activeWeek(state);
   result = accepted(
@@ -114,7 +138,7 @@ test("household domain executes every week-local command through one pure bounda
         mealId: chicken.id,
         position: week.data.meals[0].instructions.length,
         step: {
-          inputs: [{ amount: "1 cup", ingredient: "lemon yogurt" }],
+          inputs: [{ kind: "retain", occurrenceId: lemonYogurtId, amount: "1 cup", ingredient: "lemon yogurt" }],
           instruction: "Pack the yogurt in a separate container.",
         },
       },
@@ -129,11 +153,11 @@ test("household domain executes every week-local command through one pure bounda
     householdDomain.execute(
       state,
       {
-        type: "updateInstructionStep",
+        type: "editInstructionStep",
         weekId,
         stepId: addedStepId,
         changes: {
-          inputs: [{ amount: "1 cup", ingredient: "lemon yogurt sauce" }],
+          inputs: [{ kind: "retain", occurrenceId: lemonYogurtId, amount: "1 cup", ingredient: "lemon yogurt sauce" }],
           instruction: "Chill the sauce, then pack it separately.",
           timerDurationSeconds: 300,
         },
@@ -430,10 +454,10 @@ test("household domain executes every week-local command through one pure bounda
     householdDomain.execute(
       state,
       {
-        type: "moveGroceryItemsToSource",
+        type: "setGroceryItemsCoverage",
         weekId,
         itemIds: [grocery.id],
-        source: "on_hand",
+        coverage: "on_hand",
       },
       context,
     ),
@@ -443,7 +467,7 @@ test("household domain executes every week-local command through one pure bounda
   assert.ok(retainedGrocery);
   assert.equal(retainedGrocery.mealId, chicken.id);
   assert.equal(retainedGrocery.checked, true);
-  assert.equal(retainedGrocery.source, "on_hand");
+  assert.equal(retainedGrocery.coverage, "on_hand");
 
   result = accepted(
     householdDomain.execute(
@@ -526,7 +550,7 @@ test("grocery projection rejects missing and duplicate canonical ingredient iden
   assert.equal(householdDomain.validateState(duplicateIngredient).ok, false);
 
   const unsupportedSource = structuredClone(state);
-  unsupportedSource.weeks[0].data.groceries[0].source = "delivery";
+  unsupportedSource.weeks[0].data.groceries[0].coverage = "delivery";
   assert.equal(householdDomain.validateState(unsupportedSource).ok, false);
 });
 
@@ -543,9 +567,9 @@ test("a fully populated scheduled week projects every canonical ingredient", () 
     prepNote: "",
     leftoverNote: "",
     notes: "",
-    ingredients: Array.from(
+    occurrences: Array.from(
       { length: MAX_INGREDIENT_LINES },
-      (_, ingredientIndex) => `${ingredientIndex + 1} g ingredient ${mealIndex + 1}-${ingredientIndex + 1}`,
+      (_, ingredientIndex) => ({ kind: "create", correlationId: `ingredient-${mealIndex}-${ingredientIndex}`, source: null, amount: `${ingredientIndex + 1}`, unit: "g", ingredient: `ingredient ${mealIndex + 1}-${ingredientIndex + 1}`, qualifier: null, conceptId: null, canonicalIngredientId: null }),
     ),
     instructions: [],
   }));
@@ -566,11 +590,11 @@ test("a fully populated scheduled week projects every canonical ingredient", () 
   assert.deepEqual(householdDomain.validateState(result.state), { ok: true });
 });
 
-test("bulk grocery source moves are atomic and preserve grocery identities", () => {
+test("bulk grocery coverage changes are atomic and preserve grocery identities", () => {
   const context = createContext();
   const original = createCanonicalSeed(context);
   const week = activeWeek(original);
-  const selected = week.data.groceries.filter((item) => item.source === "shop").slice(0, 2);
+  const selected = week.data.groceries.filter((item) => item.coverage === "needs_source").slice(0, 2);
   assert.equal(selected.length, 2);
   const expected = new Map(selected.map((item) => [item.id, {
     checked: item.checked,
@@ -583,10 +607,10 @@ test("bulk grocery source moves are atomic and preserve grocery identities", () 
     householdDomain.execute(
       original,
       {
-        type: "moveGroceryItemsToSource",
+        type: "setGroceryItemsCoverage",
         weekId: week.id,
         itemIds: selected.map((item) => item.id),
-        source: "farm_box",
+        coverage: "farm_box",
       },
       context,
     ),
@@ -594,7 +618,7 @@ test("bulk grocery source moves are atomic and preserve grocery identities", () 
   for (const itemId of expected.keys()) {
     const item = activeWeek(moved.state).data.groceries.find((candidate) => candidate.id === itemId);
     assert.ok(item);
-    assert.equal(item.source, "farm_box");
+    assert.equal(item.coverage, "farm_box");
     assert.deepEqual(
       { checked: item.checked, section: item.section, mealId: item.mealId, ingredientId: item.ingredientId },
       expected.get(itemId),
@@ -603,16 +627,16 @@ test("bulk grocery source moves are atomic and preserve grocery identities", () 
 
   for (const command of [
     {
-      type: "moveGroceryItemsToSource",
+      type: "setGroceryItemsCoverage",
       weekId: week.id,
       itemIds: [selected[0].id, "grocery-missing"],
-      source: "on_hand",
+      coverage: "on_hand",
     },
     {
-      type: "moveGroceryItemsToSource",
+      type: "setGroceryItemsCoverage",
       weekId: week.id,
       itemIds: selected.map((item) => item.id),
-      source: "shop",
+      coverage: "needs_source",
     },
   ]) {
     const rejected = householdDomain.execute(original, command, context);
@@ -973,10 +997,13 @@ function sourcedRecipe() {
       url: "https://example.com/recipes/lentil-soup",
       retrievedAt: 1_750_000_000_000,
     },
+    occurrences: [{
+      kind: "create", correlationId: "lentils", source: "1 cup brown lentils, rinsed", amount: "1", unit: "cup", ingredient: "lentils", qualifier: "brown, rinsed", conceptId: "lentil", canonicalIngredientId: 7,
+    }],
     steps: [{
       inputs: [
-        { amount: "1 cup", ingredient: "lentils" },
-        { amount: "1 cup", ingredient: "lentils" },
+        { occurrenceCorrelationId: "lentils", amount: "1 cup", ingredient: "lentils" },
+        { occurrenceCorrelationId: "lentils", amount: "1 cup", ingredient: "lentils" },
       ],
       instruction: "Simmer the lentils.",
       timerDurationSeconds: 900,
@@ -1034,17 +1061,31 @@ test("sourced replacement changes only recipe fields with ordered duplicate inpu
   }, preserved);
   assert.equal(replaced.title, "Primary-page lentil soup");
   assert.equal(replaced.yieldText, "4 bowls");
-  assert.deepEqual(
-    replaced.ingredients.map(({ amount, ingredient }) => ({ amount, ingredient })),
-    [{ amount: "1 cup", ingredient: "lentils" }],
-  );
+  assert.deepEqual(replaced.ingredients.map((occurrence) => ({
+    source: occurrence.source,
+    amount: occurrence.amount,
+    unit: occurrence.unit,
+    ingredient: occurrence.ingredient,
+    qualifier: occurrence.qualifier,
+    conceptId: occurrence.conceptId,
+    canonicalIngredientId: occurrence.canonicalIngredientId,
+  })), [{
+    source: "1 cup brown lentils, rinsed",
+    amount: "1",
+    unit: "cup",
+    ingredient: "lentils",
+    qualifier: "brown, rinsed",
+    conceptId: "lentil",
+    canonicalIngredientId: 7,
+  }]);
+  assert.equal(replaced.ingredients[0].role, "weekly_requirement");
   assert.deepEqual(replaced.sourceRecipe, sourcedRecipe().source);
   assert.equal(replaced.instructions.length, 1);
   assert.equal(replaced.instructions[0].complete, false);
   assert.equal(replaced.instructions[0].id, result.createdIds["instructionStep.0"]);
   assert.equal(replaced.instructions[0].inputs.length, 2);
-  assert.equal(replaced.instructions[0].inputs[0].ingredientId, replaced.ingredients[0].id);
-  assert.equal(replaced.instructions[0].inputs[1].ingredientId, replaced.ingredients[0].id);
+  assert.equal(replaced.instructions[0].inputs[0].occurrenceId, replaced.ingredients[0].id);
+  assert.equal(replaced.instructions[0].inputs[1].occurrenceId, replaced.ingredients[0].id);
 });
 
 test("sourced replacement omission clears an existing yield while persisting source metadata", () => {
@@ -1063,26 +1104,19 @@ test("sourced replacement omission clears an existing yield while persisting sou
   assert.deepEqual(replaced.sourceRecipe, recipe.source);
 });
 
-test("generic meal snapshots clear or update yield without laundering source provenance", () => {
+test("recipe edits clear or update yield without laundering source provenance", () => {
   for (const yieldText of [null, "6 servings"]) {
     const { state, week, meal, context } = replacementReadyState();
     meal.yieldText = "Old household yield";
     meal.sourceRecipe = structuredClone(sourcedRecipe().source);
     const sourceBefore = structuredClone(meal.sourceRecipe);
     const result = accepted(householdDomain.execute(state, {
-      type: "updateMealSnapshot",
+      type: "editMealRecipe",
       weekId: week.id,
       mealId: meal.id,
-      changes: {
-        title: `${meal.title} refreshed`,
-        subtitle: meal.subtitle,
-        venue: meal.venue,
-        prepNote: meal.prepNote,
-        leftoverNote: meal.leftoverNote,
-        notes: meal.notes,
-        ingredients: meal.ingredients,
-        yieldText,
-      },
+      changes: recipeChanges(meal, { title: `${meal.title} refreshed`, yieldText }),
+      occurrences: retainOccurrences(meal),
+      removedOccurrenceIds: [],
     }, context));
     const updated = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
     assert.equal(updated.yieldText, yieldText === null ? undefined : yieldText);
@@ -1090,51 +1124,119 @@ test("generic meal snapshots clear or update yield without laundering source pro
   }
 });
 
-test("meal snapshot folds legacy ingredient aliases without losing a canonical step link", () => {
+test("recipe edits retain, reorder, duplicate, split, replace, and atomically unlink occurrences", () => {
   const context = createContext();
   const state = createCanonicalSeed(context);
   const week = activeWeek(state);
   const meal = week.data.meals[0];
   const roastStep = meal.instructions.find((step) => step.instruction.includes("Roast the chicken"));
   assert.ok(roastStep);
-  const peppersInput = roastStep.inputs.find((input) => input.ingredient === "red peppers");
-  assert.ok(peppersInput);
-  meal.ingredients.push({ id: "legacy-peppers", amount: "2 red", ingredient: "peppers" });
-  peppersInput.ingredientId = "legacy-peppers";
-  week.data.groceries.push({
-    id: "legacy-grocery-peppers",
-    mealId: meal.id,
-    ingredientId: "legacy-peppers",
-    section: "Produce",
-    source: "shop",
-    checked: false,
-  });
-
-  const result = accepted(householdDomain.execute(state, {
-    type: "updateMealSnapshot",
+  const peppers = meal.ingredients.find((ingredient) => ingredient.ingredient === "red peppers");
+  assert.ok(peppers);
+  const peppersGrocery = week.data.groceries.find((grocery) => grocery.ingredientId === peppers.id);
+  assert.ok(peppersGrocery);
+  const nonCore = accepted(householdDomain.execute(state, {
+    type: "editMealRecipe", weekId: week.id, mealId: meal.id, changes: recipeChanges(meal),
+    occurrences: retainOccurrences(meal, { [peppers.id]: { amount: "3" } }), removedOccurrenceIds: [],
+  }, context));
+  assert.equal(activeWeek(nonCore.state).data.groceries.find((grocery) => grocery.id === peppersGrocery.id).coverage, "farm_box", "amount-only edits preserve coverage");
+  const result = accepted(householdDomain.execute(nonCore.state, {
+    type: "editMealRecipe",
     weekId: week.id,
     mealId: meal.id,
-    changes: {
-      title: meal.title,
-      subtitle: meal.subtitle,
-      venue: meal.venue,
-      prepNote: meal.prepNote,
-      leftoverNote: meal.leftoverNote,
-      notes: meal.notes,
-      ingredients: meal.ingredients
-        .map(({ amount, ingredient }) => [amount, ingredient].filter(Boolean).join(" "))
-        .filter((line, index, lines) => lines.indexOf(line) === index),
-      yieldText: meal.yieldText ?? null,
+    changes: recipeChanges(meal),
+    occurrences: [
+      ...retainOccurrences(activeWeek(nonCore.state).data.meals.find((candidate) => candidate.id === meal.id), { [peppers.id]: { ingredient: "red onions", conceptId: "onion" } }).reverse(),
+      { kind: "create", correlationId: "duplicate-pepper", source: "1 red pepper", amount: "1", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },
+      { kind: "create", correlationId: "split-pepper-a", source: "1/2 red pepper", amount: "1/2", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },
+      { kind: "create", correlationId: "split-pepper-b", source: "1/2 red pepper", amount: "1/2", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },
+    ],
+    removedOccurrenceIds: [],
+  }, context));
+  let updated = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
+  assert.deepEqual(updated.ingredients.slice(-3).map((ingredient) => ingredient.id), [result.createdIds["duplicate-pepper"], result.createdIds["split-pepper-a"], result.createdIds["split-pepper-b"]]);
+  assert.equal(updated.ingredients.find((ingredient) => ingredient.id === peppers.id).ingredient, "red onions");
+  assert.equal(activeWeek(result.state).data.groceries.find((grocery) => grocery.id === peppersGrocery.id).coverage, "needs_source", "core literal edits reset coverage");
+  assert.equal(updated.instructions.find((step) => step.id === roastStep.id).inputs.some((input) => input.occurrenceId === peppers.id), true);
+  const remove = accepted(householdDomain.execute(result.state, {
+    type: "editMealRecipe", weekId: week.id, mealId: meal.id, changes: recipeChanges(updated),
+    occurrences: [...retainOccurrences(updated).filter((edit) => edit.occurrenceId !== peppers.id), {
+      kind: "create", correlationId: "replacement-onion", source: "3 red onions", amount: "3", unit: null, ingredient: "red onions", qualifier: null, conceptId: null, canonicalIngredientId: null,
+    }],
+    removedOccurrenceIds: [peppers.id],
+  }, context));
+  updated = activeWeek(remove.state).data.meals.find((candidate) => candidate.id === meal.id);
+  assert.equal(updated.ingredients.some((ingredient) => ingredient.id === peppers.id), false);
+  assert.equal(updated.ingredients.at(-1).id, remove.createdIds["replacement-onion"], "replace creates a distinct occurrence ID");
+  assert.equal(updated.instructions.find((step) => step.id === roastStep.id).inputs.some((input) => input.occurrenceId === peppers.id), false, "linked inputs are removed atomically");
+});
+
+test("new instruction inputs create exactly one occurrence for zero or multiple core matches", () => {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const week = activeWeek(state);
+  const meal = week.data.meals[0];
+  const existing = meal.ingredients[0];
+  const duplicateId = "hard-coded-duplicate-occurrence";
+  meal.ingredients.push({ ...existing, id: duplicateId });
+  week.data.groceries.push({
+    id: "hard-coded-duplicate-grocery",
+    mealId: meal.id,
+    ingredientId: duplicateId,
+    section: week.data.groceries.find((item) => item.ingredientId === existing.id)?.section ?? "Pantry",
+    coverage: "needs_source",
+    checked: false,
+  });
+  const beforeIds = meal.ingredients.map((occurrence) => occurrence.id);
+  const result = accepted(householdDomain.execute(state, {
+    type: "addInstructionStep",
+    weekId: week.id,
+    mealId: meal.id,
+    position: meal.instructions.length,
+    step: {
+      inputs: [
+        { kind: "create", correlationId: "ambiguous-core", amount: "1", ingredient: existing.ingredient },
+        { kind: "create", correlationId: "zero-core", amount: "2", ingredient: "hard-coded-new-ingredient" },
+      ],
+      instruction: "Prepare both new instruction inputs.",
     },
   }, context));
-  const normalizedMeal = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
-  const redPeppers = normalizedMeal.ingredients.filter((ingredient) => ingredient.ingredient === "red peppers");
-  assert.deepEqual(redPeppers.map(({ amount }) => amount), ["2"]);
-  const normalizedRoastStep = normalizedMeal.instructions.find((step) => step.id === roastStep.id);
-  assert.equal(
-    normalizedRoastStep.inputs.find((input) => input.ingredient === "red peppers").ingredientId,
-    redPeppers[0].id,
-  );
+  const nextMeal = activeWeek(result.state).data.meals.find((candidate) => candidate.id === meal.id);
+  const createdIds = result.occurrenceResolutions.map(({ occurrenceId }) => occurrenceId);
+  assert.equal(createdIds.length, 2);
+  assert.equal(new Set(createdIds).size, 2);
+  assert.equal(createdIds.some((id) => beforeIds.includes(id)), false, "an ambiguous duplicate never picks the first occurrence");
+  assert.deepEqual(nextMeal.instructions.at(-1).inputs.map(({ occurrenceId }) => occurrenceId), createdIds);
+  assert.deepEqual(result.occurrenceResolutions.map(({ correlationId }) => correlationId), ["ambiguous-core", "zero-core"]);
+  assert.deepEqual(nextMeal.ingredients.slice(-2).map(({ id, ingredient }) => ({ id, ingredient })), [
+    { id: createdIds[0], ingredient: existing.ingredient },
+    { id: createdIds[1], ingredient: "hard-coded-new-ingredient" },
+  ]);
+  const nextGroceries = activeWeek(result.state).data.groceries;
+  for (const occurrenceId of createdIds) {
+    assert.equal(nextGroceries.filter((item) => item.mealId === meal.id && item.ingredientId === occurrenceId).length, 1);
+  }
+});
+
+test("week creation rejects operation-wide duplicate occurrence correlations before materializing IDs", () => {
+  const context = createContext();
+  const state = createCanonicalSeed(context);
+  const occurrence = {
+    kind: "create", correlationId: "same-correlation", source: null, amount: "1", unit: null,
+    ingredient: "rice", qualifier: null, conceptId: null, canonicalIngredientId: null,
+  };
+  const meal = (date) => ({
+    date, title: "Rice", subtitle: "", venue: "Home", protein: "none",
+    prepNote: "", leftoverNote: "", notes: "", occurrences: [occurrence], instructions: [],
+  });
+  const result = householdDomain.execute(state, {
+    type: "createWeekPlan",
+    weekStartDate: "2026-07-13",
+    plan: { meals: [meal("2026-07-13"), meal("2026-07-14")] },
+  }, context);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /correlations must be unique/iu);
+  assert.deepEqual(result.state, state);
 });
 
 test("each protected canonical state class and immutable target lifecycle rejects replacement", () => {

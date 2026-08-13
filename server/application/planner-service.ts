@@ -6,6 +6,10 @@ import {
 } from "../../lib/household-domain.ts";
 import type { HouseholdPlannerState } from "../../lib/household-contract.ts";
 import {
+  isHistoricalGroceryReconciliationCommand,
+  isHistoricalHouseholdCommand,
+} from "../../lib/household-command-contract.ts";
+import {
   DIAGNOSTIC_EXPORT_FORMAT_VERSION,
   DIAGNOSTIC_EXPORT_KIND,
   DIAGNOSTIC_EXPORT_WARNING,
@@ -32,11 +36,14 @@ import {
   BROWSER_PROVENANCE,
   GENERATED_AFTER_APPLY,
   isApplyPlannerOperationsRequest,
+  isHistoricalPlannerEventOperationList,
+  isPlannerOperationsDecision,
   isPreviewPlannerOperationsRequest,
   isValidPlannerMutationContext,
   plannerActorForProvenance,
   type ApplyPlannerOperationsRequest,
   type ApplyPlannerOperationsResponse,
+  type HistoricalApplyPlannerOperationsRequest,
   type PlannerMutationContext,
   type PlannerOperationPreview,
   type PlannerOperationsDecision,
@@ -173,10 +180,32 @@ function assertReceiptPayload(existing: OperationReceipt, payloadHash: string): 
 
 function asPlannerOperationsDecision(
   decision: PlannerCommandDecision | PlannerOperationsDecision,
+  operationCount = 1,
 ): PlannerOperationsDecision {
-  return decision.status === "domain_rejected" && !("operationIndex" in decision)
-    ? { ...decision, operationIndex: 0 }
-    : decision;
+  if (decision.status === "domain_rejected" && !("operationIndex" in decision)) {
+    return { ...decision, operationIndex: 0 };
+  }
+  const stored = decision as unknown as Record<string, unknown>;
+  if (stored.status === "accepted" &&
+      !Object.hasOwn(stored, "occurrenceResults")) {
+    const normalized = {
+      status: "accepted",
+      eventId: stored.eventId,
+      plannerVersion: stored.plannerVersion,
+      occurrenceResults: Array.from({ length: operationCount }, (_, operationIndex) => ({
+        operationIndex,
+        occurrences: [],
+      })),
+    };
+    if (!isPlannerOperationsDecision(normalized, operationCount)) {
+      throw new PlannerServiceError("STORE_CORRUPT", "Stored planner receipt has an invalid accepted decision.", { httpStatus: 503 });
+    }
+    return normalized;
+  }
+  if (!isPlannerOperationsDecision(decision, operationCount)) {
+    throw new PlannerServiceError("STORE_CORRUPT", "Stored planner receipt has an invalid decision.", { httpStatus: 503 });
+  }
+  return decision;
 }
 
 function asPlannerCommandDecision(
@@ -188,7 +217,7 @@ function asPlannerCommandDecision(
 }
 
 function plannerOperationsPayloadForHash(
-  request: ApplyPlannerOperationsRequest,
+  request: ApplyPlannerOperationsRequest | HistoricalApplyPlannerOperationsRequest,
   context: PlannerMutationContext,
 ): unknown {
   if (context.operationKind === "planner_command" || context.operationKind === "planner_chat_command") {
@@ -348,6 +377,64 @@ export class PlannerApplicationServiceImpl
     }
   }
 
+  replayHistoricalOperations(
+    request: HistoricalApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse {
+    try {
+      return this.store.readTransaction((transaction) =>
+        this.replayHistoricalPlannerOperations(transaction, request, context),
+      );
+    } catch (error) {
+      return mapStoreError(error);
+    }
+  }
+
+  replayHistoricalPlannerOperations(
+    transaction: SqliteTransaction,
+    request: HistoricalApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse {
+    if (
+      !request ||
+      typeof request.requestId !== "string" ||
+      !Number.isSafeInteger(request.basePlannerVersion) ||
+      request.basePlannerVersion < 0 ||
+      !Array.isArray(request.operations) ||
+      !isHistoricalPlannerEventOperationList(request.operations) ||
+      !request.operations.some((operation) =>
+        isHistoricalHouseholdCommand(operation.command) ||
+        isHistoricalGroceryReconciliationCommand(operation.command))
+    ) {
+      throw new PlannerServiceError("INVALID_REQUEST", "Historical replay envelope is invalid.", {
+        httpStatus: 400,
+      });
+    }
+    const payloadHash = hashCanonicalPayload(
+      context.operationKind,
+      plannerOperationsPayloadForHash(request, context),
+    );
+    const existing = this.store.findReceipt(transaction, context.operationKind, request.requestId);
+    if (!existing) {
+      throw new PlannerServiceError(
+        "INVALID_REQUEST",
+        "Historical commands are receipt-only and cannot execute without an accepted prior request.",
+        { httpStatus: 409 },
+      );
+    }
+    assertReceiptPayload(existing, payloadHash);
+    const stored = existing.decision as StoredPlannerDecision;
+    if (stored.kind !== "planner_decision") {
+      throw new PlannerServiceError("STORE_CORRUPT", "Historical planner receipt has an invalid decision.", {
+        httpStatus: 503,
+      });
+    }
+    return {
+      decision: asPlannerOperationsDecision(stored.decision, request.operations.length),
+      workspace: this.store.readInitializedWorkspace(transaction),
+    };
+  }
+
   previewOperations(
     request: PreviewPlannerOperationsRequest,
   ): PreviewPlannerOperationsResponse {
@@ -423,6 +510,7 @@ export class PlannerApplicationServiceImpl
         summary: result.summary,
         target: result.target,
         changes: result.changes,
+        occurrences: result.occurrenceResolutions,
       });
     }
 
@@ -436,6 +524,7 @@ export class PlannerApplicationServiceImpl
           summary: replaceGeneratedIds(outcome.summary, allGeneratedIds),
           target: replaceGeneratedIds(outcome.target, allGeneratedIds),
           changes: outcome.changes.map((change) => replaceGeneratedIds(change, allGeneratedIds)),
+          occurrences: outcome.occurrences,
         })),
       },
     };
@@ -475,7 +564,7 @@ export class PlannerApplicationServiceImpl
         });
       }
       return {
-        decision: asPlannerOperationsDecision(stored.decision),
+        decision: asPlannerOperationsDecision(stored.decision, request.operations.length),
         workspace: this.store.readInitializedWorkspace(transaction),
       };
     }
@@ -528,6 +617,7 @@ export class PlannerApplicationServiceImpl
             summary: result.summary,
             target: result.target,
             changes: result.changes,
+            occurrences: result.occurrenceResolutions,
           });
         }
 
@@ -586,6 +676,10 @@ export class PlannerApplicationServiceImpl
           status: "accepted",
           eventId,
           plannerVersion: versions.plannerVersion,
+          occurrenceResults: outcomes.map((outcome) => ({
+            operationIndex: outcome.operationIndex,
+            occurrences: outcome.occurrences,
+          })),
         };
         httpStatus = 200;
         }
@@ -707,6 +801,7 @@ export class PlannerApplicationServiceImpl
               status: "accepted",
               eventId,
               plannerVersion: versions.plannerVersion,
+              occurrenceResults: [{ operationIndex: 0, occurrences: [] }],
             };
             httpStatus = 200;
           }

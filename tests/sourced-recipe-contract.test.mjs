@@ -401,6 +401,24 @@ test("host materialization, digest-bound compact reference, and replacement omit
   }, digest), false, "legacy digestless references remain readable but cannot authorize");
   const replacement = sourcedReplacementFromCandidate(candidate);
   assert.equal(isSourcedRecipeReplacement(replacement), true);
+  assert.equal(isSourcedRecipeReplacement({
+    ...replacement,
+    steps: [{
+      ...replacement.steps[0],
+      inputs: [replacement.steps[0].inputs[0], replacement.steps[0].inputs[0]],
+    }],
+  }), true, "one occurrence may appear more than once in an instruction");
+  assert.equal(isSourcedRecipeReplacement({
+    ...replacement,
+    occurrences: [...replacement.occurrences, { ...replacement.occurrences[0] }],
+  }), false, "occurrence correlations are unique");
+  assert.equal(isSourcedRecipeReplacement({
+    ...replacement,
+    steps: [{
+      ...replacement.steps[0],
+      inputs: [{ ...replacement.steps[0].inputs[0], occurrenceCorrelationId: "missing-occurrence" }],
+    }],
+  }), false, "step correlations name a supplied occurrence");
   assert.equal(isSourcedRecipeReplacement({ ...replacement, yieldText: undefined }), false);
   assert.equal(isSourcedRecipeReplacement({
     ...replacement,

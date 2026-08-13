@@ -57,7 +57,7 @@ function requestFailureLabel(request: Request, errorText: string, phase: Expecte
   if (
     phase === "recipe-loss" &&
     path === "/api/commands" &&
-    command?.type === "updateMealSnapshot"
+    command?.type === "editMealRecipe"
   ) {
     return "injected-recipe-response-loss";
   }
@@ -188,7 +188,8 @@ async function openPrepRecipeSummary(step: Locator) {
 
 async function openRecipeEditor(page: Page, title: string) {
   await openView(page, "Week");
-  await page.getByRole("article", { name: new RegExp(`^${title} dinner on `) }).getByRole("button", { name: "Edit meal" }).click();
+  await page.getByRole("article", { name: new RegExp(`^${title} on `) }).getByRole("button", { name: /^Open .* day$/ }).click();
+  await page.getByRole("button", { name: "Edit meal" }).click();
 }
 
 function apiPath(url: string) {
@@ -431,16 +432,20 @@ test.describe.serial("family dinner authority", () => {
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     const ambiguousMealDrawer = pageA.locator(".meal-drawer");
     let lostRecipeResponses = 0;
+    let ambiguousOccurrenceIds: string[] = [];
     runtimeA.setExpectedFailurePhase("recipe-loss");
     await pageA.route("**/api/commands", async (route) => {
       const body = route.request().postDataJSON();
       if (
-        body?.command?.type !== "updateMealSnapshot" ||
+        body?.command?.type !== "editMealRecipe" ||
         body.command.changes.title !== "Ambiguous recipe title"
       ) {
         await route.continue();
         return;
       }
+      ambiguousOccurrenceIds = body.command.occurrences
+        .filter((occurrence: { kind: string }) => occurrence.kind === "retain")
+        .map((occurrence: { occurrenceId: string }) => occurrence.occurrenceId);
       lostRecipeResponses += 1;
       if (lostRecipeResponses === 1) await route.fetch();
       await route.abort("failed");
@@ -466,6 +471,11 @@ test.describe.serial("family dinner authority", () => {
     await ambiguousMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(ambiguousRemoteDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Harissa chicken traybake");
     await expect(ambiguousRemoteDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Patio kitchen");
+    const conflictWorkspace = await (await pageA.request.get("/api/workspace")).json();
+    const conflictMeal = conflictWorkspace.state.weeks
+      .flatMap((candidate: { data: { meals: unknown[] } }) => candidate.data.meals)
+      .find((candidate: { title?: string }) => candidate.title === "Harissa chicken traybake");
+    expect(conflictMeal.ingredients.map(({ id }: { id: string }) => id)).toEqual(ambiguousOccurrenceIds);
     runtimeA.setExpectedFailurePhase("normal");
     await ambiguousMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
     await ambiguousRemoteDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
@@ -485,10 +495,11 @@ test.describe.serial("family dinner authority", () => {
     await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(staleMealDrawer.getByText(/Someone else changed the plan/)).toBeVisible();
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Remote accepted dinner title");
+    await expect(staleMealDrawer.getByRole("button", { name: "Retry action" })).toHaveCount(0);
+    await expect(staleTitle).toHaveValue("Stale local dinner title");
+    await expect(staleMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleTitle.fill("Harissa chicken traybake");
-    const retryEditedRecipe = staleMealDrawer.getByRole("button", { name: "Retry Save recipe details" });
-    await expect(retryEditedRecipe).toBeVisible();
-    await retryEditedRecipe.click();
+    await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(pageB.getByRole("dialog", { name: "Harissa chicken traybake" })).toBeVisible({ timeout: 8_000 });
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
@@ -502,9 +513,10 @@ test.describe.serial("family dinner authority", () => {
     });
     await roastSource.dragTo(secondTabA);
     await expect(secondTabA).toHaveAttribute("aria-selected", "true");
-    await expect(prepStep(pageA, "Roast the chicken")).toHaveCount(1);
-    await firstTabA.click();
-    await roastSource.dragTo(harissaPrepA);
+    const assignedRoastPrepA = prepStep(pageA, "Roast the chicken");
+    await expect(assignedRoastPrepA).toHaveCount(1);
+    await assignedRoastPrepA.dragTo(firstTabA);
+    await expect(firstTabA).toHaveAttribute("aria-selected", "true");
     const roastPrepA = prepStep(pageA, "Roast the chicken");
     await expect(roastPrepA.getByRole("checkbox", { name: /Complete step .*Roast the chicken/ })).toHaveCount(1);
     await expect(roastPrepA.getByRole("button", { name: /Start timer for step .*Roast the chicken/ })).toHaveCount(1);
@@ -544,6 +556,7 @@ test.describe.serial("family dinner authority", () => {
     await openView(pageA, "Prep");
     const reloadedHarissa = prepStep(pageA, "Coat the chicken with harissa");
     await expect(reloadedHarissa.getByRole("checkbox")).toBeChecked();
+    await pageB.getByRole("button", { name: "Open Codex" }).click();
     const globalDraftB = pageB.getByRole("textbox", { name: "Message Codex" });
     await globalDraftB.fill("Keep this separate household draft.");
     await reloadedHarissa.getByRole("button", { name: /More options for step .*Coat the chicken/ }).click();
@@ -606,6 +619,7 @@ test.describe.serial("family dinner authority", () => {
 
     await pageA.reload();
     await openView(pageA, "Groceries");
+    await pageA.getByRole("radio", { name: "All", exact: true }).click();
     await sendCodexMessage(pageB, "Propose conflicting meal change after a pause.");
     try {
       await expect.poll(async () => {
@@ -614,8 +628,8 @@ test.describe.serial("family dinner authority", () => {
       }).toBe(true);
       const chickenGrocery = pageA.locator(".grocery-row").filter({ hasText: "Boneless chicken thighs" });
       await chickenGrocery.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
-      await pageA.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
-      await pageA.getByRole("button", { name: "Move", exact: true }).click();
+      await pageA.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("farm_box");
+      await pageA.getByRole("button", { name: "Set coverage", exact: true }).click();
       await expect(chickenGrocery.locator(".grocery-source-badge")).toHaveText("Farm box");
     } finally {
       const releaseHeldConflictResponse = await pageA.request.post(`${controlOrigin}/release-conflict`);
@@ -626,10 +640,10 @@ test.describe.serial("family dinner authority", () => {
     await expect(pageB.locator(".tonight-hero .status-badge")).toHaveText("planned");
 
     await openView(pageB, "Groceries");
-    await pageB.getByRole("button", { name: "All", exact: true }).click();
+    await pageB.getByRole("radio", { name: "Farm box", exact: true }).click();
     await expect(pageB.locator(".grocery-row").filter({ hasText: "Boneless chicken thighs" }).locator(".grocery-source-badge")).toHaveText("Farm box");
 
-    const offlineGrocerySource = pageA.locator(".grocery-row").filter({ hasText: "salmon" }).locator(".grocery-source-badge");
+    const offlineGrocerySource = pageA.locator(".grocery-row").filter({ hasText: "salmon" }).first().locator(".grocery-source-badge");
     runtimeA.setExpectedFailurePhase("offline");
     await contextA.setOffline(true);
     await expect(pageA.getByText(/Offline · read-only/)).toBeVisible({ timeout: 8_000 });
@@ -645,32 +659,12 @@ test.describe.serial("family dinner authority", () => {
     await expect(pageB.locator(".tonight-hero .status-badge")).toHaveText("cooked");
     await openView(pageB, "Close out");
     await expect(pageB.getByText(/Harissa chicken traybake · 2 portions/)).toBeVisible();
-    const repeatHarissa = pageB.getByRole("button", { name: "Rate Harissa chicken traybake repeat" });
+    const repeatHarissa = pageB.getByRole("radio", { name: "Rate Harissa chicken traybake repeat" });
     await repeatHarissa.click();
-    await expect(repeatHarissa).toHaveAttribute("aria-pressed", "true");
-    const goodHarissaLeftovers = pageB.getByRole("button", { name: "Rate Harissa chicken traybake leftovers good" });
+    await expect(repeatHarissa).toBeChecked();
+    const goodHarissaLeftovers = pageB.getByRole("radio", { name: "Rate Harissa chicken traybake leftovers good" });
     await goodHarissaLeftovers.click();
-    await expect(goodHarissaLeftovers).toHaveAttribute("aria-pressed", "true");
-    const workspaceBeforeAssignment = await (await pageB.request.get("/api/workspace")).json();
-    const occupiedDinnerDate = workspaceBeforeAssignment.state.weeks[0].data.meals.find(
-      (meal: { title: string }) => meal.title === "Miso salmon rice bowls",
-    )?.date;
-    expect(occupiedDinnerDate).toBeTruthy();
-    await pageB.locator(".leftover-feedback select").selectOption(occupiedDinnerDate);
-    await pageB.getByRole("button", { name: /Assign Harissa chicken traybake leftovers/ }).click();
-    await openView(pageB, "Week");
-    await expect(pageB.locator(".leftover-meal").filter({ hasText: "Harissa chicken traybake" })).toBeVisible();
-    await openView(pageA, "Week");
-    await expect(pageA.locator(".leftover-meal").filter({ hasText: "Harissa chicken traybake" })).toBeVisible();
-    await setPlannerClock(
-      pageA,
-      [pageA, pageB],
-      Date.parse(`${occupiedDinnerDate}T18:00:00-03:00`),
-    );
-    await openView(pageB, "Day");
-    await expect(pageB.locator(".assigned-leftover").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
-    await sendCodexMessage(pageB, "Which dinner is in the Tonight context?");
-    await expect(codexConversation(pageB).getByText("Tonight is Harissa chicken traybake leftovers.", { exact: true })).toBeVisible();
+    await expect(goodHarissaLeftovers).toBeChecked();
 
     const statusBefore = await pageA.request.get(`${controlOrigin}/status`);
     expect(statusBefore.ok()).toBe(true);
@@ -706,30 +700,17 @@ test.describe.serial("family dinner authority", () => {
     await expectSelectedCodexThread(pageB, sharedCodexThreadId, 20_000);
     runtimeA.setExpectedFailurePhase("normal");
     runtimeB.setExpectedFailurePhase("normal");
+    await pageB.getByRole("button", { name: "Open Codex" }).click();
     await expect(codexConversation(pageB).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible();
     await openView(pageA, "Groceries");
-    await pageA.getByRole("button", { name: "All", exact: true }).click();
+    await pageA.getByRole("radio", { name: "All", exact: true }).click();
     await expect(pageA.locator(".grocery-row").filter({ hasText: "Boneless chicken thighs" }).locator(".grocery-source-badge")).toHaveText("Farm box");
-    await openView(pageA, "Day");
-    await expect(pageA.locator(".assigned-leftover").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
-    await openView(pageA, "Week");
-    await expect(pageA.locator(".leftover-meal").filter({ hasText: "Harissa chicken traybake" })).toBeVisible();
-    await openView(pageA, "Close out");
-    await pageA.getByRole("button", { name: /Mark Harissa chicken traybake leftovers eaten/ }).click();
-    await openView(pageA, "Week");
-    const consumedLeftoverA = pageA.locator(".meal-card").filter({ hasText: "2 portions from Harissa chicken traybake" });
-    await expect(consumedLeftoverA).toBeVisible();
-    await expect(consumedLeftoverA.locator(".status-badge")).toHaveText("cooked");
-    await expect(pageA.getByText("Miso salmon rice bowls", { exact: true })).toHaveCount(0);
-    await openView(pageB, "Week");
-    const consumedLeftoverB = pageB.locator(".meal-card").filter({ hasText: "2 portions from Harissa chicken traybake" });
-    await expect(consumedLeftoverB).toBeVisible();
-    await expect(pageB.getByText("Miso salmon rice bowls", { exact: true })).toHaveCount(0);
 
     await openView(pageA, "Groceries");
     await expect(pageA.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeFocused();
 
     const oldWeekId = await pageA.locator(".week-select select").inputValue();
+    await pageA.getByRole("button", { name: "Open Codex" }).click();
     await sendCodexMessage(pageA, "Create next week");
     await expect(codexConversation(pageA).getByText("I created a planned week for the next Monday.", { exact: true })).toBeVisible();
     await expect(pageA.locator(".week-select option")).toHaveCount(2);

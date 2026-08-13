@@ -10,6 +10,7 @@ import type {
 import {
   GLOBAL_CODEX_PROVENANCE,
   type ApplyPlannerOperationsRequest,
+  type HistoricalApplyPlannerOperationsRequest,
   type PlannerOperationsDecision,
   type PreviewPlannerOperationsRequest,
   type PreviewPlannerOperationsDecision,
@@ -24,6 +25,13 @@ export type GlobalCodexPlannerApplication = {
       provenance: typeof GLOBAL_CODEX_PROVENANCE;
     },
   ): { decision: PlannerOperationsDecision; workspace: InitializedWorkspace };
+  replayHistoricalOperations(
+    request: HistoricalApplyPlannerOperationsRequest,
+    context: {
+      operationKind: "global_codex_apply_planner_batch_v1";
+      provenance: typeof GLOBAL_CODEX_PROVENANCE;
+    },
+  ): { decision: PlannerOperationsDecision; workspace: InitializedWorkspace };
   previewOperations(
     request: PreviewPlannerOperationsRequest,
   ): { decision: PreviewPlannerOperationsDecision };
@@ -32,6 +40,10 @@ export type GlobalCodexPlannerApplication = {
 export type GlobalCodexPlannerPort = {
   readPlanner(): PlannerReadProjection;
   applyBatch(request: ApplyPlannerOperationsRequest): {
+    decision: PlannerOperationsDecision;
+    planner: PlannerReadProjection;
+  };
+  replayHistoricalBatch(request: HistoricalApplyPlannerOperationsRequest): {
     decision: PlannerOperationsDecision;
     planner: PlannerReadProjection;
   };
@@ -86,6 +98,16 @@ export function createGlobalCodexPlannerPort(
     },
     applyBatch(request) {
       const response = planner.applyOperations(request, {
+        operationKind: "global_codex_apply_planner_batch_v1",
+        provenance: GLOBAL_CODEX_PROVENANCE,
+      });
+      return {
+        decision: response.decision,
+        planner: projectPlannerWorkspace(response.workspace),
+      };
+    },
+    replayHistoricalBatch(request) {
+      const response = planner.replayHistoricalOperations(request, {
         operationKind: "global_codex_apply_planner_batch_v1",
         provenance: GLOBAL_CODEX_PROVENANCE,
       });

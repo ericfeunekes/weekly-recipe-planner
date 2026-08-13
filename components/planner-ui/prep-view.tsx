@@ -247,29 +247,6 @@ export function PrepView(props: PrepViewProps) {
       if (event.key === "Escape") {
         event.preventDefault();
         closeSourceDialog();
-        return;
-      }
-      if (event.key === "Tab") {
-        const dialog = sourceDialogRef.current;
-        if (!dialog) return;
-        const focusable = [...dialog.querySelectorAll<HTMLElement>(
-          "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])",
-        )].filter((element) => element.getAttribute("aria-hidden") !== "true");
-        if (!focusable.length) {
-          event.preventDefault();
-          dialog.focus();
-          return;
-        }
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        const active = document.activeElement;
-        if (event.shiftKey && (active === first || !dialog.contains(active))) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
-          event.preventDefault();
-          first.focus();
-        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -700,8 +677,8 @@ export function PrepView(props: PrepViewProps) {
           </section>
         </div>
       </div>
-      {sourceOpen && typeof document !== "undefined" ? createPortal(<div className="prep-source-backdrop" onMouseDown={closeSourceDialog}>
-        <aside ref={sourceDialogRef} className="prep-source-window" role="dialog" aria-modal="true" aria-label="Recipe instructions" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
+      {sourceOpen && typeof document !== "undefined" ? createPortal(<div className="prep-source-backdrop">
+        <aside ref={sourceDialogRef} className="prep-source-window" role="dialog" aria-label="Recipe instructions" tabIndex={-1} onMouseDown={(event) => event.stopPropagation()}>
         <header className="prep-source-window-heading">
           <div><p className="eyebrow">Batch prep</p><h3>Recipe instructions</h3></div>
           <PlannerIconButton type="button" title="Close recipe steps" aria-label="Close recipe steps" onClick={closeSourceDialog}><X size={16} /></PlannerIconButton>

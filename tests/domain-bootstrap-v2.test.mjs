@@ -9,6 +9,8 @@ import {
   transformLegacyV2,
 } from "../lib/household-bootstrap.ts";
 import { householdDomain } from "../lib/household-domain.ts";
+import { createPlannerApplicationService, PlannerServiceError } from "../server/application/planner-service.ts";
+import { openPlannerStore } from "../server/store/sqlite-store.ts";
 
 const FIXTURE = JSON.parse(
   readFileSync(
@@ -57,13 +59,13 @@ test("strict v2 transform preserves planner and transcript state while normalizi
     mealId: chickenGrocery.mealId,
     ingredientId: chickenGrocery.ingredientId,
     section: chickenGrocery.section,
-    source: chickenGrocery.source,
+    coverage: chickenGrocery.coverage,
     checked: chickenGrocery.checked,
   }, {
     mealId: week.data.meals[0].id,
     ingredientId: chickenIngredient?.id,
     section: "Meat & seafood",
-    source: "shop",
+    coverage: "needs_source",
     checked: false,
   });
   assert.equal(result.state.weeks[0].data.leftovers[0].assignedDate, "2026-07-08");
@@ -145,6 +147,58 @@ test("v2 transform fails visibly and never substitutes seed data", () => {
     () => transformLegacyV2(malformedLesson, context()),
     LegacyV2ImportError,
   );
+});
+
+test("v2 bootstrap rejects an ambiguous legacy occurrence link without mutating its input", () => {
+  const payload = copyFixture();
+  const meal = payload.data.meals[0];
+  meal.ingredients = ["2 red peppers", "2 red peppers", ...meal.ingredients];
+  meal.instructions[0].inputs = [{ amount: "2", ingredient: "red peppers" }];
+  const before = structuredClone(payload);
+
+  assert.throws(
+    () => transformLegacyV2(payload, context()),
+    (error) => {
+      assert.ok(error instanceof LegacyV2ImportError);
+      assert.match(
+        error.fieldErrors["payload.data.meals[0].instructions[0].inputs[0]"],
+        /ambiguously matches occurrences meal-mon:ingredient:0, meal-mon:ingredient:1/i,
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(payload, before, "a rejected bootstrap leaves the supplied browser snapshot byte-for-byte equivalent");
+});
+
+test("application bootstrap rolls an ambiguous legacy occurrence import back atomically", () => {
+  const payload = copyFixture();
+  const meal = payload.data.meals[0];
+  meal.ingredients = ["2 red peppers", "2 red peppers", ...meal.ingredients];
+  meal.instructions[0].inputs = [{ amount: "2", ingredient: "red peppers" }];
+  const before = structuredClone(payload);
+  const store = openPlannerStore({ filename: ":memory:" });
+  const service = createPlannerApplicationService({
+    store,
+    domain: householdDomain,
+    seedFactory: () => { throw new Error("unused"); },
+    transformLegacyV2: (candidate) => transformLegacyV2(candidate, context()),
+    clock: { now: () => 1 },
+    idFactory: { createId: (prefix) => `${prefix}-unused` },
+  });
+
+  assert.throws(
+    () => service.bootstrap({ requestId: "ambiguous-v2-import", mode: "import-v2", payload }),
+    (error) => {
+      assert.ok(error instanceof PlannerServiceError);
+      assert.equal(error.code, "INVALID_REQUEST");
+      assert.match(error.fieldErrors["payload.data.meals[0].instructions[0].inputs[0]"], /ambiguous/i);
+      return true;
+    },
+  );
+  assert.deepEqual(payload, before);
+  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 10 });
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts").get().count, 0);
+  store.close();
 });
 
 test("archived v2 workspaces import without an active week", () => {
