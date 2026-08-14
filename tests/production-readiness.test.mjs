@@ -46,6 +46,7 @@ test("production service renders a stable-app plist and rejects a stale keep-ali
   assert.ok(plist.includes(`<key>WorkingDirectory</key><string>${paths.appRoot}</string>`));
   assert.match(plist, /<key>PLANNER_PRIVATE_WEB_PORT<\/key><string>9877<\/string>/u);
   assert.match(plist, /<key>PLANNER_PUBLIC_BASE_PATH<\/key><string>\/recipe-planner\/<\/string>/u);
+  assert.match(plist, new RegExp(`<key>PLANNER_RECIPE_ROOT</key><string>${paths.agentRoot}/recipes</string>`, "u"));
   assert.doesNotMatch(plist, /app\.previous|activation|sha256/u);
   assert.throws(() => renderProductionServicePlist({ paths, port: 9876, privateWebPort: 9876 }), /distinct valid/u);
   assert.throws(() => renderProductionServicePlist({ paths, port: 9876, privateWebPort: 70000 }), /distinct valid/u);

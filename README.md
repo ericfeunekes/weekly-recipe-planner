@@ -74,8 +74,9 @@ browser.
 
 Requires Node.js `>=22.15.0` and the updater-managed Codex launcher. Planner
 state remains usable without Codex; embedded chat becomes ready only when the
-private `PLANNER_CODEX_HOME` (default `$HOME/meal-planner/agent`) and fixed
-`PLANNER_CODEX_CWD` (default `$HOME/meal-planner/app`) pass deployment,
+private persistent `PLANNER_CODEX_HOME` (default `$HOME/meal-planner/agent`)
+and `PLANNER_CODEX_CWD` (the selected app in production, a fresh private CWD
+in development/QA) pass deployment,
 provenance, capability, and dedicated ChatGPT-authentication checks. Normal
 `~/.codex` credentials/config/plugins are not the embedded surface; the normal
 OS `HOME` remains available for standalone skill discovery under
@@ -118,7 +119,7 @@ for a numbered port or writing to the household database:
 make qa-deploy
 ```
 
-The command snapshots the built runtime and a verified SQLite copy of
+The command snapshots the built runtime, a verified SQLite copy of
 `.planner-data/planner.sqlite` into a private temporary directory, then starts
 a detached front-controller/runtime pair against that immutable QA copy. It is
 reachable at `http://weekly-recipe-planner-qa.localhost:1355` even after the
@@ -129,7 +130,10 @@ The single Portless proxy is a shared local daemon, so stopping this QA target
 does not disrupt other Portless routes. Supply `QA_NAME`, `QA_PORTLESS_PORT`,
 or `QA_DATA_SOURCE=/absolute/planner.sqlite` when a separate QA deployment or
 data source is required. QA uses the configured native Codex runtime against
-its isolated planner snapshot; only the shared global Codex socket is disabled.
+its isolated planner snapshot and private copied food inputs; only the shared
+global Codex socket is disabled. QA retains the authenticated development Codex
+home and removes only its per-run CWD, food copies, and SQLite snapshot. Recipe
+lookup and parsing remain host work owned separately from this source boundary.
 
 `npm run dev:web` and `npm run start:web` start only their respective web
 processes; they are useful for web debugging but do not provide a ready planner

@@ -82,6 +82,13 @@ async function databaseProof(database) {
   };
 }
 
+async function foodProof(paths) {
+  return Promise.all(paths.map(async (path) => ({
+    path,
+    sha256: createHash("sha256").update(await readFile(path)).digest("hex"),
+  })));
+}
+
 async function optionalText(path) {
   try { return await readFile(path, "utf8"); } catch (error) {
     if (error?.code === "ENOENT") return null;
@@ -342,10 +349,26 @@ async function main() {
     await mkdir(join(home, "meal-planner", "data"), { recursive: true, mode: 0o700 });
     createDisposableReleaseDatabase(database);
     const before = readDisposableReleaseDatabaseContract(database);
+    // Seed a disposable selected slot and link its food sources to the
+    // disposable Obsidian roots before exercising promotion and recovery.
+    const vaultSkills = join(home, "ai notes", "personal", "food", ".agents", "skills");
+    const vaultRecipes = join(home, "ai notes", "personal", "food", "recipes");
+    await mkdir(vaultSkills, { recursive: true, mode: 0o700 });
+    await mkdir(vaultRecipes, { recursive: true, mode: 0o700 });
+    await writeFile(join(vaultSkills, "SKILL.md"), "disposable Vault skill\n", { mode: 0o600 });
+    await writeFile(join(vaultRecipes, "recipe.md"), "# Disposable recipe\n", { mode: 0o600 });
+    const vaultBefore = await foodProof([join(vaultSkills, "SKILL.md"), join(vaultRecipes, "recipe.md")]);
+    await cp(candidate, join(home, "meal-planner", "app"), { recursive: true });
+    await rm(join(home, "meal-planner", "app", ".agents"), { recursive: true, force: true });
     await mkdir(join(home, "meal-planner", "agent", ".agents"), { recursive: true, mode: 0o700 });
     await writeFile(join(home, "meal-planner", "agent", "auth.json"), "{}\n", { mode: 0o600 });
     await symlink(join(home, "meal-planner", "app", "deployment", "codex", "AGENTS.md"), join(home, "meal-planner", "agent", "AGENTS.md"));
-    await symlink(join(home, "meal-planner", "app", ".agents", "skills"), join(home, "meal-planner", "agent", ".agents", "skills"));
+    await symlink(join(home, "meal-planner", "app", "deployment", "codex", "config.toml"), join(home, "meal-planner", "agent", "config.toml"));
+    const { linkProductionFoodSources, validateProductionAgentSources } = await import(
+      pathToFileURL(join(candidate, "scripts", "support", "production-agent-sources.mjs")).href,
+    );
+    await linkProductionFoodSources(home, { appRoot: join(home, "meal-planner", "app") });
+    await validateProductionAgentSources(home);
     const environment = {
       ...process.env,
       HOME: home,
@@ -555,7 +578,12 @@ async function main() {
 
     assert.deepEqual(await databaseProof(database), firstDatabase, "deployment leaves SQLite identity, bytes, quick_check, and planner rows unchanged");
     assert.deepEqual(readDisposableReleaseDatabaseContract(database), before, "deployment leaves the schema and household state unchanged");
-    lines.push("- forced service failure and distinguishable previous-app recovery: PASS", "- repeated recovery: PASS", "- fixed slots and SQLite non-mutation: PASS");
+    assert.deepEqual(
+      await foodProof([join(vaultSkills, "SKILL.md"), join(vaultRecipes, "recipe.md")]),
+      vaultBefore,
+      "promotion and recovery leave the disposable Vault sources unchanged",
+    );
+    lines.push("- forced service failure and distinguishable previous-app recovery: PASS", "- repeated recovery: PASS", "- fixed slots, SQLite, and Vault non-mutation: PASS");
     await writeSummary(summaryDirectory, [...lines, "- result: PASS"]);
     await assertCandidateEvidence(join(summaryDirectory, "summary.md"), candidate, candidateIdentity);
     console.log([...lines, "- result: PASS"].join("\n"));

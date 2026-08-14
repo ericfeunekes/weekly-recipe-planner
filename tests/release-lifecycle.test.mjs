@@ -58,6 +58,12 @@ async function fixture(t, options = {}) {
       calls.push("compatibility");
       if (options.compatibilityFails) throw new Error("schema mismatch");
     },
+    validateSources: async (_paths, context = {}) => {
+      if (context.candidate && options.sourceValidationFails) throw new Error("invalid source");
+      if (!context.candidate && options.selectedSourceValidationFails) throw new Error("invalid selected source");
+      if (context.candidate && options.trackSources) calls.push("validate-candidate");
+      else if (options.trackSources) calls.push("validate-selected");
+    },
     reconcile: async () => calls.push("reconcile"),
     cleanupLegacyResidue: options.cleanupLegacyResidue,
     filesystem: options.filesystem,
@@ -84,6 +90,14 @@ test("preflight failure cleans only staging before service disturbance", async (
   await assert.rejects(readFile(join(paths.staging, "release")));
   assert.deepEqual(calls, ["prepare", "compatibility"]);
   assert.equal(await sqlite(paths), "sqlite-sentinel");
+});
+
+test("invalid Vault source links reject the unselected candidate before quiescing the service", async (t) => {
+  const { paths, lifecycle, calls } = await fixture(t, { sourceValidationFails: true, trackSources: true });
+  await assert.rejects(lifecycle.promote(), /invalid source/u);
+  assert.equal(await release(paths, "app"), "current");
+  await assert.rejects(readFile(join(paths.staging, "release")));
+  assert.deepEqual(calls, ["prepare", "compatibility"]);
 });
 
 test("a non-quiescent old service leaves slots unchanged and restores its ready selected app", async (t) => {
@@ -150,6 +164,23 @@ test("recovery restarts an unready sole app without deleting or replacing its by
   assert.equal(await release(paths, "app"), "current");
   await assert.rejects(readFile(join(paths.previous, "release")));
   assert.equal(await sqlite(paths), "sqlite-sentinel");
+});
+
+test("recovery validates external sources before accepting an already-ready selected app", async (t) => {
+  const { lifecycle, calls } = await fixture(t, { trackSources: true });
+  await lifecycle.recover();
+  assert.deepEqual(calls, ["validate-selected", "validate-selected", "ready"]);
+});
+
+test("recovery rejects a malformed selected source before changing fixed slots", async (t) => {
+  const { paths, lifecycle, calls } = await fixture(t, {
+    selectedSourceValidationFails: true,
+    trackSources: true,
+  });
+  await assert.rejects(lifecycle.recover(), /invalid selected source/u);
+  assert.equal(await release(paths, "app"), "current");
+  await assert.rejects(readFile(join(paths.previous, "release")));
+  assert.deepEqual(calls, []);
 });
 
 test("recovery restores the unready current app if app.previous cannot be selected", async (t) => {

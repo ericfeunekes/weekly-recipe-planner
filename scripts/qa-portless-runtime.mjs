@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareDevelopmentCodexHome } from "./support/codex-dev-home.mjs";
+import {
+  captureFoodSourceSnapshot,
+  discardFoodSourceSnapshot,
+} from "./support/production-agent-sources.mjs";
 
 import { acquirePlannerStoreWriteReservation } from "../server/store/sqlite-store.ts";
 
@@ -133,6 +137,7 @@ async function main() {
 
   let child;
   let childExit;
+  let foodSnapshot;
   const relaySignal = (signal) => {
     if (child?.exitCode === null && child.signalCode === null) child.kill(signal);
   };
@@ -140,11 +145,13 @@ async function main() {
   process.once("SIGTERM", () => relaySignal("SIGTERM"));
 
   try {
+    // Capture the vault-owned food sources before any QA process starts. The
+    // retained development Codex home carries auth/history only; this fresh
+    // CWD prevents later vault edits from changing the QA run.
+    foodSnapshot = await captureFoodSourceSnapshot({ destinationRoot: root });
     await snapshotRuntime(sourceRoot, runtimeDirectory);
-    // QA owns an isolated planner snapshot, but its Codex rail must connect to
-    // the same shared development home and fixed application cwd as `make dev`.
-    // Pointing it at the ephemeral runtime copy creates a second Codex context
-    // and invalidates the shared native session between QA deployments.
+    // QA owns an isolated planner snapshot while retaining the one native
+    // development Codex home, so its auth/history are never recreated.
     const development = await prepareDevelopmentCodexHome();
     const hasSnapshot = await snapshotData(source, databasePath);
     if (!hasSnapshot) {
@@ -161,7 +168,8 @@ async function main() {
         PLANNER_RUNTIME_OWNER_SOCKET: join(root, "runtime-owner.sock"),
         PLANNER_ALLOWED_ORIGINS: publicOrigin,
         PLANNER_CODEX_HOME: development.codexHome,
-        PLANNER_CODEX_CWD: development.appRoot,
+        PLANNER_CODEX_CWD: foodSnapshot.appRoot,
+        PLANNER_RECIPE_ROOT: foodSnapshot.recipeRoot,
         // QA has an isolated planner database, but it must exercise the same
         // embedded Codex mutation path as the app it verifies. The global
         // ingress stays disabled because its shared socket is not part of this
@@ -182,6 +190,7 @@ async function main() {
       child.kill("SIGTERM");
     }
     await childExit?.catch(() => undefined);
+    if (foodSnapshot) await discardFoodSourceSnapshot(foodSnapshot);
     await rm(root, { recursive: true, force: true });
   }
 }

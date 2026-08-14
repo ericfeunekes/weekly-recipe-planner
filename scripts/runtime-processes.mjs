@@ -127,6 +127,7 @@ export function createInstalledProcessSpecifications(
     ...environment,
     PLANNER_CODEX_HOME: agentDirectory,
     PLANNER_CODEX_CWD: appDirectory,
+    PLANNER_RECIPE_ROOT: join(agentDirectory, "recipes"),
     PLANNER_DATA_DIR: dataDirectory,
     PLANNER_RUNTIME_OWNER_SOCKET: join(runDirectory, "runtime-owner.sock"),
     PLANNER_INSTALLED_RUNTIME: "1",

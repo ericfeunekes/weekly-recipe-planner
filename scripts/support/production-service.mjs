@@ -140,6 +140,7 @@ export function renderProductionServicePlist({
     PLANNER_DATA_DIR: paths.dataRoot,
     PLANNER_CODEX_HOME: paths.agentRoot,
     PLANNER_CODEX_CWD: paths.appRoot,
+    PLANNER_RECIPE_ROOT: join(paths.agentRoot, "recipes"),
   };
   const variables = Object.entries(environment).map(([key, value]) =>
     `    <key>${escapeXml(key)}</key><string>${escapeXml(value)}</string>`).join("\n");
