@@ -12,6 +12,7 @@ test("application staging excludes all project-local Codex capability sources", 
     "CLAUDE.md",
     ".codex/config.toml",
     ".claude/CLAUDE.md",
+    ".agents/skills/meal-planning/SKILL.md",
   ]) {
     assert.equal(shouldStageApplicationPath(`${root}/${source}`, root), false, source);
   }
@@ -22,7 +23,6 @@ test("application staging retains runtime code and release-owned bundles", () =>
     "app/planner-client.tsx",
     "server/index.ts",
     "deployment/codex/config.toml",
-    ".agents/skills/meal-planning/SKILL.md",
   ]) {
     assert.equal(shouldStageApplicationPath(`${root}/${source}`, root), true, source);
   }

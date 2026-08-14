@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 import { shouldStageApplicationPath } from "./support/deployment-staging-filter.mjs";
 import {
+  linkProductionFoodSources,
   reconcileProductionAgentConfig,
   validateProductionAgentSources,
 } from "./support/production-agent-sources.mjs";
@@ -149,6 +150,7 @@ export async function deployProductionCandidate({
       if (!(await exists(join(paths.staging, "package.json")))) {
         throw new Error("Staged application is missing package.json.");
       }
+      await linkProductionFoodSources(home, { appRoot: paths.staging });
       await run("npm", ["ci"], { cwd: paths.staging, env: environment });
     },
     compatibilityPreflight(paths) {
@@ -157,6 +159,7 @@ export async function deployProductionCandidate({
     cleanupLegacyResidue: cleanupLegacyApplicationBackups,
     filesystem: await disposableRenameFaultFilesystem({ environment, home, label, paths: releasePaths }),
     async reconcile() {
+      await linkProductionFoodSources(home);
       await reconcileProductionAgentConfig(home);
       await validateProductionAgentSources(home);
       await productionService.writePlist();

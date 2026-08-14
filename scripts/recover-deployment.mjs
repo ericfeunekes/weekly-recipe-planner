@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import {
   reconcileProductionAgentConfig,
+  linkProductionFoodSources,
   validateProductionAgentSources,
 } from "./support/production-agent-sources.mjs";
 import { cleanupLegacyApplicationBackups } from "./support/production-legacy-cleanup.mjs";
@@ -84,6 +85,7 @@ const lifecycle = createProductionReleaseLifecycle({
   },
   cleanupLegacyResidue: cleanupLegacyApplicationBackups,
   async reconcile() {
+    await linkProductionFoodSources(home);
     await reconcileProductionAgentConfig(home);
     await validateProductionAgentSources(home);
     await productionService.writePlist();

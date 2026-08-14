@@ -1,10 +1,9 @@
 # Weekly Recipe Planner
 
 Use `make dev-start` from a worktree to run that worktree through Portless.
-It receives a unique local URL and refreshes the single shared development
-Codex home with independent copies resolved from the installed production
-instruction and skill links. `make dev-status` and `make dev-stop` manage that
-worktree runtime.
+It receives a unique local URL and uses the shared development Codex home with
+a per-run private copy of Obsidian-owned food skills and recipes. `make
+dev-status` and `make dev-stop` manage that worktree runtime.
 
 There are two persistent Codex homes: the shared development home and the
 production home. Worktree code is tested through the former, while its agent
@@ -19,18 +18,17 @@ not an embedded-planner instruction source and must never be copied, linked, or
 staged into the installed application or production `CODEX_HOME`. Root
 `AGENTS.override.md` and `CLAUDE.md` files have the same non-release status.
 
-The released embedded-planner instructions live only in
-`deployment/codex/AGENTS.md`; released planner skills live in
-`.agents/skills/`. Production exposes those two installed-app targets through
-the managed `CODEX_HOME/AGENTS.md` and `CODEX_HOME/.agents/skills` symlinks.
-Development and QA copy their resolved production contents rather than linking
-back to a mutable worktree. Drafts may be tested locally, but moving an update
-to production requires the explicit manual promotion path; never update through
-or replace either production link.
+The released embedded-planner instructions and configuration live only in
+`deployment/codex/`. Household food skills and recipes live only in
+`/Users/ericfeunekes/ai notes/personal/food`. Production follows managed links
+from its retained agent home through the selected app to the vault skills, and
+directly to the vault recipes. Development and QA retain their authenticated
+Codex home but receive a fresh private copy of those two vault roots per run.
+Never update through or replace a managed production link.
 
 `scripts/support/deployment-staging-filter.mjs` mechanically excludes the root
-instruction files while retaining `deployment/codex/AGENTS.md` and
-`.agents/skills/`. Preserve that distinction and its
+instruction files and all `.agents/skills` content while retaining
+`deployment/codex/`. Preserve that distinction and its
 `tests/deployment-staging-filter.test.mjs` proof whenever release staging or
 agent-source paths change.
 
@@ -69,8 +67,9 @@ consumer after the move.
 
 ## Food workflow skills
 
-Release-owned planner skills are in `.agents/skills/` and ship with every
-worktree and production release. Use the smallest matching skill:
+Food workflow skills are owned by the Obsidian food domain and are linked in
+production or copied privately for development and QA. Use the smallest
+matching skill:
 
 - `meal-planning` — choose and revise the week's meals.
 - `recipe-discovery-import` — find and source/import a recipe.
@@ -79,17 +78,19 @@ worktree and production release. Use the smallest matching skill:
 - `grocery-organization` — group recipe-derived grocery objects for shopping.
 - `meal-feedback` — interview meal outcomes and maintain taste evidence.
 
-All food workflow skills follow `.agents/skills/food-skill-runtime-contract.md`: planner
+All food workflow skills follow `food-skill-runtime-contract.md`: planner
 mutations are `read → preview → apply`; source facts, inventory inference,
 planned trials, and cooked evidence stay distinct. The skills name missing
 app-server operations rather than working around them with direct storage
 access.
 
 Food planning writes to the persistent production planner only. Portless
-worktrees validate code and the release-owned Codex bundle; they do not carry a
-household plan. A completed food-planning mutation has production readback and
-a rendered-week check for the meal, ingredients, instructions, source/plan
-notes, and timing.
+worktrees validate code against an isolated planner SQLite snapshot and private
+food copies; they do not carry a household plan. Recipe reading and admission
+semantics are owned by Issue 25; this boundary supplies only the configured
+recipe root. A completed food-planning mutation has production readback and a
+rendered-week check for the meal, ingredients, instructions, source/plan notes,
+and timing.
 
 Taste profiles are semantic memory: the food vault's shared
 `taste-profiles/TASTE_PROFILE.md` and person-specific

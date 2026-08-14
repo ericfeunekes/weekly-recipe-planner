@@ -82,6 +82,7 @@ export function createProductionReleaseLifecycle({
   service,
   compatibilityPreflight = async () => undefined,
   prepareCandidate = async () => undefined,
+  validateSources = async () => undefined,
   reconcile = async () => undefined,
   cleanupLegacyResidue = async () => undefined,
 } = {}) {
@@ -89,7 +90,7 @@ export function createProductionReleaseLifecycle({
   const fs = { ...defaultFilesystem, ...filesystem };
   for (const name of ["exists", "rename", "remove", "chmod"]) requireFunction(fs[name], `filesystem.${name}`);
   for (const name of ["quiesce", "bootstrap", "ready"]) requireFunction(service[name], `service.${name}`);
-  for (const [fn, name] of [[acquireLease, "acquireLease"], [compatibilityPreflight, "compatibilityPreflight"], [prepareCandidate, "prepareCandidate"], [reconcile, "reconcile"], [cleanupLegacyResidue, "cleanupLegacyResidue"]]) requireFunction(fn, name);
+  for (const [fn, name] of [[acquireLease, "acquireLease"], [compatibilityPreflight, "compatibilityPreflight"], [prepareCandidate, "prepareCandidate"], [validateSources, "validateSources"], [reconcile, "reconcile"], [cleanupLegacyResidue, "cleanupLegacyResidue"]]) requireFunction(fn, name);
 
   async function topology() {
     const [app, previous, staging, retiring] = await Promise.all(
@@ -111,6 +112,7 @@ export function createProductionReleaseLifecycle({
 
   async function bootstrapApp() {
     await reconcile(paths);
+    await validateSources(paths);
     await service.bootstrap(paths);
     if (!(await isReady())) throw new ReleaseLifecycleError("Selected planner app did not become ready.");
   }
@@ -179,6 +181,10 @@ export function createProductionReleaseLifecycle({
   }
 
   async function establishReadyApp() {
+    // A retained ready process cannot attest to the selected app's external
+    // food-source links. Validate before the ready shortcut, and never repair
+    // them from a normal promotion or recovery path.
+    await validateSources(paths);
     if (await isReady()) return { selected: "app", changed: false };
     if (!(await quiesce())) throw new ReleaseLifecycleError("Planner service did not become quiescent for recovery.");
     try {
@@ -205,6 +211,7 @@ export function createProductionReleaseLifecycle({
         // This shape is shared by an unready selected candidate and a ready
         // candidate awaiting only retiring cleanup.  Readiness is the causal
         // discriminator; never replace a ready selected app.
+        await validateSources(paths);
         if (await isReady()) return { changed: false };
         // Candidate had reached app but not readiness.  Reconstitute the former
         // current and its immediate prior before attempting another bootstrap.
@@ -227,6 +234,11 @@ export function createProductionReleaseLifecycle({
   }
 
   async function recoverUnderLease() {
+    // Recovery must not reinterpret fixed slots or clean residue until the
+    // retained and selected food-source chain is known valid.
+    const beforeRecovery = await topology();
+    const sourceApp = beforeRecovery.app ? paths.app : beforeRecovery.previous ? paths.previous : undefined;
+    await validateSources(paths, sourceApp === undefined ? {} : { appRoot: sourceApp });
     const normalized = await normalizeRecoveryTopology();
     const result = await establishReadyApp();
     await cleanupAfterReady();
@@ -272,6 +284,10 @@ export function createProductionReleaseLifecycle({
           await prepareCandidate(paths);
           if (!(await fs.exists(paths.staging))) throw new ReleaseLifecycleError("Candidate preparation did not create .app-staging.");
           await compatibilityPreflight(paths);
+          // The candidate remains non-selectable here. Its Vault skill link and
+          // the currently selected production links must both validate before
+          // the live service is quiesced.
+          await validateSources(paths, { candidate: true });
         } catch (error) {
           try { await removeTemporary(paths.staging); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Candidate preflight failed and staging cleanup failed."); }
           throw error;

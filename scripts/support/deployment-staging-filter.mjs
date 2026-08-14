@@ -20,5 +20,6 @@ export function shouldStageApplicationPath(source, sourceRoot) {
   if (EXCLUDED_TOP_LEVEL_ENTRIES.has(topLevelEntry)) return false;
 
   return relativePath !== ".codex" && !relativePath.startsWith(".codex/") &&
-    relativePath !== ".claude" && !relativePath.startsWith(".claude/");
+    relativePath !== ".claude" && !relativePath.startsWith(".claude/") &&
+    relativePath !== ".agents" && !relativePath.startsWith(".agents/");
 }
