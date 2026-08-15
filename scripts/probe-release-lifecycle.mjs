@@ -405,7 +405,7 @@ async function main() {
     const firstSlots = await slotProof(home);
     assert.deepEqual(firstSlots, {
       app: { exists: true, marker: "first\n" },
-      previous: { exists: false, marker: null },
+      previous: { exists: true, marker: null },
       staging: { exists: false, marker: null },
       retiring: { exists: false, marker: null },
     });
@@ -443,8 +443,9 @@ async function main() {
       );
     }
 
-    // The second shipped promotion creates the immediate previous slot. The
-    // marker distinguishes code-identical candidates without release metadata.
+    // The first promotion creates the initial previous slot; the second replaces
+    // it with the first-marked app. The marker distinguishes code-identical
+    // candidates without release metadata.
     await runNestedRelease("promote", candidate, environment);
     await writeFile(join(home, "meal-planner", "app", ".release-probe-marker"), "second\n", { mode: 0o600 });
     assert.deepEqual(await slotProof(home), {
