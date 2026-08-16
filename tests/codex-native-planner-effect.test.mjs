@@ -21,7 +21,7 @@ function initializedWorkspace() {
   });
   return {
     initialized: true,
-    schemaVersion: 10,
+    schemaVersion: 11,
     plannerVersion: 0,
     syncRevision: 1,
     state,
@@ -31,8 +31,8 @@ function initializedWorkspace() {
   };
 }
 
-function fakePlanner() {
-  let workspace = initializedWorkspace();
+function fakePlanner(initial = initializedWorkspace()) {
+  let workspace = initial;
   const calls = { preview: 0, apply: 0 };
   const applyOperations = (_request, context) => {
     calls.apply += 1;
@@ -165,6 +165,39 @@ test("native planner host reads and replays the exact result", async () => {
   assert.equal(sqlite.database.prepare(
     "SELECT count(*) AS count FROM codex_native_tool_calls",
   ).get().count, 1);
+  sqlite.close();
+});
+
+test("maximum catalogue continues across native turns without exceeding the per-turn call limit", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const initial = initializedWorkspace();
+  initial.state = {
+    householdTimeZone: "America/Halifax",
+    activeWeekId: null,
+    weeks: [],
+    ingredientCatalogue: {
+      revision: 7,
+      concepts: Array.from({ length: 1_000 }, (_, index) => ({ id: `concept-${index}`, preferredLabel: `Concept ${index}`, vocabulary: [], defaultSection: "Pantry" })),
+    },
+  };
+  const host = createNativePlannerEffectHost({ planner: fakePlanner(initial), store: createSqliteCodexThreadStore(sqlite), isEligibleCall: () => true, now: () => 101 });
+  const concepts = [];
+  let offset = 0;
+  let callIndex = 0;
+  while (offset !== null) {
+    const turnIndex = Math.floor(callIndex / 32);
+    const result = decode(await host.handle(callback("read", { query: { kind: "catalogue", offset } }, {
+      turnId: `turn-catalogue-${turnIndex}`,
+      callId: `call-catalogue-${callIndex}`,
+    })));
+    assert.equal(result.ok, true);
+    concepts.push(...result.data.ingredientCatalogue.concepts);
+    offset = result.data.ingredientCatalogue.nextOffset;
+    callIndex += 1;
+  }
+  assert.equal(callIndex, 250);
+  assert.equal(new Set(concepts.map(({ id }) => id)).size, 1_000);
+  assert.deepEqual(concepts.map(({ id }) => id), initial.state.ingredientCatalogue.concepts.map(({ id }) => id));
   sqlite.close();
 });
 

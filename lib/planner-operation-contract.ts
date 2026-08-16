@@ -7,6 +7,7 @@ import {
   type HouseholdCommand,
 } from "./household-command-contract.ts";
 import type { InitializedWorkspace } from "./planner-api-contract.ts";
+import { isIngredientCandidatePreview, type IngredientCandidateResult } from "./ingredient-catalogue.ts";
 import type { OccurrenceResolution } from "./ingredient-occurrence.ts";
 
 export const MIN_PLANNER_OPERATIONS = 1;
@@ -113,6 +114,7 @@ export type PlannerOperationsDecision =
       occurrenceResults: Array<{
         operationIndex: number;
         occurrences: OccurrenceResolution[];
+        ingredientCandidatePreview?: PlannerOperationPreview["ingredientCandidatePreview"];
       }>;
     }
   | {
@@ -138,6 +140,11 @@ export type PlannerOperationPreview = {
   target: string;
   changes: string[];
   occurrences: OccurrenceResolution[];
+  ingredientCandidatePreview?: {
+    inputDigest: string;
+    catalogueRevision: number;
+    results: IngredientCandidateResult[];
+  };
 };
 
 export type PreviewPlannerOperationsDecision =
@@ -193,9 +200,10 @@ export function isPlannerOperationsDecision(
         !isSafeVersion(value.plannerVersion) || !Array.isArray(value.occurrenceResults)) return false;
     if (operationCount !== undefined && value.occurrenceResults.length !== operationCount) return false;
     const valid = value.occurrenceResults.every((result, resultIndex) => {
-      if (!isRecord(result) || !hasExactKeys(result, ["operationIndex", "occurrences"]) ||
+      if (!isRecord(result) || !hasExactKeys(result, ["operationIndex", "occurrences", ...(Object.hasOwn(result, "ingredientCandidatePreview") ? ["ingredientCandidatePreview"] : [])]) ||
           !Number.isSafeInteger(result.operationIndex) || Number(result.operationIndex) < 0 ||
-          !Array.isArray(result.occurrences) || !result.occurrences.every(isOccurrenceResolution)) return false;
+          !Array.isArray(result.occurrences) || !result.occurrences.every(isOccurrenceResolution) ||
+          (result.ingredientCandidatePreview !== undefined && !isIngredientCandidatePreview(result.ingredientCandidatePreview))) return false;
       const index = Number(result.operationIndex);
       if (operationCount !== undefined && index >= operationCount) return false;
       if (index !== resultIndex) return false;
@@ -228,11 +236,12 @@ export function isPreviewPlannerOperationsDecision(
   if (operationCount !== undefined && value.outcomes.length !== operationCount) return false;
   return value.outcomes.every((outcome, outcomeIndex) => {
     if (!isRecord(outcome) ||
-        !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes", "occurrences"]) ||
+        !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes", "occurrences", ...(Object.hasOwn(outcome, "ingredientCandidatePreview") ? ["ingredientCandidatePreview"] : [])]) ||
         !Number.isSafeInteger(outcome.operationIndex) || Number(outcome.operationIndex) < 0 ||
         typeof outcome.summary !== "string" || typeof outcome.target !== "string" ||
         !Array.isArray(outcome.changes) || !outcome.changes.every((change) => typeof change === "string") ||
-        !Array.isArray(outcome.occurrences) || !outcome.occurrences.every(isOccurrenceResolution)) return false;
+        !Array.isArray(outcome.occurrences) || !outcome.occurrences.every(isOccurrenceResolution) ||
+        (outcome.ingredientCandidatePreview !== undefined && !isIngredientCandidatePreview(outcome.ingredientCandidatePreview))) return false;
     const index = Number(outcome.operationIndex);
     if (operationCount !== undefined && index >= operationCount) return false;
     if (index !== outcomeIndex) return false;

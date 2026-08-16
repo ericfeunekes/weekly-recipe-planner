@@ -8,6 +8,7 @@ import {
   type FeedbackValue,
   type GrocerySource,
   type GroceryCoverage,
+  type GrocerySection,
   type InstructionStepContentInput,
   type InstructionStepPlanInput,
   type IsoDate,
@@ -29,6 +30,13 @@ import {
   type InstructionInputEdit,
 } from "./ingredient-occurrence.ts";
 import {
+  INGREDIENT_CONCEPT_ID_PATTERN,
+  MAX_INGREDIENT_CONCEPT_ID,
+  MAX_INGREDIENT_CONCEPT_TEXT,
+  MAX_INGREDIENT_VOCABULARY,
+  type IngredientCandidateInput,
+} from "./ingredient-catalogue.ts";
+import {
   SOURCED_RECIPE_REPLACEMENT_SCHEMA,
   isSourcedRecipeReplacement,
   isLegacySourcedRecipeReplacement,
@@ -39,6 +47,14 @@ import {
 type WeekScoped = { weekId: WeekId };
 
 export type HouseholdCommand =
+  | { type: "previewIngredientCandidates"; inputs: IngredientCandidateInput[] }
+  | ({ type: "addIngredientOccurrence"; mealId: string; occurrence: IngredientOccurrenceEdit } & WeekScoped)
+  | ({ type: "resolveIngredientOccurrence"; mealId: string; occurrenceId: string; decision: { kind: "unresolved" } | { kind: "existing"; conceptId: string } | { kind: "create"; preferredLabel: string; vocabulary: string[]; defaultSection: GrocerySection } } & WeekScoped)
+  | ({ type: "applyIngredientResolutionBatch"; catalogueRevision: number; inputDigest: string; decisions: Array<({ correlationId: string; occurrenceId: string; amount: string; ingredient: string } | { correlationId: string; mealId: string; occurrence: Extract<IngredientOccurrenceEdit, { kind: "create" }> }) & { decision: { kind: "unresolved" } | { kind: "existing"; conceptId: string } | { kind: "create"; preferredLabel: string; vocabulary: string[]; defaultSection: GrocerySection } }> } & WeekScoped)
+  | { type: "createIngredientConcept"; conceptId: string; preferredLabel: string; vocabulary: string[]; defaultSection: GrocerySection }
+  | { type: "addIngredientVocabulary"; conceptId: string; vocabulary: string[] }
+  | { type: "renameIngredientConcept"; conceptId: string; preferredLabel: string }
+  | { type: "mergeIngredientConcepts"; survivorConceptId: string; mergedConceptIds: string[]; collisionPolicy: "reject" | "preferTarget" }
   | ({ type: "moveMeal"; mealId: string; targetDate: IsoDate } & WeekScoped)
   | ({ type: "reorderMeals"; date: IsoDate; mealIds: string[] } & WeekScoped)
   | ({ type: "swapMealDays"; firstDate: IsoDate; secondDate: IsoDate } & WeekScoped)
@@ -143,6 +159,7 @@ export const MAX_MEALS_PER_WEEK = 256;
 export const MAX_STEPS_PER_MEAL = 64;
 export const MAX_STEP_INPUTS = 32;
 export const MAX_INGREDIENT_LINES = 128;
+export const MAX_INGREDIENT_CANDIDATE_BATCH = 16;
 // Groceries are a 1:1 execution projection of canonical meal ingredients.
 // Keep this derived from the command-plan ceilings so no valid plan can fail
 // merely because its projected grocery rows outnumber an unrelated cap.
@@ -256,6 +273,19 @@ const occurrenceEditSchema = {
     { type: "object", additionalProperties: false, required: ["kind", "correlationId", "source", "amount", "unit", "ingredient", "qualifier", "conceptId", "canonicalIngredientId"], properties: { kind: { const: "create" }, correlationId: idSchema, source: nullableOccurrenceLiteralSchema, amount: occurrenceAmountSchema, unit: nullableOccurrenceLiteralSchema, ingredient: occurrenceCoreSchema, qualifier: nullableOccurrenceLiteralSchema, conceptId: nullableOccurrenceLiteralSchema, canonicalIngredientId: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] } } },
   ],
 };
+const grocerySectionSchema = { type: "string", enum: ["Produce", "Meat & seafood", "Dairy", "Pantry"] };
+const ingredientConceptTextSchema = { type: "string", minLength: 1, maxLength: MAX_INGREDIENT_CONCEPT_TEXT, pattern: "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$" };
+const ingredientConceptIdSchema = { type: "string", minLength: 1, maxLength: MAX_INGREDIENT_CONCEPT_ID, pattern: INGREDIENT_CONCEPT_ID_PATTERN };
+const ingredientConceptDecisionSchema = { oneOf: [
+  { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "unresolved" } } },
+  { type: "object", additionalProperties: false, required: ["kind", "conceptId"], properties: { kind: { const: "existing" }, conceptId: ingredientConceptIdSchema } },
+  { type: "object", additionalProperties: false, required: ["kind", "preferredLabel", "vocabulary", "defaultSection"], properties: { kind: { const: "create" }, preferredLabel: ingredientConceptTextSchema, vocabulary: { type: "array", maxItems: MAX_INGREDIENT_VOCABULARY, uniqueItems: true, items: ingredientConceptTextSchema }, defaultSection: grocerySectionSchema } },
+] };
+const ingredientResolutionDecisionSchema = { oneOf: [
+  { type: "object", additionalProperties: false, required: ["correlationId", "occurrenceId", "amount", "ingredient", "decision"], properties: { correlationId: idSchema, occurrenceId: idSchema, amount: occurrenceAmountSchema, ingredient: occurrenceCoreSchema, decision: ingredientConceptDecisionSchema } },
+  { type: "object", additionalProperties: false, required: ["correlationId", "mealId", "occurrence", "decision"], properties: { correlationId: idSchema, mealId: idSchema, occurrence: occurrenceEditSchema, decision: ingredientConceptDecisionSchema } },
+] };
+const ingredientCandidateInputSchema = { type: "object", additionalProperties: false, required: ["correlationId", "amount", "ingredient"], properties: { correlationId: idSchema, amount: occurrenceAmountSchema, ingredient: occurrenceCoreSchema, occurrenceId: idSchema, mealId: idSchema, source: nullableOccurrenceLiteralSchema, unit: nullableOccurrenceLiteralSchema, qualifier: nullableOccurrenceLiteralSchema, conceptId: nullableOccurrenceLiteralSchema, canonicalIngredientId: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] } } };
 const recipeEditChangesSchema = {
   type: "object", additionalProperties: false,
   required: ["title", "subtitle", "venue", "prepNote", "leftoverNote", "notes", "yieldText"],
@@ -360,6 +390,14 @@ function weekCommandSchemaWithOptional(
 }
 
 const HOUSEHOLD_COMMAND_SCHEMAS = {
+  previewIngredientCandidates: commandSchema("previewIngredientCandidates", { inputs: { type: "array", minItems: 1, maxItems: MAX_INGREDIENT_CANDIDATE_BATCH, items: ingredientCandidateInputSchema } }),
+  addIngredientOccurrence: weekCommandSchema("addIngredientOccurrence", { mealId: idSchema, occurrence: occurrenceEditSchema }),
+  resolveIngredientOccurrence: weekCommandSchema("resolveIngredientOccurrence", { mealId: idSchema, occurrenceId: idSchema, decision: ingredientConceptDecisionSchema }),
+  applyIngredientResolutionBatch: weekCommandSchema("applyIngredientResolutionBatch", { catalogueRevision: { type: "integer", minimum: 1 }, inputDigest: nonemptyTextSchema, decisions: { type: "array", minItems: 1, maxItems: MAX_INGREDIENT_CANDIDATE_BATCH, items: ingredientResolutionDecisionSchema } }),
+  createIngredientConcept: { type: "object", additionalProperties: false, required: ["type", "conceptId", "preferredLabel", "vocabulary", "defaultSection"], properties: { type: { const: "createIngredientConcept" }, conceptId: ingredientConceptIdSchema, preferredLabel: ingredientConceptTextSchema, vocabulary: { type: "array", maxItems: MAX_INGREDIENT_VOCABULARY, uniqueItems: true, items: ingredientConceptTextSchema }, defaultSection: grocerySectionSchema } },
+  addIngredientVocabulary: { type: "object", additionalProperties: false, required: ["type", "conceptId", "vocabulary"], properties: { type: { const: "addIngredientVocabulary" }, conceptId: ingredientConceptIdSchema, vocabulary: { type: "array", minItems: 1, maxItems: MAX_INGREDIENT_VOCABULARY, uniqueItems: true, items: ingredientConceptTextSchema } } },
+  renameIngredientConcept: { type: "object", additionalProperties: false, required: ["type", "conceptId", "preferredLabel"], properties: { type: { const: "renameIngredientConcept" }, conceptId: ingredientConceptIdSchema, preferredLabel: ingredientConceptTextSchema } },
+  mergeIngredientConcepts: { type: "object", additionalProperties: false, required: ["type", "survivorConceptId", "mergedConceptIds", "collisionPolicy"], properties: { type: { const: "mergeIngredientConcepts" }, survivorConceptId: ingredientConceptIdSchema, mergedConceptIds: { type: "array", minItems: 1, maxItems: MAX_INGREDIENT_VOCABULARY, uniqueItems: true, items: ingredientConceptIdSchema }, collisionPolicy: { type: "string", enum: ["reject", "preferTarget"] } } },
   moveMeal: weekCommandSchema("moveMeal", { mealId: idSchema, targetDate: isoDateSchema }),
   reorderMeals: weekCommandSchema("reorderMeals", { date: isoDateSchema, mealIds: { type: "array", minItems: 1, maxItems: MAX_MEALS_PER_WEEK, items: idSchema } }),
   swapMealDays: weekCommandSchema("swapMealDays", { firstDate: isoDateSchema, secondDate: isoDateSchema }),
@@ -464,6 +502,14 @@ function isText(value: unknown, maxLength = MAX_COMMAND_TEXT_LENGTH, allowEmpty 
 
 function isId(value: unknown): value is string {
   return isText(value, MAX_ID_LENGTH, false);
+}
+
+function isIngredientConceptId(value: unknown): value is string {
+  return typeof value === "string" && isText(value, MAX_INGREDIENT_CONCEPT_ID, false) && new RegExp(INGREDIENT_CONCEPT_ID_PATTERN, "u").test(value);
+}
+
+function isIngredientConceptText(value: unknown): value is string {
+  return typeof value === "string" && isText(value, MAX_INGREDIENT_CONCEPT_TEXT, false) && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function isIntegerInRange(value: unknown, minimum: number, maximum: number) {
@@ -614,8 +660,18 @@ function isWeekCommandWithOptional(
   return hasKeys(value, ["type", "weekId", ...fields], optionalFields) && isWeekId(value.weekId);
 }
 
+function isIngredientConceptDecision(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "unresolved") return hasKeys(value, ["kind"]);
+  if (value.kind === "existing") return hasKeys(value, ["kind", "conceptId"]) && isIngredientConceptId(value.conceptId);
+  return value.kind === "create" && hasKeys(value, ["kind", "preferredLabel", "vocabulary", "defaultSection"]) &&
+    isIngredientConceptText(value.preferredLabel) && Array.isArray(value.vocabulary) &&
+    value.vocabulary.length <= MAX_INGREDIENT_VOCABULARY && value.vocabulary.every(isIngredientConceptText) &&
+    ["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(value.defaultSection as string);
+}
+
 export type HouseholdCommandScope = "workspace" | "week";
-export type HouseholdCommandExposure = "ordinary" | "explicit_foreground" | "host_admission_required";
+export type HouseholdCommandExposure = "ordinary" | "explicit_foreground" | "host_admission_required" | "preview_only";
 
 type HouseholdCommandRegistryEntry = {
   schema: Record<string, unknown>;
@@ -625,6 +681,17 @@ type HouseholdCommandRegistryEntry = {
 };
 
 export const HOUSEHOLD_COMMAND_REGISTRY = {
+  previewIngredientCandidates: { schema: HOUSEHOLD_COMMAND_SCHEMAS.previewIngredientCandidates, scope: "workspace", exposure: "preview_only", validate: (value) => hasKeys(value, ["type", "inputs"]) && Array.isArray(value.inputs) && value.inputs.length >= 1 && value.inputs.length <= MAX_INGREDIENT_CANDIDATE_BATCH && value.inputs.every((entry) => isRecord(entry) && hasKeys(entry, ["correlationId", "amount", "ingredient"], ["occurrenceId", "mealId", "source", "unit", "qualifier", "conceptId", "canonicalIngredientId"]) && isId(entry.correlationId) && isText(entry.amount, MAX_OCCURRENCE_AMOUNT_LENGTH) && isText(entry.ingredient, MAX_OCCURRENCE_LITERAL_LENGTH, false) && (entry.occurrenceId === undefined || isId(entry.occurrenceId)) && (entry.mealId === undefined || isId(entry.mealId)) && [entry.source, entry.unit, entry.qualifier, entry.conceptId].every((literal) => literal === undefined || literal === null || isText(literal, MAX_OCCURRENCE_LITERAL_LENGTH)) && (entry.canonicalIngredientId === undefined || entry.canonicalIngredientId === null || isIntegerInRange(entry.canonicalIngredientId, 1, Number.MAX_SAFE_INTEGER))) && new Set(value.inputs.map((entry) => entry.correlationId)).size === value.inputs.length },
+  addIngredientOccurrence: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addIngredientOccurrence, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "occurrence"]) && isId(value.mealId) && isIngredientOccurrenceEdit(value.occurrence) },
+  resolveIngredientOccurrence: { schema: HOUSEHOLD_COMMAND_SCHEMAS.resolveIngredientOccurrence, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "occurrenceId", "decision"]) && isId(value.mealId) && isId(value.occurrenceId) && isIngredientConceptDecision(value.decision) },
+  applyIngredientResolutionBatch: { schema: HOUSEHOLD_COMMAND_SCHEMAS.applyIngredientResolutionBatch, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["catalogueRevision", "inputDigest", "decisions"]) && isIntegerInRange(value.catalogueRevision, 1, Number.MAX_SAFE_INTEGER) && isText(value.inputDigest, MAX_COMMAND_TEXT_LENGTH, false) && Array.isArray(value.decisions) && value.decisions.length >= 1 && value.decisions.length <= MAX_INGREDIENT_CANDIDATE_BATCH && value.decisions.every((entry) => isRecord(entry) && isId(entry.correlationId) && isIngredientConceptDecision(entry.decision) && (
+    (hasKeys(entry, ["correlationId", "occurrenceId", "amount", "ingredient", "decision"]) && isId(entry.occurrenceId) && isText(entry.amount, MAX_OCCURRENCE_AMOUNT_LENGTH) && isText(entry.ingredient, MAX_OCCURRENCE_LITERAL_LENGTH, false)) ||
+    (hasKeys(entry, ["correlationId", "mealId", "occurrence", "decision"]) && isId(entry.mealId) && isIngredientOccurrenceEdit(entry.occurrence) && entry.occurrence.kind === "create" && entry.occurrence.correlationId === entry.correlationId)
+  )) && new Set(value.decisions.map((entry) => entry.correlationId)).size === value.decisions.length && (() => { const ids = value.decisions.filter((entry) => isRecord(entry) && typeof entry.occurrenceId === "string").map((entry) => (entry as Record<string, unknown>).occurrenceId); return new Set(ids).size === ids.length; })() },
+  createIngredientConcept: { schema: HOUSEHOLD_COMMAND_SCHEMAS.createIngredientConcept, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "conceptId", "preferredLabel", "vocabulary", "defaultSection"]) && isIngredientConceptId(value.conceptId) && isIngredientConceptText(value.preferredLabel) && Array.isArray(value.vocabulary) && value.vocabulary.length <= MAX_INGREDIENT_VOCABULARY && value.vocabulary.every(isIngredientConceptText) && ["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(value.defaultSection as string) },
+  addIngredientVocabulary: { schema: HOUSEHOLD_COMMAND_SCHEMAS.addIngredientVocabulary, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "conceptId", "vocabulary"]) && isIngredientConceptId(value.conceptId) && Array.isArray(value.vocabulary) && value.vocabulary.length >= 1 && value.vocabulary.length <= MAX_INGREDIENT_VOCABULARY && value.vocabulary.every(isIngredientConceptText) },
+  renameIngredientConcept: { schema: HOUSEHOLD_COMMAND_SCHEMAS.renameIngredientConcept, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "conceptId", "preferredLabel"]) && isIngredientConceptId(value.conceptId) && isIngredientConceptText(value.preferredLabel) },
+  mergeIngredientConcepts: { schema: HOUSEHOLD_COMMAND_SCHEMAS.mergeIngredientConcepts, scope: "workspace", exposure: "ordinary", validate: (value) => hasKeys(value, ["type", "survivorConceptId", "mergedConceptIds", "collisionPolicy"]) && isIngredientConceptId(value.survivorConceptId) && Array.isArray(value.mergedConceptIds) && value.mergedConceptIds.length >= 1 && value.mergedConceptIds.length <= MAX_INGREDIENT_VOCABULARY && value.mergedConceptIds.every(isIngredientConceptId) && new Set(value.mergedConceptIds).size === value.mergedConceptIds.length && !value.mergedConceptIds.includes(value.survivorConceptId) && ["reject", "preferTarget"].includes(value.collisionPolicy as string) },
   moveMeal: { schema: HOUSEHOLD_COMMAND_SCHEMAS.moveMeal, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "targetDate"]) && isId(value.mealId) && isIsoDate(value.targetDate) },
   reorderMeals: { schema: HOUSEHOLD_COMMAND_SCHEMAS.reorderMeals, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["date", "mealIds"]) && isIsoDate(value.date) && Array.isArray(value.mealIds) && value.mealIds.length >= 1 && value.mealIds.length <= MAX_MEALS_PER_WEEK && value.mealIds.every(isId) && new Set(value.mealIds).size === value.mealIds.length },
   swapMealDays: { schema: HOUSEHOLD_COMMAND_SCHEMAS.swapMealDays, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["firstDate", "secondDate"]) && isIsoDate(value.firstDate) && isIsoDate(value.secondDate) && value.firstDate !== value.secondDate },

@@ -34,6 +34,14 @@ const step = {
 };
 
 const fixtures = {
+  previewIngredientCandidates: { type: "previewIngredientCandidates", inputs: [{ correlationId: "line-1", amount: "1", ingredient: "rice" }] },
+  addIngredientOccurrence: { type: "addIngredientOccurrence", weekId, mealId: id, occurrence },
+  resolveIngredientOccurrence: { type: "resolveIngredientOccurrence", weekId, mealId: id, occurrenceId: id, decision: { kind: "existing", conceptId: "rice" } },
+  applyIngredientResolutionBatch: { type: "applyIngredientResolutionBatch", weekId, catalogueRevision: 1, inputDigest: "digest", decisions: [{ correlationId: "line-1", occurrenceId: id, amount: "1", ingredient: "rice", decision: { kind: "unresolved" } }] },
+  createIngredientConcept: { type: "createIngredientConcept", conceptId: "rice", preferredLabel: "Rice", vocabulary: ["white rice"], defaultSection: "Pantry" },
+  addIngredientVocabulary: { type: "addIngredientVocabulary", conceptId: "rice", vocabulary: ["long grain rice"] },
+  renameIngredientConcept: { type: "renameIngredientConcept", conceptId: "rice", preferredLabel: "White rice" },
+  mergeIngredientConcepts: { type: "mergeIngredientConcepts", survivorConceptId: "rice", mergedConceptIds: ["basmati-rice"], collisionPolicy: "reject" },
   moveMeal: { type: "moveMeal", weekId, mealId: id, targetDate: "2026-07-07" },
   reorderMeals: { type: "reorderMeals", weekId, date: "2026-07-07", mealIds: [id, "id-2"] },
   swapMealDays: { type: "swapMealDays", weekId, firstDate: "2026-07-06", secondDate: "2026-07-07" },
@@ -106,6 +114,22 @@ test("one registry derives every command validator, schema variant, and authorit
     "host_admission_required",
   );
   assert.equal(HOUSEHOLD_COMMAND_AUTHORITY_MANIFEST.permanentlyDeniedOperations.includes("undoLatest"), true);
+});
+
+test("ingredient catalogue commands enforce provider and runtime capacity and identity limits", () => {
+  const ajv = new Ajv({ allErrors: true, schemaId: "auto" });
+  const validateProvider = ajv.compile(HOUSEHOLD_COMMAND_PROVIDER_SCHEMA);
+  const seventeenInputs = { type: "previewIngredientCandidates", inputs: Array.from({ length: 17 }, (_, index) => ({ correlationId: `line-${index}`, amount: "1", ingredient: "rice" })) };
+  const thirtyThreeWords = { type: "createIngredientConcept", conceptId: "new-rice", preferredLabel: "New rice", vocabulary: Array.from({ length: 33 }, (_, index) => `rice-${index}`), defaultSection: "Pantry" };
+  const duplicateTarget = { ...fixtures.applyIngredientResolutionBatch, decisions: [
+    fixtures.applyIngredientResolutionBatch.decisions[0],
+    { ...fixtures.applyIngredientResolutionBatch.decisions[0], correlationId: "line-2" },
+  ] };
+  for (const command of [seventeenInputs, thirtyThreeWords]) {
+    assert.equal(isHouseholdCommand(command), false);
+    assert.equal(validateProvider(command), false);
+  }
+  assert.equal(isHouseholdCommand(duplicateTarget), false, "different correlations cannot target the same existing occurrence");
 });
 
 test("source provenance can enter only through sourced replacement, never ordinary recipe editing", () => {

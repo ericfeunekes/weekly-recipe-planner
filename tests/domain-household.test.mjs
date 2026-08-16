@@ -1146,7 +1146,7 @@ test("recipe edits retain, reorder, duplicate, split, replace, and atomically un
     mealId: meal.id,
     changes: recipeChanges(meal),
     occurrences: [
-      ...retainOccurrences(activeWeek(nonCore.state).data.meals.find((candidate) => candidate.id === meal.id), { [peppers.id]: { ingredient: "red onions", conceptId: "onion" } }).reverse(),
+      ...retainOccurrences(activeWeek(nonCore.state).data.meals.find((candidate) => candidate.id === meal.id), { [peppers.id]: { ingredient: "red onions", conceptId: "red-onion" } }).reverse(),
       { kind: "create", correlationId: "duplicate-pepper", source: "1 red pepper", amount: "1", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },
       { kind: "create", correlationId: "split-pepper-a", source: "1/2 red pepper", amount: "1/2", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },
       { kind: "create", correlationId: "split-pepper-b", source: "1/2 red pepper", amount: "1/2", unit: null, ingredient: "red peppers", qualifier: null, conceptId: null, canonicalIngredientId: null },

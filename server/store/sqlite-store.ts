@@ -308,18 +308,18 @@ function parseJson<T>(text: string, label: string): T {
   }
 }
 
-function normalizeStoredLegacyHouseholdState(database: DatabaseSync): void {
-  try {
+function normalizeStoredLegacyHouseholdState(database: DatabaseSync, transactionOwned = false): void {
+  if (!transactionOwned) try {
     database.exec("BEGIN IMMEDIATE");
   } catch (error) {
-    throw new PlannerStoreError(
-      "MIGRATION_FAILED",
-      "Legacy household state normalization could not start.",
-      { cause: error },
-    );
+    throw new PlannerStoreError("MIGRATION_FAILED", "Legacy household state normalization could not start.", { cause: error });
   }
 
   try {
+    const assertNormalizedState = (state: HouseholdPlannerState, label: string) => {
+      const validation = validateHouseholdState(state);
+      if (!validation.ok) throw new PlannerStoreError("MIGRATION_FAILED", `${label} is invalid after ingredient catalogue migration: ${validation.issues.map(({ path, message }) => `${path}: ${message}`).join("; ")}`);
+    };
     const workspace = database
       .prepare("SELECT state_json FROM workspace WHERE id = 'household'")
       .get() as { state_json: string } | undefined;
@@ -327,6 +327,7 @@ function normalizeStoredLegacyHouseholdState(database: DatabaseSync): void {
       const normalized = normalizeLegacyHouseholdState(
         parseJson<HouseholdPlannerState>(workspace.state_json, "workspace state"),
       );
+      assertNormalizedState(normalized.state, "Workspace state");
       if (normalized.changed) {
         database
           .prepare(
@@ -351,6 +352,7 @@ function normalizeStoredLegacyHouseholdState(database: DatabaseSync): void {
           "planner event undo state",
         ),
       );
+      assertNormalizedState(normalized.state, "Planner event undo state");
       if (normalized.changed) {
         updateEvent.run(JSON.stringify(normalized.state), event.sequence);
       }
@@ -391,13 +393,19 @@ function normalizeStoredLegacyHouseholdState(database: DatabaseSync): void {
         );
       }
     }
-    database.exec("COMMIT");
-  } catch (error) {
-    try {
-      database.exec("ROLLBACK");
-    } catch {
-      // Preserve the normalization failure.
+    const nativeToolCalls = database.prepare(
+      "SELECT thread_id, turn_id, call_id, result_envelope_json FROM codex_native_tool_calls WHERE result_envelope_json IS NOT NULL",
+    ).all() as Array<{ thread_id: string; turn_id: string; call_id: string; result_envelope_json: string }>;
+    const updateNativeToolResult = database.prepare(
+      "UPDATE codex_native_tool_calls SET result_envelope_json = ? WHERE thread_id = ? AND turn_id = ? AND call_id = ?",
+    );
+    for (const toolCall of nativeToolCalls) {
+      const normalized = normalizeLegacyHouseholdPayload(parseJson<unknown>(toolCall.result_envelope_json, "native planner tool result"));
+      if (normalized.changed) updateNativeToolResult.run(JSON.stringify(normalized.value), toolCall.thread_id, toolCall.turn_id, toolCall.call_id);
     }
+    if (!transactionOwned) database.exec("COMMIT");
+  } catch (error) {
+    if (!transactionOwned) try { database.exec("ROLLBACK"); } catch { /* Preserve the normalization failure. */ }
     if (error instanceof PlannerStoreError) throw error;
     throw new PlannerStoreError(
       "MIGRATION_FAILED",
@@ -422,7 +430,7 @@ function appendHouseholdStateValidationIssues(
   path: string,
   issues: IngredientOccurrenceUpgradeIssue[],
 ): void {
-  const validation = validateHouseholdState(state);
+  const validation = validateHouseholdState(state, { allowMissingIngredientCatalogue: true });
   if (validation.ok) return;
   for (const issue of validation.issues) {
     issues.push({
@@ -1439,6 +1447,7 @@ function applyMigrations(database: DatabaseSync, startingVersion: number): void 
     database.exec("BEGIN IMMEDIATE");
     try {
       executeMigrationEntry(database, migration);
+      if (migration.version === 11) normalizeStoredLegacyHouseholdState(database, true);
       database.exec("COMMIT");
       currentVersion = migration.version;
     } catch (error) {
@@ -1848,10 +1857,10 @@ export function migratePlannerStoreV9ToV10({
   backupFilename: string;
 }): PlannerStoreV9ToV10MigrationResult {
   assertPlannerSchemaContract();
-  if (CURRENT_SCHEMA_VERSION !== 10) {
+  if (CURRENT_SCHEMA_VERSION < 10) {
     throw new PlannerStoreError(
       "MIGRATION_FAILED",
-      "The one-time SQLite v9-to-v10 command is unavailable after the schema catalogue advances.",
+      "The one-time SQLite v9-to-v10 command requires the schema-10 catalogue entry.",
     );
   }
   if (!isAbsolute(filename) || !isAbsolute(backupFilename)) {

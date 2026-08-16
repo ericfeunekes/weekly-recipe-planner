@@ -195,7 +195,7 @@ export function PrepView(props: PrepViewProps) {
   const selectedDirectSourceStepIds = selectedSession?.steps
     .filter((entry): entry is Extract<typeof entry, { stepId: string }> => selectedEntryIds.has(entry.id) && "stepId" in entry)
     .map((entry) => entry.stepId) ?? [];
-  const projectionState = { householdTimeZone: "UTC", activeWeekId: week.id, weeks: [week] };
+  const projectionState = { householdTimeZone: "UTC", activeWeekId: week.id, weeks: [week], ingredientCatalogue: { revision: 1, concepts: [] } };
   const preparedStepIds = preparedInBatchStepIds(projectionState);
   const combinePreview = projectCombinedPrepDraft(projectionState, selectedDirectSourceStepIds);
   const selectedSessionDropPosition = dropInsertion && dropInsertion.prepDate === selectedPrepDate

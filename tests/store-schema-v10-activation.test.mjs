@@ -14,7 +14,7 @@ import {
 } from "../server/store/sqlite-store.ts";
 import { PLANNER_SCHEMA_MIGRATIONS } from "../server/store/schema-contract.ts";
 import { isPlannerToolResultForTool } from "../lib/planner-tool-contract.ts";
-import { householdDomain, validateHouseholdState } from "../lib/household-domain.ts";
+import { householdDomain } from "../lib/household-domain.ts";
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
 
 function temporaryDirectory(t) {
@@ -51,7 +51,7 @@ function v9State() {
               unit: "bulb",
               ingredient: "fennel",
               qualifier: "large, sliced",
-              conceptId: "fennel",
+              conceptId: "scallion",
               role: "weekly_requirement",
               canonicalIngredientId: 12,
             },
@@ -354,6 +354,17 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
   assert.equal(existsSync(`${backupFilename}-wal`), false);
   assert.equal(existsSync(`${backupFilename}-shm`), false);
 
+  const beforeSecondMigration = logicalInventory(filename);
+  const artifactsBeforeSecondMigration = artifactInventory(filename);
+  const secondBackup = join(directory, "second.sqlite");
+  const secondMigration = migratePlannerStoreV9ToV10({ filename, backupFilename: secondBackup });
+  assert.equal(secondMigration.backup, null);
+  assert.deepEqual(secondMigration.migration, { from: 10, to: 10, allowedChanges: [] });
+  assert.equal(secondMigration.database.schemaVersion, 10);
+  assert.deepEqual(logicalInventory(filename), beforeSecondMigration);
+  assert.deepEqual(artifactInventory(filename), artifactsBeforeSecondMigration);
+  assert.equal(existsSync(secondBackup), false);
+
   const database = new DatabaseSync(filename, { readOnly: true });
   try {
     const workspace = database.prepare(
@@ -373,7 +384,7 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
       unit: "bulb",
       ingredient: "fennel",
       qualifier: "large, sliced",
-      conceptId: "fennel",
+      conceptId: "scallion",
       role: "weekly_requirement",
       canonicalIngredientId: 12,
     }, "canonical source fields survive without replacing the opaque planner ID");
@@ -438,7 +449,8 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
         const envelope = JSON.parse(row.result_envelope_json);
         assert.equal(isPlannerToolResultForTool(row.tool, envelope), true, `${table} ${row.tool} envelope must validate after upgrade`);
         if (row.tool === "read") {
-          assert.deepEqual(validateHouseholdState({ householdTimeZone: "America/Halifax", activeWeekId: envelope.data.week.id, weeks: [envelope.data.week] }), { ok: true });
+          assert.equal(envelope.data.ingredientCatalogue.offset, 0);
+          assert.ok(envelope.data.ingredientCatalogue.concepts.length <= 4);
           assert.deepEqual(envelope.data.week.data.meals[0].ingredients.map(({ id }) => id), [
             "pepper-one", "pepper-two", "fennel-bulb",
           ]);
@@ -460,7 +472,20 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
   const migratedStore = openPlannerStore({ filename });
   const migrated = migratedService(migratedStore);
   const workspaceBeforeEdit = migrated.readWorkspace();
+  assert.equal(workspaceBeforeEdit.schemaVersion, 11);
+  const migratedFennelConceptId = workspaceBeforeEdit.state.weeks[0].data.meals[0].ingredients[2].conceptId;
+  assert.notEqual(migratedFennelConceptId, "scallion", "a legacy reference colliding with core vocabulary receives a bounded collision-safe identity");
+  assert.ok(workspaceBeforeEdit.state.ingredientCatalogue.concepts.some(({ id }) => id === migratedFennelConceptId), "schema 11 retains a safe concept for every legacy resolution");
   const mealBeforeEdit = workspaceBeforeEdit.state.weeks[0].data.meals[0];
+  assert.deepEqual(
+    mealBeforeEdit.ingredients[2],
+    {
+      id: "fennel-bulb", source: "1½ large fennel bulbs, sliced", amount: "1½", unit: "bulb",
+      ingredient: "fennel", qualifier: "large, sliced", conceptId: migratedFennelConceptId,
+      role: "weekly_requirement", canonicalIngredientId: 12,
+    },
+    "catalogue migration must not rewrite occurrence identity or literal recipe fields",
+  );
   const editRequest = {
     requestId: "migrated-occurrence-edit",
     basePlannerVersion: workspaceBeforeEdit.plannerVersion,
@@ -514,28 +539,17 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
 
   const beforeCurrentOpen = logicalInventory(filename);
   const firstReopen = openPlannerStore({ filename });
-  assert.equal(firstReopen.readWorkspace().schemaVersion, 10);
-  assert.equal(firstReopen.readWorkspace().syncRevision, 10);
+  assert.equal(firstReopen.readWorkspace().schemaVersion, 11);
+  assert.equal(firstReopen.readWorkspace().syncRevision, 11);
   firstReopen.close();
   assert.deepEqual(logicalInventory(filename), beforeCurrentOpen, "a current schema open must not rewrite any logical row");
   const secondReopen = openPlannerStore({ filename });
-  assert.equal(secondReopen.readWorkspace().schemaVersion, 10);
+  assert.equal(secondReopen.readWorkspace().schemaVersion, 11);
   secondReopen.close();
   assert.deepEqual(logicalInventory(filename), beforeCurrentOpen, "a second current-schema open must remain logically idempotent");
   const integrity = new DatabaseSync(filename, { readOnly: true });
   assert.equal(integrity.prepare("PRAGMA quick_check").get().quick_check, "ok");
   integrity.close();
-
-  const beforeSecondMigration = logicalInventory(filename);
-  const artifactsBeforeSecondMigration = artifactInventory(filename);
-  const secondBackup = join(directory, "second.sqlite");
-  const secondMigration = migratePlannerStoreV9ToV10({ filename, backupFilename: secondBackup });
-  assert.equal(secondMigration.backup, null);
-  assert.deepEqual(secondMigration.migration, { from: 10, to: 10, allowedChanges: [] });
-  assert.equal(secondMigration.database.schemaVersion, 10);
-  assert.deepEqual(logicalInventory(filename), beforeSecondMigration);
-  assert.deepEqual(artifactInventory(filename), artifactsBeforeSecondMigration);
-  assert.equal(existsSync(secondBackup), false);
 });
 
 test("startup upgrades a schema-8 accepted apply envelope before current-contract validation", (t) => {
@@ -558,7 +572,7 @@ test("startup upgrades a schema-8 accepted apply envelope before current-contrac
     const envelope = JSON.parse(row.result_envelope_json);
     assert.deepEqual(envelope.data.occurrenceResults, [{ operationIndex: 0, occurrences: [] }]);
     assert.equal(isPlannerToolResultForTool("apply", envelope), true);
-    assert.equal(store.readWorkspace().schemaVersion, 10);
+    assert.equal(store.readWorkspace().schemaVersion, 11);
   } finally {
     store.close();
   }

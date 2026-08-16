@@ -3,6 +3,7 @@ import { createServer, request as requestHttp } from "node:http";
 import test from "node:test";
 
 import { householdDomain } from "../lib/household-domain.ts";
+import { createCoreIngredientCatalogue } from "../lib/ingredient-catalogue.ts";
 import {
   DIAGNOSTIC_EXPORT_FILENAME,
   DIAGNOSTIC_EXPORT_FORMAT_VERSION,
@@ -130,6 +131,7 @@ async function startRealSourcedApplication(t) {
   const seed = {
     householdTimeZone: "America/Halifax",
     activeWeekId: "2026-07-06",
+    ingredientCatalogue: createCoreIngredientCatalogue(),
     weeks: [{
       id: "2026-07-06",
       weekStartDate: "2026-07-06",

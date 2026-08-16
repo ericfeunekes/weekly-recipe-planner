@@ -621,7 +621,7 @@ test("native planner call fences recover, replay, and reject changed identity", 
     call.callId,
     { plannerVersion: 0, syncRevision: 0 },
     3,
-    { kind: "workspace", activeWeekId: null, weeks: [] },
+    { kind: "workspace", activeWeekId: null, weeks: [], ingredientCatalogue: { revision: 1, offset: 0, totalConcepts: 0, nextOffset: null, concepts: [] } },
   );
   assert.equal(store.completePlannerToolCall({
     ...call,
@@ -759,7 +759,7 @@ test("migration 006 preserves populated v5 planner receipts exactly", async (t) 
   assert.deepEqual(preserved, receipt);
   assert.equal(upgraded.database.prepare(
     "SELECT max(version) AS version FROM schema_migrations",
-  ).get().version, 10);
+  ).get().version, 11);
   assert.throws(
     () => upgraded.insertReceipt(upgraded.database, {
       ...receipt,

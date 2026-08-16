@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import { householdDomain } from "../lib/household-domain.ts";
+import { createCoreIngredientCatalogue } from "../lib/ingredient-catalogue.ts";
 import {
   DIAGNOSTIC_EXPORT_FORMAT_VERSION,
   DIAGNOSTIC_EXPORT_KIND,
@@ -34,6 +35,7 @@ function seedState(lesson = "Initial lesson") {
   return {
     householdTimeZone: "America/Halifax",
     activeWeekId: "2026-07-06",
+    ingredientCatalogue: createCoreIngredientCatalogue(),
     weeks: [
       {
         id: "2026-07-06",
@@ -323,6 +325,50 @@ test("commits one event, resolves two stale writers, and replays immutable decis
   reopened.close();
 });
 
+test("catalogue rename is evented, undoable, replayable, and durable across restart", (t) => {
+  const filename = temporaryDatabase(t);
+  let id = 0;
+  const catalogueDependencies = (store) => ({
+    store,
+    domain: householdDomain,
+    seedFactory: () => createCanonicalSeed({ now: Date.UTC(2026, 6, 6), createId: (prefix) => `${prefix}-catalogue-seed-${++id}` }),
+    transformLegacyV2: () => { throw new Error("unused"); },
+    clock: { now: () => Date.UTC(2026, 6, 6) + id },
+    idFactory: { createId: (prefix) => `${prefix}-catalogue-event-${++id}` },
+  });
+  const store = openPlannerStore({ filename });
+  const service = createPlannerApplicationService(catalogueDependencies(store));
+  service.bootstrap({ requestId: "bootstrap-catalogue-lifecycle", mode: "seed" });
+  const renamed = service.applyCommand({
+    requestId: "rename-garlic",
+    basePlannerVersion: 0,
+    command: { type: "renameIngredientConcept", conceptId: "garlic", preferredLabel: "Fresh garlic" },
+  });
+  assert.equal(renamed.decision.status, "accepted");
+  assert.equal(renamed.workspace.events[0].command.type, "renameIngredientConcept");
+  assert.equal(renamed.workspace.state.ingredientCatalogue.concepts.find(({ id: conceptId }) => conceptId === "garlic").preferredLabel, "Fresh garlic");
+  const undone = service.undoLatest({
+    requestId: "undo-garlic-rename",
+    basePlannerVersion: renamed.workspace.plannerVersion,
+    targetEventId: renamed.decision.eventId,
+  });
+  assert.equal(undone.decision.status, "accepted");
+  assert.equal(undone.workspace.state.ingredientCatalogue.concepts.find(({ id: conceptId }) => conceptId === "garlic").preferredLabel, "Garlic");
+  store.close();
+
+  const reopened = openPlannerStore({ filename });
+  const restarted = createPlannerApplicationService(catalogueDependencies(reopened));
+  assert.equal(restarted.readWorkspace().state.ingredientCatalogue.concepts.find(({ id: conceptId }) => conceptId === "garlic").preferredLabel, "Garlic");
+  const replayed = restarted.applyCommand({
+    requestId: "rename-garlic",
+    basePlannerVersion: 0,
+    command: { type: "renameIngredientConcept", conceptId: "garlic", preferredLabel: "Fresh garlic" },
+  });
+  assert.deepEqual(replayed.decision, renamed.decision);
+  assert.equal(replayed.workspace.events.length, 2);
+  reopened.close();
+});
+
 test("latest-only undo restores one prior state and cannot erase later work", () => {
   const store = openPlannerStore({ filename: ":memory:" });
   const service = createPlannerApplicationService(dependencies(store));
@@ -419,7 +465,7 @@ test("v1 planner receipts replay unchanged after the v2 migration", (t) => {
     plannerVersion: 1,
     occurrenceResults: [{ operationIndex: 0, occurrences: [] }],
   });
-  assert.equal(replay.workspace.schemaVersion, 10);
+  assert.equal(replay.workspace.schemaVersion, 11);
   assert.equal(replay.workspace.plannerVersion, 1);
   assert.equal(replay.workspace.events.length, 1);
   assert.deepEqual(replay.workspace.events[0].provenance, {
@@ -485,7 +531,7 @@ test("bootstrap is atomic, imports transcript once, and arbitrates a second clie
     payload: { data: {}, events: [], chatMessages: [] },
   };
   assert.throws(() => serviceA.bootstrap(importRequest), /bootstrap failure/);
-  assert.deepEqual(serviceA.readWorkspace(), { initialized: false, schemaVersion: 10 });
+  assert.deepEqual(serviceA.readWorkspace(), { initialized: false, schemaVersion: 11 });
   fail = false;
   const imported = serviceA.bootstrap(importRequest);
   assert.equal(imported.imported, true);
@@ -516,7 +562,7 @@ test("bootstrap is atomic, imports transcript once, and arbitrates a second clie
   assert.equal(exported.formatVersion, DIAGNOSTIC_EXPORT_FORMAT_VERSION);
   assert.equal(exported.restorable, false);
   assert.equal(exported.warning, DIAGNOSTIC_EXPORT_WARNING);
-  assert.equal(exported.schemaVersion, 10);
+  assert.equal(exported.schemaVersion, 11);
   assert.equal(exported.transcriptEntries.length, 1);
   assert.equal(exported.events.length, 0);
   storeB.close();
@@ -546,7 +592,7 @@ test("invalid legacy bootstrap fails visibly without initializing the workspace"
       error.code === "INVALID_REQUEST" &&
       error.fieldErrors["data.prep[0].due"] === "Expected an ISO date.",
   );
-  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 10 });
+  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 11 });
   assert.throws(
     () => service.readEventPage({}),
     (error) => error instanceof PlannerServiceError && error.code === "NOT_INITIALIZED",

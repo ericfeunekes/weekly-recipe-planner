@@ -11,6 +11,7 @@ import {
   isPrepSessionDirectStep,
   isWeekId,
   type GroceryItem,
+  type IngredientConcept,
   type HouseholdPlannerState,
   type InstructionStep,
   type IsoDate,
@@ -48,6 +49,17 @@ import {
   type InstructionInputEdit,
   type OccurrenceResolution,
 } from "./ingredient-occurrence.ts";
+import {
+  conceptVocabulary,
+  findIngredientCandidates,
+  ingredientCandidateDigest,
+  INGREDIENT_CONCEPT_ID_PATTERN,
+  MAX_INGREDIENT_CONCEPT_ID,
+  MAX_INGREDIENT_CONCEPTS,
+  MAX_INGREDIENT_CONCEPT_TEXT,
+  MAX_INGREDIENT_VOCABULARY,
+  type IngredientCandidateResult,
+} from "./ingredient-catalogue.ts";
 
 export type HouseholdStateValidation =
   | { ok: true }
@@ -65,6 +77,7 @@ export type HouseholdCommandExecution =
       changes: string[];
       createdIds: Record<string, string>;
       occurrenceResolutions: OccurrenceResolution[];
+      ingredientCandidatePreview?: { inputDigest: string; catalogueRevision: number; results: IngredientCandidateResult[] };
     }
   | {
       ok: false;
@@ -664,13 +677,43 @@ function validateWeek(value: unknown, path: string, issues: ValidationIssue[]): 
   };
 }
 
-export function validateHouseholdState(state: HouseholdPlannerState): HouseholdStateValidation {
+export function validateHouseholdState(state: HouseholdPlannerState, options: { allowMissingIngredientCatalogue?: boolean; allowUnknownIngredientConceptReferences?: boolean } = {}): HouseholdStateValidation {
   const value = state as unknown;
   const issues: ValidationIssue[] = [];
   if (!isRecord(value)) return { ok: false, issues: [{ path: "$", message: "Must be a household planner state object." }] };
-  requireExactShape(issues, value, "$", ["householdTimeZone", "activeWeekId", "weeks"]);
+  requireExactShape(issues, value, "$", ["householdTimeZone", "activeWeekId", "weeks", ...(options.allowMissingIngredientCatalogue ? [] : ["ingredientCatalogue"])], options.allowMissingIngredientCatalogue ? ["ingredientCatalogue"] : []);
   if (!validateTimeZone(value.householdTimeZone)) addIssue(issues, "$.householdTimeZone", "Must be a valid IANA time zone.");
   if (value.activeWeekId !== null && !isWeekId(value.activeWeekId)) addIssue(issues, "$.activeWeekId", "Must be null or a Monday ISO week ID.");
+  const conceptIds = new Set<string>();
+  const vocabularyOwners = new Map<string, string>();
+  if (!isRecord(value.ingredientCatalogue) && !(options.allowMissingIngredientCatalogue && value.ingredientCatalogue === undefined)) {
+    addIssue(issues, "$.ingredientCatalogue", "Must be a household ingredient catalogue.");
+  } else if (isRecord(value.ingredientCatalogue)) {
+    requireExactShape(issues, value.ingredientCatalogue, "$.ingredientCatalogue", ["revision", "concepts"]);
+    if (!Number.isSafeInteger(value.ingredientCatalogue.revision) || Number(value.ingredientCatalogue.revision) < 1) {
+      addIssue(issues, "$.ingredientCatalogue.revision", "Must be a positive catalogue revision.");
+    }
+    if (!Array.isArray(value.ingredientCatalogue.concepts) || value.ingredientCatalogue.concepts.length > MAX_INGREDIENT_CONCEPTS) {
+      addIssue(issues, "$.ingredientCatalogue.concepts", `Must contain at most ${MAX_INGREDIENT_CONCEPTS} concepts.`);
+    } else value.ingredientCatalogue.concepts.forEach((concept, index) => {
+      const path = `$.ingredientCatalogue.concepts[${index}]`;
+      if (!isRecord(concept)) return addIssue(issues, path, "Must be an ingredient concept.");
+      requireExactShape(issues, concept, path, ["id", "preferredLabel", "vocabulary", "defaultSection"]);
+      if (!isText(concept.id, MAX_INGREDIENT_CONCEPT_ID, { nonempty: true }) || !new RegExp(INGREDIENT_CONCEPT_ID_PATTERN, "u").test(String(concept.id)) || conceptIds.has(String(concept.id))) addIssue(issues, `${path}.id`, "Must be a unique bounded concept ID using letters, numbers, dot, underscore, colon, or hyphen.");
+      else conceptIds.add(concept.id);
+      if (!isText(concept.preferredLabel, MAX_INGREDIENT_CONCEPT_TEXT, { nonempty: true }) || /[\u0000-\u001f\u007f]/u.test(String(concept.preferredLabel))) addIssue(issues, `${path}.preferredLabel`, `Must be a nonempty control-free label up to ${MAX_INGREDIENT_CONCEPT_TEXT} characters.`);
+      if (!Array.isArray(concept.vocabulary) || concept.vocabulary.length > MAX_INGREDIENT_VOCABULARY || !concept.vocabulary.every((word) => isText(word, MAX_INGREDIENT_CONCEPT_TEXT, { nonempty: true }) && !/[\u0000-\u001f\u007f]/u.test(word))) addIssue(issues, `${path}.vocabulary`, `Must contain at most ${MAX_INGREDIENT_VOCABULARY} bounded control-free vocabulary entries.`);
+      if (!GROCERY_SECTIONS.includes(concept.defaultSection as (typeof GROCERY_SECTIONS)[number])) addIssue(issues, `${path}.defaultSection`, "Must be a supported grocery section.");
+      if (typeof concept.id === "string" && typeof concept.preferredLabel === "string" && Array.isArray(concept.vocabulary)) {
+        for (const word of [concept.preferredLabel, ...concept.vocabulary].filter((entry): entry is string => typeof entry === "string")) {
+          const normalized = normalizedCoreIngredientLiteral(word);
+          const owner = vocabularyOwners.get(normalized);
+          if (owner && owner !== concept.id) addIssue(issues, `${path}.vocabulary`, `Vocabulary collides with concept ${owner}.`);
+          else vocabularyOwners.set(normalized, concept.id);
+        }
+      }
+    });
+  }
   if (!Array.isArray(value.weeks)) {
     addIssue(issues, "$.weeks", "Must be an array.");
     return { ok: false, issues };
@@ -686,6 +729,13 @@ export function validateHouseholdState(state: HouseholdPlannerState): HouseholdS
       if (validated.status === "active") activeWeekIds.push(validated.id);
     }
   });
+  if (!options.allowUnknownIngredientConceptReferences && isRecord(value.ingredientCatalogue)) for (const [weekIndex, week] of value.weeks.entries()) if (isRecord(week) && isRecord(week.data) && Array.isArray(week.data.meals)) {
+    for (const [mealIndex, meal] of week.data.meals.entries()) if (isRecord(meal) && Array.isArray(meal.ingredients)) {
+      for (const [ingredientIndex, ingredient] of meal.ingredients.entries()) if (isRecord(ingredient) && ingredient.conceptId !== null && typeof ingredient.conceptId === "string" && !conceptIds.has(ingredient.conceptId)) {
+        addIssue(issues, `$.weeks[${weekIndex}].data.meals[${mealIndex}].ingredients[${ingredientIndex}].conceptId`, "Must reference a household ingredient concept.");
+      }
+    }
+  }
   if (activeWeekIds.length > 1) addIssue(issues, "$.weeks", "At most one week may be active.");
   if (value.activeWeekId === null && activeWeekIds.length !== 0) addIssue(issues, "$.activeWeekId", "Must identify the active week.");
   if (typeof value.activeWeekId === "string" && (activeWeekIds.length !== 1 || activeWeekIds[0] !== value.activeWeekId)) addIssue(issues, "$.activeWeekId", "Must match the single active week.");
@@ -733,10 +783,15 @@ function cloneWeekData(data: WeekPlannerData): WeekPlannerData {
 }
 
 export function cloneHouseholdState(state: HouseholdPlannerState): HouseholdPlannerState {
+  const catalogue = state.ingredientCatalogue;
   return {
     householdTimeZone: state.householdTimeZone,
     activeWeekId: state.activeWeekId,
     weeks: state.weeks.map((week) => ({ ...week, data: cloneWeekData(week.data) })),
+    ingredientCatalogue: {
+      revision: catalogue.revision,
+      concepts: catalogue.concepts.map((concept) => ({ ...concept, vocabulary: [...concept.vocabulary] })),
+    },
   };
 }
 
@@ -762,12 +817,13 @@ function success(
   changes: string[],
   createdIds: Record<string, string> = {},
   occurrenceResolutions: OccurrenceResolution[] = [],
+  ingredientCandidatePreview?: { inputDigest: string; catalogueRevision: number; results: IngredientCandidateResult[] },
 ): HouseholdCommandExecution {
   const validation = validateHouseholdState(next);
   if (!validation.ok) {
     return failure(original, "The command would produce invalid household state.", fieldErrorsFromValidation(validation));
   }
-  return { ok: true, state: next, summary, target, changes, createdIds, occurrenceResolutions };
+  return { ok: true, state: next, summary, target, changes, createdIds, occurrenceResolutions, ...(ingredientCandidatePreview ? { ingredientCandidatePreview } : {}) };
 }
 
 function findWeek(state: HouseholdPlannerState, weekId: WeekId): WeekPlan | null {
@@ -1077,6 +1133,47 @@ function rejectArchivedWeek(state: HouseholdPlannerState): HouseholdCommandExecu
   return failure(state, "Archived weeks are read-only.");
 }
 
+type ConceptDecision = Extract<HouseholdCommand, { type: "resolveIngredientOccurrence" }>["decision"];
+
+function catalogueCollision(state: HouseholdPlannerState, words: readonly string[], allowedIds: ReadonlySet<string> = new Set()): IngredientConcept | null {
+  const normalized = new Set(words.map(normalizedCoreIngredientLiteral));
+  return state.ingredientCatalogue.concepts.find((concept) =>
+    !allowedIds.has(concept.id) && conceptVocabulary(concept).some((word) => normalized.has(word))) ?? null;
+}
+
+function applyConceptDecision(
+  state: HouseholdPlannerState,
+  decision: ConceptDecision,
+  context: HouseholdCommandContext,
+): { conceptId: string | null; createdId?: string } | { error: string } {
+  if (decision.kind === "unresolved") return { conceptId: null };
+  if (decision.kind === "existing") {
+    return state.ingredientCatalogue.concepts.some((concept) => concept.id === decision.conceptId)
+      ? { conceptId: decision.conceptId }
+      : { error: `Ingredient concept ${decision.conceptId} does not exist.` };
+  }
+  const words = [decision.preferredLabel, ...decision.vocabulary];
+  const collision = catalogueCollision(state, words);
+  if (collision) return { error: `Ingredient vocabulary collides with ${collision.preferredLabel}.` };
+  const used = new Set(state.ingredientCatalogue.concepts.map((concept) => concept.id));
+  const id = materializeId(context, "ingredient-concept", used);
+  if (!id) return { error: "Could not materialize a unique ingredient concept ID." };
+  state.ingredientCatalogue.concepts.push({ id, preferredLabel: decision.preferredLabel, vocabulary: [...decision.vocabulary], defaultSection: decision.defaultSection });
+  state.ingredientCatalogue.revision += 1;
+  return { conceptId: id, createdId: id };
+}
+
+function locateOccurrence(state: HouseholdPlannerState, weekId: string, occurrenceId: string): { meal: Meal; occurrence: Meal["ingredients"][number] } | null {
+  for (const week of state.weeks) {
+    if (week.id !== weekId) continue;
+    for (const meal of week.data.meals) {
+    const occurrence = meal.ingredients.find((ingredient) => ingredient.id === occurrenceId);
+    if (occurrence) return { meal, occurrence };
+    }
+  }
+  return null;
+}
+
 function leftoverPortions(meal: Meal): number {
   const match = meal.leftoverNote.match(
     /\b(\d{1,2})(?:\s+[A-Za-z][A-Za-z'-]*){0,2}\s+(?:portions?|servings?|lunch(?:es)?)\b/i,
@@ -1150,6 +1247,140 @@ export function executeHouseholdCommand(
   if (week?.status === "archived") return rejectArchivedWeek(state);
 
   switch (command.type) {
+    case "previewIngredientCandidates": {
+      const results = findIngredientCandidates(next.ingredientCatalogue, command.inputs);
+      return success(state, next, `Reviewed ${results.length} ingredient candidates`, "Ingredient catalogue", results.map((result, index) => `${index + 1}. Input ${index + 1}: ${result.candidates.length} candidate(s)`), {}, [], {
+        inputDigest: ingredientCandidateDigest(command.inputs),
+        catalogueRevision: next.ingredientCatalogue.revision,
+        results,
+      });
+    }
+    case "addIngredientOccurrence": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const meal = week.data.meals.find((candidate) => candidate.id === command.mealId);
+      if (!meal) return failure(state, "Meal not found.");
+      if (command.occurrence.kind !== "create") return failure(state, "A new ingredient requires a create occurrence input.");
+      const occurrenceId = materializeId(context, "ingredient", allIngredientIds(next));
+      if (!occurrenceId) return failure(state, "Could not materialize a unique ingredient occurrence ID.");
+      const occurrence = materializeOccurrence(command.occurrence, occurrenceId);
+      const candidates = findIngredientCandidates(next.ingredientCatalogue, [{ correlationId: command.occurrence.correlationId, occurrenceId, amount: occurrence.amount, ingredient: occurrence.ingredient }])[0];
+      const exact = candidates.candidates.filter((candidate) => candidate.kind === "exact");
+      if (exact.length === 1) occurrence.conceptId = exact[0].conceptId;
+      meal.ingredients.push(occurrence);
+      const projected = reconcileGroceryProjection(context, week);
+      if (!projected) return failure(state, "Could not project groceries for the added ingredient.");
+      return success(state, next, `Added ${occurrence.ingredient}`, occurrenceId, [
+        `Occurrence ${occurrenceId} was created`,
+        ...(exact.length === 1 ? [`Resolved exactly to ${exact[0].preferredLabel}`] : candidates.candidates.map((candidate) => `Candidate ${candidate.preferredLabel}: ${candidate.reasons.join(", ")}`)),
+      ], { occurrenceId }, [{ correlationId: command.occurrence.correlationId, occurrenceId }], {
+        inputDigest: ingredientCandidateDigest([{ correlationId: command.occurrence.correlationId, occurrenceId, amount: occurrence.amount, ingredient: occurrence.ingredient }]),
+        catalogueRevision: next.ingredientCatalogue.revision,
+        results: [candidates],
+      });
+    }
+
+    case "resolveIngredientOccurrence": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      const meal = week.data.meals.find((candidate) => candidate.id === command.mealId);
+      const occurrence = meal?.ingredients.find((candidate) => candidate.id === command.occurrenceId);
+      if (!meal || !occurrence) return failure(state, "Ingredient occurrence not found.");
+      const applied = applyConceptDecision(next, command.decision, context);
+      if ("error" in applied) return failure(state, applied.error);
+      if (occurrence.conceptId === applied.conceptId) return failure(state, "Ingredient resolution is unchanged.");
+      occurrence.conceptId = applied.conceptId;
+      return success(state, next, `Resolved ${occurrence.ingredient}`, occurrence.id, [`Concept: ${applied.conceptId ?? "unresolved"}`], applied.createdId ? { conceptId: applied.createdId } : {});
+    }
+
+    case "applyIngredientResolutionBatch": {
+      if (command.catalogueRevision !== next.ingredientCatalogue.revision) return failure(state, "Ingredient catalogue revision is stale.");
+      const inputs = command.decisions.map((entry) => "occurrenceId" in entry
+        ? { correlationId: entry.correlationId, occurrenceId: entry.occurrenceId, amount: entry.amount, ingredient: entry.ingredient }
+        : { correlationId: entry.correlationId, mealId: entry.mealId, source: entry.occurrence.source, amount: entry.occurrence.amount, unit: entry.occurrence.unit, ingredient: entry.occurrence.ingredient, qualifier: entry.occurrence.qualifier, conceptId: entry.occurrence.conceptId, canonicalIngredientId: entry.occurrence.canonicalIngredientId });
+      if (ingredientCandidateDigest(inputs) !== command.inputDigest) return failure(state, "Ingredient batch input digest does not match its reviewed input.");
+      const resolutions: OccurrenceResolution[] = [];
+      for (const entry of command.decisions) {
+        let occurrence: Meal["ingredients"][number];
+        if ("occurrenceId" in entry) {
+          const location = locateOccurrence(next, command.weekId, entry.occurrenceId);
+          if (!location) return failure(state, "Ingredient batch refers to a missing occurrence.");
+          occurrence = location.occurrence;
+          if (occurrence.amount !== entry.amount || occurrence.ingredient !== entry.ingredient) return failure(state, "Ingredient batch literals changed after review.");
+        } else {
+          const meal = week?.data.meals.find((candidate) => candidate.id === entry.mealId);
+          if (!meal) return failure(state, "Ingredient batch refers to a missing meal.");
+          const occurrenceId = materializeId(context, "ingredient", allIngredientIds(next));
+          if (!occurrenceId) return failure(state, "Could not materialize a unique ingredient occurrence ID.");
+          occurrence = materializeOccurrence(entry.occurrence, occurrenceId);
+          meal.ingredients.push(occurrence);
+          resolutions.push({ correlationId: entry.correlationId, occurrenceId });
+        }
+        const applied = applyConceptDecision(next, entry.decision, context);
+        if ("error" in applied) return failure(state, applied.error);
+        occurrence.conceptId = applied.conceptId;
+      }
+      if (week && !reconcileGroceryProjection(context, week)) return failure(state, "Could not project groceries for the ingredient batch.");
+      return success(state, next, `Resolved ${command.decisions.length} ingredients`, "Ingredient catalogue", command.decisions.map((entry, index) => `${index + 1}. ${"ingredient" in entry ? entry.ingredient : entry.occurrence.ingredient}`), {}, resolutions);
+    }
+
+    case "createIngredientConcept": {
+      if (next.ingredientCatalogue.concepts.some((concept) => concept.id === command.conceptId)) return failure(state, "Ingredient concept ID already exists.");
+      const collision = catalogueCollision(next, [command.preferredLabel, ...command.vocabulary]);
+      if (collision) return failure(state, `Ingredient vocabulary collides with ${collision.preferredLabel}.`);
+      next.ingredientCatalogue.concepts.push({ id: command.conceptId, preferredLabel: command.preferredLabel, vocabulary: [...command.vocabulary], defaultSection: command.defaultSection });
+      next.ingredientCatalogue.revision += 1;
+      return success(state, next, `Created ingredient concept ${command.preferredLabel}`, command.conceptId, [`Catalogue revision ${next.ingredientCatalogue.revision}`]);
+    }
+
+    case "addIngredientVocabulary": {
+      const concept = next.ingredientCatalogue.concepts.find((candidate) => candidate.id === command.conceptId);
+      if (!concept) return failure(state, "Ingredient concept not found.");
+      const collision = catalogueCollision(next, command.vocabulary, new Set([concept.id]));
+      if (collision) return failure(state, `Ingredient vocabulary collides with ${collision.preferredLabel}.`);
+      const additions = command.vocabulary.filter((word) => !conceptVocabulary(concept).includes(normalizedCoreIngredientLiteral(word)));
+      if (!additions.length) return failure(state, "Ingredient vocabulary is unchanged.");
+      concept.vocabulary.push(...additions);
+      next.ingredientCatalogue.revision += 1;
+      return success(state, next, `Added vocabulary to ${concept.preferredLabel}`, concept.id, additions);
+    }
+
+    case "renameIngredientConcept": {
+      const concept = next.ingredientCatalogue.concepts.find((candidate) => candidate.id === command.conceptId);
+      if (!concept) return failure(state, "Ingredient concept not found.");
+      const collision = catalogueCollision(next, [command.preferredLabel], new Set([concept.id]));
+      if (collision) return failure(state, `Ingredient label collides with ${collision.preferredLabel}.`);
+      if (concept.preferredLabel === command.preferredLabel) return failure(state, "Ingredient concept label is unchanged.");
+      const previous = concept.preferredLabel;
+      const retainsPrevious = concept.vocabulary.some((word) => normalizedCoreIngredientLiteral(word) === normalizedCoreIngredientLiteral(previous));
+      if (!retainsPrevious && concept.vocabulary.length >= MAX_INGREDIENT_VOCABULARY) return failure(state, "Ingredient concept vocabulary is full; rename cannot retain the previous label.");
+      if (!retainsPrevious) concept.vocabulary.push(previous);
+      concept.preferredLabel = command.preferredLabel;
+      next.ingredientCatalogue.revision += 1;
+      return success(state, next, `Renamed ${previous} to ${concept.preferredLabel}`, concept.id, [`Catalogue revision ${next.ingredientCatalogue.revision}`]);
+    }
+
+    case "mergeIngredientConcepts": {
+      const survivor = next.ingredientCatalogue.concepts.find((candidate) => candidate.id === command.survivorConceptId);
+      const merged = command.mergedConceptIds.map((id) => next.ingredientCatalogue.concepts.find((candidate) => candidate.id === id));
+      if (!survivor || merged.some((concept) => !concept)) return failure(state, "Every merged ingredient concept must exist.");
+      const sourceWords = (merged as IngredientConcept[]).flatMap((concept) => [concept.preferredLabel, ...concept.vocabulary]);
+      const allowed = new Set([survivor.id, ...command.mergedConceptIds]);
+      const collision = catalogueCollision(next, sourceWords, allowed);
+      if (collision && command.collisionPolicy === "reject") return failure(state, `Merged vocabulary collides with ${collision.preferredLabel}.`);
+      const additions = sourceWords.filter((word, index) =>
+        !catalogueCollision(next, [word], allowed) &&
+        sourceWords.findIndex((candidate) => normalizedCoreIngredientLiteral(candidate) === normalizedCoreIngredientLiteral(word)) === index &&
+        !conceptVocabulary(survivor).includes(normalizedCoreIngredientLiteral(word)));
+      const availableVocabulary = MAX_INGREDIENT_VOCABULARY - survivor.vocabulary.length;
+      if (additions.length > availableVocabulary && command.collisionPolicy === "reject") return failure(state, "Merged vocabulary exceeds the survivor concept capacity.");
+      const acceptedWords = additions.slice(0, availableVocabulary);
+      survivor.vocabulary.push(...acceptedWords);
+      const mergedIds = new Set(command.mergedConceptIds);
+      for (const weekPlan of next.weeks) for (const meal of weekPlan.data.meals) for (const occurrence of meal.ingredients) if (occurrence.conceptId && mergedIds.has(occurrence.conceptId)) occurrence.conceptId = survivor.id;
+      next.ingredientCatalogue.concepts = next.ingredientCatalogue.concepts.filter((concept) => !mergedIds.has(concept.id));
+      next.ingredientCatalogue.revision += 1;
+      return success(state, next, `Merged ${mergedIds.size} ingredient concepts into ${survivor.preferredLabel}`, survivor.id, [`Catalogue revision ${next.ingredientCatalogue.revision}`, ...(acceptedWords.length < additions.length ? [`Preferred target vocabulary; omitted ${additions.length - acceptedWords.length} overflow term(s)`] : [])]);
+    }
+
     case "moveMeal": {
       if (!week) return rejectMissingWeek(state, command.weekId);
       if (!weekContainsDate(week.id, command.targetDate)) return failure(state, "Target date is outside the week.", { targetDate: "Choose a date inside the selected week." });

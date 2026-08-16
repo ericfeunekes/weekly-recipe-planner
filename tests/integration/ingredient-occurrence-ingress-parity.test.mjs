@@ -10,8 +10,9 @@ import {
   GLOBAL_CODEX_CONTRACT_VERSION,
   GLOBAL_CODEX_ROUTES,
 } from "../../lib/global-codex-contract.ts";
-import { householdDomain } from "../../lib/household-domain.ts";
-import { PLANNER_TOOL_NAMESPACE } from "../../lib/planner-tool-contract.ts";
+import { householdDomain, validateHouseholdState } from "../../lib/household-domain.ts";
+import { createCoreIngredientCatalogue } from "../../lib/ingredient-catalogue.ts";
+import { isPlannerReadProjection, PLANNER_TOOL_NAMESPACE, projectPlannerRead } from "../../lib/planner-tool-contract.ts";
 import {
   createPlannerApplicationService,
   hashCanonicalPayload,
@@ -60,7 +61,7 @@ function seedState() {
           prepNote: "",
           leftoverNote: "",
           notes: "",
-          ingredients: [],
+          ingredients: [{ id: "ingredient-scallions", source: "2 scallions, sliced", amount: "2", unit: null, ingredient: "scallions", qualifier: "sliced", conceptId: null, role: "output", canonicalIngredientId: null }],
           instructions: [],
         }],
         prepSessions: [],
@@ -70,6 +71,7 @@ function seedState() {
         weekLesson: "",
       },
     }],
+    ingredientCatalogue: createCoreIngredientCatalogue(),
   };
 }
 
@@ -91,18 +93,17 @@ function historicalCommand() {
   };
 }
 
-function requestSocket(socketPath, body) {
+function requestSocket(socketPath, body = null, path = GLOBAL_CODEX_ROUTES.batches, method = "POST") {
   return new Promise((resolve, reject) => {
-    const payload = Buffer.from(JSON.stringify(body));
+    const payload = body === null ? null : Buffer.from(JSON.stringify(body));
     const request = requestHttp({
       socketPath,
-      method: "POST",
-      path: GLOBAL_CODEX_ROUTES.batches,
+      method,
+      path,
       headers: {
         Host: "localhost",
         Connection: "close",
-        "Content-Type": "application/json",
-        "Content-Length": String(payload.length),
+        ...(payload === null ? {} : { "Content-Type": "application/json", "Content-Length": String(payload.length) }),
       },
     }, (response) => {
       const chunks = [];
@@ -113,7 +114,7 @@ function requestSocket(socketPath, body) {
       }));
     });
     request.once("error", reject);
-    request.end(payload);
+    request.end(payload ?? undefined);
   });
 }
 
@@ -125,7 +126,8 @@ function decodeNative(response) {
 test("one historical recipe receipt has identical replay-only semantics across HTTP, embedded Codex, and Global UDS", async (t) => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "occurrence-ingress-parity-")));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const store = openPlannerStore({ filename: join(directory, "planner.sqlite") });
+  const filename = join(directory, "planner.sqlite");
+  const store = openPlannerStore({ filename });
   t.after(() => store.close());
   let id = 0;
   let now = 1_800_000_000_000;
@@ -278,7 +280,116 @@ test("one historical recipe receipt has identical replay-only semantics across H
     occurrenceResults: expectedDecision.occurrenceResults,
   });
 
-  assert.deepEqual(planner.readWorkspace(), before, "all three replays leave the canonical workspace unchanged");
-  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 1);
-  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts").get().count, 4);
+  const candidateOperations = [{ command: { type: "previewIngredientCandidates", inputs: [
+    { correlationId: "candidate-one", occurrenceId: "ingredient-scallions", mealId: "meal-1", source: "2 scallions, sliced", amount: "2", unit: null, ingredient: "scallions", qualifier: "sliced", conceptId: null, canonicalIngredientId: null },
+  ] } }];
+  const previewRequest = { basePlannerVersion: before.plannerVersion, operations: candidateOperations };
+  const browserPreviewResponse = await fetch(`http://127.0.0.1:${address.port}/api/operations/preview`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN }, body: JSON.stringify(previewRequest),
+  });
+  assert.equal(browserPreviewResponse.status, 200);
+  const browserPreview = (await browserPreviewResponse.json()).decision;
+  const globalPreview = await requestSocket(join(globalParent, "run", "global-codex.sock"), {
+    contractVersion: GLOBAL_CODEX_CONTRACT_VERSION, ...previewRequest,
+  }, GLOBAL_CODEX_ROUTES.previews);
+  assert.equal(globalPreview.status, 200);
+  const nativePreview = decodeNative(await nativeHost.handle({
+    threadId: "thread-parity", turnId: "turn-preview", callId: "call-preview", namespace: PLANNER_TOOL_NAMESPACE,
+    tool: "preview", arguments: previewRequest,
+  }));
+  assert.equal(nativePreview.ok, true);
+  assert.deepEqual(globalPreview.body.decision, browserPreview);
+  assert.deepEqual(nativePreview.data, { status: browserPreview.status, outcomes: browserPreview.outcomes });
+  assert.equal(browserPreview.outcomes[0].ingredientCandidatePreview.results[0].candidates[0].conceptId, "green-onion");
+
+  const reviewed = browserPreview.outcomes[0].ingredientCandidatePreview;
+  const resolutionInput = { correlationId: "candidate-one", occurrenceId: "ingredient-scallions", amount: "2", ingredient: "scallions" };
+  const resolutionCommand = {
+    type: "applyIngredientResolutionBatch", weekId: "2026-08-10", catalogueRevision: before.state.ingredientCatalogue.revision,
+    inputDigest: reviewed.inputDigest, decisions: [{ ...resolutionInput, decision: { kind: "existing", conceptId: "green-onion" } }],
+  };
+  const [browserRace, globalRace, nativeRace] = await Promise.all([
+    fetch(`http://127.0.0.1:${address.port}/api/commands`, {
+      method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN },
+      body: JSON.stringify({ requestId: "catalogue-http-race", basePlannerVersion: before.plannerVersion, command: resolutionCommand }),
+    }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    requestSocket(join(globalParent, "run", "global-codex.sock"), {
+      contractVersion: GLOBAL_CODEX_CONTRACT_VERSION, requestId: "186ce6e0-b9bc-4d30-9924-bb766eabfd42",
+      basePlannerVersion: before.plannerVersion, operations: [{ command: resolutionCommand }],
+    }),
+    nativeHost.handle({
+      threadId: "thread-parity", turnId: "turn-catalogue-race", callId: "call-catalogue-race", namespace: PLANNER_TOOL_NAMESPACE,
+      tool: "apply", arguments: { basePlannerVersion: before.plannerVersion, operations: [{ command: resolutionCommand }], readback: { kind: "workspace" } },
+    }).then(decodeNative),
+  ]);
+  const raceOutcomes = [browserRace.body.decision.status, globalRace.body.decision.status, nativeRace.ok ? nativeRace.data.status : nativeRace.error.code];
+  assert.equal(raceOutcomes.filter((status) => status === "accepted").length, 1, JSON.stringify(raceOutcomes));
+  assert.equal(raceOutcomes.filter((status) => status === "version_conflict" || status === "VERSION_CONFLICT").length, 2);
+
+  const afterRace = planner.readWorkspace();
+  assert.equal(afterRace.plannerVersion, before.plannerVersion + 1);
+  assert.equal(afterRace.state.weeks[0].data.meals[0].ingredients[0].conceptId, "green-onion");
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 2);
+
+  const beforeLiteral = structuredClone(afterRace.state.weeks[0].data.meals[0].ingredients[0]);
+  const renameResponse = await fetch(`http://127.0.0.1:${address.port}/api/commands`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN },
+    body: JSON.stringify({ requestId: "catalogue-rename", basePlannerVersion: afterRace.plannerVersion, command: { type: "renameIngredientConcept", conceptId: "green-onion", preferredLabel: "Spring onion" } }),
+  });
+  assert.equal(renameResponse.status, 200);
+  const renamed = await renameResponse.json();
+  assert.equal(renamed.decision.status, "accepted");
+  const mergeResponse = await requestSocket(join(globalParent, "run", "global-codex.sock"), {
+    contractVersion: GLOBAL_CODEX_CONTRACT_VERSION, requestId: "51044bb6-8c4a-40f6-a733-ccbffaad5248",
+    basePlannerVersion: renamed.workspace.plannerVersion,
+    operations: [{ command: { type: "mergeIngredientConcepts", survivorConceptId: "red-onion", mergedConceptIds: ["green-onion"], collisionPolicy: "preferTarget" } }],
+  });
+  assert.equal(mergeResponse.body.decision.status, "accepted");
+
+  const browserRead = await fetch(`http://127.0.0.1:${address.port}/api/workspace`).then((response) => response.json());
+  const globalRead = await requestSocket(join(globalParent, "run", "global-codex.sock"), null, GLOBAL_CODEX_ROUTES.workspace, "GET");
+  assert.deepEqual(validateHouseholdState(browserRead.state), { ok: true });
+  const expectedNativeRead = projectPlannerRead(browserRead, { kind: "meal", weekId: "2026-08-10", mealId: "meal-1" });
+  assert.equal(isPlannerReadProjection(expectedNativeRead), true, JSON.stringify(expectedNativeRead));
+  const nativeRead = decodeNative(await nativeHost.handle({
+    threadId: "thread-parity", turnId: "turn-catalogue-read", callId: "call-catalogue-read", namespace: PLANNER_TOOL_NAMESPACE,
+    tool: "read", arguments: { query: { kind: "meal", weekId: "2026-08-10", mealId: "meal-1" } },
+  }));
+  assert.equal(nativeRead.ok, true);
+  const browserIngredient = browserRead.state.weeks[0].data.meals[0].ingredients[0];
+  const globalIngredient = globalRead.body.planner.state.weeks[0].data.meals[0].ingredients[0];
+  const nativeIngredient = nativeRead.data.meal.ingredients[0];
+  for (const ingredient of [browserIngredient, globalIngredient, nativeIngredient]) {
+    assert.deepEqual({ ...ingredient, conceptId: null }, { ...beforeLiteral, conceptId: null });
+    assert.equal(ingredient.conceptId, "red-onion");
+  }
+  const nativeConcepts = [...nativeRead.data.ingredientCatalogue.concepts];
+  let nextCatalogueOffset = nativeRead.data.ingredientCatalogue.nextOffset;
+  while (nextCatalogueOffset !== null) {
+    const page = decodeNative(await nativeHost.handle({
+      threadId: "thread-parity", turnId: "turn-catalogue-read", callId: `call-catalogue-page-${nextCatalogueOffset}`, namespace: PLANNER_TOOL_NAMESPACE,
+      tool: "read", arguments: { query: { kind: "catalogue", offset: nextCatalogueOffset } },
+    }));
+    assert.equal(page.ok, true);
+    nativeConcepts.push(...page.data.ingredientCatalogue.concepts);
+    nextCatalogueOffset = page.data.ingredientCatalogue.nextOffset;
+  }
+  assert.deepEqual({ revision: nativeRead.data.ingredientCatalogue.revision, concepts: nativeConcepts }, browserRead.state.ingredientCatalogue);
+  assert.deepEqual(globalRead.body.planner.state.ingredientCatalogue, browserRead.state.ingredientCatalogue);
+
+  const undoResponse = await fetch(`http://127.0.0.1:${address.port}/api/undo`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: ORIGIN },
+    body: JSON.stringify({ requestId: "undo-catalogue-merge", basePlannerVersion: browserRead.plannerVersion, targetEventId: mergeResponse.body.decision.eventId }),
+  });
+  assert.equal(undoResponse.status, 200);
+  assert.equal((await undoResponse.json()).decision.status, "accepted");
+  const reopened = openPlannerStore({ filename });
+  const restarted = createPlannerApplicationService({
+    store: reopened, domain: householdDomain, seedFactory: seedState, transformLegacyV2: () => { throw new Error("unused"); },
+    clock: { now: () => now++ }, idFactory: { createId: (prefix) => `${prefix}-restart-${++id}` },
+  });
+  const restartedIngredient = restarted.readWorkspace().state.weeks[0].data.meals[0].ingredients[0];
+  assert.deepEqual({ ...restartedIngredient, conceptId: null }, { ...beforeLiteral, conceptId: null });
+  assert.equal(restartedIngredient.conceptId, "green-onion");
+  reopened.close();
 });

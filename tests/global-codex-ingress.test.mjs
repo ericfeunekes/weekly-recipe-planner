@@ -27,6 +27,7 @@ import {
   isGlobalCodexResponse,
 } from "../lib/global-codex-contract.ts";
 import { householdDomain } from "../lib/household-domain.ts";
+import { createCoreIngredientCatalogue } from "../lib/ingredient-catalogue.ts";
 import {
   isPlannerOperationsDecision,
   isPreviewPlannerOperationsDecision,
@@ -58,6 +59,7 @@ function seedState(lesson = "Initial lesson") {
   return {
     householdTimeZone: "America/Halifax",
     activeWeekId: "2026-07-06",
+    ingredientCatalogue: createCoreIngredientCatalogue(),
     weeks: [{
       id: "2026-07-06",
       weekStartDate: "2026-07-06",
