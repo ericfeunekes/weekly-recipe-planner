@@ -1,202 +1,249 @@
-export type Rational = {
-  numerator: number;
-  denominator: number;
-};
+export type Rational = Readonly<{ numerator: number; denominator: number }>;
+export type QuantityDimension = "count" | "mass" | "volume";
 
-export type IngredientQuantityFailure =
-  | "empty"
-  | "unparseable"
-  | "missing-unit"
-  | "incompatible-unit"
-  | "overflow";
+export type StructuredIngredientAmount = Readonly<{
+  amount: string;
+  unit: string | null;
+  /** Exact source spelling, returned whenever derivation abstains. */
+  source?: string | null;
+}>;
+
+export type IngredientQuantityPart =
+  | Readonly<{ kind: "quantity"; dimension: QuantityDimension; quantity: Rational; unit: string | null; display: string }>
+  | Readonly<{ kind: "literal"; literal: string; reason: "amount" | "unit" | "incompatible" | "overflow" }>;
 
 export type IngredientQuantitySum =
-  | {
-      ok: true;
-      quantity: Rational;
-      unit: string;
-      display: string;
-    }
-  | {
-      ok: false;
-      reason: IngredientQuantityFailure;
-    };
+  | Readonly<{ ok: true; quantity: Rational; unit: string; display: string }>
+  | Readonly<{ ok: false; reason: "empty" | "unparseable" | "missing-unit" | "incompatible-unit" | "overflow" }>;
 
-type ParsedQuantity = {
-  quantity: Rational;
-  unit: Unit;
-};
+export type WeeklyRequirementOccurrence = Readonly<{
+  occurrenceId: string;
+  mealId: string;
+  mealTitle: string;
+  ingredient: string;
+  qualifier?: string | null;
+  amount: string;
+  unit: string | null;
+  source: string | null;
+  role: "weekly_requirement" | "output" | "leftover";
+  concept?: Readonly<{ id: string; label: string }> | null;
+  execution: Readonly<{
+    id: string;
+    section: string;
+    coverage: "needs_source" | "shop" | "farm_box" | "on_hand";
+    checked: boolean;
+  }>;
+}>;
 
-type Unit = {
-  dimension: "mass" | "volume";
-  canonical: string;
-  factor: Rational;
-};
+export type WeeklyRequirementChild = Readonly<{
+  executionId: string;
+  occurrenceId: string;
+  mealId: string;
+  mealTitle: string;
+  ingredient: string;
+  qualifier: string | null;
+  amount: StructuredIngredientAmount;
+  coverage: WeeklyRequirementOccurrence["execution"]["coverage"];
+  checked: boolean;
+}>;
 
-const UNITS: Record<string, Unit> = {
-  mg: { dimension: "mass", canonical: "mg", factor: { numerator: 1, denominator: 1 } },
-  g: { dimension: "mass", canonical: "g", factor: { numerator: 1_000, denominator: 1 } },
-  kg: { dimension: "mass", canonical: "kg", factor: { numerator: 1_000_000, denominator: 1 } },
-  oz: { dimension: "mass", canonical: "oz", factor: { numerator: 28_349_523_125, denominator: 1_000_000 } },
-  lb: { dimension: "mass", canonical: "lb", factor: { numerator: 453_592_370_000, denominator: 1_000_000 } },
-  lbs: { dimension: "mass", canonical: "lb", factor: { numerator: 453_592_370_000, denominator: 1_000_000 } },
-  tsp: { dimension: "volume", canonical: "tsp", factor: { numerator: 5, denominator: 1 } },
-  tbsp: { dimension: "volume", canonical: "tbsp", factor: { numerator: 15, denominator: 1 } },
-  "fl oz": { dimension: "volume", canonical: "fl oz", factor: { numerator: 2_957_352_956_250, denominator: 100_000_000_000 } },
-  cup: { dimension: "volume", canonical: "cup", factor: { numerator: 250, denominator: 1 } },
-  ml: { dimension: "volume", canonical: "mL", factor: { numerator: 1, denominator: 1 } },
-  l: { dimension: "volume", canonical: "L", factor: { numerator: 1_000, denominator: 1 } },
-};
+export type WeeklyRequirementGroup = Readonly<{
+  key: string;
+  section: string;
+  conceptId: string | null;
+  label: string;
+  quantities: readonly IngredientQuantityPart[];
+  children: readonly WeeklyRequirementChild[];
+}>;
 
 type BigRational = { numerator: bigint; denominator: bigint };
+type Unit = Readonly<{ dimension: QuantityDimension; canonical: string | null; factor: BigRational }>;
+const ONE = { numerator: BigInt(1), denominator: BigInt(1) } as const;
+const UNITS: Readonly<Record<string, Unit>> = {
+  "": { dimension: "count", canonical: null, factor: ONE },
+  count: { dimension: "count", canonical: null, factor: ONE },
+  each: { dimension: "count", canonical: null, factor: ONE },
+  mg: { dimension: "mass", canonical: "mg", factor: ONE },
+  g: { dimension: "mass", canonical: "g", factor: { numerator: BigInt(1_000), denominator: BigInt(1) } },
+  kg: { dimension: "mass", canonical: "kg", factor: { numerator: BigInt(1_000_000), denominator: BigInt(1) } },
+  oz: { dimension: "mass", canonical: "oz", factor: { numerator: BigInt("28349523125"), denominator: BigInt(1_000_000) } },
+  lb: { dimension: "mass", canonical: "lb", factor: { numerator: BigInt("453592370000"), denominator: BigInt(1_000_000) } },
+  tsp: { dimension: "volume", canonical: "tsp", factor: { numerator: BigInt(5), denominator: BigInt(1) } },
+  tbsp: { dimension: "volume", canonical: "tbsp", factor: { numerator: BigInt(15), denominator: BigInt(1) } },
+  "fl oz": { dimension: "volume", canonical: "fl oz", factor: { numerator: BigInt("2957352956250"), denominator: BigInt("100000000000") } },
+  cup: { dimension: "volume", canonical: "cup", factor: { numerator: BigInt(250), denominator: BigInt(1) } },
+  ml: { dimension: "volume", canonical: "mL", factor: ONE },
+  l: { dimension: "volume", canonical: "L", factor: { numerator: BigInt(1_000), denominator: BigInt(1) } },
+};
 
-function normalizeBig(value: BigRational): BigRational | null {
-  if (value.denominator === BigInt(0)) return null;
-  const sign = value.denominator < BigInt(0) ? BigInt(-1) : BigInt(1);
-  const numerator = value.numerator * sign;
-  const denominator = value.denominator * sign;
-  const divisor = greatestCommonDivisorBig(numerator < BigInt(0) ? -numerator : numerator, denominator);
-  return { numerator: numerator / divisor, denominator: denominator / divisor };
-}
-
-function greatestCommonDivisorBig(left: bigint, right: bigint): bigint {
-  let a = left;
-  let b = right;
+function gcd(left: bigint, right: bigint): bigint {
+  let a = left < BigInt(0) ? -left : left;
+  let b = right < BigInt(0) ? -right : right;
   while (b !== BigInt(0)) [a, b] = [b, a % b];
   return a || BigInt(1);
 }
 
-function fromBig(value: BigRational | null): Rational | null {
-  if (!value || value.numerator > BigInt(Number.MAX_SAFE_INTEGER) || value.numerator < BigInt(Number.MIN_SAFE_INTEGER) ||
-      value.denominator > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+function normalize(value: BigRational): BigRational | null {
+  if (value.denominator === BigInt(0)) return null;
+  const sign = value.denominator < BigInt(0) ? BigInt(-1) : BigInt(1);
+  const numerator = value.numerator * sign;
+  const denominator = value.denominator * sign;
+  const divisor = gcd(numerator, denominator);
+  return { numerator: numerator / divisor, denominator: denominator / divisor };
+}
+
+function toPublic(value: BigRational | null): Rational | null {
+  if (!value || value.numerator > BigInt(Number.MAX_SAFE_INTEGER) || value.numerator < BigInt(Number.MIN_SAFE_INTEGER) || value.denominator > BigInt(Number.MAX_SAFE_INTEGER)) return null;
   return { numerator: Number(value.numerator), denominator: Number(value.denominator) };
 }
 
-function normalize(value: Rational): Rational | null {
-  if (!Number.isSafeInteger(value.numerator) || !Number.isSafeInteger(value.denominator) || value.denominator === 0) {
-    return null;
-  }
-  return fromBig(normalizeBig({ numerator: BigInt(value.numerator), denominator: BigInt(value.denominator) }));
-}
-
-function asBig(value: Rational): BigRational {
-  return { numerator: BigInt(value.numerator), denominator: BigInt(value.denominator) };
-}
-
-function add(left: Rational, right: Rational): Rational | null {
-  const a = asBig(left);
-  const b = asBig(right);
-  return fromBig(normalizeBig({
-    numerator: a.numerator * b.denominator + b.numerator * a.denominator,
-    denominator: a.denominator * b.denominator,
-  }));
-}
-
-function multiply(left: Rational, right: Rational): Rational | null {
-  const a = asBig(left);
-  const b = asBig(right);
-  return fromBig(normalizeBig({ numerator: a.numerator * b.numerator, denominator: a.denominator * b.denominator }));
-}
-
-function divide(left: Rational, right: Rational): Rational | null {
-  const a = asBig(left);
-  const b = asBig(right);
-  return fromBig(normalizeBig({ numerator: a.numerator * b.denominator, denominator: a.denominator * b.numerator }));
-}
-
-function parseNumber(value: string): Rational | null {
-  const mixed = /^(\d+)\s+(\d+)\/(\d+)$/u.exec(value);
-  if (mixed) {
-    const denominator = BigInt(mixed[3]);
-    return fromBig(normalizeBig({
-      numerator: BigInt(mixed[1]) * denominator + BigInt(mixed[2]),
-      denominator,
-    }));
-  }
-  const fraction = /^(\d+)\/(\d+)$/u.exec(value);
-  if (fraction) {
-    return fromBig(normalizeBig({ numerator: BigInt(fraction[1]), denominator: BigInt(fraction[2]) }));
-  }
-  const decimal = /^(\d+)(?:\.(\d+))?$/u.exec(value);
-  if (!decimal) return null;
-  const decimalPart = decimal[2] ?? "";
-  return fromBig(normalizeBig({
-    numerator: BigInt(`${decimal[1]}${decimalPart}`),
-    denominator: BigInt(10) ** BigInt(decimalPart.length),
-  }));
-}
-
-function parseQuantity(value: string): ParsedQuantity | IngredientQuantityFailure {
+function parseAmount(value: string): BigRational | null {
   const trimmed = value.trim();
-  if (!trimmed) return "empty";
-  const numberOnly = /^(\d+(?:\.\d+)?|\d+\/\d+|\d+\s+\d+\/\d+)$/u.test(trimmed);
-  if (numberOnly) return "missing-unit";
-  const match = /^(\d+(?:\.\d+)?|\d+\/\d+|\d+\s+\d+\/\d+)\s+(fl oz|mg|kg|lbs?|oz|g|tsp|tbsp|cups?|ml|mL|l|L)$/iu.exec(trimmed);
-  if (!match) return "unparseable";
-  const quantity = parseNumber(match[1]);
-  if (!quantity) return "unparseable";
-  const rawUnit = match[2].toLocaleLowerCase("en-CA");
-  const unitKey = rawUnit === "lbs" ? "lb" : rawUnit === "cups" ? "cup" : rawUnit;
-  const unit = UNITS[unitKey];
-  return unit ? { quantity, unit } : "unparseable";
+  const mixed = /^(\d+)\s+(\d+)\/(\d+)$/u.exec(trimmed);
+  if (mixed) return normalize({ numerator: BigInt(mixed[1]) * BigInt(mixed[3]) + BigInt(mixed[2]), denominator: BigInt(mixed[3]) });
+  const fraction = /^(\d+)\/(\d+)$/u.exec(trimmed);
+  if (fraction) return normalize({ numerator: BigInt(fraction[1]), denominator: BigInt(fraction[2]) });
+  const decimal = /^(\d+)(?:\.(\d+))?$/u.exec(trimmed);
+  if (!decimal) return null;
+  const decimals = decimal[2] ?? "";
+  return normalize({ numerator: BigInt(`${decimal[1]}${decimals}`), denominator: BigInt(10) ** BigInt(decimals.length) });
 }
 
-function pluralizedUnit(unit: string, quantity: Rational): string {
-  if (["mg", "g", "kg", "oz", "lb", "tsp", "tbsp", "mL", "L", "fl oz"].includes(unit)) return unit;
-  if (quantity.numerator === quantity.denominator) return unit;
-  return `${unit}s`;
+function unitFor(value: string | null): Unit | null {
+  if (value === null) return UNITS[""];
+  const key = value.trim().toLocaleLowerCase("en-CA");
+  return UNITS[key === "cups" ? "cup" : key === "lbs" ? "lb" : key] ?? null;
 }
 
-export function formatIngredientQuantity(quantity: Rational, unit: string): string {
-  const normalized = normalize(quantity);
-  if (!normalized) return "Amount unavailable";
-  const whole = Math.floor(normalized.numerator / normalized.denominator);
-  const remainder = normalized.numerator % normalized.denominator;
-  const number = remainder === 0
-    ? whole.toString()
-    : whole === 0
-      ? `${remainder}/${normalized.denominator}`
-      : `${whole} ${remainder}/${normalized.denominator}`;
-  return `${number} ${pluralizedUnit(unit, normalized)}`;
+function sourceLiteral(input: StructuredIngredientAmount): string {
+  return input.source ?? [input.amount, input.unit].filter((part) => part !== null && part !== "").join(" ");
 }
 
-/**
- * Adds only standardized quantities. Any modifier, range, yield state, or
- * unrecognized unit deliberately returns an abstention for literal display.
- */
-function sumIngredientQuantitiesUnchecked(amounts: readonly string[]): IngredientQuantitySum {
-  if (amounts.length === 0) return { ok: false, reason: "empty" };
-  const parsed: ParsedQuantity[] = [];
-  for (const amount of amounts) {
-    const result = parseQuantity(amount);
-    if (typeof result === "string") return { ok: false, reason: result };
-    parsed.push(result);
-  }
-  const first = parsed[0];
-  if (parsed.some((value) => value.unit.dimension !== first.unit.dimension)) {
-    return { ok: false, reason: "incompatible-unit" };
-  }
-  const displayUnit = parsed.every((value) => value.unit.canonical === first.unit.canonical)
-    ? first.unit.canonical
-    : first.unit.dimension === "mass" ? "g" : "mL";
-  const displayDefinition = UNITS[displayUnit.toLocaleLowerCase("en-CA")];
-  let quantity: Rational = { numerator: 0, denominator: 1 };
-  for (const value of parsed) {
-    const factored = multiply(value.quantity, value.unit.factor);
-    const converted = factored && divide(factored, displayDefinition.factor);
-    const next = converted && add(quantity, converted);
-    if (!next) return { ok: false, reason: "overflow" };
-    quantity = next;
-  }
-  return { ok: true, quantity, unit: displayUnit, display: formatIngredientQuantity(quantity, displayUnit) };
+function display(quantity: Rational, unit: string | null): string {
+  const whole = Math.floor(quantity.numerator / quantity.denominator);
+  const remainder = quantity.numerator % quantity.denominator;
+  const number = remainder === 0 ? String(whole) : whole === 0 ? `${remainder}/${quantity.denominator}` : `${whole} ${remainder}/${quantity.denominator}`;
+  return unit === null ? number : `${number} ${unit}`;
 }
 
-export function sumIngredientQuantities(amounts: readonly string[]): IngredientQuantitySum {
+export function deriveIngredientQuantity(input: StructuredIngredientAmount): IngredientQuantityPart {
   try {
-    return sumIngredientQuantitiesUnchecked(amounts);
+    const amount = parseAmount(input.amount);
+    if (!amount) return { kind: "literal", literal: sourceLiteral(input), reason: "amount" };
+    const unit = unitFor(input.unit);
+    if (!unit) return { kind: "literal", literal: sourceLiteral(input), reason: "unit" };
+    const quantity = toPublic(amount);
+    if (!quantity) return { kind: "literal", literal: sourceLiteral(input), reason: "overflow" };
+    return { kind: "quantity", dimension: unit.dimension, quantity, unit: unit.canonical, display: display(quantity, unit.canonical) };
   } catch {
-    // This helper is a display projection over user-authored literals. Resource
-    // limits or unsupported numeric forms must abstain, never break Prep.
-    return { ok: false, reason: "overflow" };
+    return { kind: "literal", literal: sourceLiteral(input), reason: "overflow" };
   }
+}
+
+function add(left: BigRational, right: BigRational): BigRational | null {
+  return normalize({ numerator: left.numerator * right.denominator + right.numerator * left.denominator, denominator: left.denominator * right.denominator });
+}
+
+function totalQuantities(inputs: readonly StructuredIngredientAmount[]): IngredientQuantityPart[] {
+  const standardizedDimensions = new Set(inputs.map((input) => unitFor(input.unit)?.dimension).filter((value) => value !== undefined));
+  if (standardizedDimensions.size > 1) {
+    return inputs.map((input) => {
+      const derived = deriveIngredientQuantity(input);
+      return derived.kind === "literal" ? derived : { kind: "literal", literal: sourceLiteral(input), reason: "incompatible" };
+    });
+  }
+  const totals = new Map<QuantityDimension, BigRational>();
+  const units = new Map<QuantityDimension, string | null>();
+  const order: Array<{ dimension: QuantityDimension } | { literal: IngredientQuantityPart }> = [];
+  const seenDimensions = new Set<QuantityDimension>();
+  for (const input of inputs) {
+    const amount = parseAmount(input.amount);
+    const unit = unitFor(input.unit);
+    if (!amount || !unit) {
+      order.push({ literal: deriveIngredientQuantity(input) });
+      continue;
+    }
+    const scaled = normalize({ numerator: amount.numerator * unit.factor.numerator, denominator: amount.denominator * unit.factor.denominator });
+    const next = scaled && add(totals.get(unit.dimension) ?? { numerator: BigInt(0), denominator: BigInt(1) }, scaled);
+    if (!next) {
+      order.push({ literal: { kind: "literal", literal: sourceLiteral(input), reason: "overflow" } });
+      continue;
+    }
+    totals.set(unit.dimension, next);
+    if (!seenDimensions.has(unit.dimension)) {
+      seenDimensions.add(unit.dimension);
+      order.push({ dimension: unit.dimension });
+    }
+    const existing = units.get(unit.dimension);
+    units.set(unit.dimension, existing === undefined ? unit.canonical : existing === unit.canonical ? existing : unit.dimension === "mass" ? "g" : unit.dimension === "volume" ? "mL" : null);
+  }
+  const quantities = new Map<QuantityDimension, IngredientQuantityPart[]>();
+  for (const dimension of ["count", "mass", "volume"] as const) {
+    const base = totals.get(dimension);
+    if (!base) continue;
+    const outputUnit = units.get(dimension) ?? null;
+    const definition = unitFor(outputUnit);
+    const quantity = toPublic(definition && normalize({ numerator: base.numerator * definition.factor.denominator, denominator: base.denominator * definition.factor.numerator }));
+    if (quantity) quantities.set(dimension, [{ kind: "quantity", dimension, quantity, unit: outputUnit, display: display(quantity, outputUnit) }]);
+    else quantities.set(dimension, inputs.filter((input) => unitFor(input.unit)?.dimension === dimension).map((input) => ({ kind: "literal" as const, literal: sourceLiteral(input), reason: "overflow" as const })));
+  }
+  return order.flatMap((part) => "literal" in part ? [part.literal] : quantities.get(part.dimension) ?? []);
+}
+
+function compare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Pure read projection with content-derived ordering. */
+export function projectWeeklyGroceryRequirements(occurrences: readonly WeeklyRequirementOccurrence[]): WeeklyRequirementGroup[] {
+  const groups = new Map<string, { section: string; conceptId: string | null; label: string; children: WeeklyRequirementChild[] }>();
+  for (const occurrence of occurrences) {
+    if (occurrence.role !== "weekly_requirement") continue;
+    const conceptId = occurrence.concept?.id ?? null;
+    const key = conceptId === null ? `occurrence:${occurrence.occurrenceId}` : `concept:${occurrence.execution.section}:${conceptId}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { section: occurrence.execution.section, conceptId, label: occurrence.concept?.label ?? occurrence.ingredient, children: [] };
+      groups.set(key, group);
+    }
+    const candidateLabel = occurrence.concept?.label ?? occurrence.ingredient;
+    if (compare(candidateLabel, group.label) < 0) group.label = candidateLabel;
+    group.children.push({
+      executionId: occurrence.execution.id,
+      occurrenceId: occurrence.occurrenceId,
+      mealId: occurrence.mealId,
+      mealTitle: occurrence.mealTitle,
+      ingredient: occurrence.ingredient,
+      qualifier: occurrence.qualifier ?? null,
+      amount: { amount: occurrence.amount, unit: occurrence.unit, source: occurrence.source },
+      coverage: occurrence.execution.coverage,
+      checked: occurrence.execution.checked,
+    });
+  }
+  return [...groups.entries()]
+    .map(([key, group]) => {
+      const children = [...group.children].sort((left, right) => compare(left.mealTitle, right.mealTitle) || compare(left.mealId, right.mealId) || compare(left.occurrenceId, right.occurrenceId));
+      return { ...group, key, children, quantities: totalQuantities(children.map((child) => child.amount)) };
+    })
+    .sort((left, right) => compare(left.section, right.section) || compare(left.label, right.label) || compare(left.key, right.key));
+}
+
+/** Compatibility adapter for the existing Prep projection until #14 supplies structured units. */
+export function sumIngredientQuantities(amounts: readonly string[]): IngredientQuantitySum {
+  if (amounts.length === 0) return { ok: false, reason: "empty" };
+  const structured: StructuredIngredientAmount[] = [];
+  for (const literal of amounts) {
+    const match = /^(\d+(?:\.\d+)?|\d+\/\d+|\d+\s+\d+\/\d+)\s+(fl oz|mg|kg|lbs?|oz|g|tsp|tbsp|cups?|ml|l)$/iu.exec(literal.trim());
+    if (!match) return { ok: false, reason: /^\d+(?:\.\d+)?$|^\d+\/\d+$/u.test(literal.trim()) ? "missing-unit" : "unparseable" };
+    structured.push({ amount: match[1], unit: match[2], source: literal });
+  }
+  const dimensions = new Set(structured.map((input) => unitFor(input.unit)?.dimension));
+  if (dimensions.size !== 1) return { ok: false, reason: "incompatible-unit" };
+  const [part] = totalQuantities(structured);
+  if (!part || part.kind === "literal") return { ok: false, reason: "overflow" };
+  const compatibilityUnit = part.unit ?? "";
+  const compatibilityDisplay = compatibilityUnit === "cup" && part.quantity.numerator !== part.quantity.denominator
+    ? `${part.display}s`
+    : part.display;
+  return { ok: true, quantity: part.quantity, unit: compatibilityUnit, display: compatibilityDisplay };
 }

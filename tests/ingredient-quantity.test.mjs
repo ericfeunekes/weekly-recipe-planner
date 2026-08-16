@@ -1,65 +1,119 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { deriveIngredientQuantity, projectWeeklyGroceryRequirements } from "../lib/ingredient-quantity.ts";
 
-import { formatIngredientQuantity, sumIngredientQuantities } from "../lib/ingredient-quantity.ts";
-
-test("ingredient quantity sums exact integer, decimal, and fractional compatible amounts", () => {
-  const rice = sumIngredientQuantities(["1 cup", "1/2 cup"]);
-  assert.equal(rice.ok, true);
-  assert.equal(rice.ok && rice.display, "1 1/2 cups");
-
-  const decimal = sumIngredientQuantities(["0.25 L", "0.75 L"]);
-  assert.equal(decimal.ok, true);
-  assert.equal(decimal.ok && decimal.display, "1 L");
-
-  const converted = sumIngredientQuantities(["500 g", "0.5 kg"]);
-  assert.equal(converted.ok, true);
-  assert.equal(converted.ok && converted.display, "1000 g");
+const occurrence = (overrides = {}) => ({
+  occurrenceId: "onion-a", mealId: "meal-a", mealTitle: "Fried rice", ingredient: "green onion", qualifier: "sliced",
+  amount: "1/3", unit: "cup", source: "1/3 cup sliced green onion", role: "weekly_requirement", concept: { id: "green-onion", label: "Green onion" },
+  execution: { id: "grocery-a", section: "Produce", coverage: "shop", checked: false }, ...overrides,
 });
 
-test("ingredient quantity supports a deliberately small compatible-unit table", () => {
-  const volume = sumIngredientQuantities(["1 tbsp", "1 tsp"]);
-  assert.equal(volume.ok, true);
-  assert.equal(volume.ok && volume.display, "20 mL");
-
-  const mass = sumIngredientQuantities(["1 kg", "500 g"]);
-  assert.equal(mass.ok, true);
-  assert.equal(mass.ok && mass.display, "1500 g");
-
-  const fluidOunces = sumIngredientQuantities(["1 fl oz", "2 fl oz"]);
-  assert.equal(fluidOunces.ok, true);
-  assert.equal(fluidOunces.ok && fluidOunces.display, "3 fl oz");
+test("structured amounts normalize exact integers, decimals, fractions, and counts without changing input", () => {
+  const input = { amount: "0.125", unit: "kg" };
+  assert.deepEqual(deriveIngredientQuantity(input), { kind: "quantity", dimension: "mass", quantity: { numerator: 1, denominator: 8 }, unit: "kg", display: "1/8 kg" });
+  assert.deepEqual(input, { amount: "0.125", unit: "kg" });
+  assert.deepEqual(deriveIngredientQuantity({ amount: "2", unit: null }), { kind: "quantity", dimension: "count", quantity: { numerator: 2, denominator: 1 }, unit: null, display: "2" });
 });
 
-test("ingredient quantity abstains instead of throwing on unsafe input or arithmetic", () => {
-  const huge = "9".repeat(300);
-  assert.doesNotThrow(() => sumIngredientQuantities([`${huge} cups`, "1 cup"]));
-  assert.deepEqual(sumIngredientQuantities([`${huge} cups`, "1 cup"]), { ok: false, reason: "unparseable" });
-  assert.deepEqual(sumIngredientQuantities([`${Number.MAX_SAFE_INTEGER} kg`, `${Number.MAX_SAFE_INTEGER} kg`]), {
-    ok: false,
-    reason: "overflow",
-  });
+test("ranges, modifiers, package units, and invalid fractions abstain while preserving literals", () => {
+  for (const input of [
+    { amount: "1-2", unit: "cup", source: "1-2 cups" },
+    { amount: "about 1", unit: "cup", source: "about 1 cup" },
+    { amount: "1", unit: "bunch", source: "1 bunch" },
+    { amount: "1/0", unit: "cup", source: "1/0 cup" },
+  ]) assert.equal(deriveIngredientQuantity(input).literal, input.source);
 });
 
-test("ingredient quantity abstains from incompatible, missing, modified, and raw/cooked literals", () => {
-  for (const [amounts, reason] of [
-    [["1 cup", "100 g"], "incompatible-unit"],
-    [["1", "1 cup"], "missing-unit"],
-    [["1 bunch", "1 cup"], "unparseable"],
-    [["1 cup cooked", "1 cup"], "unparseable"],
-    [["1-2 cups", "1 cup"], "unparseable"],
+test("the bounded count, mass, and volume unit table is explicit and exact", () => {
+  for (const [unit, dimension, canonical] of [
+    [null, "count", null], ["count", "count", null], ["each", "count", null],
+    ["mg", "mass", "mg"], ["g", "mass", "g"], ["kg", "mass", "kg"], ["oz", "mass", "oz"], ["lb", "mass", "lb"],
+    ["tsp", "volume", "tsp"], ["tbsp", "volume", "tbsp"], ["fl oz", "volume", "fl oz"], ["cup", "volume", "cup"], ["mL", "volume", "mL"], ["L", "volume", "L"],
   ]) {
-    assert.deepEqual(sumIngredientQuantities(amounts), { ok: false, reason });
+    const result = deriveIngredientQuantity({ amount: "1", unit });
+    assert.equal(result.kind, "quantity");
+    assert.equal(result.kind === "quantity" && result.dimension, dimension);
+    assert.equal(result.kind === "quantity" && result.unit, canonical);
+    assert.deepEqual(result.kind === "quantity" && result.quantity, { numerator: 1, denominator: 1 });
+  }
+
+  const projections = projectWeeklyGroceryRequirements([
+    occurrence({ amount: "500", unit: "g", source: "500 g green onion" }),
+    occurrence({ occurrenceId: "onion-b", amount: "0.5", unit: "kg", source: "0.5 kg green onion", execution: { id: "grocery-b", section: "Produce", coverage: "shop", checked: false } }),
+  ]);
+  assert.deepEqual(projections[0].quantities, [{ kind: "quantity", dimension: "mass", quantity: { numerator: 1000, denominator: 1 }, unit: "g", display: "1000 g" }]);
+});
+
+test("every cross-unit factor conserves its exact base-unit quantity", () => {
+  const cases = [
+    ["mg", "g", { numerator: 1, denominator: 1000 }],
+    ["kg", "g", { numerator: 1000, denominator: 1 }],
+    ["oz", "g", { numerator: 45359237, denominator: 1600000 }],
+    ["lb", "g", { numerator: 45359237, denominator: 100000 }],
+    ["tsp", "mL", { numerator: 5, denominator: 1 }],
+    ["tbsp", "mL", { numerator: 15, denominator: 1 }],
+    ["fl oz", "mL", { numerator: 473176473, denominator: 16000000 }],
+    ["cup", "mL", { numerator: 250, denominator: 1 }],
+    ["L", "mL", { numerator: 1000, denominator: 1 }],
+  ];
+  for (const [unit, baseUnit, expected] of cases) {
+    const [group] = projectWeeklyGroceryRequirements([
+      occurrence({ amount: "1", unit, source: `1 ${unit} green onion` }),
+      occurrence({ occurrenceId: "onion-zero", amount: "0", unit: baseUnit, source: `0 ${baseUnit} green onion`, execution: { id: "grocery-zero", section: "Produce", coverage: "shop", checked: false } }),
+    ]);
+    assert.equal(group.quantities.length, 1, `${unit} remains one compatible total`);
+    assert.deepEqual(group.quantities[0].kind === "quantity" && group.quantities[0].quantity, expected, `${unit} factor`);
+    assert.equal(group.quantities[0].kind === "quantity" && group.quantities[0].unit, baseUnit, `${unit} base unit`);
   }
 });
 
-test("ingredient quantity formats deterministic Canadian-English mixed fractions", () => {
-  assert.equal(
-    formatIngredientQuantity({ numerator: 3, denominator: 2 }, "cup"),
-    "1 1/2 cups",
-  );
-  assert.equal(
-    formatIngredientQuantity({ numerator: 1, denominator: 1 }, "tbsp"),
-    "1 tbsp",
-  );
+test("compatible units total exactly and incompatible dimensions preserve literals", () => {
+  const [group] = projectWeeklyGroceryRequirements([
+    occurrence(),
+    occurrence({ occurrenceId: "onion-b", mealId: "meal-b", mealTitle: "Salad", amount: "1", unit: "tbsp", source: "1 tbsp", execution: { id: "grocery-b", section: "Produce", coverage: "on_hand", checked: true } }),
+    occurrence({ occurrenceId: "onion-c", mealId: "meal-c", mealTitle: "Tacos", amount: "2", unit: null, source: "2", execution: { id: "grocery-c", section: "Produce", coverage: "farm_box", checked: false } }),
+  ]);
+  assert.deepEqual(group.quantities, [
+    { kind: "literal", literal: "1/3 cup sliced green onion", reason: "incompatible" },
+    { kind: "literal", literal: "1 tbsp", reason: "incompatible" },
+    { kind: "literal", literal: "2", reason: "incompatible" },
+  ]);
+});
+
+test("unsupported literals remain visible beside compatible concept totals", () => {
+  const [group] = projectWeeklyGroceryRequirements([
+    occurrence(),
+    occurrence({ occurrenceId: "onion-b", amount: "1", unit: "bunch", source: "1 bunch green onion", execution: { id: "grocery-b", section: "Produce", coverage: "shop", checked: false } }),
+  ]);
+  assert.deepEqual(group.quantities, [
+    { kind: "quantity", dimension: "volume", quantity: { numerator: 1, denominator: 3 }, unit: "cup", display: "1/3 cup" },
+    { kind: "literal", literal: "1 bunch green onion", reason: "unit" },
+  ]);
+});
+
+test("projection filters non-requirements before grouping and leaves unresolved occurrences separate", () => {
+  const projected = projectWeeklyGroceryRequirements([
+    occurrence({ role: "output", occurrenceId: "stock" }),
+    occurrence({ occurrenceId: "unknown-a", ingredient: "mystery greens", concept: null }),
+    occurrence({ occurrenceId: "unknown-b", ingredient: "mystery greens", concept: null, execution: { id: "grocery-b", section: "Produce", coverage: "shop", checked: false } }),
+  ]);
+  assert.deepEqual(projected.map((group) => group.key), ["occurrence:unknown-a", "occurrence:unknown-b"]);
+});
+
+test("grouping is deterministic and execution state and provenance remain on children only", () => {
+  const inputs = [
+    occurrence(),
+    occurrence({ occurrenceId: "onion-b", mealId: "meal-b", mealTitle: "Salad", execution: { id: "grocery-b", section: "Produce", coverage: "on_hand", checked: true } }),
+    occurrence({ occurrenceId: "onion-pantry", execution: { id: "grocery-c", section: "Pantry", coverage: "shop", checked: false } }),
+  ];
+  const first = projectWeeklyGroceryRequirements(inputs);
+  assert.deepEqual(projectWeeklyGroceryRequirements(inputs), first);
+  assert.deepEqual(first.map((group) => group.key), ["concept:Pantry:green-onion", "concept:Produce:green-onion"]);
+  assert.deepEqual(first[1].children.map(({ occurrenceId, mealId, mealTitle, coverage, checked }) => ({ occurrenceId, mealId, mealTitle, coverage, checked })), [
+    { occurrenceId: "onion-a", mealId: "meal-a", mealTitle: "Fried rice", coverage: "shop", checked: false },
+    { occurrenceId: "onion-b", mealId: "meal-b", mealTitle: "Salad", coverage: "on_hand", checked: true },
+  ]);
+  assert.equal("coverage" in first[1], false);
+  assert.equal("checked" in first[1], false);
+  assert.deepEqual(projectWeeklyGroceryRequirements([...inputs].reverse()), first);
 });
