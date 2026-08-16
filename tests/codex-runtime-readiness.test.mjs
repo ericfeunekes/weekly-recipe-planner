@@ -64,7 +64,7 @@ const CONTROL_CAPABILITY = Object.freeze({
   workerTools: [
     "update_plan", "request_user_input", "skills", "web_search",
   ],
-  plannerNamespaceMembers: ["read", "preview", "apply"],
+  plannerNamespaceMembers: ["read", "preview", "apply", "importRecipe"],
   forbiddenHits: [],
   unexpectedRpcMethods: [],
   plannerReadObserved: true,

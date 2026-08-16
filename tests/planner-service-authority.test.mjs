@@ -465,7 +465,7 @@ test("v1 planner receipts replay unchanged after the v2 migration", (t) => {
     plannerVersion: 1,
     occurrenceResults: [{ operationIndex: 0, occurrences: [] }],
   });
-  assert.equal(replay.workspace.schemaVersion, 11);
+  assert.equal(replay.workspace.schemaVersion, 12);
   assert.equal(replay.workspace.plannerVersion, 1);
   assert.equal(replay.workspace.events.length, 1);
   assert.deepEqual(replay.workspace.events[0].provenance, {
@@ -531,7 +531,7 @@ test("bootstrap is atomic, imports transcript once, and arbitrates a second clie
     payload: { data: {}, events: [], chatMessages: [] },
   };
   assert.throws(() => serviceA.bootstrap(importRequest), /bootstrap failure/);
-  assert.deepEqual(serviceA.readWorkspace(), { initialized: false, schemaVersion: 11 });
+  assert.deepEqual(serviceA.readWorkspace(), { initialized: false, schemaVersion: 12 });
   fail = false;
   const imported = serviceA.bootstrap(importRequest);
   assert.equal(imported.imported, true);
@@ -562,7 +562,7 @@ test("bootstrap is atomic, imports transcript once, and arbitrates a second clie
   assert.equal(exported.formatVersion, DIAGNOSTIC_EXPORT_FORMAT_VERSION);
   assert.equal(exported.restorable, false);
   assert.equal(exported.warning, DIAGNOSTIC_EXPORT_WARNING);
-  assert.equal(exported.schemaVersion, 11);
+  assert.equal(exported.schemaVersion, 12);
   assert.equal(exported.transcriptEntries.length, 1);
   assert.equal(exported.events.length, 0);
   storeB.close();
@@ -592,7 +592,7 @@ test("invalid legacy bootstrap fails visibly without initializing the workspace"
       error.code === "INVALID_REQUEST" &&
       error.fieldErrors["data.prep[0].due"] === "Expected an ISO date.",
   );
-  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 11 });
+  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 12 });
   assert.throws(
     () => service.readEventPage({}),
     (error) => error instanceof PlannerServiceError && error.code === "NOT_INITIALIZED",

@@ -21,7 +21,7 @@ function initializedWorkspace() {
   });
   return {
     initialized: true,
-    schemaVersion: 11,
+    schemaVersion: 12,
     plannerVersion: 0,
     syncRevision: 1,
     state,
@@ -99,6 +99,7 @@ function fakePlanner(initial = initializedWorkspace()) {
 function realPlanner(sqlite, {
   failureInjector = { hit() {} },
   bootstrap = true,
+  transformSeed = (seed) => seed,
 } = {}) {
   let id = 0;
   let now = Date.UTC(2026, 6, 15, 12);
@@ -109,7 +110,7 @@ function realPlanner(sqlite, {
   const planner = createPlannerApplicationService({
     store: sqlite,
     domain: householdDomain,
-    seedFactory: () => createCanonicalSeed(context()),
+    seedFactory: () => transformSeed(createCanonicalSeed(context())),
     transformLegacyV2: () => { throw new Error("unused"); },
     clock: { now: () => now += 1 },
     idFactory: { createId: (prefix) => `${prefix}-native-${id += 1}` },
@@ -160,7 +161,7 @@ test("native planner host reads and replays the exact result", async () => {
   const first = decode(await host.handle(params));
   const replay = decode(await host.handle(params));
   assert.deepEqual(replay, first);
-  assert.equal(first.ok, true);
+  assert.equal(first.ok, true, JSON.stringify(first));
   assert.equal(first.data.kind, "workspace");
   assert.equal(sqlite.database.prepare(
     "SELECT count(*) AS count FROM codex_native_tool_calls",
@@ -198,6 +199,150 @@ test("maximum catalogue continues across native turns without exceeding the per-
   assert.equal(callIndex, 250);
   assert.equal(new Set(concepts.map(({ id }) => id)).size, 1_000);
   assert.deepEqual(concepts.map(({ id }) => id), initial.state.ingredientCatalogue.concepts.map(({ id }) => id));
+  sqlite.close();
+});
+
+test("native planner host imports one pinned canonical recipe through the versioned planner authority", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const planner = realPlanner(sqlite, {
+    transformSeed(seed) {
+      for (const week of seed.weeks) week.data.prepSessions = [];
+      return seed;
+    },
+  });
+  const recipeRoot = join(process.cwd(), "tests/support/fixtures/canonical-recipes");
+  const host = createNativePlannerEffectHost({
+    planner,
+    store: createSqliteCodexThreadStore(sqlite),
+    isEligibleCall: () => true,
+    recipeRoot,
+    now: () => 150,
+  });
+  const before = planner.readWorkspace();
+  const weekId = before.state.activeWeekId;
+  const week = before.state.weeks.find((candidate) => candidate.id === weekId);
+  const prepStepIds = new Set(week.data.prepSessions.flatMap((session) =>
+    session.steps.flatMap((entry) => "stepId" in entry ? [entry.stepId] : entry.sources.map((source) => source.stepId))));
+  const meal = week.data.meals.find((candidate) =>
+    (candidate.status === "planned" || candidate.status === "moved") &&
+    candidate.instructions.every((step) => !step.complete && step.note === undefined &&
+      step.timerStartedAt === undefined && !prepStepIds.has(step.id)));
+  assert.ok(meal, "seed must expose one eligible unstarted meal");
+  const originalDate = meal.date;
+  const originalSubtitle = meal.subtitle;
+  const originalNotes = meal.notes;
+  const params = callback("importRecipe", {
+    basePlannerVersion: before.plannerVersion,
+    weekId,
+    mealId: meal.id,
+    recipePath: "lemon-pepper-salmon.md",
+  });
+  const first = decode(await host.handle(params));
+  const replay = decode(await host.handle(params));
+
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(first.data.status, "accepted");
+  assert.deepEqual(replay, first);
+  const imported = first.data.readback.meal;
+  assert.equal(imported.title, "Lemon Pepper Salmon");
+  assert.equal(imported.date, originalDate);
+  assert.equal(imported.subtitle, originalSubtitle);
+  assert.equal(imported.notes, originalNotes);
+  assert.equal(imported.sourceRecipe.kind, "canonical");
+  assert.equal(imported.sourceRecipe.identity, "lemon-pepper-salmon");
+  assert.match(imported.sourceRecipe.revision, /^[0-9a-f]{64}$/u);
+  assert.equal(imported.sourceRecipe.notes, "- Serve with rice and roasted vegetables.\n- Butter can replace the olive oil.\n");
+  assert.deepEqual(imported.ingredients.map(({ source, amount, unit, ingredient, qualifier, canonicalIngredientId }) =>
+    ({ source, amount, unit, ingredient, qualifier, canonicalIngredientId })), [
+    { source: "4 (4-6 ounce) salmon fillets", amount: "4", unit: "fillet", ingredient: "salmon", qualifier: "4-6 ounce", canonicalIngredientId: 1 },
+    { source: "1 tablespoon minced garlic", amount: "1", unit: "tablespoon", ingredient: "garlic", qualifier: "minced", canonicalIngredientId: 2 },
+    { source: "Salt to taste", amount: "", unit: null, ingredient: "salt", qualifier: "to taste", canonicalIngredientId: 3 },
+  ]);
+  assert.deepEqual(imported.instructions.map((step) => ({
+    ingredientIds: step.inputs.map((input) => input.occurrenceId),
+    instruction: step.instruction,
+    timer: step.timerDurationSeconds ?? null,
+  })), [
+    { ingredientIds: [], instruction: "Preheat the oven to 400°F.", timer: null },
+    { ingredientIds: [imported.ingredients[0].id, imported.ingredients[1].id, imported.ingredients[2].id], instruction: "Rub the garlic over the salmon.", timer: null },
+    { ingredientIds: [imported.ingredients[0].id], instruction: "Bake until the salmon flakes easily.", timer: 900 },
+  ]);
+  assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion + 1);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
+  const edited = planner.applyCommand({
+    requestId: "edit-imported-snapshot",
+    basePlannerVersion: before.plannerVersion + 1,
+    command: {
+      type: "editMealRecipe",
+      weekId,
+      mealId: meal.id,
+      changes: {
+        title: "Lemon Pepper Salmon with herbs",
+        subtitle: imported.subtitle,
+        venue: imported.venue,
+        prepNote: imported.prepNote,
+        leftoverNote: imported.leftoverNote,
+        notes: imported.notes,
+        yieldText: imported.yieldText ?? null,
+      },
+      occurrences: imported.ingredients.map((ingredient) => ({
+        kind: "retain", occurrenceId: ingredient.id, source: ingredient.source,
+        amount: ingredient.amount, unit: ingredient.unit, ingredient: ingredient.ingredient,
+        qualifier: ingredient.qualifier, conceptId: ingredient.conceptId,
+      })),
+      removedOccurrenceIds: [],
+    },
+  });
+  assert.equal(edited.decision.status, "accepted");
+  const editedMeal = edited.workspace.state.weeks.find((candidate) => candidate.id === weekId)
+    .data.meals.find((candidate) => candidate.id === meal.id);
+  assert.equal(editedMeal.title, "Lemon Pepper Salmon with herbs");
+  assert.deepEqual(editedMeal.sourceRecipe, imported.sourceRecipe);
+  sqlite.close();
+});
+
+test("native canonical import rejects invalid paths and stale versions without a planner event", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const planner = realPlanner(sqlite, {
+    transformSeed(seed) {
+      for (const week of seed.weeks) week.data.prepSessions = [];
+      return seed;
+    },
+  });
+  const host = createNativePlannerEffectHost({
+    planner,
+    store: createSqliteCodexThreadStore(sqlite),
+    isEligibleCall: () => true,
+    recipeRoot: join(process.cwd(), "tests/support/fixtures/canonical-recipes"),
+    now: () => 175,
+  });
+  const before = planner.readWorkspace();
+  const week = before.state.weeks.find((candidate) => candidate.id === before.state.activeWeekId);
+  const meal = week.data.meals.find((candidate) =>
+    (candidate.status === "planned" || candidate.status === "moved") &&
+    candidate.instructions.every((step) => !step.complete && step.note === undefined &&
+      step.timerStartedAt === undefined && step.timerPaused !== true));
+  const invalid = decode(await host.handle(callback("importRecipe", {
+    basePlannerVersion: before.plannerVersion,
+    weekId: week.id,
+    mealId: meal.id,
+    recipePath: "missing.md",
+  }, { callId: "call-import-invalid" })));
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.error.code, "INVALID_ARGUMENTS");
+  const stale = decode(await host.handle(callback("importRecipe", {
+    basePlannerVersion: before.plannerVersion + 1,
+    weekId: week.id,
+    mealId: meal.id,
+    recipePath: "lemon-pepper-salmon.md",
+  }, { callId: "call-import-stale" })));
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error.code, "VERSION_CONFLICT");
+  assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 0);
+  assert.equal(sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_tool_calls WHERE status = 'rejected'",
+  ).get().count, 2);
   sqlite.close();
 });
 

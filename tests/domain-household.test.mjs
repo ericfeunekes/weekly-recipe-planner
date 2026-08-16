@@ -1244,6 +1244,10 @@ test("each protected canonical state class and immutable target lifecycle reject
     ["completed", ({ meal }) => { meal.instructions[0].complete = true; }],
     ["note", ({ meal }) => { meal.instructions[0].note = "keep"; }],
     ["timer", ({ meal }) => { meal.instructions[0].timerStartedAt = NOW; }],
+    ["paused timer", ({ meal }) => {
+      meal.instructions[0].timerDurationSeconds = 300;
+      meal.instructions[0].timerPaused = true;
+    }],
     ["prep", ({ week, meal }) => {
       week.data.prepSessions.push({
         id: "prep-protected",

@@ -92,7 +92,7 @@ function workspace() {
   };
 }
 
-test("dynamic planner manifest is exactly one three-function registry-derived namespace", () => {
+test("dynamic planner manifest is exactly one four-function registry-derived namespace", () => {
   assert.equal(PLANNER_DYNAMIC_TOOL_NAMESPACE.type, "namespace");
   assert.equal(PLANNER_DYNAMIC_TOOL_NAMESPACE.name, "planner");
   assert.deepEqual(
@@ -136,6 +136,8 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
     applyTool.description,
     /Readback fields by kind: catalogue\[kind,offset\]; workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
   );
+  const importTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "importRecipe");
+  assert.deepEqual(importTool.inputSchema.required, ["basePlannerVersion", "weekId", "mealId", "recipePath"]);
 });
 
 test("sourced replacement remains typed but is withheld pending host admission", () => {
@@ -362,6 +364,7 @@ test("stored successful results are validated against the originating tool contr
   assert.equal(isPlannerToolResultForTool("read", read), true);
   assert.equal(isPlannerToolResultForTool("preview", preview), true);
   assert.equal(isPlannerToolResultForTool("apply", apply), true);
+  assert.equal(isPlannerToolResultForTool("importRecipe", apply), true);
   assert.equal(isPlannerToolResultForTool("read", preview), false);
   assert.equal(isPlannerToolResultForTool("preview", apply), false);
   assert.equal(isPlannerToolResultForTool("apply", read), false);

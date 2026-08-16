@@ -137,7 +137,7 @@ type LogicalInventory = Readonly<{
 }>;
 
 type SchemaDefinition = LogicalInventory["schema"][number];
-let canonicalPlannerSchemaDefinitions: readonly SchemaDefinition[] | null = null;
+const canonicalPlannerSchemaDefinitions = new Map<number, readonly SchemaDefinition[]>();
 
 export type PlannerStoreV8ToV9MigrationResult = Readonly<{
   database: Readonly<{
@@ -1532,17 +1532,22 @@ function readRowCounts(database: DatabaseSync): Readonly<Record<string, number>>
   })));
 }
 
-function assertExpectedSchemaObjects(database: DatabaseSync): void {
-  if (canonicalPlannerSchemaDefinitions === null) {
+function assertExpectedSchemaObjects(database: DatabaseSync, throughVersion = CURRENT_SCHEMA_VERSION): void {
+  let expected = canonicalPlannerSchemaDefinitions.get(throughVersion);
+  if (expected === undefined) {
     const canonical = new DatabaseSync(":memory:");
     try {
-      for (const migration of PLANNER_SCHEMA_MIGRATIONS) executeMigrationEntry(canonical, migration);
-      canonicalPlannerSchemaDefinitions = readNonInternalSchemaDefinitions(canonical);
+      for (const migration of PLANNER_SCHEMA_MIGRATIONS) {
+        if (migration.version > throughVersion) break;
+        executeMigrationEntry(canonical, migration);
+      }
+      expected = readNonInternalSchemaDefinitions(canonical);
+      canonicalPlannerSchemaDefinitions.set(throughVersion, expected);
     } finally {
       canonical.close();
     }
   }
-  if (!sameLogicalValue(readNonInternalSchemaDefinitions(database), canonicalPlannerSchemaDefinitions)) {
+  if (!sameLogicalValue(readNonInternalSchemaDefinitions(database), expected)) {
     throw new PlannerStoreError("STORE_CORRUPT", "The SQLite schema definitions do not match the repository migration catalogue.");
   }
 }
@@ -1564,7 +1569,7 @@ function assertCoherentV8Store(database: DatabaseSync): void {
   if (!sameLogicalValue(versions, [1, 2, 3, 4, 5, 6, 7, 8])) {
     throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store must have the contiguous v1 through v8 migration ledger.");
   }
-  assertExpectedSchemaObjects(database);
+  assertExpectedSchemaObjects(database, 8);
   const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
   const household = database.prepare(
     "SELECT schema_version FROM workspace WHERE id = 'household'",
@@ -1584,7 +1589,7 @@ function assertCoherentV9Store(database: DatabaseSync): void {
   if (!sameLogicalValue(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9])) {
     throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store did not reach the contiguous v1 through v9 migration ledger.");
   }
-  assertExpectedSchemaObjects(database);
+  assertExpectedSchemaObjects(database, 9);
   const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
   const household = database.prepare(
     "SELECT schema_version FROM workspace WHERE id = 'household'",
@@ -1601,7 +1606,7 @@ function assertCoherentV10Store(database: DatabaseSync): void {
   if (!sameLogicalValue(versions, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])) {
     throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store did not reach the contiguous v1 through v10 migration ledger.");
   }
-  assertExpectedSchemaObjects(database);
+  assertExpectedSchemaObjects(database, 10);
   const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
   const household = database.prepare(
     "SELECT schema_version FROM workspace WHERE id = 'household'",
@@ -1857,7 +1862,7 @@ export function migratePlannerStoreV9ToV10({
   backupFilename: string;
 }): PlannerStoreV9ToV10MigrationResult {
   assertPlannerSchemaContract();
-  if (CURRENT_SCHEMA_VERSION < 10) {
+  if (Number(CURRENT_SCHEMA_VERSION) < 10) {
     throw new PlannerStoreError(
       "MIGRATION_FAILED",
       "The one-time SQLite v9-to-v10 command requires the schema-10 catalogue entry.",

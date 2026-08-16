@@ -21,6 +21,7 @@ are satisfied.
 | Merge | Candidate readiness | The application selected by the current promotion attempt cannot pass readiness unless the application, store, native Codex compatibility boundary, and Global UDS are initialized. Readiness from the previously running app cannot satisfy the attempt. |
 | Merge | Production-profile routing | The production build and front controller are exercised at `/recipe-planner/`; API, workspace, JavaScript, CSS, favicon, and social-preview metadata resolve under the mounted profile. |
 | Merge | Gate integrity | The documented release entrypoint runs typecheck, production build, lint, deterministic tests, and the release lifecycle matrix. A missing script, empty test selection, or shared wrong constant is a failure. |
+| Merge | Canonical recipe import | A production-faithful fixture passes the host reader and versioned planner import. Reader tests reject root escape, absolute paths, links, directories, oversized reads, incomplete review metadata, legacy ingredient fields, invalid instruction references, and pathological YAML; descriptor metadata also fences files that change during a read. Host tests prove invalid paths and stale versions create no planner event. Readback preserves the pinned revision/provenance/timing/Notes, exact ingredient source lines plus structured fields, ordered instruction references, timers, and protected meal fields; a normal typed edit remains possible without changing pinned source metadata. |
 | RC | Disposable installed candidate | The candidate produced by the release entrypoint is installed under a temporary home with disposable SQLite data, started through the production front controller, and passes mounted health/workspace plus the representative browser smoke. |
 | QA | Disposable production-profile observation | A disposable installed candidate and SQLite profile are visibly checked through the production front controller at `/recipe-planner/`; mounted health, workspace, assets, favicon, social preview, and one narrow active-week dinner journey have authoritative readback. |
 
@@ -176,6 +177,26 @@ offset, total, and next offset, while browser and Global workspace reads remain
 authoritative full-state reads. `nextOffset` is the explicit continuation token;
 large catalogues continue across native turns so each turn stays within its
 planner-call budget without truncating the canonical catalogue.
+
+### Schema-v12 canonical-import tool ledger hold
+
+Issue 26 advances retained state from schema 11 to 12 only to admit the new
+`importRecipe` name in the durable native-tool-call ledger. Migration 012
+rebuilds that table with the expanded closed tool union, copies every existing
+row and index, and leaves planner events and household recipe data unchanged.
+Current-code proof creates and verifies a schema-11 backup, compares every
+populated native-call ledger value across the table rebuild, replays a retained
+call through the host, exercises a planner edit/replay/undo after migration,
+restarts with an integrity check and idempotent reopen, and proves a frozen
+schema-11 preflight rejects the schema-12 file without changing its bytes.
+
+There is deliberately no household v11-to-v12 operator command in this
+change. Production must remain on the schema-11 app and database. Promotion is
+held until a separately authorized `shipping:release` action supplies a
+checked-in transition procedure that creates and verifies a schema-11 backup,
+names restoration steps, and completes authoritative application readback on
+disposable data before any household action. `make promote`, `make deploy`, and
+`make recover` are not substitutes for that missing database procedure.
 
 ## Merge Gate
 

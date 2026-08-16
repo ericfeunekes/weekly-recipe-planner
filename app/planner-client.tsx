@@ -3130,6 +3130,22 @@ function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: bo
 
 function RecipeSource({ meal }: { meal: Meal }) {
   if (!meal.sourceRecipe) return null;
+  if (meal.sourceRecipe.kind === "canonical") {
+    return (
+      <div>
+        <p className="recipe-source">
+          <span>Canonical recipe</span>
+          <span>{meal.sourceRecipe.identity} · pinned {meal.sourceRecipe.revision.slice(0, 12)}</span>
+        </p>
+        {meal.sourceRecipe.notes ? (
+          <div className="mt-3 whitespace-pre-wrap text-sm text-[var(--color-text-muted)]">
+            <span className="mb-1 block font-semibold text-[var(--color-text)]">Canonical notes</span>
+            {meal.sourceRecipe.notes}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <p className="recipe-source">
       <span>Recipe source</span>

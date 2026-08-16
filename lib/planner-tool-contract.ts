@@ -38,7 +38,7 @@ import {
 
 export const PLANNER_TOOL_SCHEMA_VERSION = 1 as const;
 export const PLANNER_TOOL_NAMESPACE = "planner" as const;
-export const PLANNER_TOOL_NAMES = ["read", "preview", "apply"] as const;
+export const PLANNER_TOOL_NAMES = ["read", "preview", "apply", "importRecipe"] as const;
 export const PLANNER_TOOL_CALL_LIMIT = 32;
 export const PLANNER_TOOL_ARGUMENT_BYTES_LIMIT = 65_536;
 export const PLANNER_TOOL_RESULT_BYTES_LIMIT = 131_072;
@@ -62,6 +62,12 @@ export type PlannerPreviewArguments = {
 };
 export type PlannerApplyArguments = PlannerPreviewArguments & {
   readback: ReadQuery;
+};
+export type PlannerImportRecipeArguments = {
+  basePlannerVersion: number;
+  weekId: string;
+  mealId: string;
+  recipePath: string;
 };
 
 export type ForegroundGrant = {
@@ -190,6 +196,7 @@ export type PlannerToolDataByName = {
   read: PlannerReadProjection;
   preview: PlannerPreviewData;
   apply: PlannerApplyData;
+  importRecipe: PlannerApplyData;
 };
 
 const readQuerySchema = {
@@ -375,6 +382,25 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
         },
       },
     }),
+    Object.freeze({
+      type: "function",
+      name: "importRecipe",
+      description:
+        "Import one reviewed canonical Markdown recipe from the host's linked recipe root into an eligible unstarted meal. " +
+        "recipePath is a relative .md path inside that root. The host pins the exact file revision and applies the resulting " +
+        "editable week-local snapshot through the planner's versioned mutation authority.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["basePlannerVersion", "weekId", "mealId", "recipePath"],
+        properties: {
+          basePlannerVersion: { type: "integer", minimum: 0 },
+          weekId: { type: "string", minLength: 1, maxLength: 200 },
+          mealId: { type: "string", minLength: 1, maxLength: 200 },
+          recipePath: { type: "string", minLength: 1, maxLength: 2_048 },
+        },
+      },
+    }),
   ]),
 });
 
@@ -440,6 +466,17 @@ export function isPlannerApplyArguments(value: unknown): value is PlannerApplyAr
     hasExactKeys(value, ["basePlannerVersion", "operations", "readback"]) &&
     Number.isSafeInteger(value.basePlannerVersion) && Number(value.basePlannerVersion) >= 0 &&
     isPlannerOperationList(value.operations) && isReadQuery(value.readback);
+}
+
+export function isPlannerImportRecipeArguments(
+  value: unknown,
+): value is PlannerImportRecipeArguments {
+  return isRecord(value) &&
+    hasExactKeys(value, ["basePlannerVersion", "weekId", "mealId", "recipePath"]) &&
+    Number.isSafeInteger(value.basePlannerVersion) && Number(value.basePlannerVersion) >= 0 &&
+    isBoundedId(value.weekId) && isBoundedId(value.mealId) &&
+    typeof value.recipePath === "string" && value.recipePath.length >= 1 &&
+    value.recipePath.length <= 2_048 && !value.recipePath.includes("\0");
 }
 
 export function isHistoricalPlannerApplyArguments(
@@ -936,6 +973,7 @@ export function isPlannerToolResultForTool<Tool extends PlannerToolName>(
     case "preview":
       return isPlannerPreviewData(value.data);
     case "apply":
+    case "importRecipe":
       return isPlannerApplyData(value.data);
     default:
       return false;

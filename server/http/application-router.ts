@@ -345,7 +345,10 @@ export function createApplicationRouter(
         ) {
           throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed planner command request.");
         }
-        const result = isHouseholdCommand(body.command)
+        const result = isHouseholdCommand(body.command) && !(
+          body.command.type === "replaceMealRecipeFromSource" &&
+          body.command.recipe.source.kind === "canonical"
+        )
           ? dependencies.planner.applyCommand({
               requestId: body.requestId,
               basePlannerVersion: body.basePlannerVersion,
@@ -368,7 +371,8 @@ export function createApplicationRouter(
         return;
       }
       if (url.pathname === PLANNER_API_ROUTES.preview.path) {
-        if (!isPreviewPlannerOperationsRequest(body)) {
+        if (!isPreviewPlannerOperationsRequest(body) || body.operations.some(({ command }) =>
+          command.type === "replaceMealRecipeFromSource" && command.recipe.source.kind === "canonical")) {
           throw new ApiRouteError(400, "INVALID_REQUEST", "Malformed planner operation preview request.");
         }
         const result = dependencies.planner.previewOperations(body);

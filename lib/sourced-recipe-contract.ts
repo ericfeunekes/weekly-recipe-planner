@@ -32,9 +32,39 @@ export type WebRecipeSourceDraft = {
   url: string;
 };
 
-export type SourceRecipe = WebRecipeSourceDraft & {
+export type WebSourceRecipe = WebRecipeSourceDraft & {
   retrievedAt: number;
 };
+
+export type CanonicalRecipeSource = {
+  kind: "canonical";
+  identity: string;
+  revision: string;
+  path: string;
+  status: "active";
+  provenance: {
+    source: "cookbook" | "chatgpt" | "web" | "self" | "family";
+    sourceRef: string;
+    sourceLocator: string | null;
+    sourcePath: string | null;
+    sourceStartLine: number | null;
+    sourceEndLine: number | null;
+    sourceSha256: string | null;
+    sourceRetrievedAt: string;
+    fidelityVerdict: "exact" | "mismatch";
+    fidelityReview: string;
+    adaptedFrom: string | null;
+  };
+  servings: string;
+  timeActiveMinutes: number;
+  timeTotalMinutes: number;
+  cuisine: string | null;
+  tasteTags: string[];
+  dietaryTags: string[];
+  notes: string;
+};
+
+export type SourceRecipe = WebSourceRecipe | CanonicalRecipeSource;
 
 export type ResearchRecipeDraft = {
   source: WebRecipeSourceDraft;
@@ -57,7 +87,7 @@ export type ResearchRecipeProviderOutput = {
 export type ResearchRecipeCandidate = {
   schemaVersion: typeof RESEARCH_RECIPE_SCHEMA_VERSION;
   candidateId: string;
-  source: SourceRecipe;
+  source: WebSourceRecipe;
   title: string;
   yieldText?: string;
   steps: SourcedRecipeStep[];
@@ -67,7 +97,7 @@ type ResearchCandidateReferenceBase = {
   schemaVersion: typeof RESEARCH_RECIPE_SCHEMA_VERSION;
   candidateId: string;
   title: string;
-  source: SourceRecipe;
+  source: WebSourceRecipe;
   stepCount: number;
 };
 
@@ -128,13 +158,45 @@ const webSourceDraftSchema = {
 } as const;
 
 const sourceRecipeSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["kind", "identity", "url", "retrievedAt"],
-  properties: {
-    ...webSourceDraftSchema.properties,
-    retrievedAt: { type: "integer", minimum: 0 },
-  },
+  oneOf: [
+    {
+      type: "object", additionalProperties: false,
+      required: ["kind", "identity", "url", "retrievedAt"],
+      properties: { ...webSourceDraftSchema.properties, retrievedAt: { type: "integer", minimum: 0 } },
+    },
+    {
+      type: "object", additionalProperties: false,
+      required: ["kind", "identity", "revision", "path", "status", "provenance", "servings", "timeActiveMinutes", "timeTotalMinutes", "cuisine", "tasteTags", "dietaryTags", "notes"],
+      properties: {
+        kind: { type: "string", const: "canonical" }, identity: boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1),
+        revision: { type: "string", pattern: "^[0-9a-f]{64}$" }, path: boundedString(RESEARCH_SOURCE_URL_LENGTH, 1),
+        status: { type: "string", const: "active" },
+        provenance: {
+          type: "object",
+          additionalProperties: false,
+          required: ["source", "sourceRef", "sourceLocator", "sourcePath", "sourceStartLine", "sourceEndLine", "sourceSha256", "sourceRetrievedAt", "fidelityVerdict", "fidelityReview", "adaptedFrom"],
+          properties: {
+            source: { type: "string", enum: ["cookbook", "chatgpt", "web", "self", "family"] },
+            sourceRef: boundedString(RESEARCH_SOURCE_URL_LENGTH, 1),
+            sourceLocator: { anyOf: [boundedString(RESEARCH_SOURCE_URL_LENGTH, 1), { type: "null" }] },
+            sourcePath: { anyOf: [boundedString(RESEARCH_SOURCE_URL_LENGTH, 1), { type: "null" }] },
+            sourceStartLine: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
+            sourceEndLine: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
+            sourceSha256: { anyOf: [{ type: "string", pattern: "^[0-9a-f]{64}$" }, { type: "null" }] },
+            sourceRetrievedAt: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+            fidelityVerdict: { type: "string", enum: ["exact", "mismatch"] },
+            fidelityReview: boundedString(RESEARCH_SOURCE_URL_LENGTH, 1),
+            adaptedFrom: { anyOf: [boundedString(RESEARCH_SOURCE_URL_LENGTH, 1), { type: "null" }] },
+          },
+        }, servings: boundedString(RESEARCH_YIELD_LENGTH, 1),
+        timeActiveMinutes: { type: "integer", minimum: 0 }, timeTotalMinutes: { type: "integer", minimum: 0 },
+        cuisine: { anyOf: [boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1), { type: "null" }] },
+        tasteTags: { type: "array", items: boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1) },
+        dietaryTags: { type: "array", items: boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1) },
+        notes: boundedString(RESEARCH_INSTRUCTION_LENGTH * 4),
+      },
+    },
+  ],
 } as const;
 
 const inputSchema = {
@@ -177,6 +239,17 @@ const providerStepSchema = {
         { type: "null" },
       ],
     },
+  },
+} as const;
+
+const occurrenceInputSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["occurrenceCorrelationId", "amount", "ingredient"],
+  properties: {
+    occurrenceCorrelationId: boundedString(200, 1),
+    amount: boundedString(RESEARCH_AMOUNT_LENGTH, 1),
+    ingredient: boundedString(RESEARCH_INGREDIENT_LENGTH, 1),
   },
 } as const;
 
@@ -238,7 +311,7 @@ export const SOURCED_RECIPE_REPLACEMENT_SCHEMA = Object.freeze({
       type: "array",
       minItems: 1,
       maxItems: RESEARCH_STEP_LIMIT,
-      items: { type: "object", additionalProperties: false, required: ["inputs", "instruction"], properties: { inputs: { type: "array", maxItems: RESEARCH_STEP_INPUT_LIMIT, items: { type: "object", additionalProperties: false, required: ["occurrenceCorrelationId", "amount", "ingredient"], properties: { occurrenceCorrelationId: boundedString(200, 1), amount: boundedString(RESEARCH_AMOUNT_LENGTH), ingredient: boundedString(RESEARCH_INGREDIENT_LENGTH) } } }, instruction: boundedString(RESEARCH_INSTRUCTION_LENGTH, 1), timerDurationSeconds: canonicalStepSchema.properties.timerDurationSeconds, note: boundedString(RESEARCH_INSTRUCTION_LENGTH) } },
+      items: { type: "object", additionalProperties: false, required: ["inputs", "instruction"], properties: { inputs: { type: "array", maxItems: RESEARCH_STEP_INPUT_LIMIT, items: occurrenceInputSchema }, instruction: boundedString(RESEARCH_INSTRUCTION_LENGTH, 1), timerDurationSeconds: canonicalStepSchema.properties.timerDurationSeconds, note: boundedString(RESEARCH_INSTRUCTION_LENGTH) } },
     },
   },
 });
@@ -289,12 +362,49 @@ function isWebSourceDraft(value: unknown): value is WebRecipeSourceDraft {
 }
 
 export function isSourceRecipe(value: unknown): value is SourceRecipe {
-  return isRecord(value) &&
-    hasExactKeys(value, ["kind", "identity", "url", "retrievedAt"]) &&
-    value.kind === "web" &&
-    isBoundedTrimmedText(value.identity, RESEARCH_SOURCE_IDENTITY_LENGTH) &&
-    isCanonicalWebUrl(value.url) &&
-    Number.isSafeInteger(value.retrievedAt) && Number(value.retrievedAt) >= 0;
+  if (!isRecord(value)) return false;
+  if (value.kind === "web") {
+    return hasExactKeys(value, ["kind", "identity", "url", "retrievedAt"]) &&
+      isBoundedTrimmedText(value.identity, RESEARCH_SOURCE_IDENTITY_LENGTH) &&
+      isCanonicalWebUrl(value.url) &&
+      Number.isSafeInteger(value.retrievedAt) && Number(value.retrievedAt) >= 0;
+  }
+  if (value.kind !== "canonical" || !hasExactKeys(value, [
+    "kind", "identity", "revision", "path", "status", "provenance", "servings",
+    "timeActiveMinutes", "timeTotalMinutes", "cuisine", "tasteTags", "dietaryTags", "notes",
+  ])) return false;
+  const provenance = value.provenance;
+  if (!isRecord(provenance) || !hasExactKeys(provenance, [
+    "source", "sourceRef", "sourceLocator", "sourcePath", "sourceStartLine",
+    "sourceEndLine", "sourceSha256", "sourceRetrievedAt", "fidelityVerdict",
+    "fidelityReview", "adaptedFrom",
+  ])) return false;
+  const nullableText = (candidate: unknown, max = RESEARCH_SOURCE_URL_LENGTH) =>
+    candidate === null || isBoundedTrimmedText(candidate, max);
+  const nullableLine = (candidate: unknown) =>
+    candidate === null || (Number.isSafeInteger(candidate) && Number(candidate) >= 1);
+  return isBoundedTrimmedText(value.identity, RESEARCH_SOURCE_IDENTITY_LENGTH) &&
+    typeof value.revision === "string" && /^[0-9a-f]{64}$/u.test(value.revision) &&
+    isBoundedTrimmedText(value.path, RESEARCH_SOURCE_URL_LENGTH) && value.status === "active" &&
+    ["cookbook", "chatgpt", "web", "self", "family"].includes(String(provenance.source)) &&
+    isBoundedTrimmedText(provenance.sourceRef, RESEARCH_SOURCE_URL_LENGTH) &&
+    nullableText(provenance.sourceLocator) && nullableText(provenance.sourcePath) &&
+    nullableLine(provenance.sourceStartLine) && nullableLine(provenance.sourceEndLine) &&
+    ((provenance.sourceStartLine === null && provenance.sourceEndLine === null) ||
+      (provenance.sourceStartLine !== null && provenance.sourceEndLine !== null &&
+        Number(provenance.sourceEndLine) >= Number(provenance.sourceStartLine))) &&
+    (provenance.sourceSha256 === null || (typeof provenance.sourceSha256 === "string" && /^[0-9a-f]{64}$/u.test(provenance.sourceSha256))) &&
+    typeof provenance.sourceRetrievedAt === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(provenance.sourceRetrievedAt) &&
+    (provenance.fidelityVerdict === "exact" || provenance.fidelityVerdict === "mismatch") &&
+    isBoundedTrimmedText(provenance.fidelityReview, RESEARCH_SOURCE_URL_LENGTH) &&
+    nullableText(provenance.adaptedFrom) &&
+    isBoundedTrimmedText(value.servings, RESEARCH_YIELD_LENGTH) &&
+    Number.isSafeInteger(value.timeActiveMinutes) && Number(value.timeActiveMinutes) >= 0 &&
+    Number.isSafeInteger(value.timeTotalMinutes) && Number(value.timeTotalMinutes) >= Number(value.timeActiveMinutes) &&
+    (value.cuisine === null || isBoundedTrimmedText(value.cuisine, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
+    Array.isArray(value.tasteTags) && value.tasteTags.every((tag) => isBoundedTrimmedText(tag, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
+    Array.isArray(value.dietaryTags) && value.dietaryTags.every((tag) => isBoundedTrimmedText(tag, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
+    typeof value.notes === "string" && value.notes.length <= RESEARCH_INSTRUCTION_LENGTH * 4;
 }
 
 function isSourcedRecipeInput(value: unknown): value is SourcedRecipeInput {
@@ -412,7 +522,7 @@ export function isResearchRecipeCandidate(
     ) &&
     value.schemaVersion === RESEARCH_RECIPE_SCHEMA_VERSION &&
     isBoundedTrimmedText(value.candidateId, RESEARCH_CANDIDATE_ID_LENGTH) &&
-    isSourceRecipe(value.source) && hasValidRecipeBody(value) &&
+    isRecord(value.source) && value.source.kind === "web" && isSourceRecipe(value.source) && hasValidRecipeBody(value) &&
     Buffer.byteLength(JSON.stringify(value), "utf8") <= RESEARCH_CANDIDATE_BYTES_LIMIT;
 }
 
@@ -471,7 +581,7 @@ export function isResearchCandidateReference(
     value.schemaVersion === RESEARCH_RECIPE_SCHEMA_VERSION &&
     isBoundedTrimmedText(value.candidateId, RESEARCH_CANDIDATE_ID_LENGTH) &&
     isBoundedTrimmedText(value.title, RESEARCH_TITLE_LENGTH) &&
-    isSourceRecipe(value.source) &&
+    isRecord(value.source) && value.source.kind === "web" && isSourceRecipe(value.source) &&
     Number.isSafeInteger(value.stepCount) && Number(value.stepCount) >= 1 &&
     Number(value.stepCount) <= RESEARCH_STEP_LIMIT &&
     (hasLegacyShape || (
@@ -528,11 +638,13 @@ export function isSourcedRecipeReplacement(
     value.occurrences.every((occurrence) => isIngredientOccurrenceEdit(occurrence) && occurrence.kind === "create" &&
       hasExactKeys(occurrence, ["kind", "correlationId", "source", "amount", "unit", "ingredient", "qualifier", "conceptId", "canonicalIngredientId"]) &&
       isBoundedTrimmedText(occurrence.correlationId, 200) &&
-      (occurrence.source === null || isBoundedTrimmedText(occurrence.source, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
-      occurrence.amount.length <= RESEARCH_AMOUNT_LENGTH &&
-      (occurrence.unit === null || occurrence.unit.length <= RESEARCH_AMOUNT_LENGTH) &&
-      isBoundedTrimmedText(occurrence.ingredient, RESEARCH_INGREDIENT_LENGTH) &&
-      (occurrence.qualifier === null || occurrence.qualifier.length <= RESEARCH_INGREDIENT_LENGTH) &&
+      (occurrence.source === null || isBoundedTrimmedText(occurrence.source,
+        (value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_LITERAL_LENGTH : RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
+      occurrence.amount.length <= ((value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_AMOUNT_LENGTH : RESEARCH_AMOUNT_LENGTH) &&
+      (occurrence.unit === null || occurrence.unit.length <= ((value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_LITERAL_LENGTH : RESEARCH_AMOUNT_LENGTH)) &&
+      isBoundedTrimmedText(occurrence.ingredient,
+        (value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_LITERAL_LENGTH : RESEARCH_INGREDIENT_LENGTH) &&
+      (occurrence.qualifier === null || occurrence.qualifier.length <= ((value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_LITERAL_LENGTH : RESEARCH_INGREDIENT_LENGTH)) &&
       (occurrence.conceptId === null || occurrence.conceptId.length <= 200) &&
       (occurrence.canonicalIngredientId === null || (Number.isSafeInteger(occurrence.canonicalIngredientId) && Number(occurrence.canonicalIngredientId) > 0))) &&
     Array.isArray(value.steps) && value.steps.length >= 1 && value.steps.length <= RESEARCH_STEP_LIMIT &&
@@ -541,9 +653,12 @@ export function isSourcedRecipeReplacement(
       step.inputs.every((input) => isRecord(input) &&
         hasExactKeys(input, ["occurrenceCorrelationId", "amount", "ingredient"]) &&
         isBoundedTrimmedText(input.occurrenceCorrelationId, 200) &&
-        isBoundedTrimmedText(input.amount, RESEARCH_AMOUNT_LENGTH) &&
+        (((value.source as SourceRecipe).kind === "canonical" && input.amount === "") ||
+          isBoundedTrimmedText(input.amount,
+            (value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_AMOUNT_LENGTH : RESEARCH_AMOUNT_LENGTH)) &&
         isSingleLine(input.amount) &&
-        isBoundedTrimmedText(input.ingredient, RESEARCH_INGREDIENT_LENGTH) &&
+        isBoundedTrimmedText(input.ingredient,
+          (value.source as SourceRecipe).kind === "canonical" ? MAX_OCCURRENCE_LITERAL_LENGTH : RESEARCH_INGREDIENT_LENGTH) &&
         isSingleLine(input.ingredient)) &&
       isBoundedTrimmedText(step.instruction, RESEARCH_INSTRUCTION_LENGTH) &&
       (!Object.hasOwn(step, "timerDurationSeconds") ||
@@ -576,8 +691,11 @@ export function isLegacySourcedRecipeReplacement(
 }
 
 export function sourceRecipeEquals(left: SourceRecipe, right: SourceRecipe): boolean {
-  return left.kind === right.kind && left.identity === right.identity &&
-    left.url === right.url && left.retrievedAt === right.retrievedAt;
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "web" && right.kind === "web") {
+    return left.identity === right.identity && left.url === right.url && left.retrievedAt === right.retrievedAt;
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function canonicalSourcedRecipeReplacementJson(
@@ -593,12 +711,7 @@ export function canonicalSourcedRecipeReplacementJson(
       present: Object.hasOwn(replacement, "yieldText"),
       value: replacement.yieldText ?? null,
     },
-    source: {
-      kind: replacement.source.kind,
-      identity: replacement.source.identity,
-      url: replacement.source.url,
-      retrievedAt: replacement.source.retrievedAt,
-    },
+    source: replacement.source,
     occurrences: replacement.occurrences.map((occurrence) => ({
       correlationId: occurrence.correlationId,
       source: occurrence.source,
@@ -709,3 +822,7 @@ export function authorizeEmbeddedSourcedReplacements(
   return { ok: true };
 }
 import { isIngredientOccurrenceEdit } from "./ingredient-occurrence.ts";
+import {
+  MAX_OCCURRENCE_AMOUNT_LENGTH,
+  MAX_OCCURRENCE_LITERAL_LENGTH,
+} from "./ingredient-occurrence.ts";

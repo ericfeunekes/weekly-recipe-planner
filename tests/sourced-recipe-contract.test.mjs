@@ -405,6 +405,13 @@ test("host materialization, digest-bound compact reference, and replacement omit
     ...replacement,
     steps: [{
       ...replacement.steps[0],
+      inputs: replacement.steps[0].inputs.map((input) => ({ ...input, amount: "" })),
+    }],
+  }), false, "web replacements retain the existing non-empty instruction amount contract");
+  assert.equal(isSourcedRecipeReplacement({
+    ...replacement,
+    steps: [{
+      ...replacement.steps[0],
       inputs: [replacement.steps[0].inputs[0], replacement.steps[0].inputs[0]],
     }],
   }), true, "one occurrence may appear more than once in an instruction");

@@ -41,7 +41,7 @@ const capability = Object.freeze({
   workerTools: [
     "update_plan", "request_user_input", "skills", "web_search",
   ],
-  plannerNamespaceMembers: ["read", "preview", "apply"],
+  plannerNamespaceMembers: ["read", "preview", "apply", "importRecipe"],
   forbiddenHits: [],
   unexpectedRpcMethods: [],
   plannerReadObserved: true,
@@ -244,7 +244,7 @@ test("compatibility contract freezes exact capability manifests and RPC allowlis
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.skillsNamespace, ["list", "read"]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.research, ["update_plan", "web_search"]);
   assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.planner, ["update_plan", "planner"]);
-  assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.plannerNamespace, ["read", "preview", "apply"]);
+  assert.deepEqual(CODEX_FOLLOW_UP_TOOL_MANIFESTS.plannerNamespace, ["read", "preview", "apply", "importRecipe"]);
   assert.deepEqual(CODEX_FOLLOW_UP_RPC_POLICY.serverRequests, [
     "item/tool/call",
     "item/tool/requestUserInput",
@@ -372,7 +372,7 @@ test("observed capability inspection requires exact ordered arrays and dependent
   assert.deepEqual(result.researchTools, ["update_plan", "web_search"]);
   assert.deepEqual(result.plannerTools, ["update_plan", "planner"]);
   assert.deepEqual(result.workerTools, CODEX_FOLLOW_UP_TOOL_MANIFESTS.workerRequired);
-  assert.deepEqual(result.plannerNamespaceMembers, ["read", "preview", "apply"]);
+  assert.deepEqual(result.plannerNamespaceMembers, ["read", "preview", "apply", "importRecipe"]);
   assert.equal(result.plannerReadObserved, true);
   assert.equal(result.workerWaitCallObserved, true);
   assert.equal(result.workerWaitResultObserved, true);

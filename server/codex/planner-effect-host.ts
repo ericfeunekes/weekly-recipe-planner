@@ -14,6 +14,7 @@ import {
   createPlannerToolSuccess,
   isHistoricalPlannerApplyArguments,
   isPlannerApplyArguments,
+  isPlannerImportRecipeArguments,
   isPlannerPreviewArguments,
   isPlannerReadArguments,
   projectPlannerRead,
@@ -22,6 +23,7 @@ import {
   type PlannerToolName,
   type PlannerToolResult,
 } from "../../lib/planner-tool-contract.ts";
+import type { SourcedRecipeReplacement } from "../../lib/sourced-recipe-contract.ts";
 import { HOUSEHOLD_COMMAND_REGISTRY } from "../../lib/household-command-contract.ts";
 import type {
   PlannerApplicationService,
@@ -33,6 +35,7 @@ import type {
   SqliteCodexThreadStore,
 } from "../store/codex-thread-store.ts";
 import type { SqliteTransaction } from "../store/sqlite-store.ts";
+import { CanonicalRecipeReadError, readCanonicalRecipe } from "./canonical-recipe-reader.ts";
 
 const IDENTIFIER_LIMIT = 200;
 
@@ -54,6 +57,7 @@ export type NativePlannerEffectHostOptions = {
   planner: PlannerApplicationService & PlannerMutationKernel<SqliteTransaction>;
   store: SqliteCodexThreadStore;
   isEligibleCall(threadId: string, turnId: string): boolean;
+  recipeRoot?: string;
   now?: () => number;
 };
 
@@ -250,13 +254,17 @@ export class NativePlannerEffectHost {
     }
 
     const workspace = this.#options.planner.readWorkspace();
-    const executeAndComplete = (transaction?: SqliteTransaction) => {
+    const executeAndComplete = (
+      transaction?: SqliteTransaction,
+      importedRecipe?: SourcedRecipeReplacement,
+    ) => {
       const { result, completion } = this.#runTool(
         call,
         identity,
         now,
         workspace,
         transaction,
+        importedRecipe,
       );
       if (this.#options.store.completePlannerToolCall(completion, transaction)) return result;
       const terminal = this.#options.store.readPlannerToolCalls(
@@ -273,6 +281,27 @@ export class NativePlannerEffectHost {
       }
       throw new Error("Native planner call lost its durable completion ownership.");
     };
+    if (call.tool === "importRecipe") {
+      if (!isPlannerImportRecipeArguments(call.arguments) || this.#options.recipeRoot === undefined) {
+        return executeAndComplete();
+      }
+      let recipe: SourcedRecipeReplacement;
+      try {
+        recipe = await readCanonicalRecipe(this.#options.recipeRoot, call.arguments.recipePath);
+      } catch (error) {
+        const result = failure(
+          call.callId,
+          workspace,
+          now,
+          "INVALID_ARGUMENTS",
+          error instanceof CanonicalRecipeReadError ? error.message : "Canonical recipe import failed safely.",
+          "revise_new_call",
+        );
+        this.#options.store.completePlannerToolCall(completionBase(identity, result, now));
+        return result;
+      }
+      return this.#options.store.transaction((transaction) => executeAndComplete(transaction, recipe));
+    }
     return call.tool === "apply"
       ? this.#options.store.transaction((transaction) => executeAndComplete(transaction))
       : executeAndComplete();
@@ -284,6 +313,7 @@ export class NativePlannerEffectHost {
     now: number,
     workspace: ReturnType<PlannerApplicationService["readWorkspace"]>,
     transaction?: SqliteTransaction,
+    importedRecipe?: SourcedRecipeReplacement,
   ): { result: PlannerToolResult; completion: NativePlannerToolCompletion } {
     if (!workspace.initialized) {
       const result = failure(
@@ -387,6 +417,72 @@ export class NativePlannerEffectHost {
       }
       serializePlannerToolResult(result);
       return { result, completion: completionBase(identity, result, now) };
+    }
+
+    if (call.tool === "importRecipe") {
+      if (!isPlannerImportRecipeArguments(call.arguments) || importedRecipe === undefined || !transaction) {
+        const result = failure(
+          call.callId,
+          workspace,
+          now,
+          "INVALID_ARGUMENTS",
+          this.#options.recipeRoot === undefined
+            ? "Canonical recipe import is not configured for this planner host."
+            : "planner.importRecipe arguments did not match the closed import contract.",
+          "revise_new_call",
+        );
+        return { result, completion: completionBase(identity, result, now) };
+      }
+      const requestId = `native-codex:${identity.callbackIdentityHash}`;
+      const operation = {
+        command: {
+          type: "replaceMealRecipeFromSource" as const,
+          weekId: call.arguments.weekId as import("../../lib/household-contract.ts").WeekId,
+          mealId: call.arguments.mealId,
+          recipe: importedRecipe,
+        },
+      };
+      const applied = this.#options.planner.applyPlannerOperations(
+        transaction,
+        { requestId, basePlannerVersion: call.arguments.basePlannerVersion, operations: [operation] },
+        { operationKind: "native_codex_apply_planner_operations_v1", provenance: EMBEDDED_CODEX_PROVENANCE, now },
+      );
+      let result: PlannerToolResult;
+      if (applied.decision.status === "accepted") {
+        const readback = projectPlannerRead(applied.workspace, {
+          kind: "meal", weekId: call.arguments.weekId, mealId: call.arguments.mealId,
+        });
+        if (!readback) throw new Error("Accepted canonical recipe import lost its meal readback.");
+        result = createPlannerToolSuccess(call.callId, applied.workspace, now, {
+          status: "accepted" as const,
+          eventId: applied.decision.eventId,
+          occurrenceResults: applied.decision.occurrenceResults,
+          readback,
+        });
+      } else if (applied.decision.status === "version_conflict") {
+        result = failure(
+          call.callId, applied.workspace, now, "VERSION_CONFLICT",
+          `Planner version changed from ${applied.decision.expectedVersion} to ${applied.decision.actualVersion}.`,
+          "refresh_new_call",
+        );
+      } else {
+        result = failure(
+          call.callId, applied.workspace, now, "DOMAIN_REJECTED", applied.decision.message,
+          "revise_new_call", applied.decision.operationIndex,
+        );
+      }
+      const completion: NativePlannerToolCompletion = {
+        ...completionBase(identity, result, now),
+        operationKind: "native_codex_apply_planner_operations_v1",
+        requestId,
+        ...(applied.decision.status === "accepted" ? { eventId: applied.decision.eventId } : {}),
+        basePlannerVersion: call.arguments.basePlannerVersion,
+        resultPlannerVersion: applied.decision.status === "version_conflict"
+          ? applied.decision.actualVersion
+          : applied.workspace.plannerVersion,
+      };
+      serializePlannerToolResult(result);
+      return { result, completion };
     }
 
     let result: PlannerToolResult;

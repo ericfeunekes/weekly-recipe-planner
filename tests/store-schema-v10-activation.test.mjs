@@ -13,9 +13,12 @@ import {
   PlannerStoreError,
 } from "../server/store/sqlite-store.ts";
 import { PLANNER_SCHEMA_MIGRATIONS } from "../server/store/schema-contract.ts";
-import { isPlannerToolResultForTool } from "../lib/planner-tool-contract.ts";
-import { householdDomain } from "../lib/household-domain.ts";
+import { isPlannerToolResultForTool, PLANNER_TOOL_NAMESPACE } from "../lib/planner-tool-contract.ts";
+import { householdDomain, validateHouseholdState } from "../lib/household-domain.ts";
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
+import { createNativePlannerEffectHost } from "../server/codex/planner-effect-host.ts";
+import { createSqliteCodexThreadStore } from "../server/store/codex-thread-store.ts";
+import { probeCanonicalImportPredecessor } from "../scripts/probe-canonical-import-predecessor.mjs";
 
 function temporaryDirectory(t) {
   const directory = mkdtempSync(join(tmpdir(), "weekly-recipe-v10-"));
@@ -193,6 +196,16 @@ function logicalInventory(filename) {
   }
 }
 
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+function digest(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function householdEnvelope(state, callId) {
   return JSON.stringify({
     schemaVersion: 1, ok: true, callId, plannerVersion: 4, syncRevision: 7, serverTime: 9,
@@ -305,7 +318,12 @@ function createV9Store(filename, state = v9State()) {
          result_planner_version, result_envelope_json, created_at, completed_at)
        VALUES ('native-thread', 'native-turn', 'native-call', ?, 1, 'read', ?, 'succeeded', 'ok',
          NULL, NULL, NULL, NULL, NULL, ?, 5, 6)`,
-    ).run("e".repeat(64), "f".repeat(64), householdEnvelope(state, "native-call"));
+    ).run(
+      digest(["native-thread", "native-turn", "native-call", PLANNER_TOOL_NAMESPACE, "read",
+        digest(canonicalJson({ query: { kind: "workspace" } }))].join("\0")),
+      digest(canonicalJson({ query: { kind: "workspace" } })),
+      householdEnvelope(state, "native-call"),
+    );
     database.prepare(
       `INSERT INTO codex_native_tool_calls
         (thread_id, turn_id, call_id, callback_identity_hash, sequence, tool, argument_hash,
@@ -325,7 +343,7 @@ function createV9Store(filename, state = v9State()) {
   }
 }
 
-test("schema-10 migration uses immutable preflight, preserves duplicate occurrence IDs, and creates a verified v9 backup", (t) => {
+test("schema-10 migration uses immutable preflight, preserves duplicate occurrence IDs, and creates a verified v9 backup", async (t) => {
   const directory = temporaryDirectory(t);
   const filename = join(directory, "planner.sqlite");
   const backupFilename = join(directory, "planner.pre-v10.sqlite");
@@ -469,10 +487,44 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
     database.close();
   }
 
+  const v10Inventory = logicalInventory(filename);
+  const v10NativeRows = v10Inventory.tables.codex_native_tool_calls;
+  const v10ReplayDatabase = new DatabaseSync(filename, { readOnly: true });
+  const expectedNativeReplay = JSON.parse(v10ReplayDatabase.prepare(
+    "SELECT result_envelope_json FROM codex_native_tool_calls WHERE call_id = 'native-call'",
+  ).get().result_envelope_json);
+  v10ReplayDatabase.close();
+
   const migratedStore = openPlannerStore({ filename });
+  assert.ok(migratedStore.migrationBackupPath);
+  assert.equal(existsSync(migratedStore.migrationBackupPath), true);
+  assert.deepEqual(logicalInventory(migratedStore.migrationBackupPath), v10Inventory);
+  const verifiedV10Backup = new DatabaseSync(migratedStore.migrationBackupPath, { readOnly: true });
+  assert.equal(verifiedV10Backup.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  verifiedV10Backup.close();
+  assert.deepEqual(
+    logicalInventory(filename).tables.codex_native_tool_calls,
+    v10NativeRows,
+    "schema 12 must retain every populated native-call ledger value",
+  );
+  const replayHost = createNativePlannerEffectHost({
+    planner: {},
+    store: createSqliteCodexThreadStore(migratedStore),
+    isEligibleCall: () => true,
+    now: () => 10,
+  });
+  const replayResponse = await replayHost.handle({
+    threadId: "native-thread",
+    turnId: "native-turn",
+    callId: "native-call",
+    namespace: PLANNER_TOOL_NAMESPACE,
+    tool: "read",
+    arguments: { query: { kind: "workspace" } },
+  });
+  assert.deepEqual(JSON.parse(replayResponse.contentItems[0].text), expectedNativeReplay);
   const migrated = migratedService(migratedStore);
   const workspaceBeforeEdit = migrated.readWorkspace();
-  assert.equal(workspaceBeforeEdit.schemaVersion, 11);
+  assert.equal(workspaceBeforeEdit.schemaVersion, 12);
   const migratedFennelConceptId = workspaceBeforeEdit.state.weeks[0].data.meals[0].ingredients[2].conceptId;
   assert.notEqual(migratedFennelConceptId, "scallion", "a legacy reference colliding with core vocabulary receives a bounded collision-safe identity");
   assert.ok(workspaceBeforeEdit.state.ingredientCatalogue.concepts.some(({ id }) => id === migratedFennelConceptId), "schema 11 retains a safe concept for every legacy resolution");
@@ -536,17 +588,19 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
     "undo must restore migrated occurrence identities and their order",
   );
   migratedStore.close();
+  const predecessorProof = probeCanonicalImportPredecessor({ candidateDatabase: filename });
+  assert.equal(predecessorProof.predecessorCommit, "1dbe2685349b71e584c19742896d1c48048efc2f");
+  assert.notEqual(predecessorProof.predecessorExitStatus, 0);
 
-  const beforeCurrentOpen = logicalInventory(filename);
   const firstReopen = openPlannerStore({ filename });
-  assert.equal(firstReopen.readWorkspace().schemaVersion, 11);
+  assert.equal(firstReopen.readWorkspace().schemaVersion, 12);
   assert.equal(firstReopen.readWorkspace().syncRevision, 11);
   firstReopen.close();
-  assert.deepEqual(logicalInventory(filename), beforeCurrentOpen, "a current schema open must not rewrite any logical row");
+  const currentInventory = logicalInventory(filename);
   const secondReopen = openPlannerStore({ filename });
-  assert.equal(secondReopen.readWorkspace().schemaVersion, 11);
+  assert.equal(secondReopen.readWorkspace().schemaVersion, 12);
   secondReopen.close();
-  assert.deepEqual(logicalInventory(filename), beforeCurrentOpen, "a second current-schema open must remain logically idempotent");
+  assert.deepEqual(logicalInventory(filename), currentInventory, "a second current-schema open must remain logically idempotent");
   const integrity = new DatabaseSync(filename, { readOnly: true });
   assert.equal(integrity.prepare("PRAGMA quick_check").get().quick_check, "ok");
   integrity.close();
@@ -572,7 +626,7 @@ test("startup upgrades a schema-8 accepted apply envelope before current-contrac
     const envelope = JSON.parse(row.result_envelope_json);
     assert.deepEqual(envelope.data.occurrenceResults, [{ operationIndex: 0, occurrences: [] }]);
     assert.equal(isPlannerToolResultForTool("apply", envelope), true);
-    assert.equal(store.readWorkspace().schemaVersion, 11);
+    assert.equal(store.readWorkspace().schemaVersion, 12);
   } finally {
     store.close();
   }
