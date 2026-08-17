@@ -29,7 +29,7 @@ async function render() {
   );
 }
 
-test("fresh mounted build renders public-origin metadata and the shared planner loading surface", async () => {
+test("fresh build renders configured public-origin metadata and the shared planner loading surface", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -38,8 +38,10 @@ test("fresh mounted build renders public-origin metadata and the shared planner 
   assert.match(html, /<title>Weekly Recipe Planner<\/title>/i);
   assert.match(html, /Opening the shared planner/);
   assert.match(html, /Reading the latest household workspace/);
-  assert.match(html, /href="\/recipe-planner\/favicon\.svg"/);
-  assert.match(html, /https:\/\/planner\.example\.test\/recipe-planner\/og\.png/);
+  const configuredBasePath = process.env.PLANNER_PUBLIC_BASE_PATH ?? "/";
+  const publicPrefix = configuredBasePath === "/" ? "" : configuredBasePath.slice(0, -1);
+  assert.ok(html.includes(`href="${publicPrefix}/favicon.svg"`));
+  assert.ok(html.includes(`https://planner.example.test${publicPrefix}/og.png`));
   assert.doesNotMatch(html, /private-web-origin\.invalid|localhost:3001/);
   assert.doesNotMatch(
     html,
