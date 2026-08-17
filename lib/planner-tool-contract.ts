@@ -192,11 +192,15 @@ export type PlannerApplyData = {
   readback: PlannerReadProjection;
 };
 
+export type PlannerImportRecipeData = Omit<PlannerApplyData, "readback"> & {
+  readback: Extract<PlannerReadProjection, { kind: "meal" }>;
+};
+
 export type PlannerToolDataByName = {
   read: PlannerReadProjection;
   preview: PlannerPreviewData;
   apply: PlannerApplyData;
-  importRecipe: PlannerApplyData;
+  importRecipe: PlannerImportRecipeData;
 };
 
 const readQuerySchema = {
@@ -955,6 +959,10 @@ export function isPlannerApplyData(value: unknown): value is PlannerApplyData {
     isPlannerReadProjection(value.readback);
 }
 
+export function isPlannerImportRecipeData(value: unknown): value is PlannerImportRecipeData {
+  return isPlannerApplyData(value) && value.readback.kind === "meal";
+}
+
 function isOccurrenceResolutions(value: unknown): boolean {
   return Array.isArray(value) && value.every((resolution) =>
     isRecord(resolution) && hasExactKeys(resolution, ["correlationId", "occurrenceId"]) &&
@@ -973,8 +981,9 @@ export function isPlannerToolResultForTool<Tool extends PlannerToolName>(
     case "preview":
       return isPlannerPreviewData(value.data);
     case "apply":
-    case "importRecipe":
       return isPlannerApplyData(value.data);
+    case "importRecipe":
+      return isPlannerImportRecipeData(value.data);
     default:
       return false;
   }

@@ -15,7 +15,7 @@ fidelity-review: reviews/lemon-pepper-salmon.md
 adapted-from: family/lemon-salmon
 cuisine: North American
 servings: 4
-time-active-min: 10
+time-active-min:
 time-total-min: 30
 taste-tags: [bright, savory]
 dietary-tags: [gluten-free]

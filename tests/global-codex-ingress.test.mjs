@@ -168,6 +168,41 @@ function sourcedBatch(
   };
 }
 
+function canonicalBatch() {
+  const request = structuredClone(sourcedBatch(
+    "6c8ac06d-ebaf-4ec8-875b-d46216934f18",
+    2,
+  ));
+  request.operations[0].command.recipe.source = {
+    kind: "canonical",
+    identity: "lentil-soup",
+    revision: "a".repeat(64),
+    path: "lentil-soup.md",
+    status: "active",
+    provenance: {
+      source: "web",
+      sourceRef: "https://example.com/recipes/lentil-soup",
+      sourceLocator: null,
+      sourcePath: null,
+      sourceStartLine: null,
+      sourceEndLine: null,
+      sourceSha256: null,
+      sourceRetrievedAt: "2026-08-17",
+      fidelityVerdict: "exact",
+      fidelityReview: "recipes/reviews/lentil-soup.md",
+      adaptedFrom: null,
+    },
+    servings: "4",
+    timeActiveMinutes: null,
+    timeTotalMinutes: 30,
+    cuisine: null,
+    tasteTags: [],
+    dietaryTags: [],
+    notes: "",
+  };
+  return request;
+}
+
 function requestSocket(socketPath, { method = "GET", path, body = null, headers = {} }) {
   return new Promise((resolve, reject) => {
     const payload = body === null ? null : Buffer.from(body);
@@ -459,6 +494,26 @@ test("real UDS and SQLite preserve apply, replay, conflict, provenance, and plan
     body: JSON.stringify(forbiddenCandidateId),
   });
   assert.equal(strictRejection.status, 400);
+
+  assert.equal(isGlobalCodexBatchRequest(canonicalBatch()), false);
+  const canonicalPreview = structuredClone(canonicalBatch());
+  delete canonicalPreview.requestId;
+  assert.equal(isGlobalCodexPreviewRequest(canonicalPreview), false);
+  const canonicalApplyRejection = await requestSocket(socketPath, {
+    method: "POST",
+    path: GLOBAL_CODEX_ROUTES.batches,
+    body: JSON.stringify(canonicalBatch()),
+  });
+  assert.equal(canonicalApplyRejection.status, 400);
+  const canonicalPreviewRejection = await requestSocket(socketPath, {
+    method: "POST",
+    path: GLOBAL_CODEX_ROUTES.previews,
+    body: JSON.stringify(canonicalPreview),
+  });
+  assert.equal(canonicalPreviewRejection.status, 400);
+  assert.equal(store.database.prepare(
+    "SELECT COUNT(*) AS count FROM planner_events",
+  ).get().count, 2, "raw canonical requests must create no planner event");
 
   const replay = await requestSocket(socketPath, {
     method: "POST",

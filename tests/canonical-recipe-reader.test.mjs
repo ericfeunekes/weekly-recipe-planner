@@ -69,7 +69,7 @@ test("canonical reader preserves the exact current recipe snapshot and pins its 
   assert.equal(recipe.source.provenance.fidelityVerdict, "exact");
   assert.equal(recipe.source.provenance.fidelityReview, "reviews/lemon-pepper-salmon.md");
   assert.equal(recipe.source.provenance.adaptedFrom, "family/lemon-salmon");
-  assert.equal(recipe.source.timeActiveMinutes, 10);
+  assert.equal(recipe.source.timeActiveMinutes, null);
   assert.equal(recipe.source.timeTotalMinutes, 30);
   assert.equal(recipe.source.notes, "- Serve with rice and roasted vegetables.\n- Butter can replace the olive oil.\n");
 });
@@ -135,9 +135,37 @@ test("canonical reader rejects incomplete and legacy recipe schemas instead of t
       .replace("source: web", "source: cookbook")
       .replace('source-ref: "https://example.com/lemon-pepper-salmon"', "source-ref: cookbook-slug")
       .replace('source-locator: "Recipe card"', "source-locator:"),
+    "invalid-time-order.md": current
+      .replace("id: lemon-pepper-salmon", "id: invalid-time-order")
+      .replace("time-active-min:", "time-active-min: 31"),
   };
   for (const [name, content] of Object.entries(cases)) {
     await writeFile(join(root, name), content);
     await assert.rejects(readCanonicalRecipe(root, name), CanonicalRecipeReadError, name);
   }
+});
+
+test("canonical timing preserves blank, zero, and independently optional values", async (t) => {
+  const root = await scratchRoot(t);
+  const current = await readFile(join(fixtureRoot, "lemon-pepper-salmon.md"), "utf8");
+  const cases = {
+    "both-blank.md": current
+      .replace("id: lemon-pepper-salmon", "id: both-blank")
+      .replace("time-total-min: 30", "time-total-min:"),
+    "zero-active.md": current
+      .replace("id: lemon-pepper-salmon", "id: zero-active")
+      .replace("time-active-min:", "time-active-min: 0"),
+    "active-only.md": current
+      .replace("id: lemon-pepper-salmon", "id: active-only")
+      .replace("time-active-min:", "time-active-min: 10")
+      .replace("time-total-min: 30", "time-total-min:"),
+  };
+  for (const [name, content] of Object.entries(cases)) await writeFile(join(root, name), content);
+  assert.deepEqual(
+    await Promise.all(["both-blank.md", "zero-active.md", "active-only.md"].map(async (name) => {
+      const recipe = await readCanonicalRecipe(root, name);
+      return [recipe.source.timeActiveMinutes, recipe.source.timeTotalMinutes];
+    })),
+    [[null, null], [0, 30], [10, null]],
+  );
 });

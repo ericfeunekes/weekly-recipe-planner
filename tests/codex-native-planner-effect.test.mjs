@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -251,6 +251,8 @@ test("native planner host imports one pinned canonical recipe through the versio
   assert.equal(imported.sourceRecipe.kind, "canonical");
   assert.equal(imported.sourceRecipe.identity, "lemon-pepper-salmon");
   assert.match(imported.sourceRecipe.revision, /^[0-9a-f]{64}$/u);
+  assert.equal(imported.sourceRecipe.timeActiveMinutes, null);
+  assert.equal(imported.sourceRecipe.timeTotalMinutes, 30);
   assert.equal(imported.sourceRecipe.notes, "- Serve with rice and roasted vegetables.\n- Butter can replace the olive oil.\n");
   assert.deepEqual(imported.ingredients.map(({ source, amount, unit, ingredient, qualifier, canonicalIngredientId }) =>
     ({ source, amount, unit, ingredient, qualifier, canonicalIngredientId })), [
@@ -343,6 +345,120 @@ test("native canonical import rejects invalid paths and stale versions without a
   assert.equal(sqlite.database.prepare(
     "SELECT count(*) AS count FROM codex_native_tool_calls WHERE status = 'rejected'",
   ).get().count, 2);
+  sqlite.close();
+});
+
+test("concurrent recovery hosts return one durable canonical read failure", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const planner = realPlanner(sqlite);
+  const store = createSqliteCodexThreadStore(sqlite);
+  const options = {
+    planner,
+    store,
+    isEligibleCall: () => true,
+    recipeRoot: join(process.cwd(), "tests/support/fixtures/canonical-recipes"),
+  };
+  const firstHost = createNativePlannerEffectHost({ ...options, now: () => 100 });
+  const secondHost = createNativePlannerEffectHost({ ...options, now: () => 200 });
+  const params = callback("importRecipe", {
+    basePlannerVersion: 0,
+    weekId: "2026-07-06",
+    mealId: "meal-1",
+    recipePath: "missing.md",
+  }, { callId: "call-import-concurrent-failure" });
+  const [first, second] = await Promise.all([
+    firstHost.handle(params).then(decode),
+    secondHost.handle(params).then(decode),
+  ]);
+  assert.deepEqual(second, first);
+  assert.equal(first.ok, false);
+  assert.equal(first.error.code, "INVALID_ARGUMENTS");
+  assert.equal(sqlite.database.prepare(
+    "SELECT count(*) AS count FROM codex_native_tool_calls",
+  ).get().count, 1);
+  sqlite.close();
+});
+
+test("a durable read failure winner rolls back a competing successful import", async (t) => {
+  const missingRoot = await mkdtemp(join(tmpdir(), "planner-native-missing-recipe-"));
+  t.after(() => rm(missingRoot, { recursive: true, force: true }));
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const sqlite = openPlannerStore({ filename: ":memory:" });
+    const planner = realPlanner(sqlite, {
+      transformSeed(seed) {
+        for (const week of seed.weeks) week.data.prepSessions = [];
+        return seed;
+      },
+    });
+    const store = createSqliteCodexThreadStore(sqlite);
+    const validHost = createNativePlannerEffectHost({
+      planner,
+      store,
+      isEligibleCall: () => true,
+      recipeRoot: join(process.cwd(), "tests/support/fixtures/canonical-recipes"),
+      now: () => 300,
+    });
+    const missingHost = createNativePlannerEffectHost({
+      planner,
+      store,
+      isEligibleCall: () => true,
+      recipeRoot: missingRoot,
+      now: () => 301,
+    });
+    const before = planner.readWorkspace();
+    const week = before.state.weeks.find((candidate) => candidate.id === before.state.activeWeekId);
+    const meal = week.data.meals.find((candidate) =>
+      (candidate.status === "planned" || candidate.status === "moved") &&
+      candidate.instructions.every((step) => !step.complete && step.note === undefined &&
+        step.timerStartedAt === undefined && step.timerPaused !== true));
+    const params = callback("importRecipe", {
+      basePlannerVersion: before.plannerVersion,
+      weekId: week.id,
+      mealId: meal.id,
+      recipePath: "lemon-pepper-salmon.md",
+    }, { callId: `call-import-mixed-race-${attempt}` });
+    const [validResult, missingResult] = await Promise.all([
+      validHost.handle(params).then(decode),
+      missingHost.handle(params).then(decode),
+    ]);
+    assert.deepEqual(missingResult, validResult);
+    const eventCount = sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count;
+    assert.equal(eventCount, validResult.ok ? 1 : 0);
+    assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion + eventCount);
+    sqlite.close();
+  }
+});
+
+test("native canonical import rejects an ineligible cooking meal without a planner event", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const planner = realPlanner(sqlite, {
+    transformSeed(seed) {
+      const week = seed.weeks.find((candidate) => candidate.id === seed.activeWeekId);
+      week.data.prepSessions = [];
+      week.data.meals[0].status = "cooking";
+      return seed;
+    },
+  });
+  const before = planner.readWorkspace();
+  const week = before.state.weeks.find((candidate) => candidate.id === before.state.activeWeekId);
+  const meal = week.data.meals[0];
+  const host = createNativePlannerEffectHost({
+    planner,
+    store: createSqliteCodexThreadStore(sqlite),
+    isEligibleCall: () => true,
+    recipeRoot: join(process.cwd(), "tests/support/fixtures/canonical-recipes"),
+    now: () => 180,
+  });
+  const result = decode(await host.handle(callback("importRecipe", {
+    basePlannerVersion: before.plannerVersion,
+    weekId: week.id,
+    mealId: meal.id,
+    recipePath: "lemon-pepper-salmon.md",
+  }, { callId: "call-import-ineligible" })));
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "DOMAIN_REJECTED");
+  assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 0);
   sqlite.close();
 });
 
@@ -716,6 +832,65 @@ test("native apply and its callback fence roll back together and recover after a
     "SELECT count(*) AS count FROM command_receipts WHERE operation_kind = 'native_codex_apply_planner_operations_v1'",
   ).get().count, 1);
   assert.equal(store.readPlannerToolCalls(params.threadId, params.turnId)[0].status, "succeeded");
+  sqlite.close();
+});
+
+test("durable canonical import replay survives source removal and a new host process", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "planner-native-import-replay-"));
+  const filename = join(directory, "planner.sqlite");
+  const recipeRoot = join(directory, "recipes");
+  const recipeFilename = join(recipeRoot, "lemon-pepper-salmon.md");
+  await mkdir(recipeRoot);
+  await copyFile(
+    join(process.cwd(), "tests/support/fixtures/canonical-recipes/lemon-pepper-salmon.md"),
+    recipeFilename,
+  );
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  let sqlite = openPlannerStore({ filename });
+  let planner = realPlanner(sqlite, {
+    transformSeed(seed) {
+      for (const week of seed.weeks) week.data.prepSessions = [];
+      return seed;
+    },
+  });
+  let host = createNativePlannerEffectHost({
+    planner,
+    store: createSqliteCodexThreadStore(sqlite),
+    isEligibleCall: () => true,
+    recipeRoot,
+    now: () => 360,
+  });
+  const before = planner.readWorkspace();
+  const week = before.state.weeks.find((candidate) => candidate.id === before.state.activeWeekId);
+  const meal = week.data.meals.find((candidate) =>
+    (candidate.status === "planned" || candidate.status === "moved") &&
+    candidate.instructions.every((step) => !step.complete && step.note === undefined &&
+      step.timerStartedAt === undefined && step.timerPaused !== true));
+  const params = callback("importRecipe", {
+    basePlannerVersion: before.plannerVersion,
+    weekId: week.id,
+    mealId: meal.id,
+    recipePath: "lemon-pepper-salmon.md",
+  }, { callId: "call-file-backed-import-replay" });
+  const accepted = decode(await host.handle(params));
+  assert.equal(accepted.ok, true);
+  sqlite.close();
+  await unlink(recipeFilename);
+
+  sqlite = openPlannerStore({ filename });
+  planner = realPlanner(sqlite, { bootstrap: false });
+  host = createNativePlannerEffectHost({
+    planner,
+    store: createSqliteCodexThreadStore(sqlite),
+    isEligibleCall: () => true,
+    recipeRoot,
+    now: () => 361,
+  });
+  const replay = decode(await host.handle(params));
+  assert.deepEqual(replay, accepted);
+  assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion + 1);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
   sqlite.close();
 });
 

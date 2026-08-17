@@ -56,8 +56,8 @@ export type CanonicalRecipeSource = {
     adaptedFrom: string | null;
   };
   servings: string;
-  timeActiveMinutes: number;
-  timeTotalMinutes: number;
+  timeActiveMinutes: number | null;
+  timeTotalMinutes: number | null;
   cuisine: string | null;
   tasteTags: string[];
   dietaryTags: string[];
@@ -128,7 +128,7 @@ export type SourcedRecipeReplacement = {
 export type LegacySourcedRecipeReplacement = {
   title: string;
   yieldText?: string;
-  source: SourceRecipe;
+  source: WebSourceRecipe;
   steps: SourcedRecipeStep[];
 };
 
@@ -189,7 +189,8 @@ const sourceRecipeSchema = {
             adaptedFrom: { anyOf: [boundedString(RESEARCH_SOURCE_URL_LENGTH, 1), { type: "null" }] },
           },
         }, servings: boundedString(RESEARCH_YIELD_LENGTH, 1),
-        timeActiveMinutes: { type: "integer", minimum: 0 }, timeTotalMinutes: { type: "integer", minimum: 0 },
+        timeActiveMinutes: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
+        timeTotalMinutes: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
         cuisine: { anyOf: [boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1), { type: "null" }] },
         tasteTags: { type: "array", items: boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1) },
         dietaryTags: { type: "array", items: boundedString(RESEARCH_SOURCE_IDENTITY_LENGTH, 1) },
@@ -383,6 +384,8 @@ export function isSourceRecipe(value: unknown): value is SourceRecipe {
     candidate === null || isBoundedTrimmedText(candidate, max);
   const nullableLine = (candidate: unknown) =>
     candidate === null || (Number.isSafeInteger(candidate) && Number(candidate) >= 1);
+  const nullableMinutes = (candidate: unknown) =>
+    candidate === null || (Number.isSafeInteger(candidate) && Number(candidate) >= 0);
   return isBoundedTrimmedText(value.identity, RESEARCH_SOURCE_IDENTITY_LENGTH) &&
     typeof value.revision === "string" && /^[0-9a-f]{64}$/u.test(value.revision) &&
     isBoundedTrimmedText(value.path, RESEARCH_SOURCE_URL_LENGTH) && value.status === "active" &&
@@ -399,8 +402,9 @@ export function isSourceRecipe(value: unknown): value is SourceRecipe {
     isBoundedTrimmedText(provenance.fidelityReview, RESEARCH_SOURCE_URL_LENGTH) &&
     nullableText(provenance.adaptedFrom) &&
     isBoundedTrimmedText(value.servings, RESEARCH_YIELD_LENGTH) &&
-    Number.isSafeInteger(value.timeActiveMinutes) && Number(value.timeActiveMinutes) >= 0 &&
-    Number.isSafeInteger(value.timeTotalMinutes) && Number(value.timeTotalMinutes) >= Number(value.timeActiveMinutes) &&
+    nullableMinutes(value.timeActiveMinutes) && nullableMinutes(value.timeTotalMinutes) &&
+    (value.timeActiveMinutes === null || value.timeTotalMinutes === null ||
+      Number(value.timeTotalMinutes) >= Number(value.timeActiveMinutes)) &&
     (value.cuisine === null || isBoundedTrimmedText(value.cuisine, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
     Array.isArray(value.tasteTags) && value.tasteTags.every((tag) => isBoundedTrimmedText(tag, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
     Array.isArray(value.dietaryTags) && value.dietaryTags.every((tag) => isBoundedTrimmedText(tag, RESEARCH_SOURCE_IDENTITY_LENGTH)) &&
@@ -685,17 +689,13 @@ export function isLegacySourcedRecipeReplacement(
     hasExactKeys(value, ["title", "source", "steps"], ["yieldText"]) &&
     isBoundedTrimmedText(value.title, RESEARCH_TITLE_LENGTH) &&
     (value.yieldText === undefined || isBoundedTrimmedText(value.yieldText, RESEARCH_YIELD_LENGTH)) &&
-    isSourceRecipe(value.source) &&
+    isRecord(value.source) && value.source.kind === "web" && isSourceRecipe(value.source) &&
     Array.isArray(value.steps) && value.steps.length >= 1 && value.steps.length <= RESEARCH_STEP_LIMIT &&
     value.steps.every(isSourcedRecipeStep);
 }
 
-export function sourceRecipeEquals(left: SourceRecipe, right: SourceRecipe): boolean {
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "web" && right.kind === "web") {
-    return left.identity === right.identity && left.url === right.url && left.retrievedAt === right.retrievedAt;
-  }
-  return JSON.stringify(left) === JSON.stringify(right);
+export function sourceRecipeEquals(left: WebSourceRecipe, right: WebSourceRecipe): boolean {
+  return left.identity === right.identity && left.url === right.url && left.retrievedAt === right.retrievedAt;
 }
 
 export function canonicalSourcedRecipeReplacementJson(

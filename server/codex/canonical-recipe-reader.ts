@@ -65,6 +65,14 @@ function optionalString(value: unknown, maxLength: number): string | null {
   return value;
 }
 
+function optionalMinutes(value: unknown, field: string): number | null {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    fail(`Canonical recipe ${field} must be a nonnegative integer or blank.`);
+  }
+  return Number(value);
+}
+
 function stringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || !value.every((entry) => nonemptyString(entry, RESEARCH_SOURCE_IDENTITY_LENGTH))) {
     fail(`Canonical recipe ${field} must be an array of bounded non-empty strings.`);
@@ -159,6 +167,8 @@ function parseCanonicalRecipe(relativePath: string, bytes: Buffer): SourcedRecip
   const servings = typeof metadata.servings === "number" && Number.isSafeInteger(metadata.servings) && metadata.servings > 0
     ? String(metadata.servings)
     : nonemptyString(metadata.servings, 80) ? metadata.servings : null;
+  const timeActiveMinutes = optionalMinutes(metadata["time-active-min"], "time-active-min");
+  const timeTotalMinutes = optionalMinutes(metadata["time-total-min"], "time-total-min");
   if (!nonemptyString(match[2], 200) || metadata.type !== "recipe" || metadata.status !== "active" ||
       !nonemptyString(metadata.id, RESEARCH_SOURCE_IDENTITY_LENGTH) || metadata.id !== expectedIdentity ||
       !["cookbook", "chatgpt", "web", "self", "family"].includes(String(metadata.source)) ||
@@ -167,8 +177,7 @@ function parseCanonicalRecipe(relativePath: string, bytes: Buffer): SourcedRecip
       !["exact", "mismatch"].includes(String(metadata["fidelity-verdict"])) ||
       !nonemptyString(metadata["fidelity-review"], RESEARCH_SOURCE_URL_LENGTH) ||
       servings === null ||
-      !Number.isSafeInteger(metadata["time-active-min"]) || Number(metadata["time-active-min"]) < 0 ||
-      !Number.isSafeInteger(metadata["time-total-min"]) || Number(metadata["time-total-min"]) < Number(metadata["time-active-min"])) {
+      (timeActiveMinutes !== null && timeTotalMinutes !== null && timeTotalMinutes < timeActiveMinutes)) {
     fail("Canonical recipe frontmatter is not an active, reviewed, cooking-ready current-schema recipe.");
   }
   const startLine = metadata["source-start-line"];
@@ -218,8 +227,8 @@ function parseCanonicalRecipe(relativePath: string, bytes: Buffer): SourcedRecip
       adaptedFrom: optionalString(metadata["adapted-from"], RESEARCH_SOURCE_URL_LENGTH),
     },
     servings,
-    timeActiveMinutes: Number(metadata["time-active-min"]),
-    timeTotalMinutes: Number(metadata["time-total-min"]),
+    timeActiveMinutes,
+    timeTotalMinutes,
     cuisine: optionalString(metadata.cuisine, RESEARCH_SOURCE_IDENTITY_LENGTH),
     tasteTags: stringArray(metadata["taste-tags"], "taste-tags"),
     dietaryTags: stringArray(metadata["dietary-tags"], "dietary-tags"),

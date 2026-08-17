@@ -365,6 +365,14 @@ test("stored successful results are validated against the originating tool contr
   assert.equal(isPlannerToolResultForTool("preview", preview), true);
   assert.equal(isPlannerToolResultForTool("apply", apply), true);
   assert.equal(isPlannerToolResultForTool("importRecipe", apply), true);
+  assert.equal(isPlannerToolResultForTool("apply", {
+    ...apply,
+    data: { ...apply.data, readback: projectPlannerRead(source, { kind: "workspace" }) },
+  }), true);
+  assert.equal(isPlannerToolResultForTool("importRecipe", {
+    ...apply,
+    data: { ...apply.data, readback: projectPlannerRead(source, { kind: "workspace" }) },
+  }), false);
   assert.equal(isPlannerToolResultForTool("read", preview), false);
   assert.equal(isPlannerToolResultForTool("preview", apply), false);
   assert.equal(isPlannerToolResultForTool("apply", read), false);
