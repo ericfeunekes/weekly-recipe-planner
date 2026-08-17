@@ -145,13 +145,12 @@ function add(left: BigRational, right: BigRational): BigRational | null {
 }
 
 function totalQuantities(inputs: readonly StructuredIngredientAmount[]): IngredientQuantityPart[] {
-  const standardizedDimensions = new Set(inputs.map((input) => unitFor(input.unit)?.dimension).filter((value) => value !== undefined));
-  if (standardizedDimensions.size > 1) {
-    return inputs.map((input) => {
-      const derived = deriveIngredientQuantity(input);
-      return derived.kind === "literal" ? derived : { kind: "literal", literal: sourceLiteral(input), reason: "incompatible" };
-    });
+  const dimensionCounts = new Map<QuantityDimension, number>();
+  for (const input of inputs) {
+    const dimension = unitFor(input.unit)?.dimension;
+    if (dimension) dimensionCounts.set(dimension, (dimensionCounts.get(dimension) ?? 0) + 1);
   }
+  const hasMultipleDimensions = dimensionCounts.size > 1;
   const totals = new Map<QuantityDimension, BigRational>();
   const units = new Map<QuantityDimension, string | null>();
   const order: Array<{ dimension: QuantityDimension } | { literal: IngredientQuantityPart }> = [];
@@ -161,6 +160,10 @@ function totalQuantities(inputs: readonly StructuredIngredientAmount[]): Ingredi
     const unit = unitFor(input.unit);
     if (!amount || !unit) {
       order.push({ literal: deriveIngredientQuantity(input) });
+      continue;
+    }
+    if (hasMultipleDimensions && dimensionCounts.get(unit.dimension) === 1) {
+      order.push({ literal: { kind: "literal", literal: sourceLiteral(input), reason: "incompatible" } });
       continue;
     }
     const scaled = normalize({ numerator: amount.numerator * unit.factor.numerator, denominator: amount.denominator * unit.factor.denominator });

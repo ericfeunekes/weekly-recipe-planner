@@ -67,15 +67,14 @@ test("every cross-unit factor conserves its exact base-unit quantity", () => {
   }
 });
 
-test("compatible units total exactly and incompatible dimensions preserve literals", () => {
+test("compatible subsets still total while incompatible singleton dimensions preserve literals", () => {
   const [group] = projectWeeklyGroceryRequirements([
     occurrence(),
     occurrence({ occurrenceId: "onion-b", mealId: "meal-b", mealTitle: "Salad", amount: "1", unit: "tbsp", source: "1 tbsp", execution: { id: "grocery-b", section: "Produce", coverage: "on_hand", checked: true } }),
     occurrence({ occurrenceId: "onion-c", mealId: "meal-c", mealTitle: "Tacos", amount: "2", unit: null, source: "2", execution: { id: "grocery-c", section: "Produce", coverage: "farm_box", checked: false } }),
   ]);
   assert.deepEqual(group.quantities, [
-    { kind: "literal", literal: "1/3 cup sliced green onion", reason: "incompatible" },
-    { kind: "literal", literal: "1 tbsp", reason: "incompatible" },
+    { kind: "quantity", dimension: "volume", quantity: { numerator: 295, denominator: 3 }, unit: "mL", display: "98 1/3 mL" },
     { kind: "literal", literal: "2", reason: "incompatible" },
   ]);
 });
