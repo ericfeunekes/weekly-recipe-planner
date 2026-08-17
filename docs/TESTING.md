@@ -213,6 +213,13 @@ Every implementation merge must keep these deterministic cells green:
 | Accessibility and fixture capability | Direct Playwright axe integration plus closed D4/D7 runtime seeds | `tests/support/playwright-qa.ts`, `tests/support/e2e-runtime.mjs`, `tests/e2e-runtime-fixtures.test.mjs` |
 | Baseline | Typecheck, production web build, lint, existing unit tests | `npm test`, `npm run lint` |
 
+`npm test` builds the mounted `/recipe-planner/` profile used by rendered-HTML
+proof and caps Node test-file concurrency at the lesser of four or Node's
+CPU-derived default, with a floor of one. Several runtime suites spawn their own
+subprocesses; allowing unrestricted file concurrency to multiply those children
+can starve fixed behavioral deadlines without exposing a product failure. Do not
+replace the cap with retries or wider timeouts.
+
 Owner lanes edit their own unit/contract test files. The proof lane owns only
 shared support and cross-boundary paths: `tests/support/**`,
 `tests/integration/**`, `tests/e2e/**`, and `tests/architecture/**`.
