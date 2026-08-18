@@ -18,6 +18,7 @@ import {
   productionServicePaths,
 } from "./support/production-service.mjs";
 import { acquireRuntimeOwnershipLease } from "./support/runtime-ownership.mjs";
+import { createProductionDataTransition } from "./support/production-data-transition.mjs";
 
 const home = resolve(process.env.HOME ?? homedir());
 const label = process.env.PLANNER_LAUNCHD_LABEL ?? "com.ericfeunekes.meal-planner";
@@ -26,6 +27,7 @@ const privateWebPort = Number(process.env.PLANNER_PRIVATE_WEB_PORT ?? 3002);
 const publicBasePath = process.env.PLANNER_PUBLIC_BASE_PATH ?? "/recipe-planner/";
 const releasePaths = productionReleasePaths(home);
 const servicePaths = productionServicePaths({ home, label });
+const dataTransition = createProductionDataTransition({ databasePath: releasePaths.data });
 
 if (!Number.isInteger(port) || port < 1024 || port > 65_535) {
   throw new TypeError("PLANNER_PORT is invalid.");
@@ -84,6 +86,7 @@ const lifecycle = createProductionReleaseLifecycle({
     return lease;
   },
   cleanupLegacyResidue: cleanupLegacyApplicationBackups,
+  dataTransition,
   async reconcile() {
     await linkProductionFoodSources(home);
     await reconcileProductionAgentConfig(home);

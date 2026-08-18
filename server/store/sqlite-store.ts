@@ -1185,6 +1185,26 @@ export function inspectVerifiedPlannerSnapshot(
   return inspectPlannerSnapshot(filename);
 }
 
+export function inspectVerifiedPlannerSchema10Snapshot(
+  filename: string,
+): VerifiedPlannerSnapshotInspection {
+  const before = inspectPlannerSnapshot(filename);
+  const database = new DatabaseSync(before.filename, { readOnly: true });
+  try {
+    assertCoherentV10Store(database);
+  } finally {
+    database.close();
+  }
+  const after = inspectPlannerSnapshot(filename);
+  if (before.sha256 !== after.sha256) {
+    throw new PlannerStoreError(
+      "STORE_CORRUPT",
+      "The schema-10 SQLite snapshot changed during exact verification.",
+    );
+  }
+  return after;
+}
+
 function removeSnapshotArtifacts(filename: string): void {
   for (const artifact of [filename, `${filename}-wal`, `${filename}-shm`]) {
     rmSync(artifact, { force: true });

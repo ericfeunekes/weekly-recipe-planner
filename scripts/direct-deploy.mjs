@@ -9,7 +9,7 @@ import {
   reconcileProductionAgentConfig,
   validateProductionAgentSources,
 } from "./support/production-agent-sources.mjs";
-import { assertProductionDataCompatible } from "./support/production-data-compatibility.mjs";
+import { createProductionDataTransition } from "./support/production-data-transition.mjs";
 import { cleanupLegacyApplicationBackups } from "./support/production-legacy-cleanup.mjs";
 import {
   assertDisposableReleaseProbeProfile,
@@ -85,6 +85,7 @@ export async function deployProductionCandidate({
   const publicBasePath = environment.PLANNER_PUBLIC_BASE_PATH ?? "/recipe-planner/";
   const releasePaths = productionReleasePaths(home);
   const servicePaths = productionServicePaths({ home, label });
+  const dataTransition = createProductionDataTransition({ databasePath: releasePaths.data });
 
   if (!(await exists(join(candidateRoot, "dist")))) {
     throw new Error("Build output is missing; promotion gates must build the mounted candidate first.");
@@ -153,9 +154,8 @@ export async function deployProductionCandidate({
       await linkProductionFoodSources(home, { appRoot: paths.staging });
       await run("npm", ["ci"], { cwd: paths.staging, env: environment });
     },
-    compatibilityPreflight(paths) {
-      return assertProductionDataCompatible(paths.data);
-    },
+    compatibilityPreflight: () => dataTransition.preflight(),
+    dataTransition,
     cleanupLegacyResidue: cleanupLegacyApplicationBackups,
     filesystem: await disposableRenameFaultFilesystem({ environment, home, label, paths: releasePaths }),
     async reconcile() {

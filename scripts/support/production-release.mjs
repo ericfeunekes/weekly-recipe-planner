@@ -84,6 +84,7 @@ export function createProductionReleaseLifecycle({
   prepareCandidate = async () => undefined,
   validateSources = async () => undefined,
   reconcile = async () => undefined,
+  dataTransition = {},
   cleanupLegacyResidue = async () => undefined,
 } = {}) {
   if (service === null || typeof service !== "object") throw new TypeError("service adapters are required.");
@@ -91,6 +92,16 @@ export function createProductionReleaseLifecycle({
   for (const name of ["exists", "rename", "remove", "chmod"]) requireFunction(fs[name], `filesystem.${name}`);
   for (const name of ["quiesce", "bootstrap", "ready"]) requireFunction(service[name], `service.${name}`);
   for (const [fn, name] of [[acquireLease, "acquireLease"], [compatibilityPreflight, "compatibilityPreflight"], [prepareCandidate, "prepareCandidate"], [validateSources, "validateSources"], [reconcile, "reconcile"], [cleanupLegacyResidue, "cleanupLegacyResidue"]]) requireFunction(fn, name);
+  const transition = {
+    afterQuiescence: async () => null,
+    beforeBootstrap: async () => undefined,
+    afterReadiness: async () => undefined,
+    restore: async () => undefined,
+    ...dataTransition,
+  };
+  for (const name of ["afterQuiescence", "beforeBootstrap", "afterReadiness", "restore"]) {
+    requireFunction(transition[name], `dataTransition.${name}`);
+  }
 
   async function topology() {
     const [app, previous, staging, retiring] = await Promise.all(
@@ -110,11 +121,13 @@ export function createProductionReleaseLifecycle({
 
   async function isReady() { return requireBoolean(await service.ready(), "service.ready"); }
 
-  async function bootstrapApp() {
+  async function bootstrapApp(transitionState = null) {
+    await transition.beforeBootstrap(paths, transitionState);
     await reconcile(paths);
     await validateSources(paths);
     await service.bootstrap(paths);
     if (!(await isReady())) throw new ReleaseLifecycleError("Selected planner app did not become ready.");
+    await transition.afterReadiness(paths, transitionState);
   }
 
   async function quiesce() {
@@ -185,7 +198,10 @@ export function createProductionReleaseLifecycle({
     // food-source links. Validate before the ready shortcut, and never repair
     // them from a normal promotion or recovery path.
     await validateSources(paths);
-    if (await isReady()) return { selected: "app", changed: false };
+    if (await isReady()) {
+      await transition.afterReadiness(paths, null);
+      return { selected: "app", changed: false };
+    }
     if (!(await quiesce())) throw new ReleaseLifecycleError("Planner service did not become quiescent for recovery.");
     try {
       await bootstrapApp();
@@ -245,8 +261,8 @@ export function createProductionReleaseLifecycle({
     return { selected: "app", changed: normalized.changed || result.changed };
   }
 
-  async function restorePromotionTopology() {
-    if (!(await quiesce())) {
+  async function restorePromotionTopology(transitionState = null, alreadyQuiescent = false) {
+    if (!alreadyQuiescent && !(await quiesce())) {
       throw new ReleaseLifecycleError("Failed candidate service did not become quiescent for promotion reversal.");
     }
     const state = await topology();
@@ -263,7 +279,7 @@ export function createProductionReleaseLifecycle({
       // Only old previous moved aside (including a failed second rename).
       await fs.rename(paths.retiring, paths.previous);
     }
-    await bootstrapApp();
+    await bootstrapApp(transitionState);
     await cleanupAfterReady({ retiring: false });
   }
 
@@ -296,15 +312,21 @@ export function createProductionReleaseLifecycle({
           try { await recoverUnderLease(); } catch (recoveryError) { throw new AggregateError([recoveryError], "Promotion quiescence failed and recovery failed."); }
           throw new ReleaseLifecycleError("Planner service did not become quiescent for promotion.");
         }
+        let transitionState = null;
         try {
+          transitionState = await transition.afterQuiescence(paths);
           if (await fs.exists(paths.previous)) await fs.rename(paths.previous, paths.retiring);
           if (await fs.exists(paths.app)) await fs.rename(paths.app, paths.previous);
           await fs.rename(paths.staging, paths.app);
           await fs.chmod(paths.app);
-          await bootstrapApp();
+          await bootstrapApp(transitionState);
         } catch (error) {
           try {
-            await restorePromotionTopology();
+            if (!(await quiesce())) {
+              throw new ReleaseLifecycleError("Failed candidate service did not become quiescent before data restoration.");
+            }
+            await transition.restore(paths, transitionState);
+            await restorePromotionTopology(transitionState, true);
           } catch (recoveryError) {
             const message = recoveryError instanceof ReleaseCleanupIncompleteError ? `Promotion failed; ${recoveryError.message}` : "Promotion failed and recovery failed.";
             throw new AggregateError([error, recoveryError], message);

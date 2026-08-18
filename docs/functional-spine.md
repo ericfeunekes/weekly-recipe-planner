@@ -394,10 +394,13 @@ The current contract is:
   production-profile gates. Missing commands, stale fixtures, empty selections,
   and tests that duplicate a producer's wrong constant do not count as green
   proof.
-- **RR6 — Protect and bound retained state.** The household SQLite authority is
-  never copied, replaced, restored, migrated, or pruned by application
-  deployment. The selected app directory and its immediately previous app
-  directory are the complete recovery state. The previous directory remains
+- **RR6 — Protect and bound retained state.** Ordinary application deployment
+  never copies, replaces, restores, migrates, or prunes the household SQLite
+  authority. An explicitly authorized coordinated schema promotion may migrate
+  only after service quiescence and a verified retained backup, and it restores
+  that backup before booting the previous app on any failure. The selected app
+  directory, its immediately previous app directory, and any retained
+  transition backup are the complete recovery state. The previous directory remains
   available until the selected app is ready; older app-only residue may be
   removed only after that point.
 - **RR7 — Do not overclaim sourced-recipe fidelity.** Direct typed recipe

@@ -65,6 +65,7 @@ async function fixture(t, options = {}) {
       else if (options.trackSources) calls.push("validate-selected");
     },
     reconcile: async () => calls.push("reconcile"),
+    dataTransition: options.dataTransition?.(calls),
     cleanupLegacyResidue: options.cleanupLegacyResidue,
     filesystem: options.filesystem,
   });
@@ -81,6 +82,41 @@ test("promotion selects only the candidate app and retains its immediate predece
   assert.equal(await release(paths, "previous"), "current");
   assert.equal(await sqlite(paths), "sqlite-sentinel");
   assert.deepEqual(calls, ["prepare", "compatibility", "quiesce", "reconcile", "bootstrap", "ready"]);
+});
+
+test("promotion runs a retained data transition only after quiescence and verifies the selected app", async (t) => {
+  const { lifecycle, calls } = await fixture(t, {
+    dataTransition: (events) => ({
+      async afterQuiescence() { events.push("data-transition"); return { backupPath: "backup" }; },
+      async beforeBootstrap() { events.push("data-before-bootstrap"); },
+      async afterReadiness() { events.push("data-after-readiness"); },
+      async restore() { events.push("data-restore"); },
+    }),
+  });
+  await lifecycle.promote();
+  assert.deepEqual(calls, [
+    "prepare", "compatibility", "quiesce", "data-transition",
+    "data-before-bootstrap", "reconcile", "bootstrap", "ready", "data-after-readiness",
+  ]);
+});
+
+test("candidate failure restores data before bootstrapping the previous app", async (t) => {
+  const { lifecycle, calls } = await fixture(t, {
+    bootstrapReady: [false, true],
+    dataTransition: (events) => ({
+      async afterQuiescence() { events.push("data-transition"); return { backupPath: "backup" }; },
+      async beforeBootstrap() { events.push("data-before-bootstrap"); },
+      async afterReadiness() { events.push("data-after-readiness"); },
+      async restore() { events.push("data-restore"); },
+    }),
+  });
+  await assert.rejects(lifecycle.promote(), /did not become ready/u);
+  const restoreIndex = calls.indexOf("data-restore");
+  const secondBootstrapIndex = calls.lastIndexOf("bootstrap");
+  assert.ok(restoreIndex >= 0 && restoreIndex < secondBootstrapIndex);
+  assert.equal(calls[restoreIndex - 1], "quiesce");
+  assert.equal(calls.filter((call) => call === "data-before-bootstrap").length, 2);
+  assert.equal(calls.at(-1), "data-after-readiness");
 });
 
 test("preflight failure cleans only staging before service disturbance", async (t) => {
