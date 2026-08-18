@@ -50,8 +50,10 @@ production stays on the previous app and schema. Release remains blocked until:
    above are green for the candidate.
 
 The migration implementation and disposable proof may live in the feature PR;
-the household data action remains a later `shipping:release` boundary. App
-deployment itself never migrates, copies, restores, or prunes household SQLite.
+the household data action remains a later `shipping:release` boundary. Ordinary
+app deployment never migrates household SQLite; an explicitly authorized,
+version-pinned coordinated promotion may do so only through the checked-in
+backup/migration/restoration transaction described below.
 
 ### One-time SQLite schema-v9 activation
 
@@ -190,13 +192,24 @@ call through the host, exercises a planner edit/replay/undo after migration,
 restarts with an integrity check and idempotent reopen, and proves a frozen
 schema-11 preflight rejects the schema-12 file without changing its bytes.
 
-There is deliberately no household v11-to-v12 operator command in this
-change. Production must remain on the schema-11 app and database. Promotion is
-held until a separately authorized `shipping:release` action supplies a
-checked-in transition procedure that creates and verifies a schema-11 backup,
-names restoration steps, and completes authoritative application readback on
-disposable data before any household action. `make promote`, `make deploy`, and
-`make recover` are not substitutes for that missing database procedure.
+The separately authorized production transition is integrated into the sole
+operator command, `make promote`. Its preflight accepts only an exact current
+schema-12 database or the exact schema-10 production predecessor; schema 11 and
+all malformed or unexpected states reject before service disturbance. After
+candidate preparation and proof, promotion quiesces the old service, creates
+and verifies the schema-10 migration backup, applies catalogue migration 11 and
+import-ledger migration 12, verifies planner-version and schema readback, then
+selects and starts the schema-12 candidate.
+
+Any migration, slot-selection, bootstrap, readiness, or post-readiness failure
+restores the retained schema-10 backup before the old app is bootstrapped. The
+backup is never consumed. Same-process promotion failure uses its exact backup
+handle to restore schema 10. A later `make recover` never guesses among retained
+backups or automatically downgrades schema 12; an interrupted schema transition
+that cannot retain its exact handle fails closed for explicit operator recovery.
+Disposable proof covers
+the real predecessor migration, backup equality, restore equality, transition
+ordering after quiescence, and data restoration before fallback bootstrap.
 
 ## Merge Gate
 
