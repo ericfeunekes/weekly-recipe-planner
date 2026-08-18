@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { validateHouseholdState } from "../lib/household-domain.ts";
+import { createCoreIngredientCatalogue } from "../lib/ingredient-catalogue.ts";
 import {
   createE2eFixtureSeed,
   E2E_FIXTURE_IDS,
@@ -31,6 +32,7 @@ test("D7 is a valid initialized zero-week seed and D4 remains canonical", () => 
     householdTimeZone: "America/Halifax",
     activeWeekId: null,
     weeks: [],
+    ingredientCatalogue: createCoreIngredientCatalogue(),
   });
   const d4 = createE2eFixtureSeed("D4", context);
   assert.equal(validateHouseholdState(d4).ok, true);

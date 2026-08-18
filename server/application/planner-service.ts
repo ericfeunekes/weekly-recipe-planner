@@ -511,6 +511,7 @@ export class PlannerApplicationServiceImpl
         target: result.target,
         changes: result.changes,
         occurrences: result.occurrenceResolutions,
+        ...(result.ingredientCandidatePreview ? { ingredientCandidatePreview: result.ingredientCandidatePreview } : {}),
       });
     }
 
@@ -525,6 +526,7 @@ export class PlannerApplicationServiceImpl
           target: replaceGeneratedIds(outcome.target, allGeneratedIds),
           changes: outcome.changes.map((change) => replaceGeneratedIds(change, allGeneratedIds)),
           occurrences: outcome.occurrences,
+          ...(outcome.ingredientCandidatePreview ? { ingredientCandidatePreview: outcome.ingredientCandidatePreview } : {}),
         })),
       },
     };
@@ -595,6 +597,17 @@ export class PlannerApplicationServiceImpl
         };
         httpStatus = 422;
       } else {
+        const previewOnlyIndex = request.operations.findIndex((operation) =>
+          operation.command.type === "previewIngredientCandidates"
+        );
+        if (previewOnlyIndex >= 0) {
+          decision = {
+            status: "domain_rejected",
+            operationIndex: previewOnlyIndex,
+            message: "Ingredient candidate queries must use planner preview.",
+          };
+          httpStatus = 422;
+        } else {
         let candidate = workspace.state;
         const outcomes: PlannerOperationPreview[] = [];
         for (let operationIndex = 0; operationIndex < request.operations.length; operationIndex += 1) {
@@ -618,6 +631,7 @@ export class PlannerApplicationServiceImpl
             target: result.target,
             changes: result.changes,
             occurrences: result.occurrenceResolutions,
+            ...(result.ingredientCandidatePreview ? { ingredientCandidatePreview: result.ingredientCandidatePreview } : {}),
           });
         }
 
@@ -679,9 +693,11 @@ export class PlannerApplicationServiceImpl
           occurrenceResults: outcomes.map((outcome) => ({
             operationIndex: outcome.operationIndex,
             occurrences: outcome.occurrences,
+            ...(outcome.ingredientCandidatePreview ? { ingredientCandidatePreview: outcome.ingredientCandidatePreview } : {}),
           })),
         };
         httpStatus = 200;
+        }
         }
       }
     }

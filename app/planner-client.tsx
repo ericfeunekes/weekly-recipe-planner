@@ -288,6 +288,14 @@ type SendContextMessage = (
 ) => Promise<boolean>;
 
 const PLANNER_ACTION_LABELS = {
+  previewIngredientCandidates: "Review ingredient candidates",
+  addIngredientOccurrence: "Add ingredient",
+  resolveIngredientOccurrence: "Resolve ingredient",
+  applyIngredientResolutionBatch: "Apply ingredient review",
+  createIngredientConcept: "Create ingredient concept",
+  addIngredientVocabulary: "Add ingredient vocabulary",
+  renameIngredientConcept: "Rename ingredient concept",
+  mergeIngredientConcepts: "Merge ingredient concepts",
   moveMeal: "Move meal",
   reorderMeals: "Reorder meals",
   swapMealDays: "Swap meal days",

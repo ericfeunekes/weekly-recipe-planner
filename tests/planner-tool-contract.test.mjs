@@ -9,10 +9,13 @@ import {
   PLANNER_TOOL_AUTHORITY_MANIFEST,
   PLANNER_TOOL_NAMES,
   authorizePlannerOperations,
+  createPlannerToolSuccess,
   createPlannerToolFailure,
   freezeForegroundAuthority,
   isPlannerApplyArguments,
   isPlannerReadArguments,
+  isPlannerReadProjection,
+  isPlannerPreviewData,
   isPlannerToolResult,
   isPlannerToolResultForTool,
   projectPlannerRead,
@@ -32,6 +35,10 @@ function workspace() {
     state: {
       householdTimeZone: "America/Halifax",
       activeWeekId: "2026-07-06",
+      ingredientCatalogue: {
+        revision: 9,
+        concepts: [{ id: "test-rice", preferredLabel: "Test rice", vocabulary: ["fixture rice"], defaultSection: "Pantry" }],
+      },
       weeks: [{
         id: "2026-07-06",
         weekStartDate: "2026-07-06",
@@ -127,7 +134,7 @@ test("dynamic planner manifest is exactly one three-function registry-derived na
   const applyTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "apply");
   assert.match(
     applyTool.description,
-    /Readback fields by kind: workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
+    /Readback fields by kind: catalogue\[kind,offset\]; workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
   );
 });
 
@@ -232,11 +239,40 @@ test("read projections exclude transcript, chat, receipts, before-state, and req
     kind: "workspace",
     activeWeekId: "2026-07-06",
     weeks: [{ id: "2026-07-06", weekStartDate: "2026-07-06", status: "active" }],
+    ingredientCatalogue: {
+      revision: source.state.ingredientCatalogue.revision,
+      offset: 0,
+      totalConcepts: source.state.ingredientCatalogue.concepts.length,
+      nextOffset: null,
+      concepts: source.state.ingredientCatalogue.concepts.slice(0, 4),
+    },
   });
   const history = projectPlannerRead(source, { kind: "history", limit: 20 });
   const serialized = JSON.stringify(history);
   assert.doesNotMatch(serialized, /secret-idempotency-key|chat-private|private transcript|token-hash/);
   assert.match(serialized, /event-1/);
+  assert.equal(isPlannerReadProjection({ kind: "workspace", activeWeekId: null, weeks: [], ingredientCatalogue: "forged" }), false);
+});
+
+test("the maximum valid catalogue fits the embedded read result bound", () => {
+  const source = workspace();
+  source.state.ingredientCatalogue = {
+    revision: 1,
+    concepts: Array.from({ length: 1_000 }, (_, conceptIndex) => ({
+      id: `concept-${conceptIndex}-`.padEnd(200, "i"),
+      preferredLabel: `preferred-${conceptIndex}-`.padEnd(200, "\\"),
+      vocabulary: Array.from({ length: 32 }, (_, vocabularyIndex) => `v-${conceptIndex}-${vocabularyIndex}-`.padEnd(200, "\\")),
+      defaultSection: "Pantry",
+    })),
+  };
+  const projection = projectPlannerRead(source, { kind: "workspace" });
+  assert.equal(isPlannerReadProjection(projection), true);
+  const result = createPlannerToolSuccess("max-catalogue", source, 1, projection);
+  assert.doesNotThrow(() => serializePlannerToolResult(result));
+});
+
+test("candidate preview wire data is closed rather than object-shaped", () => {
+  assert.equal(isPlannerPreviewData({ status: "previewed", outcomes: [{ operationIndex: 0, summary: "x", target: "x", changes: [], occurrences: [], ingredientCandidatePreview: {} }] }), false);
 });
 
 test("result serialization enforces the 128 KiB wire bound", () => {

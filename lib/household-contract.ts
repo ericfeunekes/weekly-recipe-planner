@@ -34,6 +34,18 @@ export type GroceryCoverage = (typeof GROCERY_COVERAGES)[number];
 export type IngredientRole = (typeof INGREDIENT_ROLES)[number];
 export type GrocerySection = "Produce" | "Meat & seafood" | "Dairy" | "Pantry";
 
+export type IngredientConcept = {
+  id: string;
+  preferredLabel: string;
+  vocabulary: string[];
+  defaultSection: GrocerySection;
+};
+
+export type IngredientCatalogue = {
+  revision: number;
+  concepts: IngredientConcept[];
+};
+
 export type IngredientAmountLine = {
   amount: string;
   ingredient: string;
@@ -172,6 +184,7 @@ export type HouseholdPlannerState = {
   householdTimeZone: string;
   activeWeekId: WeekId | null;
   weeks: WeekPlan[];
+  ingredientCatalogue: IngredientCatalogue;
 };
 
 export type InstructionStepPlanInput = {

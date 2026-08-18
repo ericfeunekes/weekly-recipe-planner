@@ -18,6 +18,7 @@ import {
   mondayForIsoDate,
   validateHouseholdState,
 } from "./household-domain.ts";
+import { createCoreIngredientCatalogue, isIngredientCandidatePreview } from "./ingredient-catalogue.ts";
 import type {
   InitializedWorkspace,
   PlannerEvent,
@@ -43,6 +44,7 @@ export const PLANNER_TOOL_ARGUMENT_BYTES_LIMIT = 65_536;
 export const PLANNER_TOOL_RESULT_BYTES_LIMIT = 131_072;
 export const PLANNER_TOOL_HISTORY_LIMIT = 20;
 export const PLANNER_TOOL_FIELD_ERROR_LIMIT = 20;
+export const PLANNER_CATALOGUE_PAGE_SIZE = 4;
 
 export type PlannerToolName = (typeof PLANNER_TOOL_NAMES)[number];
 
@@ -50,6 +52,7 @@ export type ReadQuery =
   | { kind: "workspace" }
   | { kind: "week"; weekId: string }
   | { kind: "meal"; weekId: string; mealId: string }
+  | { kind: "catalogue"; offset: number }
   | { kind: "history"; afterSequence?: number; limit: number };
 
 export type PlannerReadArguments = { query: ReadQuery };
@@ -133,13 +136,24 @@ export type PlannerReadProjection =
       kind: "workspace";
       activeWeekId: string | null;
       weeks: Array<{ id: string; weekStartDate: string; status: string }>;
+      ingredientCatalogue: PlannerIngredientCataloguePage;
     }
-  | { kind: "week"; week: InitializedWorkspace["state"]["weeks"][number] }
+  | { kind: "week"; week: InitializedWorkspace["state"]["weeks"][number]; ingredientCatalogue: PlannerIngredientCataloguePage }
   | {
       kind: "meal";
       meal: InitializedWorkspace["state"]["weeks"][number]["data"]["meals"][number];
+      ingredientCatalogue: PlannerIngredientCataloguePage;
     }
+  | { kind: "catalogue"; ingredientCatalogue: PlannerIngredientCataloguePage }
   | { kind: "history"; events: SanitizedPlannerEvent[] };
+
+export type PlannerIngredientCataloguePage = {
+  revision: number;
+  offset: number;
+  totalConcepts: number;
+  nextOffset: number | null;
+  concepts: InitializedWorkspace["state"]["ingredientCatalogue"]["concepts"];
+};
 
 export type SanitizedPlannerEvent = Pick<
   PlannerEvent,
@@ -167,6 +181,7 @@ export type PlannerApplyData = {
   occurrenceResults: Array<{
     operationIndex: number;
     occurrences: OccurrenceResolution[];
+    ingredientCandidatePreview?: PlannerOperationPreview["ingredientCandidatePreview"];
   }>;
   readback: PlannerReadProjection;
 };
@@ -179,6 +194,15 @@ export type PlannerToolDataByName = {
 
 const readQuerySchema = {
   oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "offset"],
+      properties: {
+        kind: { type: "string", const: "catalogue" },
+        offset: { type: "integer", minimum: 0 },
+      },
+    },
     {
       type: "object",
       additionalProperties: false,
@@ -388,6 +412,8 @@ export function isReadQuery(value: unknown): value is ReadQuery {
     case "meal":
       return hasExactKeys(value, ["kind", "weekId", "mealId"]) &&
         isBoundedId(value.weekId) && isBoundedId(value.mealId);
+    case "catalogue":
+      return hasExactKeys(value, ["kind", "offset"]) && Number.isSafeInteger(value.offset) && Number(value.offset) >= 0;
     case "history":
       return hasExactKeys(value, ["kind", "limit"], ["afterSequence"]) &&
         Number.isSafeInteger(value.limit) && Number(value.limit) >= 1 &&
@@ -453,10 +479,18 @@ export function freezeForegroundAuthority(value: unknown): ForegroundAuthority {
 
 export function foregroundTarget(command: HouseholdCommand): string {
   switch (command.type) {
+    case "previewIngredientCandidates":
+      return "ingredient-catalogue";
     case "createWeekPlan":
       return command.weekStartDate;
     case "handoffWeek":
       return `${command.currentWeekId}->${command.nextWeekId}`;
+    case "createIngredientConcept":
+    case "addIngredientVocabulary":
+    case "renameIngredientConcept":
+      return command.conceptId;
+    case "mergeIngredientConcepts":
+      return command.survivorConceptId;
     default:
       return command.weekId;
   }
@@ -517,6 +551,12 @@ export function projectPlannerRead(
   workspace: InitializedWorkspace,
   query: ReadQuery,
 ): PlannerReadProjection | null {
+  const ingredientCatalogue = workspace.state.ingredientCatalogue;
+  const cataloguePage = (offset: number): PlannerIngredientCataloguePage => {
+    const concepts = ingredientCatalogue.concepts.slice(offset, offset + PLANNER_CATALOGUE_PAGE_SIZE);
+    const nextOffset = offset + concepts.length < ingredientCatalogue.concepts.length ? offset + concepts.length : null;
+    return { revision: ingredientCatalogue.revision, offset, totalConcepts: ingredientCatalogue.concepts.length, nextOffset, concepts: structuredClone(concepts) };
+  };
   switch (query.kind) {
     case "workspace":
       return {
@@ -527,16 +567,19 @@ export function projectPlannerRead(
           weekStartDate,
           status,
         })),
+        ingredientCatalogue: cataloguePage(0),
       };
     case "week": {
       const week = workspace.state.weeks.find((candidate) => candidate.id === query.weekId);
-      return week ? { kind: "week", week: structuredClone(week) } : null;
+      return week ? { kind: "week", week: structuredClone(week), ingredientCatalogue: cataloguePage(0) } : null;
     }
     case "meal": {
       const week = workspace.state.weeks.find((candidate) => candidate.id === query.weekId);
       const meal = week?.data.meals.find((candidate) => candidate.id === query.mealId);
-      return meal ? { kind: "meal", meal: structuredClone(meal) } : null;
+      return meal ? { kind: "meal", meal: structuredClone(meal), ingredientCatalogue: cataloguePage(0) } : null;
     }
+    case "catalogue":
+      return query.offset <= ingredientCatalogue.concepts.length ? { kind: "catalogue", ingredientCatalogue: cataloguePage(query.offset) } : null;
     case "history": {
       const events = workspace.events
         .filter((event) => query.afterSequence === undefined || event.sequence > query.afterSequence)
@@ -729,7 +772,24 @@ function isSanitizedPlannerEvent(value: unknown): value is SanitizedPlannerEvent
   return value.actor === (value.provenance.actorClass === "household" ? "Household" : "Codex");
 }
 
-function isWeekPlan(value: unknown): value is WeekPlan {
+function isIngredientCataloguePage(value: unknown): value is PlannerIngredientCataloguePage {
+  if (!isRecord(value) || !hasExactKeys(value, ["revision", "offset", "totalConcepts", "nextOffset", "concepts"]) ||
+      !Number.isSafeInteger(value.revision) || Number(value.revision) < 1 ||
+      !Number.isSafeInteger(value.offset) || Number(value.offset) < 0 ||
+      !Number.isSafeInteger(value.totalConcepts) || Number(value.totalConcepts) < 0 ||
+      !Array.isArray(value.concepts) || value.concepts.length > PLANNER_CATALOGUE_PAGE_SIZE ||
+      Number(value.offset) + value.concepts.length > Number(value.totalConcepts) ||
+      (value.nextOffset !== null && (!Number.isSafeInteger(value.nextOffset) || Number(value.nextOffset) !== Number(value.offset) + value.concepts.length || Number(value.nextOffset) >= Number(value.totalConcepts))) ||
+      (value.nextOffset === null && Number(value.offset) + value.concepts.length !== Number(value.totalConcepts))) return false;
+  return validateHouseholdState({
+    householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
+    activeWeekId: null,
+    weeks: [],
+    ingredientCatalogue: { revision: Number(value.revision), concepts: value.concepts as HouseholdPlannerState["ingredientCatalogue"]["concepts"] },
+  }).ok;
+}
+
+function isWeekPlan(value: unknown, ingredientCatalogue = createCoreIngredientCatalogue()): value is WeekPlan {
   if (!isRecord(value)) return false;
   const activeWeekId = value.status === "active" && typeof value.id === "string"
     ? value.id as WeekId
@@ -738,11 +798,12 @@ function isWeekPlan(value: unknown): value is WeekPlan {
     householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
     activeWeekId,
     weeks: [value as WeekPlan],
+    ingredientCatalogue,
   } satisfies HouseholdPlannerState;
-  return validateHouseholdState(state).ok;
+  return validateHouseholdState(state, { allowUnknownIngredientConceptReferences: true }).ok;
 }
 
-function isMeal(value: unknown): value is Meal {
+function isMeal(value: unknown, ingredientCatalogue = createCoreIngredientCatalogue()): value is Meal {
   if (!isRecord(value) || !isIsoDate(value.date)) return false;
   const weekId = mondayForIsoDate(value.date);
   const meal = value as Meal;
@@ -756,7 +817,7 @@ function isMeal(value: unknown): value is Meal {
       data: {
         meals: [meal],
         prepSessions: [],
-        groceries: meal.ingredients.map((ingredient) => ({
+        groceries: meal.ingredients.filter((ingredient) => ingredient.role === "weekly_requirement").map((ingredient) => ({
           id: `grocery-read-${meal.id}-${ingredient.id}`,
           mealId: meal.id,
           ingredientId: ingredient.id,
@@ -769,8 +830,9 @@ function isMeal(value: unknown): value is Meal {
         weekLesson: "",
       },
     }],
+    ingredientCatalogue,
   } satisfies HouseholdPlannerState;
-  return validateHouseholdState(state).ok;
+  return validateHouseholdState(state, { allowUnknownIngredientConceptReferences: true }).ok;
 }
 
 export function isPlannerReadProjection(value: unknown): value is PlannerReadProjection {
@@ -778,9 +840,9 @@ export function isPlannerReadProjection(value: unknown): value is PlannerReadPro
   switch (value.kind) {
     case "workspace": {
       if (
-        !hasExactKeys(value, ["kind", "activeWeekId", "weeks"]) ||
+        !hasExactKeys(value, ["kind", "activeWeekId", "weeks", "ingredientCatalogue"]) ||
         (value.activeWeekId !== null && !isBoundedId(value.activeWeekId)) ||
-        !Array.isArray(value.weeks)
+        !Array.isArray(value.weeks) || !isIngredientCataloguePage(value.ingredientCatalogue)
       ) return false;
       const weekIds = new Set<string>();
       return value.weeks.every((week) => {
@@ -798,9 +860,11 @@ export function isPlannerReadProjection(value: unknown): value is PlannerReadPro
       });
     }
     case "week":
-      return hasExactKeys(value, ["kind", "week"]) && isWeekPlan(value.week);
+      return hasExactKeys(value, ["kind", "week", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue) && isWeekPlan(value.week, { revision: value.ingredientCatalogue.revision, concepts: value.ingredientCatalogue.concepts });
     case "meal":
-      return hasExactKeys(value, ["kind", "meal"]) && isMeal(value.meal);
+      return hasExactKeys(value, ["kind", "meal", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue) && isMeal(value.meal, { revision: value.ingredientCatalogue.revision, concepts: value.ingredientCatalogue.concepts });
+    case "catalogue":
+      return hasExactKeys(value, ["kind", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue);
     case "history":
       return hasExactKeys(value, ["kind", "events"]) &&
         Array.isArray(value.events) &&
@@ -824,7 +888,7 @@ export function isPlannerPreviewData(value: unknown): value is PlannerPreviewDat
   return value.outcomes.every((outcome) => {
     if (
       !isRecord(outcome) ||
-      !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes", "occurrences"]) ||
+      !hasExactKeys(outcome, ["operationIndex", "summary", "target", "changes", "occurrences"], ["ingredientCandidatePreview"]) ||
       !Number.isSafeInteger(outcome.operationIndex) ||
       Number(outcome.operationIndex) < 0 ||
       Number(outcome.operationIndex) >= MAX_PLANNER_OPERATIONS ||
@@ -832,7 +896,8 @@ export function isPlannerPreviewData(value: unknown): value is PlannerPreviewDat
       typeof outcome.summary !== "string" ||
       typeof outcome.target !== "string" ||
       !isStringArray(outcome.changes) ||
-      !isOccurrenceResolutions(outcome.occurrences)
+      !isOccurrenceResolutions(outcome.occurrences) ||
+      (outcome.ingredientCandidatePreview !== undefined && !isIngredientCandidatePreview(outcome.ingredientCandidatePreview))
     ) return false;
     indexes.add(Number(outcome.operationIndex));
     return true;
@@ -845,10 +910,11 @@ export function isPlannerApplyData(value: unknown): value is PlannerApplyData {
     (value.status === "accepted" || value.status === "replayed") &&
     isBoundedId(value.eventId) &&
     Array.isArray(value.occurrenceResults) && value.occurrenceResults.every((result) =>
-      isRecord(result) && hasExactKeys(result, ["operationIndex", "occurrences"]) &&
+      isRecord(result) && hasExactKeys(result, ["operationIndex", "occurrences", ...(Object.hasOwn(result, "ingredientCandidatePreview") ? ["ingredientCandidatePreview"] : [])]) &&
       Number.isSafeInteger(result.operationIndex) && Number(result.operationIndex) >= 0 &&
       Number(result.operationIndex) < MAX_PLANNER_OPERATIONS &&
-      isOccurrenceResolutions(result.occurrences)) &&
+      isOccurrenceResolutions(result.occurrences) &&
+      (result.ingredientCandidatePreview === undefined || isIngredientCandidatePreview(result.ingredientCandidatePreview))) &&
     isPlannerReadProjection(value.readback);
 }
 

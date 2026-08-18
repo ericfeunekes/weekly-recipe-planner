@@ -11,7 +11,7 @@ export type PlannerSchemaObject = Readonly<{
   name: string;
 }>;
 
-export const CURRENT_SCHEMA_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 11;
 
 export const PLANNER_SCHEMA_MIGRATIONS: readonly PlannerSchemaMigration[] = Object.freeze([
   { version: 1, path: fileURLToPath(new URL("migrations/001-initial.sql", import.meta.url)) },
@@ -65,9 +65,13 @@ export const PLANNER_SCHEMA_MIGRATIONS: readonly PlannerSchemaMigration[] = Obje
     version: 10,
     path: fileURLToPath(new URL("migrations/010-ingredient-occurrences.sql", import.meta.url)),
   },
+  {
+    version: 11,
+    path: fileURLToPath(new URL("migrations/011-ingredient-catalogue.sql", import.meta.url)),
+  },
 ]);
 
-// This is the selected schema-v10 shape after every migration has run. Release
+// This is the selected schema-v11 shape after every migration has run. Release
 // compatibility checks the exact live shape so a damaged ledger or missing
 // enforcement object cannot masquerade as a current database.
 export const PLANNER_SCHEMA_OBJECTS: readonly PlannerSchemaObject[] = Object.freeze([

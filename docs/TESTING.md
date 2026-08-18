@@ -151,6 +151,32 @@ and final authoritative application readback. `make recover` still does not
 restore SQLite; do not treat this rehearsal or application promotion as data
 migration authorization.
 
+### Schema-v11 ingredient-catalogue proof
+
+Issue 14 adds the planner-owned ingredient catalogue inside canonical household
+state. Opening a schema-v10 database through the current application performs
+the v10-to-v11 migration transactionally: it installs the core catalogue,
+retains every legacy concept reference (adding a literal placeholder concept
+when necessary), and rewrites neither ingredient occurrence identity nor any
+recipe-owned source, amount, unit, ingredient, or qualifier field.
+
+The deterministic proof covers ordered candidate preview, exact and conservative
+similar matching, inline concept and vocabulary creation, digest/revision-bound
+batch apply, rename/merge collision behavior, event/undo/restart, and the shared
+browser, embedded Codex, and Global Codex operation authority. Reopen the same
+real SQLite file twice and compare logical inventory: the second open must be a
+no-op, `PRAGMA quick_check` must remain `ok`, and catalogue mutations must replay
+from their original receipt without an additional event.
+
+Canonical household state retains the complete catalogue. Embedded workspace,
+week, and meal reads include its first bounded page; subsequent pages use the
+same planner `read` tool with `{kind:"catalogue", offset}`. This projection is
+not a second authority or route: every page carries the same catalogue revision,
+offset, total, and next offset, while browser and Global workspace reads remain
+authoritative full-state reads. `nextOffset` is the explicit continuation token;
+large catalogues continue across native turns so each turn stays within its
+planner-call budget without truncating the canonical catalogue.
+
 ## Merge Gate
 
 Every implementation merge must keep these deterministic cells green:

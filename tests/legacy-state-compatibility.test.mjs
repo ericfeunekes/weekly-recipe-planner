@@ -121,6 +121,38 @@ function installAmbiguousLegacyLentils(state) {
   ];
 }
 
+test("catalogue migration maps colliding and oversized legacy concept references safely and fails at capacity", () => {
+  const colliding = "scallion";
+  const oversized = "x".repeat(201);
+  const payload = {
+    kind: "workspace",
+    weeks: [{ data: { meals: [{ ingredients: [{ conceptId: colliding }, { conceptId: oversized }, { conceptId: colliding }, { conceptId: "opaque-a" }, { conceptId: "legacy-f1028ef85d717524" }] }] } }],
+  };
+  const normalized = normalizeLegacyHouseholdPayload(payload);
+  const ingredients = normalized.value.weeks[0].data.meals[0].ingredients;
+  assert.notEqual(ingredients[0].conceptId, colliding);
+  assert.notEqual(ingredients[1].conceptId, oversized);
+  assert.equal(ingredients[0].conceptId, ingredients[2].conceptId, "repeated legacy references retain one mapped identity");
+  assert.notEqual(ingredients[3].conceptId, ingredients[4].conceptId, "an original ID cannot collapse into another concept's generated placeholder ID");
+  const partialRead = normalizeLegacyHouseholdPayload({ kind: "meal", meal: { ingredients: [{ conceptId: "opaque-a" }] } });
+  assert.equal(partialRead.value.meal.ingredients[0].conceptId, ingredients[3].conceptId, "authoritative state and partial stored readback use the same context-independent mapping");
+  assert.ok(normalized.value.ingredientCatalogue.concepts.every(({ id, preferredLabel }) => id.length <= 200 && preferredLabel.length <= 200));
+  assert.equal(new Set(normalized.value.ingredientCatalogue.concepts.map(({ preferredLabel }) => preferredLabel.toLowerCase())).size, normalized.value.ingredientCatalogue.concepts.length);
+
+  const twentyLegacy = normalizeLegacyHouseholdPayload({
+    kind: "workspace",
+    weeks: [{ data: { meals: [{ ingredients: Array.from({ length: 20 }, (_, index) => ({ conceptId: `valid-v10-concept-${index}` })) }] } }],
+  });
+  assert.equal(twentyLegacy.value.ingredientCatalogue.totalConcepts, 49, "migration retains more than nineteen household concepts beyond the launch core");
+  assert.equal(new Set(twentyLegacy.value.weeks[0].data.meals[0].ingredients.map(({ conceptId }) => conceptId)).size, 20);
+
+  const overCapacity = {
+    kind: "workspace",
+    weeks: [{ data: { meals: [{ ingredients: Array.from({ length: 972 }, (_, index) => ({ conceptId: `legacy-concept-${index}` })) }] } }],
+  };
+  assert.throws(() => normalizeLegacyHouseholdPayload(overCapacity), /exceed the catalogue capacity/);
+});
+
 test("legacy household normalization is atomic and idempotent before current-schema persistence", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "weekly-recipe-legacy-state-"));
   const filename = join(directory, "planner.sqlite");

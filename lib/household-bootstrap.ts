@@ -38,6 +38,7 @@ import {
   matchOccurrenceByCore,
   parseLegacyIngredientLine,
 } from "./ingredient-occurrence.ts";
+import { createCoreIngredientCatalogue } from "./ingredient-catalogue.ts";
 import {
   LEGACY_V2_WEEK_START_DATE,
   type LegacyV2Payload,
@@ -641,6 +642,7 @@ export function transformLegacyV2(
   const legacyState: HouseholdPlannerState = {
     householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
     activeWeekId: archived ? null : weekId,
+    ingredientCatalogue: createCoreIngredientCatalogue(),
     weeks: [
       {
         id: weekId,
@@ -708,6 +710,7 @@ export function createCanonicalSeed(
     householdTimeZone: DEFAULT_HOUSEHOLD_TIME_ZONE,
     activeWeekId: null,
     weeks: [],
+    ingredientCatalogue: createCoreIngredientCatalogue(),
   };
   const created = householdDomain.execute(
     state,

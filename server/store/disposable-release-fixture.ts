@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { createCoreIngredientCatalogue } from "../../lib/ingredient-catalogue.ts";
 
 import {
   CURRENT_SCHEMA_VERSION,
@@ -10,6 +11,7 @@ import {
 const DISPOSABLE_STATE = Object.freeze({
   householdTimeZone: "America/Halifax",
   activeWeekId: "2026-07-20",
+  ingredientCatalogue: createCoreIngredientCatalogue(),
   weeks: [Object.freeze({
     id: "2026-07-20",
     weekStartDate: "2026-07-20",

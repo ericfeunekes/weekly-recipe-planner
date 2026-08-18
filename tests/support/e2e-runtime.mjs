@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import { createCanonicalSeed } from "../../lib/household-bootstrap.ts";
 import { validateHouseholdState } from "../../lib/household-domain.ts";
+import { createCoreIngredientCatalogue } from "../../lib/ingredient-catalogue.ts";
 import {
   createGlobalCodexIngressForTests,
   createGlobalCodexPlannerPort,
@@ -34,6 +35,7 @@ export function createE2eFixtureSeed(fixture, context) {
         householdTimeZone: "America/Halifax",
         activeWeekId: null,
         weeks: [],
+        ingredientCatalogue: createCoreIngredientCatalogue(),
       };
   const validation = validateHouseholdState(state);
   if (!validation.ok) {

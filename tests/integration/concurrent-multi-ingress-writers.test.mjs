@@ -11,6 +11,7 @@ import {
   GLOBAL_CODEX_CONTRACT_VERSION,
   GLOBAL_CODEX_ROUTES,
 } from "../../lib/global-codex-contract.ts";
+import { createCoreIngredientCatalogue } from "../../lib/ingredient-catalogue.ts";
 import {
   createGlobalCodexIngressForTests,
   createGlobalCodexPlannerPort,
@@ -24,6 +25,7 @@ function seedState() {
   return {
     householdTimeZone: "America/Halifax",
     activeWeekId: "2026-07-06",
+    ingredientCatalogue: createCoreIngredientCatalogue(),
     weeks: [{
       id: "2026-07-06",
       weekStartDate: "2026-07-06",

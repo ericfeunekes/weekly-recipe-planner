@@ -8,6 +8,55 @@ import {
   type HouseholdPlannerState,
   type MealStatus,
 } from "./household-contract.ts";
+import { createCoreIngredientCatalogue, MAX_INGREDIENT_CONCEPTS } from "./ingredient-catalogue.ts";
+
+function migratedIngredientCatalogue(value: Record<string, unknown>) {
+  const catalogue = createCoreIngredientCatalogue();
+  const coreIds = new Set(catalogue.concepts.map((concept) => concept.id));
+  const legacyIds = new Map<string, string>();
+  const digest = (text: string) => {
+    let left = 0x811c9dc5;
+    let right = 0x9e3779b9;
+    for (const byte of new TextEncoder().encode(text)) {
+      left = Math.imul(left ^ byte, 0x01000193) >>> 0;
+      right = Math.imul(right ^ byte, 0x85ebca6b) >>> 0;
+    }
+    return left.toString(16).padStart(8, "0") + right.toString(16).padStart(8, "0");
+  };
+  const referencedIngredients: Record<string, unknown>[] = [];
+  if (Array.isArray(value.weeks)) for (const week of value.weeks) {
+    if (!isRecord(week) || !isRecord(week.data) || !Array.isArray(week.data.meals)) continue;
+    for (const meal of week.data.meals) {
+      if (!isRecord(meal) || !Array.isArray(meal.ingredients)) continue;
+      for (const ingredient of meal.ingredients) if (isRecord(ingredient) && typeof ingredient.conceptId === "string" && ingredient.conceptId) referencedIngredients.push(ingredient);
+    }
+  }
+  const originalLegacyIds = [...new Set(referencedIngredients.map(({ conceptId }) => String(conceptId)).filter((id) => !coreIds.has(id)))];
+  if (catalogue.concepts.length + originalLegacyIds.length > MAX_INGREDIENT_CONCEPTS) throw new TypeError("Legacy ingredient concepts exceed the catalogue capacity.");
+  const reserved = new Set(coreIds);
+  for (const originalId of originalLegacyIds) {
+    const base = `legacy-${digest(originalId)}`;
+    let mappedId = base;
+    let suffix = 1;
+    while (reserved.has(mappedId)) mappedId = `${base}-${suffix++}`;
+    reserved.add(mappedId);
+    legacyIds.set(originalId, mappedId);
+    catalogue.concepts.push({ id: mappedId, preferredLabel: `Legacy ingredient ${catalogue.concepts.length + 1} (${mappedId.slice(7)})`, vocabulary: [], defaultSection: "Pantry" });
+  }
+  for (const ingredient of referencedIngredients) if (typeof ingredient.conceptId === "string" && legacyIds.has(ingredient.conceptId)) ingredient.conceptId = legacyIds.get(ingredient.conceptId);
+  return catalogue;
+}
+
+function catalogueProjectionPage(catalogue: ReturnType<typeof createCoreIngredientCatalogue>) {
+  const concepts = catalogue.concepts.slice(0, 4);
+  return {
+    revision: catalogue.revision,
+    offset: 0,
+    totalConcepts: catalogue.concepts.length,
+    nextOffset: concepts.length < catalogue.concepts.length ? concepts.length : null,
+    concepts,
+  };
+}
 import { MAX_ID_LENGTH } from "./household-command-contract.ts";
 import {
   isGroceryRequirementRole,
@@ -336,9 +385,12 @@ export function normalizeLegacyGrocerySources(
 export function normalizeLegacyHouseholdState(
   state: HouseholdPlannerState,
 ): HouseholdStateNormalization {
-  const groceries = normalizeLegacyGrocerySources(state);
+  const catalogue = Object.hasOwn(state as object, "ingredientCatalogue")
+    ? { state, changed: false }
+    : { state: { ...state, ingredientCatalogue: migratedIngredientCatalogue(state as unknown as Record<string, unknown>) }, changed: true };
+  const groceries = normalizeLegacyGrocerySources(catalogue.state);
   const leftovers = normalizeLegacyLeftoverSourceStatuses(groceries.state);
-  return leftovers.changed || groceries.changed
+  return catalogue.changed || leftovers.changed || groceries.changed
     ? { state: leftovers.state, changed: true }
     : { state, changed: false };
 }
@@ -359,6 +411,31 @@ export function normalizeLegacyHouseholdPayload<T>(value: T): HouseholdPayloadNo
       return;
     }
     if (!isRecord(candidate)) return;
+
+    if (
+      typeof candidate.householdTimeZone === "string" &&
+      Array.isArray(candidate.weeks) &&
+      !Object.hasOwn(candidate, "ingredientCatalogue")
+    ) {
+      candidate.ingredientCatalogue = migratedIngredientCatalogue(candidate);
+      changed = true;
+    }
+    if (candidate.kind === "workspace" && Array.isArray(candidate.weeks) && !Object.hasOwn(candidate, "ingredientCatalogue")) {
+      candidate.ingredientCatalogue = catalogueProjectionPage(migratedIngredientCatalogue(candidate));
+      changed = true;
+    }
+    if (candidate.kind === "week" && isRecord(candidate.week) && !Object.hasOwn(candidate, "ingredientCatalogue")) {
+      candidate.ingredientCatalogue = catalogueProjectionPage(migratedIngredientCatalogue({ weeks: [candidate.week] }));
+      changed = true;
+    }
+    if (candidate.kind === "meal" && isRecord(candidate.meal) && !Object.hasOwn(candidate, "ingredientCatalogue")) {
+      candidate.ingredientCatalogue = catalogueProjectionPage(migratedIngredientCatalogue({ weeks: [{ data: { meals: [candidate.meal] } }] }));
+      changed = true;
+    }
+    if (["workspace", "week", "meal"].includes(String(candidate.kind)) && isRecord(candidate.ingredientCatalogue) && Array.isArray(candidate.ingredientCatalogue.concepts) && !Object.hasOwn(candidate.ingredientCatalogue, "offset")) {
+      candidate.ingredientCatalogue = catalogueProjectionPage(candidate.ingredientCatalogue as ReturnType<typeof createCoreIngredientCatalogue>);
+      changed = true;
+    }
 
     if (
       Array.isArray(candidate.meals) &&
@@ -645,8 +722,19 @@ export function upgradeHouseholdPayloadToIngredientOccurrences<T>(
     if (!isRecord(candidate)) return;
     if (candidate.kind === "week" && isRecord(candidate.week)) {
       changed = upgradeWeekOccurrences(candidate.week, `${path}.week`, issues) || changed;
+      if (!Object.hasOwn(candidate, "ingredientCatalogue")) {
+        candidate.ingredientCatalogue = catalogueProjectionPage(migratedIngredientCatalogue({ weeks: [candidate.week] }));
+        changed = true;
+      }
     } else if (candidate.kind === "meal" && isRecord(candidate.meal)) {
       changed = upgradeMealOccurrences(candidate.meal, `${path}.meal`, issues) || changed;
+      if (!Object.hasOwn(candidate, "ingredientCatalogue")) {
+        candidate.ingredientCatalogue = catalogueProjectionPage(migratedIngredientCatalogue({ weeks: [{ data: { meals: [candidate.meal] } }] }));
+        changed = true;
+      }
+    } else if (candidate.kind === "workspace" && Array.isArray(candidate.weeks) && !Object.hasOwn(candidate, "ingredientCatalogue")) {
+      candidate.ingredientCatalogue = catalogueProjectionPage(migratedIngredientCatalogue(candidate));
+      changed = true;
     }
   };
   if (
