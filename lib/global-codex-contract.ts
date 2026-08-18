@@ -146,6 +146,11 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function containsCanonicalReplacement(operations: readonly PlannerOperation[]): boolean {
+  return operations.some(({ command }) =>
+    command.type === "replaceMealRecipeFromSource" && command.recipe.source.kind === "canonical");
+}
+
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
@@ -157,7 +162,8 @@ export function isGlobalCodexBatchRequest(value: unknown): value is GlobalCodexB
     value.contractVersion === GLOBAL_CODEX_CONTRACT_VERSION &&
     isUuid(value.requestId) &&
     isNonNegativeSafeInteger(value.basePlannerVersion) &&
-    isPlannerOperationList(value.operations);
+    isPlannerOperationList(value.operations) &&
+    !containsCanonicalReplacement(value.operations);
 }
 
 export function isHistoricalGlobalCodexBatchRequest(
@@ -179,7 +185,8 @@ export function isGlobalCodexPreviewRequest(value: unknown): value is GlobalCode
     hasExactKeys(value, ["contractVersion", "basePlannerVersion", "operations"]) &&
     value.contractVersion === GLOBAL_CODEX_CONTRACT_VERSION &&
     isNonNegativeSafeInteger(value.basePlannerVersion) &&
-    isPlannerOperationList(value.operations);
+    isPlannerOperationList(value.operations) &&
+    !containsCanonicalReplacement(value.operations);
 }
 
 function isProvenance(value: unknown): value is PlannerEventProvenance {

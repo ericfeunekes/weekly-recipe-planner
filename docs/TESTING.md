@@ -21,6 +21,7 @@ are satisfied.
 | Merge | Candidate readiness | The application selected by the current promotion attempt cannot pass readiness unless the application, store, native Codex compatibility boundary, and Global UDS are initialized. Readiness from the previously running app cannot satisfy the attempt. |
 | Merge | Production-profile routing | The production build and front controller are exercised at `/recipe-planner/`; API, workspace, JavaScript, CSS, favicon, and social-preview metadata resolve under the mounted profile. |
 | Merge | Gate integrity | The documented release entrypoint runs typecheck, production build, lint, deterministic tests, and the release lifecycle matrix. A missing script, empty test selection, or shared wrong constant is a failure. |
+| Merge | Canonical recipe import | A production-faithful fixture passes the host reader and versioned planner import. Reader tests reject root escape, absolute paths, links, directories, oversized reads, incomplete review metadata, legacy ingredient fields, invalid instruction references, and pathological YAML; descriptor metadata also fences files that change during a read. Host tests prove invalid paths and stale versions create no planner event. Readback preserves the pinned revision/provenance/timing/Notes, exact ingredient source lines plus structured fields, ordered instruction references, timers, and protected meal fields; a normal typed edit remains possible without changing pinned source metadata. |
 | RC | Disposable installed candidate | The candidate produced by the release entrypoint is installed under a temporary home with disposable SQLite data, started through the production front controller, and passes mounted health/workspace plus the representative browser smoke. |
 | QA | Disposable production-profile observation | A disposable installed candidate and SQLite profile are visibly checked through the production front controller at `/recipe-planner/`; mounted health, workspace, assets, favicon, social preview, and one narrow active-week dinner journey have authoritative readback. |
 
@@ -177,6 +178,26 @@ authoritative full-state reads. `nextOffset` is the explicit continuation token;
 large catalogues continue across native turns so each turn stays within its
 planner-call budget without truncating the canonical catalogue.
 
+### Schema-v12 canonical-import tool ledger hold
+
+Issue 26 advances retained state from schema 11 to 12 only to admit the new
+`importRecipe` name in the durable native-tool-call ledger. Migration 012
+rebuilds that table with the expanded closed tool union, copies every existing
+row and index, and leaves planner events and household recipe data unchanged.
+Current-code proof creates and verifies a schema-11 backup, compares every
+populated native-call ledger value across the table rebuild, replays a retained
+call through the host, exercises a planner edit/replay/undo after migration,
+restarts with an integrity check and idempotent reopen, and proves a frozen
+schema-11 preflight rejects the schema-12 file without changing its bytes.
+
+There is deliberately no household v11-to-v12 operator command in this
+change. Production must remain on the schema-11 app and database. Promotion is
+held until a separately authorized `shipping:release` action supplies a
+checked-in transition procedure that creates and verifies a schema-11 backup,
+names restoration steps, and completes authoritative application readback on
+disposable data before any household action. `make promote`, `make deploy`, and
+`make recover` are not substitutes for that missing database procedure.
+
 ## Merge Gate
 
 Every implementation merge must keep these deterministic cells green:
@@ -191,6 +212,13 @@ Every implementation merge must keep these deterministic cells green:
 | Architecture closure | No browser/shared-localStorage authority or alternate mutation path | `tests/architecture/**` |
 | Accessibility and fixture capability | Direct Playwright axe integration plus closed D4/D7 runtime seeds | `tests/support/playwright-qa.ts`, `tests/support/e2e-runtime.mjs`, `tests/e2e-runtime-fixtures.test.mjs` |
 | Baseline | Typecheck, production web build, lint, existing unit tests | `npm test`, `npm run lint` |
+
+`npm test` builds the mounted `/recipe-planner/` profile used by rendered-HTML
+proof and caps Node test-file concurrency at the lesser of four or Node's
+CPU-derived default, with a floor of one. Several runtime suites spawn their own
+subprocesses; allowing unrestricted file concurrency to multiply those children
+can starve fixed behavioral deadlines without exposing a product failure. Do not
+replace the cap with retries or wider timeouts.
 
 Owner lanes edit their own unit/contract test files. The proof lane owns only
 shared support and cross-boundary paths: `tests/support/**`,
@@ -273,10 +301,10 @@ does not rewrite the completed family-readiness signoff.
 | Native background workers | One native child agent reports parentage, progress, failure/completion, switch-away-and-back, and read-only drill-down. A child-completed/parent-result-absent fixture cannot fabricate or terminate the top-level assistant reply. The active runtime must prove the worker's exact provider-tool manifest; Codex 0.142.5 gives workers no planner dynamic tools, so cancellation, timeout, out-of-tree identity, and late completion cannot create a worker-owned planner effect. The parent alone may act on a returned worker result. |
 | Skill discovery and provenance | Obsidian-owned food skills resolve through exact production links or private dev/QA copies, while dynamically discovered `$HOME/.agents/skills` entries reach the top-level agent in captured input/readback and live behavior. Any skill guidance actually observed on a worker is inventoried rather than assumed. Food-source changes do not pin the app, and adversarial skill content cannot add tools, RPC methods, grants, or planner commands. |
 | Identity typing | Type-level negatives and runtime cases prove top-level thread, child thread/job, turn, item/call, selection revision, request/idempotency, planner version, and sync revision cannot be interchanged. The normal path contains no Plan/Research discriminator or app-owned transcript contract. |
-| Dynamic planner protocol | Deterministic app-server scenarios prove native turn start/steer plus client-message correlation and exactly `planner.read`, `planner.preview`, and `planner.apply` on the owning top-level turn. An ordinary running turn steers; there is no browser grant or approval-decision field. Dependent parent calls consume authoritative results; unknown, duplicate, changed-payload, out-of-tree, timed-out, cancelled, and late calls fail with the specified fencing behavior. |
+| Dynamic planner protocol | Deterministic app-server scenarios prove native turn start/steer plus client-message correlation and exactly `planner.read`, `planner.preview`, `planner.apply`, and `planner.importRecipe` on the owning top-level turn. An ordinary running turn steers; there is no browser grant or approval-decision field. Dependent parent calls consume authoritative results; unknown, duplicate, changed-payload, out-of-tree, timed-out, cancelled, and late calls fail with the specified fencing behavior. |
 | Planner operation parity | UI, embedded, and global callers exercise the same typed-command registry and mutation authority. One to sixteen ordered operations commit as one version/event/receipt/undo unit or not at all, with authoritative readback and no alternate mutation kernel. |
 | Durable effect lifecycle | Real temporary SQLite tests cover accepted top-level effects, rejection of child-attributed callbacks, crash points before and after commit/tool-response/reply, restart readback, and immutable tool-call replay. The wrapper never auto-replays an ambiguous user send; after effect/reply loss, any household follow-up is an ordinary new native turn over authoritative planner readback. |
-| Unified capability surface | One native top-level thread tree exposes hosted web search, the exact planner namespace, and skills without a mode/intent switch or hidden research/planner context. It proves an interleaved `planner.read -> web_search -> planner.preview -> planner.apply` path, a worker-assisted path, and a conversational no-tool path. |
+| Unified capability surface | One native top-level thread tree exposes hosted web search, the exact four-tool planner namespace, and skills without a mode/intent switch or hidden research/planner context. It proves an interleaved `planner.read -> web_search -> planner.preview -> planner.apply` path, generated-schema and host-boundary `planner.importRecipe` behavior, a worker-assisted path, and a conversational no-tool path. |
 | Web-assisted planning | Hostile/malformed web content may influence reasoning but cannot escape planner schemas, versions, idempotency, protected-state rules, or fixed authority. A real turn binds a completed search observation, informational source reference, accepted effects, and second-client readback without a cross-context candidate or false provenance claim. |
 | No semantic cache | Static ownership checks and deterministic stale-state cases prove there is no native-history/planner/search semantic cache: switches/reconnects read Codex, planner changes force current read/OCC, an explicit search refresh reaches hosted search again, and only immutable idempotency replay returns a stored decision. |
 | Availability and loss | Missing/malformed home, expired auth, history-read/search/app-server/worker/tool failure, restart, and incompatible update leave planner read/write and Global UDS available. Recoverable transport re-reads native history; a readable historical thread that cannot accept the active surface remains visible/unavailable-to-send beside a usable thread, and either can be selected without planner damage or hidden replacement. |

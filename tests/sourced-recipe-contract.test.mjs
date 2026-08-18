@@ -26,6 +26,8 @@ import {
   isResearchRecipeCandidate,
   isResearchRecipeDraft,
   isResearchRecipeProviderOutput,
+  isSourceRecipe,
+  isLegacySourcedRecipeReplacement,
   isSourcedRecipeReplacement,
   materializeResearchRecipeCandidate,
   normalizeResearchRecipeProviderOutput,
@@ -64,6 +66,34 @@ function replacementDigest(candidate) {
 const ids = { createId: () => "research-candidate-1" };
 const clock = { now: () => 1_750_000_000_000 };
 
+const canonicalSource = {
+  kind: "canonical",
+  identity: "weeknight-soup",
+  revision: "a".repeat(64),
+  path: "weeknight-soup.md",
+  status: "active",
+  provenance: {
+    source: "web",
+    sourceRef: "https://example.com/recipes/soup",
+    sourceLocator: null,
+    sourcePath: null,
+    sourceStartLine: null,
+    sourceEndLine: null,
+    sourceSha256: null,
+    sourceRetrievedAt: "2026-08-17",
+    fidelityVerdict: "exact",
+    fidelityReview: "recipes/reviews/soup.md",
+    adaptedFrom: null,
+  },
+  servings: "4",
+  timeActiveMinutes: null,
+  timeTotalMinutes: 30,
+  cuisine: null,
+  tasteTags: [],
+  dietaryTags: [],
+  notes: "",
+};
+
 test("provider projection requires nullable optionals and normalizes only null omission", () => {
   assert.deepEqual(RESEARCH_RECIPE_PROVIDER_OUTPUT_SCHEMA.required, [
     "source",
@@ -86,6 +116,28 @@ test("provider projection requires nullable optionals and normalizes only null o
   assert.equal(isResearchRecipeProviderOutput({
     ...raw,
     steps: [{ ...raw.steps[0], timerDurationSeconds: undefined }],
+  }), false);
+});
+
+test("persisted canonical timing accepts only ordered nonnegative integers or null", () => {
+  assert.equal(isSourceRecipe(canonicalSource), true);
+  assert.equal(isSourceRecipe({ ...canonicalSource, timeActiveMinutes: 0 }), true);
+  assert.equal(isSourceRecipe({ ...canonicalSource, timeTotalMinutes: null }), true);
+  assert.equal(isSourceRecipe({ ...canonicalSource, timeActiveMinutes: 31 }), false);
+  for (const value of [-1, 1.5, "10", undefined]) {
+    assert.equal(isSourceRecipe({ ...canonicalSource, timeActiveMinutes: value }), false, String(value));
+    assert.equal(isSourceRecipe({ ...canonicalSource, timeTotalMinutes: value }), false, String(value));
+  }
+});
+
+test("canonical sources cannot enter the retired web replacement grammar", () => {
+  assert.equal(isLegacySourcedRecipeReplacement({
+    title: "Weeknight soup",
+    source: canonicalSource,
+    steps: [{
+      inputs: [{ amount: "1 cup", ingredient: "lentils" }],
+      instruction: "Simmer until tender.",
+    }],
   }), false);
 });
 
@@ -401,6 +453,13 @@ test("host materialization, digest-bound compact reference, and replacement omit
   }, digest), false, "legacy digestless references remain readable but cannot authorize");
   const replacement = sourcedReplacementFromCandidate(candidate);
   assert.equal(isSourcedRecipeReplacement(replacement), true);
+  assert.equal(isSourcedRecipeReplacement({
+    ...replacement,
+    steps: [{
+      ...replacement.steps[0],
+      inputs: replacement.steps[0].inputs.map((input) => ({ ...input, amount: "" })),
+    }],
+  }), false, "web replacements retain the existing non-empty instruction amount contract");
   assert.equal(isSourcedRecipeReplacement({
     ...replacement,
     steps: [{

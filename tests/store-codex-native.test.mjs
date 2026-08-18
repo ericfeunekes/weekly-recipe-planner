@@ -759,7 +759,7 @@ test("migration 006 preserves populated v5 planner receipts exactly", async (t) 
   assert.deepEqual(preserved, receipt);
   assert.equal(upgraded.database.prepare(
     "SELECT max(version) AS version FROM schema_migrations",
-  ).get().version, 11);
+  ).get().version, 12);
   assert.throws(
     () => upgraded.insertReceipt(upgraded.database, {
       ...receipt,

@@ -1212,6 +1212,9 @@ export function validateSourcedRecipeReplacementEligibility(
   if (meal.instructions.some((step) => step.timerStartedAt !== undefined)) {
     return { ok: false, message: "Running instruction timers must be stopped in an earlier change." };
   }
+  if (meal.instructions.some((step) => step.timerPaused === true)) {
+    return { ok: false, message: "Paused instruction timers must be cleared in an earlier change." };
+  }
   const stepIds = new Set(meal.instructions.map((step) => step.id));
   if (week.data.prepSessions.some((session) => sessionReferencesAnyStep(session, stepIds))) {
     return { ok: false, message: "Prep-session references must be removed in an earlier change." };

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, request as requestHttp } from "node:http";
+import { join } from "node:path";
 import test from "node:test";
 
 import { householdDomain } from "../lib/household-domain.ts";
@@ -11,6 +12,7 @@ import {
   DIAGNOSTIC_EXPORT_WARNING,
 } from "../lib/planner-api-contract.ts";
 import { createPlannerApplicationService, hashCanonicalPayload } from "../server/application/planner-service.ts";
+import { readCanonicalRecipe } from "../server/codex/canonical-recipe-reader.ts";
 import { createApplicationRouter } from "../server/http/application-router.ts";
 import { createFrontController } from "../server/http/front-controller.ts";
 import {
@@ -390,6 +392,32 @@ test("operation previews use the canonical request without creating a mutation c
 test("household HTTP sourced replacement reaches shared reducer without embedded admission", async (t) => {
   const { baseUrl, store } = await startRealSourcedApplication(t);
   const headers = { "Content-Type": "application/json", Origin: "http://localhost:3001" };
+  const canonicalRecipe = await readCanonicalRecipe(
+    join(process.cwd(), "tests/support/fixtures/canonical-recipes"),
+    "lemon-pepper-salmon.md",
+  );
+  const canonicalRequest = {
+    requestId: "source-http-canonical-forbidden",
+    basePlannerVersion: 0,
+    command: {
+      type: "replaceMealRecipeFromSource",
+      weekId: "2026-07-06",
+      mealId: "meal-1",
+      recipe: canonicalRecipe,
+    },
+  };
+  assert.equal((await fetch(`${baseUrl}/api/commands`, {
+    method: "POST", headers, body: JSON.stringify(canonicalRequest),
+  })).status, 400);
+  assert.equal((await fetch(`${baseUrl}/api/operations/preview`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      basePlannerVersion: 0,
+      operations: [{ command: canonicalRequest.command }],
+    }),
+  })).status, 400);
+  assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM planner_events").get().count, 0);
   const request = {
     requestId: "source-http-1",
     basePlannerVersion: 0,

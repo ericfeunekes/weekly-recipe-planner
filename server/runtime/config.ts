@@ -13,6 +13,7 @@ export type PlannerRuntimeConfig = {
   port: number;
   dataDirectory: string;
   databasePath: string;
+  recipeRoot?: string | null;
   webOrigin: URL;
   publicBasePath?: string;
   allowedOrigins: ReadonlySet<string>;
@@ -151,6 +152,14 @@ export function readRuntimeConfig(
     port,
     dataDirectory,
     databasePath: resolve(dataDirectory, "planner.sqlite"),
+    recipeRoot: environment.PLANNER_RECIPE_ROOT === undefined
+      ? null
+      : (() => {
+          if (!isAbsolute(environment.PLANNER_RECIPE_ROOT) || environment.PLANNER_RECIPE_ROOT.includes("\0")) {
+            throw new TypeError("PLANNER_RECIPE_ROOT must be an absolute path.");
+          }
+          return resolve(environment.PLANNER_RECIPE_ROOT);
+        })(),
     webOrigin,
     publicBasePath: parsePublicBasePath(environment.PLANNER_PUBLIC_BASE_PATH),
     allowedOrigins: parseAllowedOrigins(

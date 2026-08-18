@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { selectTestConcurrency } from "../scripts/run-node-tests.mjs";
+
 const projectRoot = new URL("../", import.meta.url);
 
 async function render() {
@@ -159,9 +161,24 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(packageJson, /"tailwindcss"/);
   assert.match(packageJson, /"lucide-react"/);
   assert.match(packageJson, /--experimental-strip-types/);
+  const testScript = JSON.parse(packageJson).scripts.test;
+  assert.match(testScript, /PLANNER_PUBLIC_BASE_PATH=\/recipe-planner\/ npm run build/);
+  assert.match(testScript, /node scripts\/run-node-tests\.mjs/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(planner, /completePrepTask|reschedulePrepTask/);
   assert.doesNotMatch(planner, /Local command preview|highlighted move command only/);
 
   await assert.rejects(access(new URL("../app/_sites-preview", projectRoot)));
+});
+
+test("full-suite concurrency never exceeds four or the available CPUs", () => {
+  assert.equal(selectTestConcurrency(12), 4);
+  assert.equal(selectTestConcurrency(5), 4);
+  assert.equal(selectTestConcurrency(4), 3);
+  assert.equal(selectTestConcurrency(3), 2);
+  assert.equal(selectTestConcurrency(2), 1);
+  assert.equal(selectTestConcurrency(1), 1);
+  for (const invalid of [0, -1, 1.5, Number.NaN]) {
+    assert.throws(() => selectTestConcurrency(invalid), /positive integer/u);
+  }
 });

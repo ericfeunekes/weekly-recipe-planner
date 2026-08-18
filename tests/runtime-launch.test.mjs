@@ -132,6 +132,7 @@ test("installed launch fixes both children to the selected app and materializes 
   assert.equal(authority.options.env.PLANNER_CODEX_HOME, "/opt/meal-planner/agent");
   assert.equal(authority.options.env.PLANNER_CODEX_CWD, "/opt/meal-planner/app");
   assert.equal(authority.options.env.PLANNER_RECIPE_ROOT, "/opt/meal-planner/agent/recipes");
+  assert.equal(readRuntimeConfig(authority.options.env).recipeRoot, "/opt/meal-planner/agent/recipes");
   assert.equal(authority.options.env.PLANNER_DATA_DIR, "/opt/meal-planner/data");
   assert.equal(
     authority.options.env.PLANNER_RUNTIME_OWNER_SOCKET,

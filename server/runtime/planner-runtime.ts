@@ -250,6 +250,7 @@ export async function startPlannerRuntime(
         store: codexStore,
         isEligibleCall: (threadId, turnId) =>
           nativeSession?.isEligibleRootTurn(threadId, turnId) === true,
+        ...(typeof options.config.recipeRoot === "string" ? { recipeRoot: options.config.recipeRoot } : {}),
         now: () => clock.now(),
       });
       nativeSession = createNativeCodexSession({
