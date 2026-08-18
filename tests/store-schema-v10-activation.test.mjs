@@ -18,7 +18,10 @@ import { householdDomain, validateHouseholdState } from "../lib/household-domain
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
 import { createNativePlannerEffectHost } from "../server/codex/planner-effect-host.ts";
 import { createSqliteCodexThreadStore } from "../server/store/codex-thread-store.ts";
-import { probeCanonicalImportPredecessor } from "../scripts/probe-canonical-import-predecessor.mjs";
+import {
+  migrateWithCanonicalImportPredecessor,
+  probeCanonicalImportPredecessor,
+} from "../scripts/probe-canonical-import-predecessor.mjs";
 
 function temporaryDirectory(t) {
   const directory = mkdtempSync(join(tmpdir(), "weekly-recipe-v10-"));
@@ -487,24 +490,30 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
     database.close();
   }
 
-  const v10Inventory = logicalInventory(filename);
-  const v10NativeRows = v10Inventory.tables.codex_native_tool_calls;
-  const v10ReplayDatabase = new DatabaseSync(filename, { readOnly: true });
-  const expectedNativeReplay = JSON.parse(v10ReplayDatabase.prepare(
+  const predecessorMigration = migrateWithCanonicalImportPredecessor({ candidateDatabase: filename });
+  assert.equal(predecessorMigration.predecessorCommit, "1dbe2685349b71e584c19742896d1c48048efc2f");
+  const schema11Database = new DatabaseSync(filename, { readOnly: true });
+  assert.equal(schema11Database.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.equal(schema11Database.prepare("SELECT max(version) AS version FROM schema_migrations").get().version, 11);
+  assert.equal(schema11Database.prepare("SELECT schema_version FROM workspace WHERE id = 'household'").get().schema_version, 11);
+  const expectedNativeReplay = JSON.parse(schema11Database.prepare(
     "SELECT result_envelope_json FROM codex_native_tool_calls WHERE call_id = 'native-call'",
   ).get().result_envelope_json);
-  v10ReplayDatabase.close();
+  schema11Database.close();
+  const schema11Inventory = logicalInventory(filename);
+  const schema11NativeRows = schema11Inventory.tables.codex_native_tool_calls;
 
   const migratedStore = openPlannerStore({ filename });
   assert.ok(migratedStore.migrationBackupPath);
   assert.equal(existsSync(migratedStore.migrationBackupPath), true);
-  assert.deepEqual(logicalInventory(migratedStore.migrationBackupPath), v10Inventory);
-  const verifiedV10Backup = new DatabaseSync(migratedStore.migrationBackupPath, { readOnly: true });
-  assert.equal(verifiedV10Backup.prepare("PRAGMA quick_check").get().quick_check, "ok");
-  verifiedV10Backup.close();
+  assert.deepEqual(logicalInventory(migratedStore.migrationBackupPath), schema11Inventory);
+  const verifiedSchema11Backup = new DatabaseSync(migratedStore.migrationBackupPath, { readOnly: true });
+  assert.equal(verifiedSchema11Backup.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.equal(verifiedSchema11Backup.prepare("SELECT max(version) AS version FROM schema_migrations").get().version, 11);
+  verifiedSchema11Backup.close();
   assert.deepEqual(
     logicalInventory(filename).tables.codex_native_tool_calls,
-    v10NativeRows,
+    schema11NativeRows,
     "schema 12 must retain every populated native-call ledger value",
   );
   const replayHost = createNativePlannerEffectHost({

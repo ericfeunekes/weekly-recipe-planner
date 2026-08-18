@@ -38,10 +38,7 @@ function inventory(directory) {
   });
 }
 
-export function probeCanonicalImportPredecessor({
-  candidateDatabase,
-  repository = resolve("."),
-}) {
+function withPredecessorCheckout(repository, callback) {
   const repositoryRoot = realpathSync(repository);
   const scratchRoot = join(repositoryRoot, ".scratch");
   const scratchRootExisted = existsSync(scratchRoot);
@@ -53,16 +50,8 @@ export function probeCanonicalImportPredecessor({
     });
     requireSuccess(resolvedCommit, "predecessor commit lookup");
     assert.equal(resolvedCommit.stdout.trim(), CANONICAL_IMPORT_PREDECESSOR);
-
-    const fixtureDirectory = join(directory, "fixture");
     const predecessorDirectory = join(directory, "predecessor");
-    mkdirSync(fixtureDirectory);
     mkdirSync(predecessorDirectory);
-    const database = join(fixtureDirectory, basename(candidateDatabase));
-    copyFileSync(candidateDatabase, database);
-    const beforeHash = sha256(database);
-    const beforeInventory = inventory(fixtureDirectory);
-
     const archive = join(directory, "predecessor.tar");
     requireSuccess(run(
       "git",
@@ -71,18 +60,57 @@ export function probeCanonicalImportPredecessor({
     ), "predecessor archive");
     requireSuccess(run("tar", ["-xf", archive, "-C", predecessorDirectory]), "predecessor archive extraction");
     symlinkSync(join(repositoryRoot, "node_modules"), join(predecessorDirectory, "node_modules"), "dir");
+    return callback({ directory, predecessorDirectory });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+    if (!scratchRootExisted) {
+      try {
+        rmdirSync(scratchRoot);
+      } catch {
+        // Another concurrent task may have begun using the shared scratch root.
+      }
+    }
+  }
+}
 
-    const predecessor = run(
-      process.execPath,
-      [
-        "--experimental-strip-types",
-        "--input-type=module",
-        "--eval",
-        "import('./server/store/sqlite-store.ts').then(({openPlannerStore}) => openPlannerStore({filename: process.argv[1]}).close())",
-        database,
-      ],
-      { cwd: predecessorDirectory },
-    );
+function runPredecessorStoreOpen(predecessorDirectory, database) {
+  return run(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      "--input-type=module",
+      "--eval",
+      "import('./server/store/sqlite-store.ts').then(({openPlannerStore}) => openPlannerStore({filename: process.argv[1]}).close())",
+      database,
+    ],
+    { cwd: predecessorDirectory },
+  );
+}
+
+export function migrateWithCanonicalImportPredecessor({
+  candidateDatabase,
+  repository = resolve("."),
+}) {
+  return withPredecessorCheckout(repository, ({ predecessorDirectory }) => {
+    const predecessor = runPredecessorStoreOpen(predecessorDirectory, candidateDatabase);
+    requireSuccess(predecessor, "schema-11 predecessor migration");
+    return Object.freeze({ predecessorCommit: CANONICAL_IMPORT_PREDECESSOR });
+  });
+}
+
+export function probeCanonicalImportPredecessor({
+  candidateDatabase,
+  repository = resolve("."),
+}) {
+  return withPredecessorCheckout(repository, ({ directory, predecessorDirectory }) => {
+    const fixtureDirectory = join(directory, "fixture");
+    mkdirSync(fixtureDirectory);
+    const database = join(fixtureDirectory, basename(candidateDatabase));
+    copyFileSync(candidateDatabase, database);
+    const beforeHash = sha256(database);
+    const beforeInventory = inventory(fixtureDirectory);
+
+    const predecessor = runPredecessorStoreOpen(predecessorDirectory, database);
     assert.notEqual(predecessor.status, 0, "the schema-11 predecessor must reject a schema-12 candidate");
     assert.match(`${predecessor.stdout}\n${predecessor.stderr}`, /schema 12 is newer than supported schema 11/iu);
     assert.equal(sha256(database), beforeHash, "the predecessor must not mutate the schema-12 candidate");
@@ -98,14 +126,5 @@ export function probeCanonicalImportPredecessor({
       databaseSha256: beforeHash,
       artifactInventory: beforeInventory,
     });
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-    if (!scratchRootExisted) {
-      try {
-        rmdirSync(scratchRoot);
-      } catch {
-        // Another concurrent task may have begun using the shared scratch root.
-      }
-    }
-  }
+  });
 }
