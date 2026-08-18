@@ -243,7 +243,7 @@ test("opens and migrates a real file with required SQLite durability settings", 
   assert.equal(store.database.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
   assert.equal(
     store.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,
-    11,
+    12,
   );
   store.close();
 
@@ -279,7 +279,7 @@ test("a held write reservation captures one deterministic closed WAL image and e
   assert.equal(first.quickCheck, "ok");
   assert.equal(first.schemaVersion, 12);
   assert.equal(first.initialized, true);
-  assert.equal(first.workspaceSchemaVersion, 11);
+  assert.equal(first.workspaceSchemaVersion, 12);
   assert.equal(first.plannerVersion, 0);
   assert.match(first.sha256, /^[a-f0-9]{64}$/u);
   assert.equal(first.sha256, second.sha256, "the unchanged reserved image is deterministic");
@@ -353,7 +353,7 @@ test("backs up and upgrades a populated v1 file before modification", (t) => {
   );
   assert.equal(
     store.database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version,
-    11,
+    12,
   );
   assert.equal(
     store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts WHERE request_id = 'legacy-request'").get().count,
@@ -845,7 +845,7 @@ test("rejects a database newer than the supported migration manifest without mod
   );
   const unchanged = new DatabaseSync(filename, { readOnly: true });
   try {
-    assert.equal(unchanged.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 12);
+    assert.equal(unchanged.prepare("SELECT MAX(version) AS version FROM schema_migrations").get().version, 13);
   } finally {
     unchanged.close();
   }
