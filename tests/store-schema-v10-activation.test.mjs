@@ -14,7 +14,7 @@ import {
 } from "../server/store/sqlite-store.ts";
 import { PLANNER_SCHEMA_MIGRATIONS } from "../server/store/schema-contract.ts";
 import { isPlannerToolResultForTool, PLANNER_TOOL_NAMESPACE } from "../lib/planner-tool-contract.ts";
-import { householdDomain, validateHouseholdState } from "../lib/household-domain.ts";
+import { householdDomain } from "../lib/household-domain.ts";
 import { createPlannerApplicationService } from "../server/application/planner-service.ts";
 import { createNativePlannerEffectHost } from "../server/codex/planner-effect-host.ts";
 import { createSqliteCodexThreadStore } from "../server/store/codex-thread-store.ts";
