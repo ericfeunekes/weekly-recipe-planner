@@ -6,7 +6,9 @@ Current product and experience requirements. This spine guides design and implem
 
 The functional spine is locked when a designer or coding agent can trace one meal-planning cycle without contradiction:
 
-1. Codex imports or creates one or more future week plans.
+1. Codex imports or creates one or more future week plans. An approved recipe
+   week imports as one all-or-nothing host operation; its accepted result is
+   sufficient for the normal workflow.
 2. The user opens the app, navigates the multi-week calendar, and opens the current or upcoming week.
 3. The selected week shows dinners, leftovers, and status clearly enough to execute or revise; Prep remains a separate execution destination rather than Week content.
 4. Either the user or Codex can mutate the same data through the UI or app-server commands.
@@ -41,33 +43,35 @@ Past weeks do not need to remain fully active editing surfaces. They should pres
 
 ## Browser Navigation And Shareable Locations
 
-The browser location makes the household's current **Week** and **Day**
-addressable without becoming planner authority. A Week is identified by its
-Monday-start week ID and a Day by its ISO date within that Week. The canonical
-first navigation contract is:
+The browser location makes the household's current **Week** and exact
+**Recipe** addressable without becoming planner authority. A Week is identified
+by its Monday-start week ID and a Recipe by its stable meal ID within that Week.
+The canonical first navigation contract is:
 
 - `/weeks/<weekId>` opens that Week overview.
-- `/weeks/<weekId>/day/<date>` opens that Week's Day cooking ticket.
+- `/weeks/<weekId>/recipes/<mealId>` opens that exact meal's Recipe view.
 - `/weeks/<weekId>/prep` opens that Week's Prep workspace.
 - `/weeks/<weekId>/groceries` opens that Week's Groceries workspace.
 - `/weeks/<weekId>/closeout` opens that Week's Closeout workspace.
 - A copied canonical URL loads, reloads, and participates in browser
-  back/forward as that same requested Week or Day after the current household
+  back/forward as that same requested Week or Recipe after the current household
   workspace is available.
 
 The location is a request for a planner presentation, never a planner mutation
 or an alternative record of household state. The current workspace remains the
 authority that determines whether the requested Week exists and whether the
-requested Day belongs to it. A direct valid URL takes precedence over any
+requested Recipe belongs to it. A direct valid URL takes precedence over any
 remembered browser context. Without a direct planner location, reopening the
 app returns to the last valid selected-week workspace used on that browser and
 replaces the root address with that canonical URL; if none remains valid, it
 replaces the root address with the existing authoritative default Week.
 
-Malformed, unavailable, deleted, or out-of-week Week/Day locations replace the
-address with the canonical valid default only after workspace readback rather
-than silently selecting an unrelated Week or allowing raw URL values into
-planner state.
+Malformed, unavailable, or deleted Week locations replace the address with the
+canonical valid default only after workspace readback rather than allowing raw
+URL values into planner state. A malformed, missing, archived-ineligible, or
+cross-week Recipe target returns to the requested valid Week with a clear
+unavailable-recipe state; it never opens an unrelated meal or falls through to
+another Week.
 Loading, offline, and reconnect behavior remain the shared-workspace behavior:
 the requested location is retained in browser history while the app waits for
 authoritative data; it does not synthesize a household view from URL state.
@@ -87,8 +91,8 @@ parameter and does not change when a planner location is opened.
 ## Data Model
 
 - **WeekPlan**: a Monday-start week in draft/planned, active, or archived state.
-- **MealInstance**: central week object; assigned to a day/slot; can be moved, edited, cooked, skipped, or replaced by leftovers/flex.
-- **RecipeSnapshot**: the recipe-owned fields on the existing flat meal instance: title, optional yield text, meal-local ingredient occurrences, ordered instruction steps, and optional source reference. Scheduling and household execution fields remain on the same meal but are not implicitly replaced with the recipe. The snapshot is editable/adaptable; editing it does not imply the source page changed.
+- **MealInstance**: central week object; assigned to a day/slot; can be moved, edited, cooked, skipped, or replaced by leftovers/flex. Marking it cooked freezes its current culinary state as the version actually cooked.
+- **RecipeSnapshot**: the recipe-owned fields on the existing flat meal instance: title, optional yield text, meal-local ingredient occurrences, ordered instruction steps, and optional source reference. A canonical import creates the dated meal copy the household will cook. Until that meal is cooked, the household or Codex may explicitly edit its culinary fields through normal planner mutations; those edits never claim to change the source recipe or its pinned revision. Later culinary edits reject. A meal copy never becomes an app-owned reusable recipe.
 - **SourceRecipe**: optional pinned provenance on a meal snapshot, not mutation authority. The web form is `{kind:"web",identity,url,retrievedAt}` and remains informational. The canonical form retains the recipe identity, exact file SHA-256 revision, root-relative path, reviewed provenance, servings, active/total timing, cuisine/tags, and canonical Notes captured at import. Its ingredient source lines and structured fields and its ordered instruction references/timers become editable week-local content; later file changes do not rewrite that snapshot.
 - **RecipeIngredient**: one stable meal-local ingredient occurrence. It preserves the recipe's display amount/name and may resolve to one household `IngredientConcept`; later concept or alias changes never rewrite the snapshot's literal display text. Instruction ingredient uses link to this occurrence. Their amounts explain step use and do not need to add up to the recipe occurrence's displayed requirement.
 - **IngredientConcept**: one shared household food identity such as `Green onion`, `Salmon`, or `White rice`, with a preferred label, accepted matching vocabulary, and a default shopping section. An app-provided curated starter catalogue supplies common concepts; the household may add concepts and vocabulary without turning the planner into a canonical recipe library, product/SKU catalogue, nutrition database, or universal food ontology.
@@ -157,7 +161,7 @@ them. Each projected requirement has coverage/source state: `Needs source`,
 source never silently defaults to Shop. The first delivery need not introduce an
 automatic step-input/output dependency graph: explicit role plus recipe provenance
 is sufficient. When several requirements resolve to the same concept, Groceries
-groups their compatible standardized totals and concatenates remaining literal
+automatically groups their compatible standardized totals and keeps remaining literal
 requirements, while retaining each contributing meal and each occurrence's
 source/check execution state. Preparation wording such as `sliced green onion`
 may resolve to `Green onion` without losing its literal form, while a prepared
@@ -257,7 +261,7 @@ Core mutations:
 - Reconcile derived grocery requirements, classify their source, complete them, and follow their contributing recipe links; grocery names and requirements are never independently authored copies.
 - Mark leftovers available, consumed, or assigned to a later meal.
 - Capture meal/week feedback.
-- Promote a successful recipe snapshot or lesson into future planning material.
+- Capture feedback and planning lessons; any reusable stable variant belongs to the canonical food workflow, not planner state.
 - Archive a week summary.
 
 ## Status Model
@@ -267,7 +271,7 @@ Meal statuses should stay cooking-specific and simple:
 - **Planned**: assigned to a day/slot.
 - **Moved**: shifted from its original plan; original day may be useful as history.
 - **Prepping/Cooking**: active execution state for batch work or tonight.
-- **Cooked**: meal happened and may produce leftovers.
+- **Cooked**: meal happened and may produce leftovers; its current culinary state is frozen as the dated cooked version.
 - **Leftover**: a meal slot uses existing food, or a cooked meal has available leftovers.
 - **Skipped/Flex**: intentionally not cooking the planned meal, including eating out or leaving the slot open.
 
@@ -279,8 +283,8 @@ The app supports the Monday farm-box pattern by keeping each projected weekly
 requirement in `Needs source`, `Shop`, `Farm box`, or `On hand` coverage state.
 Only `Shop` rows appear in `To buy`; missing coverage remains visibly unresolved
 instead of silently becoming a purchase. Every execution row links directly to
-the one meal-local occurrence that produced it. The shopping view may group rows by household ingredient concept,
-show compatible totals, concatenate remaining literal requirements, and list
+the one meal-local occurrence that produced it. The shopping view automatically groups rows by household ingredient concept,
+shows compatible totals, keeps incompatible measures/forms separate, and lists
 every contributing recipe, while the child rows retain source/check authority.
 The result remains traceable without becoming a full pantry inventory or a
 separate household-shopping product.
@@ -293,8 +297,8 @@ Because recipes are week snapshots, not a recipe-library-first model, learning m
 
 - Archived weeks retain summary and feedback.
 - Event history explains what changed.
-- Good recipe snapshots can be promoted into reusable app records and optionally exported/archived to Obsidian.
-- Week-level lessons can update reusable app planning material and optionally export/archive to Obsidian.
+- A generally preferred cooked change may be explicitly promoted by the canonical food workflow into a separately reviewed reusable stable variant; this never rewrites the source recipe or dated meal history.
+- Week-level lessons can inform future food planning and optionally export/archive to Obsidian.
 - Feedback should feed future Codex planning without forcing every week snapshot to become a canonical recipe.
 
 ## History And Undo
@@ -305,11 +309,11 @@ Every UI or Codex mutation creates an event-log entry with actor, time, target o
 
 Chat with Codex is a first-class mutation surface alongside direct UI editing, delivered as an always-available side panel at desktop/iPad widths and a drawer on mobile rather than a separate destination view. It is a small wrapper over native Codex threads: a history control, exactly one selected top-level thread, one composer, streamed native items, and native worker activity. Codex executes the same typed domain commands and the underlying view reflects the change.
 
-- The chat component carries the current view context: from Tonight it knows the current meal and selected instruction step; from Groceries it defaults to grocery scope; from Week Overview it defaults to the selected week.
+- The chat component carries the current view context: from Recipe it knows the exact meal and selected instruction step; from Groceries it defaults to grocery scope; from Week Overview it defaults to the selected week.
 - A comment field on an instruction step offers exactly two actions. **Save comment** persists the text as that step's optional note and does not send a thread message. **Ask Codex** sends the text and stable step context to the currently selected native thread and does not also save it as a note.
 - Chat-initiated mutations log to the event log with Codex as actor, same as app-server command mutations, and participate in recent undo.
 - The composer has no Plan/Research selector. The agent decides from the request whether to answer conversationally, use a planner skill, search the web, inspect planner state, preview a change, or apply one or more changes.
-- Hosted web search, normal standalone skills, direct Obsidian-owned food skills, and the `planner.read`, `planner.preview`, `planner.apply`, and `planner.importRecipe` tools are available to each top-level planner thread. Native workers use the exact research/reasoning surface proved for the active Codex build and return results to their parent; on Codex 0.142.5 they do not inherit planner dynamic tools. Search/page/worker content is untrusted reasoning input and may influence parent planner calls, but it cannot bypass typed commands, validation, versions, idempotency, transactions, or authoritative readback.
+- Hosted web search, normal standalone skills, direct Obsidian-owned food skills, ordinary `planner.read`, `planner.preview`, and `planner.apply`, and the single-meal `planner.importRecipe` are available to each top-level planner thread. The intended approved-week import is added only after its host/tool contract and activation gate pass; until then, it is unavailable and must not be emulated with repeated imports. Native workers use the exact research/reasoning surface proved for the active Codex build and return results to their parent; on Codex 0.142.5 they do not inherit planner dynamic tools. Search/page/worker content is untrusted reasoning input and may influence parent planner calls, but it cannot bypass typed commands, validation, versions, idempotency, transactions, or authoritative results.
 - Native conversation archive is available from the history wrapper and is distinct from destructive planner `archiveWeek`. The embedded send contract has no approval or authority-grant field and cannot acquire `archiveWeek`; that planner action remains on its separate typed household/UI path.
 - A web-derived recipe may retain a typed informational primary-page reference and yield on the meal. That reference does not claim authorship, extraction fidelity, current page truth, or semantic single-source derivation; no separate research-candidate quarantine or hidden research/planner conversation is part of the product.
 - The wrapper renders native Codex items plus bounded planner-effect summaries/status. It does not add app-owned interactive meal, grocery, or prep widgets inside conversation history; the canonical planner views remain the only interactive state surface.
@@ -322,7 +326,7 @@ Chat with Codex is a first-class mutation surface alongside direct UI editing, d
 
 - **Calendar / Week Picker**: navigate draft, active, and archived weeks.
 - **Week Overview**: primary opening surface after selecting/current week; a prep-free agenda of the week’s dinners/slots, today, statuses, and leftovers/flex days. It may make the current/selected day actionable, but it contains no Prep counts, indicators, pressure summary, or Week-to-Prep shortcut on any viewport. Prep remains available only through its own destination.
-- **Tonight / Day**: focused execution view for the current or selected day’s meal, presented as a compact cooking ticket: day and meal identity, ingredient context, one clear cooking action, canonical instruction steps in recipe order with completion checkboxes, optional timers and notes, serving/packing instructions, components, and leftover handling. Steps completed from Prep are already checked here.
+- **Recipe**: exact-meal view for one planned meal, presented as a compact cooking ticket: meal/date identity, ingredient context, one clear cooking action, canonical instruction steps in recipe order with completion checkboxes, optional timers and notes, serving/packing instructions, components, and leftover handling. Steps completed from Prep are already checked here.
 - **Prep / Batch Cook**: an active-week workspace of dated and undated prep sessions. A recipe sidebar supplies canonical instructions to drag into session order. Direct references share canonical completion; a prep-only combined entry can replace selected references with one independently completable shared obligation while preserving and exposing every contribution.
 - **Meal Detail**: editable active-week meal and recipe snapshot: title, recipe details, independently referenceable instruction steps, source links, venue, and leftover path.
 - **Groceries**: derived weekly food shopping list with household-ingredient grouping, compatible totals or concatenated literal requirements, section/source filters, execution checks, and contributing-recipe provenance.
@@ -427,20 +431,22 @@ check, and clear recovery command are sufficient.
 - Planning horizon: multi-week calendar for navigation; execution happens inside selected week.
 - Week lifecycle: draft/planned -> active -> archived.
 - Core object: meal instance inside a week.
-- Recipe model: editable recipe snapshots, with promotion into reusable app records when useful.
+- Recipe model: editable dated meal snapshots; reusable stable variants remain canonical food-workflow material, not planner records.
 - Instruction model: canonical atomic `InstructionStep` records with stable IDs, ingredient amounts, one free-text instruction, shared Boolean completion, optional persisted-start timer, and one optional note.
 - Codex authority: same planner mutation service and supported non-archive domain-command surface as the UI. Destructive planner `archiveWeek` remains on its separate typed household/UI path and cannot be obtained through a native approval request.
 - Codex surface: typed domain commands.
 - History: event log with recent undo exposed in UI.
 - Prep model: week-scoped, dated or undated `PrepSession` records contain manually ordered direct references and prep-only combined entries. Direct references share canonical completion, timers, and notes. Combined entries own only their prep wording and fulfillment state and retain stable source-step and ingredient-occurrence lineage; they never copy ingredient truth or rewrite/reorder recipes. Removing a direct reference or combined entry does not alter a canonical step, and expansion restores direct references in contribution order. Legacy dated prep references migrate into one dated session per date, preserving their prior order.
-- Grocery model: weekly food groceries, not full inventory or household shopping.
+- Grocery model: weekly food groceries, not full inventory or household shopping; compatible quantities total automatically while incompatible measures/forms remain separate child requirements.
+- Approved-week import: one host-owned all-or-nothing operation maps existing meal occurrence IDs to root-relative canonical paths and exact reviewed revisions. Targeted meals plus explicitly untargeted manual meals exhaust the existing week shell; an untargeted manual meal has no `sourceRecipe` or canonical source pin, and meal IDs are preserved. Missing, duplicate, unknown, stale, or revision-mismatched targets reject without mutation. Its accepted response is authoritative; the normal workflow adds no receipt, manual readback, or mandatory UI inspection.
+- Dated cooking version: each imported meal copy is explicitly editable until cooked, then culinary fields freeze. Feedback identifies that cooked state, event/version, and source pin. After cooking, non-culinary planner-owned state remains mutable: ingredient-concept resolution, grocery coverage/check state, instruction completion and running timer state where applicable, Prep organization, logistics, and feedback. A reusable stable variant may later be explicitly created by the food workflow from that state; it is never automatic or planner-owned.
 - Ingredient model: meal-local literal occurrences remain recipe truth; shared household concepts support matching and shopping groups; unresolved occurrences remain valid.
 - Measurement model: preserve every literal amount, normalize only safe compatible measures, and concatenate non-standard or incompatible requirements rather than guessing conversions.
 - Instruction ingredient UX: preserve line-oriented `amount | ingredient` editing and resolve/link behind that interaction instead of requiring a picker.
-- Learning: app-owned reusable promotions with optional Obsidian export/archive.
+- Learning: meal feedback and lessons inform the canonical food workflow; the planner retains dated meal history rather than reusable recipe variants.
 - Household model: one shared global state with no accounts, personal attribution, permissions, or private content.
 - Notes and Codex: an instruction-step comment field has exactly **Add comment** or **Ask Codex**; comments remain on the step, while requests move into the local native Codex composer with object context.
 - Conversation authority: Codex owns native top-level/child threads and item history; the app owns only the selected top-level thread ID/revision and planner-specific status; planner state/effect authority remains in the planner database.
-- Agent surface: one composer with no Plan/Research selector. Each top-level planner thread has standalone/planner skills, hosted web search, worker orchestration, and `planner.read`, `planner.preview`, `planner.apply`, and `planner.importRecipe`; workers return research/reasoning and have no planner dynamic tools on the currently proved runtime.
+- Agent surface: one composer with no Plan/Research selector. Each top-level planner thread has standalone/planner skills, hosted web search, worker orchestration, ordinary `planner.read`, `planner.preview`, and `planner.apply`, and the single-meal `planner.importRecipe`; the approved-week import appears only after its host/tool contract and activation gate pass. Workers return research/reasoning and have no planner dynamic tools on the currently proved runtime.
 - Chat surface: always-available desktop/iPad side panel and mobile drawer with native history/select/new and worker drill-down, backed by the isolated managed Codex app-server runtime; context-aware dynamic calls and Global Codex batches use the same typed domain commands, mutation kernel, and event log.
 - Thread selection: exactly one top-level thread is selected app-wide. Navigation/new tabs preserve it; selecting another does not cancel running native work; an unavailable thread is explicit and never reconstructed from app-owned text.

@@ -78,19 +78,22 @@ matching skill:
 - `grocery-organization` — group recipe-derived grocery objects for shopping.
 - `meal-feedback` — interview meal outcomes and maintain taste evidence.
 
-All food workflow skills follow `food-skill-runtime-contract.md`: planner
-mutations are `read → preview → apply`; source facts, inventory inference,
-planned trials, and cooked evidence stay distinct. The skills name missing
-app-server operations rather than working around them with direct storage
-access.
+All food workflow skills follow `food-skill-runtime-contract.md`: ordinary
+planner mutations are `read → preview → apply`; source facts, inventory
+inference, planned trials, and cooked evidence stay distinct. The approved-week
+import is the explicit one-call exception: when the host advertises it, its
+accepted response is authoritative and needs no routine readback or rendered
+week inspection. The skills name missing app-server operations rather than
+working around them with direct storage access.
 
 Food planning writes to the persistent production planner only. Portless
 worktrees validate code against an isolated planner SQLite snapshot and private
 food copies; they do not carry a household plan. Recipe reading and admission
 semantics are owned by Issue 25; this boundary supplies only the configured
-recipe root. A completed food-planning mutation has production readback and a
-rendered-week check for the meal, ingredients, instructions, source/plan notes,
-and timing.
+recipe root. An ordinary completed food-planning mutation has production
+readback and a rendered-week check for the meal, ingredients, instructions,
+source/plan notes, and timing; the accepted approved-week import response is
+the exception above.
 
 Taste profiles are semantic memory: the food vault's shared
 `taste-profiles/TASTE_PROFILE.md` and person-specific
