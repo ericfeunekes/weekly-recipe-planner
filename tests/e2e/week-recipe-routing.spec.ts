@@ -115,8 +115,8 @@ test("D4 source links keep three same-date meal identities and Recipe context ex
   await page.getByRole("button", { name: "Week", exact: true }).click();
   await page.getByRole("article", { name: new RegExp(`^${meals[0].title} on `) }).getByRole("button", { name: new RegExp(`Open ${meals[0].title} recipe`) }).click();
   const step = page.locator(".meal-drawer .instruction-step").first();
-  await step.getByRole("button", { name: /Add comment for step/ }).click();
-  await step.getByRole("textbox").fill("Exact route context");
+  await step.getByRole("button", { name: /Add Prep note for step/ }).click();
+  await step.getByRole("textbox", { name: /Prep note or Codex request for step/ }).fill("Exact route context");
   await step.getByRole("button", { name: "Ask Codex" }).click();
   const sent = page.waitForRequest((request) => request.url().endsWith("/api/codex/turns/send") && request.method() === "POST");
   await page.getByRole("button", { name: "Send to Codex" }).click();
