@@ -273,12 +273,11 @@ async function runBrowserJourney(origin, evidenceDirectory, executablePath) {
     assert.equal(response?.status(), 200, "browser mounted planner page");
     assert.equal(await page.title(), "Weekly Recipe Planner");
     await page.getByText("Family dinner planner", { exact: true }).waitFor({ state: "visible" });
-    const dinner = page.locator(".week-view .meal-card-primary").first();
-    await dinner.waitFor({ state: "visible" });
-    await dinner.click();
-    await page.getByRole("heading", { level: 1, name: "Day", exact: true }).waitFor({ state: "visible" });
-    await page.getByRole("heading", { name: "Instructions", exact: true }).waitFor({ state: "visible" });
-    await page.getByRole("heading", { name: "Ingredients", exact: true }).waitFor({ state: "visible" });
+    const recipe = page.locator(".week-view .meal-card-primary").first();
+    await recipe.waitFor({ state: "visible" });
+    await recipe.click();
+    await page.getByRole("heading", { level: 1, name: "Recipe", exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("dialog").waitFor({ state: "visible" });
     assert.deepEqual({ consoleErrors, failedResponses }, { consoleErrors: [], failedResponses: [] }, "browser network and console errors");
     await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
     await page.screenshot({ path: join(evidenceDirectory, "mounted-dinner.png"), animations: "disabled" });

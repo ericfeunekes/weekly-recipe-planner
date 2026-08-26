@@ -92,7 +92,7 @@ test("keeps the locked product requirements represented in source", async () => 
     assert.match(domain, new RegExp(command));
   }
 
-  for (const view of ["Week", "Day", "Prep", "Groceries", "Close out"]) {
+  for (const view of ["Week", "Prep", "Groceries", "Close out"]) {
     assert.match(planner, new RegExp(`label: "${view}"`));
   }
 

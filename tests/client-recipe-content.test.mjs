@@ -16,7 +16,7 @@ test("recipe occurrence display preserves source or composes every structured li
   }), "3 tbsp harissa paste divided");
 });
 
-test("Day, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
+test("Recipe, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
   const [planner, recipeContent] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
