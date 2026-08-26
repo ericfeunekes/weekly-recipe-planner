@@ -241,6 +241,7 @@ const readQuerySchema = {
         kind: { type: "string", const: "grocery" },
         weekId: { type: "string", minLength: 1, maxLength: 200 },
         filter: { type: "string", enum: ["to_buy", "all", "needs_source", "shop", "farm_box", "on_hand", "done"] },
+        offset: { type: "integer", minimum: 0 },
       },
     },
     {
