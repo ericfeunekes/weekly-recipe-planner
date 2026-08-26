@@ -1,13 +1,11 @@
 "use client";
 
 import {
-  Archive,
   ArrowDown,
   ArrowUp,
   Bot,
   CalendarDays,
   Check,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -75,9 +73,7 @@ import {
   type InstructionInputEdit,
 } from "@/lib/ingredient-occurrence";
 import {
-  FEEDBACK_VALUES,
   GROCERY_COVERAGES,
-  LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   isPrepSessionCombinedStep,
   type GroceryItem,
@@ -130,15 +126,11 @@ import {
   validateStepDraft,
 } from "./planner-validation";
 import { deriveTimerDisplay } from "./timer-display";
-import {
-  composeCompositeDraft,
-  editCompositeDraft,
-  settleCompositeDraft,
-  type CompositeDraft,
-} from "./versioned-draft";
+import { PlannerVersionContext, useVersionedDraft } from "./versioned-draft";
 import { isoDateForTimeZone } from "./calendar-time";
 import {
   LAST_VALID_WEEK_STORAGE_KEY,
+  closeoutPath,
   parsePlannerLocation,
   recipePath,
   resolvePlannerLocation,
@@ -149,6 +141,8 @@ import { CodexThreadRail } from "./codex-thread-rail";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
 import { RecipeIngredientList, RecipeInstructionContent, RecipeProvenance } from "@/components/planner-ui/recipe-content";
 import { PrepView } from "@/components/planner-ui/prep-view";
+import { CloseoutView } from "@/components/planner-ui/closeout-view";
+import { SegmentedControl, type SegmentedOption } from "@/components/planner-ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -166,7 +160,7 @@ const WORKSPACE_QUERY_KEY = ["planner", "workspace"] as const;
 type MutateOptions = {
   basePlannerVersion?: number;
   conflictStrategy?: "recompose";
-  onAccepted?: (decision: Extract<PlannerCommandDecision, { status: "accepted" }>, currentPlannerVersion: number) => void;
+  onAccepted?: (plannerVersion: number) => void;
   onConflict?: (plannerVersion: number) => void;
 };
 type PendingAuthorityRetry = {
@@ -528,62 +522,6 @@ function mergeIdentityRows<Row extends object>(
 }
 
 const ServerOffsetContext = createContext(0);
-const PlannerVersionContext = createContext(0);
-
-function useVersionedDraft<T extends object = Record<never, never>>() {
-  const plannerVersion = useContext(PlannerVersionContext);
-  const versionRef = useRef<number | null>(null);
-  const editRevisionRef = useRef(0);
-  const compositeDraftRef = useRef<CompositeDraft<T> | null>(null);
-  const [compositeDraft, setCompositeDraft] = useState<CompositeDraft<T> | null>(null);
-  return {
-    versionRef,
-    begin() {
-      versionRef.current ??= plannerVersion;
-      editRevisionRef.current += 1;
-    },
-    edit<K extends keyof T>(canonical: T, field: K, value: T[K]) {
-      versionRef.current ??= plannerVersion;
-      editRevisionRef.current += 1;
-      const next = editCompositeDraft(compositeDraftRef.current, canonical, field, value);
-      compositeDraftRef.current = next;
-      setCompositeDraft(next);
-    },
-    compose(canonical: T, merge?: (canonical: T, draft: CompositeDraft<T>) => T): T {
-      return compositeDraft && merge
-        ? merge(canonical, compositeDraft)
-        : composeCompositeDraft(canonical, compositeDraft);
-    },
-    mutationOptions(onAccepted?: () => void): MutateOptions {
-      const submittedRevision = editRevisionRef.current;
-      const submittedCompositeDraft = compositeDraftRef.current;
-      return {
-        basePlannerVersion: versionRef.current ?? plannerVersion,
-        conflictStrategy: "recompose",
-        onAccepted(decision) {
-          const settledCompositeDraft = settleCompositeDraft(
-            compositeDraftRef.current,
-            submittedCompositeDraft,
-          );
-          compositeDraftRef.current = settledCompositeDraft;
-          setCompositeDraft(settledCompositeDraft);
-          const hasNewerDraft = settledCompositeDraft !== null ||
-            (submittedCompositeDraft === null && editRevisionRef.current !== submittedRevision);
-          if (!hasNewerDraft) {
-            versionRef.current = null;
-            editRevisionRef.current = 0;
-            onAccepted?.();
-          } else {
-            versionRef.current = decision.plannerVersion;
-          }
-        },
-        onConflict(nextPlannerVersion) {
-          versionRef.current = nextPlannerVersion;
-        },
-      };
-    },
-  };
-}
 
 const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "week", label: "Week", icon: CalendarDays },
@@ -690,55 +628,6 @@ function AuthorityNotice(props: {
         ) : null}
       </div>
     </div>
-  );
-}
-
-type SegmentedOption<T extends string> = {
-  value: T;
-  label: string;
-  ariaLabel?: string;
-};
-
-function SegmentedControl<T extends string>({
-  ariaLabel,
-  className = "",
-  disabled = false,
-  onChange,
-  options,
-  value,
-}: {
-  ariaLabel: string;
-  className?: string;
-  disabled?: boolean | ((option: T) => boolean);
-  onChange: (value: T) => void;
-  options: readonly SegmentedOption<T>[];
-  value: T | undefined;
-}) {
-  return (
-    <ToggleGroup
-      className={`segmented-control ${className}`.trim()}
-      type="single"
-      value={value}
-      onValueChange={(nextValue) => {
-        if (nextValue) onChange(nextValue as T);
-      }}
-      aria-label={ariaLabel}
-      variant="outline"
-      size="sm"
-      spacing={0}
-    >
-      {options.map((option) => {
-        const optionDisabled = typeof disabled === "function" ? disabled(option.value) : disabled;
-        return (
-          <ToggleGroupItem
-            key={option.value}
-            value={option.value}
-            aria-label={option.ariaLabel}
-            disabled={optionDisabled}
-          >{option.label}</ToggleGroupItem>
-        );
-      })}
-    </ToggleGroup>
   );
 }
 
@@ -874,10 +763,11 @@ const plannerRootRoute = createRootRoute({ component: PlannerAppContent });
 const plannerIndexRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/" });
 const plannerWeekRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId" });
 const plannerRecipeRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/recipes/$mealId" });
+const plannerCloseoutRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/closeout" });
 const plannerLegacyDayRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/day/$date" });
 function createPlannerRouter() {
   return createRouter({
-    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerLegacyDayRoute]),
+    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
     basepath: import.meta.env?.BASE_URL === "/" ? undefined : import.meta.env?.BASE_URL?.replace(/\/$/u, ""),
   });
 }
@@ -908,7 +798,7 @@ function PlannerAppContent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const routerNavigate = useNavigate();
   const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
-  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "legacy-day"
+  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "closeout" || location.kind === "legacy-day"
     ? location.weekId
     : null;
   const queryClient = useQueryClient();
@@ -1111,12 +1001,20 @@ function PlannerAppContent() {
   }, [syncPendingRetries]);
 
   const navigate = useCallback((nextView: PlannerView) => {
+    if (nextView === "closeout" && selectedWeekId) {
+      void routerNavigate({ to: closeoutPath(selectedWeekId) });
+      return;
+    }
+    if (nextView === "week" && location.kind === "closeout" && selectedWeekId) {
+      void routerNavigate({ to: weekPath(selectedWeekId) });
+      return;
+    }
     setView(nextView);
     setTimersOpen(false);
     primaryWorkspaceRef.current?.scrollTo({ top: 0, behavior: "auto" });
     window.scrollTo({ top: 0, behavior: "auto" });
     window.requestAnimationFrame(() => headingRef.current?.focus());
-  }, []);
+  }, [location.kind, routerNavigate, selectedWeekId]);
 
   const openRecipe = useCallback((weekId: WeekId, mealId: string, trigger?: HTMLElement) => {
     if (trigger) mealTriggerRef.current = trigger;
@@ -1369,7 +1267,7 @@ function PlannerAppContent() {
             inputs,
           });
         }
-        options?.onAccepted?.(result.decision, result.workspace.plannerVersion);
+        options?.onAccepted?.(result.workspace.plannerVersion);
         await refresh(true);
         return true;
       }
@@ -1668,7 +1566,8 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const heading = resolvedLocation.kind === "recipe" ? "Recipe" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
+  const currentView = resolvedLocation.kind === "closeout" ? "closeout" : view;
+  const heading = resolvedLocation.kind === "recipe" ? "Recipe" : currentView === "closeout" ? "Close out" : `${currentView[0].toUpperCase()}${currentView.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
     : routeNotice
@@ -1709,7 +1608,8 @@ function PlannerAppContent() {
                 value={week?.id ?? ""}
                 onChange={(event) => {
                   setRouteNotice(null);
-                  void routerNavigate({ to: weekPath(event.target.value as WeekId) });
+                  const nextWeekId = event.target.value as WeekId;
+                  void routerNavigate({ to: resolvedLocation.kind === "closeout" ? closeoutPath(nextWeekId) : weekPath(nextWeekId) });
                 }}
               >
                 {initialized.state.weeks.map((item) => (
@@ -1790,9 +1690,9 @@ function PlannerAppContent() {
             return (
               <button
                 key={item.id}
-                className={`nav-item ${view === item.id ? "active" : ""}`}
+                className={`nav-item ${currentView === item.id ? "active" : ""}`}
                 type="button"
-                aria-current={view === item.id ? "page" : undefined}
+                aria-current={currentView === item.id ? "page" : undefined}
                 onClick={() => navigate(item.id)}
               >
                 <Icon size={16} /> {item.label}
@@ -1880,6 +1780,8 @@ function PlannerAppContent() {
                     {...plannerAuthorityRecovery}
                     onClose={() => void routerNavigate({ to: weekPath(week.id) })}
                   />
+              ) : resolvedLocation.kind === "closeout" ? (
+                  <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} formatCalendarDate={formatCalendarDate} />
                 ) : view === "week" ? (
                   <WeekView
                     week={week}
@@ -1902,12 +1804,7 @@ function PlannerAppContent() {
                     previewOperations={previewPlannerOperations}
                     week={week}
                     disabled={isReadOnly}
-                    mutate={(command, options) => mutate(command, options && {
-                      ...options,
-                      onAccepted: options.onAccepted
-                        ? (decision) => options.onAccepted?.(decision.plannerVersion)
-                        : undefined,
-                    })}
+                    mutate={mutate}
                     sendContextMessage={sendContextMessage}
                     onOpenRecipeSummary={openRecipeSummary}
                   />
@@ -1919,9 +1816,7 @@ function PlannerAppContent() {
                     mutate={mutate}
                     onOpenRecipeSummary={openRecipeSummary}
                   />
-                ) : (
-                  <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
-              )}
+                ) : null}
             </section>
             {!mobile ? (
               <CodexThreadRail
@@ -1943,7 +1838,7 @@ function PlannerAppContent() {
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             return (
-              <button key={item.id} type="button" className={view === item.id ? "active" : ""} aria-current={view === item.id ? "page" : undefined} onClick={() => navigate(item.id)}>
+              <button key={item.id} type="button" className={currentView === item.id ? "active" : ""} aria-current={currentView === item.id ? "page" : undefined} onClick={() => navigate(item.id)}>
                 <Icon size={17} /><span>{item.label}</span>
               </button>
             );
@@ -3045,78 +2940,6 @@ function GroceryView({
   );
 }
 
-function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  return (
-    <div className="leftover-feedback">
-      {week.data.leftovers.map((leftover) => {
-        return (
-          <div key={leftover.id}>
-            <span><strong>{leftover.label} · {leftover.portions} portions</strong><small>{leftover.state}{leftover.assignedDate ? ` for ${leftover.assignedDate}` : ""}</small></span>
-            <SegmentedControl
-              ariaLabel={`Quality for ${leftover.label} leftovers`}
-              disabled={disabled}
-              options={LEFTOVER_QUALITIES.map((quality) => ({ value: quality, label: quality, ariaLabel: `Rate ${leftover.label} leftovers ${quality}` }))}
-              value={leftover.quality}
-              onChange={(quality) => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}
-            />
-            {leftover.state === "assigned" ? <PlannerActionButton tone="secondary" type="button" aria-label={`Mark ${leftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</PlannerActionButton> : null}
-          </div>
-        );
-      })}
-      {!week.data.leftovers.length ? <p className="empty-copy">Cooking a meal with planned leftovers will add it here.</p> : null}
-    </div>
-  );
-}
-
-function MealFeedbackRow({ meal, week, disabled, mutate }: { meal: Meal; week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  return <div className="feedback-row">
-    <div><strong>{meal.title}</strong><small>{formatCalendarDate(meal.date, { weekday: "long" })} · {meal.status}</small></div>
-    <SegmentedControl ariaLabel={`Feedback for ${meal.title}`} className="feedback-control" disabled={disabled} options={FEEDBACK_VALUES.map((value) => ({ value, label: value, ariaLabel: `Rate ${meal.title} ${value}` }))} value={week.data.feedback[meal.id]} onChange={(value) => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })} />
-  </div>;
-}
-
-function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  const [lesson, setLesson] = useState(week.data.weekLesson);
-  const lessonDraft = useVersionedDraft();
-  const draftLesson = lessonDraft.versionRef.current === null
-    ? week.data.weekLesson
-    : lesson;
-  const feedbackMeals = week.data.meals.filter((meal) => meal.status === "cooked");
-  const feedbackComplete = feedbackMeals.filter((meal) => week.data.feedback[meal.id]).length;
-  const archivedFeedbackCount = week.data.meals.filter((meal) => week.data.feedback[meal.id]).length;
-  if (week.status === "archived") {
-    return (
-      <div className="lifecycle-surface current-archive">
-        <span className="archive-icon"><Archive size={24} /></span>
-        <p className="eyebrow">Read-only record</p><h2>Week archived</h2>
-        <div className="archive-stats"><span><strong>{week.data.meals.length}</strong> meals</span><span><strong>{archivedFeedbackCount}</strong> ratings</span><span><strong>{week.data.leftovers.length}</strong> leftovers</span></div>
-        {week.data.weekLesson ? <div className="lesson-band"><StickyNote size={16} /><span><strong>Planning lesson</strong><p>{week.data.weekLesson}</p></span></div> : null}
-      </div>
-    );
-  }
-  return (
-    <div className="closeout-layout">
-      <div className="feedback-list">
-        <div className="surface-summary"><div><p className="eyebrow">Keep the useful signal</p><h2>Cooked meal feedback</h2></div><span className="summary-chip">{feedbackComplete}/{feedbackMeals.length} rated</span></div>
-        {feedbackMeals.map((meal) => <MealFeedbackRow key={meal.id} meal={meal} week={week} disabled={disabled} mutate={mutate} />)}
-        {!feedbackMeals.length ? <p className="empty-copy">Cook a meal first, then capture the signal worth carrying into the next plan.</p> : null}
-      </div>
-      <aside className="closeout-notes">
-        <section className="closeout-note-section">
-          <span className="field-label">Leftovers</span>
-          <LeftoverControls week={week} disabled={disabled} mutate={mutate} />
-        </section>
-        <section className="closeout-note-section">
-          <label><span>What should next week remember?</span><textarea maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLesson} onChange={(event) => { lessonDraft.begin(); setLesson(event.target.value); }} placeholder="A short planning lesson" /><small className="field-limit">{draftLesson.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
-          <PlannerActionButton tone="secondary" type="button" disabled={disabled || draftLesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: draftLesson }, lessonDraft.mutationOptions())}><StickyNote size={15} /> Save lesson</PlannerActionButton>
-        </section>
-        <span className="closeout-check"><CheckCircle2 size={14} /> Archiving freezes this week as a read-only family record.</span>
-        <PlannerActionButton tone="primary" type="button" disabled={disabled || week.status !== "active"} onClick={() => void mutate({ type: "archiveWeek", weekId: week.id })}><Archive size={16} /> Archive active week</PlannerActionButton>
-      </aside>
-    </div>
-  );
-}
-
 function RecipeSource({ meal }: { meal: Meal }) {
   if (!meal.sourceRecipe) return null;
   if (meal.sourceRecipe.kind === "canonical") {
@@ -3412,7 +3235,7 @@ function MealDrawer(props: {
     }, {
       basePlannerVersion: ingredientReview.plannerVersion,
       onConflict: (currentPlannerVersion) => void startIngredientReview(reviewQueue, currentPlannerVersion),
-      onAccepted: (_decision, currentPlannerVersion) => void startIngredientReview(remaining, currentPlannerVersion),
+      onAccepted: (currentPlannerVersion) => void startIngredientReview(remaining, currentPlannerVersion),
     });
   };
   const editRecipeField = <Key extends keyof typeof canonicalRecipeDraft>(

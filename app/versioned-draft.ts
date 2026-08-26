@@ -1,3 +1,5 @@
+import { createContext, useContext, useRef, useState } from "react";
+
 export type CompositeDraft<T extends object> = {
   baseline: T;
   dirtyValues: Partial<T>;
@@ -44,4 +46,61 @@ export function settleCompositeDraft<T extends object>(
   return Object.keys(dirtyValues).length
     ? { baseline: current.baseline, dirtyValues }
     : null;
+}
+
+export const PlannerVersionContext = createContext(0);
+
+export function useVersionedDraft<T extends object = Record<never, never>>() {
+  const plannerVersion = useContext(PlannerVersionContext);
+  const versionRef = useRef<number | null>(null);
+  const editRevisionRef = useRef(0);
+  const compositeDraftRef = useRef<CompositeDraft<T> | null>(null);
+  const [compositeDraft, setCompositeDraft] = useState<CompositeDraft<T> | null>(null);
+  return {
+    versionRef,
+    begin() {
+      versionRef.current ??= plannerVersion;
+      editRevisionRef.current += 1;
+    },
+    edit<K extends keyof T>(canonical: T, field: K, value: T[K]) {
+      versionRef.current ??= plannerVersion;
+      editRevisionRef.current += 1;
+      const next = editCompositeDraft(compositeDraftRef.current, canonical, field, value);
+      compositeDraftRef.current = next;
+      setCompositeDraft(next);
+    },
+    compose(canonical: T, merge?: (canonical: T, draft: CompositeDraft<T>) => T): T {
+      return compositeDraft && merge
+        ? merge(canonical, compositeDraft)
+        : composeCompositeDraft(canonical, compositeDraft);
+    },
+    mutationOptions(onAccepted?: () => void) {
+      const submittedRevision = editRevisionRef.current;
+      const submittedCompositeDraft = compositeDraftRef.current;
+      return {
+        basePlannerVersion: versionRef.current ?? plannerVersion,
+        conflictStrategy: "recompose" as const,
+        onAccepted(nextPlannerVersion: number) {
+          const settledCompositeDraft = settleCompositeDraft(
+            compositeDraftRef.current,
+            submittedCompositeDraft,
+          );
+          compositeDraftRef.current = settledCompositeDraft;
+          setCompositeDraft(settledCompositeDraft);
+          const hasNewerDraft = settledCompositeDraft !== null ||
+            (submittedCompositeDraft === null && editRevisionRef.current !== submittedRevision);
+          if (!hasNewerDraft) {
+            versionRef.current = null;
+            editRevisionRef.current = 0;
+            onAccepted?.();
+          } else {
+            versionRef.current = nextPlannerVersion;
+          }
+        },
+        onConflict(nextPlannerVersion: number) {
+          versionRef.current = nextPlannerVersion;
+        },
+      };
+    },
+  };
 }
