@@ -19,6 +19,7 @@ import {
   validateHouseholdState,
 } from "./household-domain.ts";
 import { createCoreIngredientCatalogue, isIngredientCandidatePreview } from "./ingredient-catalogue.ts";
+import { isSourceRecipe } from "./sourced-recipe-contract.ts";
 import { projectGroceryRequirements, type GroceryFilter, type GroceryProjection } from "./grocery-projection.ts";
 import type {
   InitializedWorkspace,
@@ -944,6 +945,14 @@ function isMeal(value: unknown, ingredientCatalogue = createCoreIngredientCatalo
   return validateHouseholdState(state, { allowUnknownIngredientConceptReferences: true }).ok;
 }
 
+function isGroceryProjection(value: unknown): boolean {
+  const coverage = ["needs_source", "shop", "farm_box", "on_hand"];
+  const sectionNames = ["Produce", "Meat & seafood", "Dairy", "Pantry"];
+  const quantity = (part: unknown) => isRecord(part) && ((part.kind === "quantity" && hasExactKeys(part, ["kind", "dimension", "quantity", "unit", "display"]) && isRecord(part.quantity) && hasExactKeys(part.quantity, ["numerator", "denominator"]) && typeof part.display === "string") || (part.kind === "literal" && hasExactKeys(part, ["kind", "literal", "reason"]) && typeof part.literal === "string"));
+  const child = (entry: unknown) => isRecord(entry) && hasExactKeys(entry, ["executionId", "occurrenceId", "mealId", "mealTitle", "ingredient", "qualifier", "amount", "coverage", "checked", "section", "sourceRecipe"]) && typeof entry.executionId === "string" && typeof entry.occurrenceId === "string" && typeof entry.mealId === "string" && typeof entry.mealTitle === "string" && typeof entry.ingredient === "string" && (typeof entry.qualifier === "string" || entry.qualifier === null) && isRecord(entry.amount) && hasExactKeys(entry.amount, ["amount", "unit", "source"]) && typeof entry.amount.amount === "string" && (typeof entry.amount.unit === "string" || entry.amount.unit === null) && (typeof entry.amount.source === "string" || entry.amount.source === null) && coverage.includes(entry.coverage as string) && typeof entry.checked === "boolean" && sectionNames.includes(entry.section as string) && (entry.sourceRecipe === null || isSourceRecipe(entry.sourceRecipe));
+  return isRecord(value) && hasExactKeys(value, ["filter", "sections"]) && typeof value.filter === "string" && ["to_buy", "all", ...coverage, "done"].includes(value.filter) && Array.isArray(value.sections) && value.sections.every((section) => isRecord(section) && hasExactKeys(section, ["section", "groups"]) && sectionNames.includes(section.section as string) && Array.isArray(section.groups) && section.groups.every((group) => isRecord(group) && hasExactKeys(group, ["key", "label", "conceptId", "quantities", "provenanceCount", "children"]) && typeof group.key === "string" && typeof group.label === "string" && (typeof group.conceptId === "string" || group.conceptId === null) && Array.isArray(group.quantities) && group.quantities.every(quantity) && Number.isSafeInteger(group.provenanceCount) && Number(group.provenanceCount) >= 0 && Array.isArray(group.children) && group.children.length === Number(group.provenanceCount) && group.children.every(child)));
+}
+
 export function isPlannerReadProjection(value: unknown): value is PlannerReadProjection {
   if (!isRecord(value) || typeof value.kind !== "string") return false;
   switch (value.kind) {
@@ -973,10 +982,7 @@ export function isPlannerReadProjection(value: unknown): value is PlannerReadPro
     case "meal":
       return hasExactKeys(value, ["kind", "meal", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue) && isMeal(value.meal, { revision: value.ingredientCatalogue.revision, concepts: value.ingredientCatalogue.concepts });
     case "grocery":
-      return hasExactKeys(value, ["kind", "grocery"]) && isRecord(value.grocery) &&
-        typeof value.grocery.filter === "string" && ["to_buy", "all", "needs_source", "shop", "farm_box", "on_hand", "done"].includes(value.grocery.filter) &&
-        Array.isArray(value.grocery.sections) && value.grocery.sections.every((section) => isRecord(section) &&
-          hasExactKeys(section, ["section", "groups"]) && ["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(section.section as string) && Array.isArray(section.groups) && section.groups.every((group) => isRecord(group) && hasExactKeys(group, ["key", "label", "conceptId", "quantities", "provenanceCount", "children"]) && typeof group.key === "string" && typeof group.label === "string" && (typeof group.conceptId === "string" || group.conceptId === null) && Array.isArray(group.quantities) && Number.isSafeInteger(group.provenanceCount) && Array.isArray(group.children)));
+      return hasExactKeys(value, ["kind", "grocery"]) && isGroceryProjection(value.grocery);
     case "catalogue":
       return hasExactKeys(value, ["kind", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue);
     case "history":

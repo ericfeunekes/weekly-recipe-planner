@@ -18,8 +18,8 @@ const week = () => ({ id: "2026-08-24", weekStartDate: "2026-08-24", status: "ac
 test("grocery projection filters children before grouping and preserves units, literals, provenance, and unclassified children", () => {
   const all = projectGroceryRequirements(week(), catalogue, "all");
   const produce = all.sections.find((section) => section.section === "Produce");
-  assert.equal(produce.groups.length, 1);
-  assert.deepEqual(produce.groups[0].quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["1 cup", "1 bunch trimmed green onion"]);
+  assert.equal(produce.groups.length, 2);
+  assert.deepEqual(produce.groups.flatMap((group) => group.quantities.map((part) => part.kind === "quantity" ? part.display : part.literal)), ["1 cup", "1 bunch trimmed green onion"]);
   assert.equal(produce.groups[0].children[0].amount.unit, "cup");
   assert.equal(produce.groups[0].children[0].sourceRecipe, null);
   const pantry = all.sections.find((section) => section.section === "Pantry");
@@ -28,4 +28,12 @@ test("grocery projection filters children before grouping and preserves units, l
   assert.equal(projectGroceryRequirements(week(), catalogue, "to_buy").sections[0].groups[0].children.length, 1);
   assert.equal(projectGroceryRequirements(week(), catalogue, "farm_box").sections[0].groups[0].children.length, 1);
   assert.equal(projectGroceryRequirements(week(), catalogue, "needs_source").sections[0].groups[0].label, "Unclassified");
+});
+
+test("shopping-relevant qualifiers remain separate even when the concept and unit match", () => {
+  const state = week();
+  state.data.meals[1].ingredients[0] = ingredient("b", "1", "cup", "whole");
+  const groups = projectGroceryRequirements(state, catalogue, "all").sections.find((section) => section.section === "Produce").groups;
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map((group) => group.quantities[0].display), ["1 cup", "1 cup"]);
 });

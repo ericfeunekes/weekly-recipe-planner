@@ -63,7 +63,11 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
       unit: ingredient.unit,
       source: ingredient.source,
       role: ingredient.role,
-      concept: concept ? { id: concept.id, label: concept.preferredLabel } : null,
+      // A household concept can share a safe quantity total only when its
+      // shopping-relevant form is the same. The quantity kernel remains the
+      // sole converter; this presentation key merely prevents qualifiers from
+      // being silently laundered into one purchase requirement.
+      concept: concept ? { id: `${concept.id}\u0000${ingredient.qualifier ?? ""}`, label: concept.preferredLabel } : null,
       execution: { id: grocery.id, section: grocery.section, coverage: grocery.coverage, checked: grocery.checked },
     });
     childContext.set(grocery.id, { section: grocery.section, sourceRecipe: meal.sourceRecipe ?? null });
@@ -88,7 +92,7 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
       } else list.push({ key: `unclassified:${section}`, label: "Unclassified", conceptId: null, quantities: [], provenanceCount: children.length, children: [...children] });
       continue;
     }
-    sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId, quantities: group.quantities, provenanceCount: children.length, children });
+    sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId.split("\u0000", 1)[0], quantities: group.quantities, provenanceCount: children.length, children });
   }
   return { filter, sections: SECTIONS.map((section) => ({ section, groups: sections.get(section)! })).filter((section) => section.groups.length) };
 }
