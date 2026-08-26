@@ -159,6 +159,13 @@ test("a requested Groceries URL remains until workspace authority is available",
   await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
 });
 
+test("unavailable Groceries returns to the selected Week", async ({ page }) => {
+  await resetPlanner(page);
+  await page.goto("/weeks/missing/groceries");
+  await expect(page).toHaveURL("/weeks/2026-07-06");
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+});
+
 test("D4 source links keep three same-date meal identities and Recipe context exact", async ({ page }) => {
   await resetPlanner(page);
   const workspace = await (await page.request.get("/api/workspace")).json() as RouteFixture;
