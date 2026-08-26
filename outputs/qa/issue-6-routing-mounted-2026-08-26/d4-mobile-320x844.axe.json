@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "d4",
+  "viewportId": "mobile-320x844",
+  "browserVersion": "151.0.7922.174",
+  "testEngine": {
+    "name": "axe-core",
+    "version": "4.10.3"
+  },
+  "testEnvironment": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+    "windowWidth": 320,
+    "windowHeight": 844,
+    "orientationAngle": 0,
+    "orientationType": "landscape-primary"
+  },
+  "violations": [],
+  "passes": [
+    "aria-allowed-attr",
+    "aria-conditional-attr",
+    "aria-deprecated-role",
+    "aria-hidden-body",
+    "aria-hidden-focus",
+    "aria-prohibited-attr",
+    "aria-required-attr",
+    "aria-roles",
+    "aria-valid-attr",
+    "aria-valid-attr-value",
+    "avoid-inline-spacing",
+    "button-name",
+    "color-contrast",
+    "document-title",
+    "duplicate-id-aria",
+    "form-field-multiple-labels",
+    "html-has-lang",
+    "html-lang-valid",
+    "label",
+    "meta-viewport",
+    "nested-interactive"
+  ],
+  "incomplete": [
+    "aria-hidden-focus"
+  ]
+}

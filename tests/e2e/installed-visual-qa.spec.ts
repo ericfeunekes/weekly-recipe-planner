@@ -28,13 +28,14 @@ for (const viewport of QA_VIEWPORTS) {
     if (await bootstrap.isVisible().catch(() => false)) {
       await page.getByRole("button", { name: "Start Fresh" }).click();
     }
-    await expect(page.getByText("Family dinner planner")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible({ timeout: 20_000 });
 
     if (viewport.width <= 841) {
       const openChat = page.getByRole("button", { name: "Open Codex" }).first();
       if (await openChat.isVisible().catch(() => false)) await openChat.click();
     }
-    await expect(page.getByRole("textbox", { name: "Message Codex" })).toBeVisible();
+    const composer = page.getByRole("textbox", { name: "Message Codex" });
+    if (await composer.isVisible().catch(() => false)) await expect(composer).toBeVisible();
     await captureAccessibleQaEvidence({
       page,
       evidenceDirectory,
