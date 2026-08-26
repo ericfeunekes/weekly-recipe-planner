@@ -874,7 +874,7 @@ test("durable canonical import replay survives source removal and a new host pro
     recipePath: "lemon-pepper-salmon.md",
   }, { callId: "call-file-backed-import-replay" });
   const accepted = decode(await host.handle(params));
-  assert.equal(accepted.ok, true);
+  assert.ok(accepted.ok, JSON.stringify(accepted));
   sqlite.close();
   await unlink(recipeFilename);
 
@@ -891,6 +891,62 @@ test("durable canonical import replay survives source removal and a new host pro
   assert.deepEqual(replay, accepted);
   assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion + 1);
   assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
+  sqlite.close();
+});
+
+test("native approved-week import commits the complete shell once and replays without rereading", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "planner-approved-week-"));
+  const filename = join(directory, "planner.sqlite");
+  const recipeRoot = join(directory, "recipes");
+  const recipeFilename = join(recipeRoot, "lemon-pepper-salmon.md");
+  await mkdir(recipeRoot);
+  await copyFile(join(process.cwd(), "tests/support/fixtures/canonical-recipes/lemon-pepper-salmon.md"), recipeFilename);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const revision = createHash("sha256").update(await (await import("node:fs/promises")).readFile(recipeFilename)).digest("hex");
+  let sqlite = openPlannerStore({ filename });
+  let planner = realPlanner(sqlite, { transformSeed(seed) { for (const week of seed.weeks) week.data.prepSessions = []; return seed; } });
+  let host = createNativePlannerEffectHost({ planner, store: createSqliteCodexThreadStore(sqlite), isEligibleCall: () => true, recipeRoot, now: () => 500 });
+  const before = planner.readWorkspace();
+  const week = before.state.weeks.find((candidate) => candidate.id === before.state.activeWeekId);
+  const target = week.data.meals.find((meal) => meal.status === "planned" && meal.instructions.every((step) => !step.complete));
+  const params = callback("importApprovedWeek", {
+    basePlannerVersion: before.plannerVersion,
+    weekId: week.id,
+    targets: [{ mealId: target.id, recipePath: "lemon-pepper-salmon.md", recipeRevision: revision }],
+    manualMealIds: week.data.meals.filter((meal) => meal.id !== target.id).map((meal) => meal.id),
+  }, { callId: "approved-week-call" });
+  const accepted = decode(await host.handle(params));
+  assert.ok(accepted.ok, JSON.stringify(accepted));
+  assert.deepEqual(accepted.data.importedMealIds, [target.id]);
+  assert.equal(planner.readWorkspace().plannerVersion, before.plannerVersion + 1);
+  sqlite.close();
+  await unlink(recipeFilename);
+  sqlite = openPlannerStore({ filename });
+  planner = realPlanner(sqlite, { bootstrap: false });
+  host = createNativePlannerEffectHost({ planner, store: createSqliteCodexThreadStore(sqlite), isEligibleCall: () => true, recipeRoot, now: () => 501 });
+  assert.deepEqual(decode(await host.handle(params)), accepted);
+  assert.equal(sqlite.database.prepare("SELECT count(*) AS count FROM planner_events").get().count, 1);
+  sqlite.close();
+});
+
+test("approved-week transport accepts the maximum valid Unicode request envelope", async () => {
+  const sqlite = openPlannerStore({ filename: ":memory:" });
+  const planner = fakePlanner();
+  const host = createNativePlannerEffectHost({ planner, store: createSqliteCodexThreadStore(sqlite), isEligibleCall: () => true, now: () => 700 });
+  const unicode = "\u0800";
+  const targets = Array.from({ length: 256 }, (_, index) => ({
+    mealId: `${unicode.repeat(199)}${String.fromCodePoint(0x0800 + index)}`,
+    recipePath: unicode.repeat(2048),
+    recipeRevision: "a".repeat(64),
+  }));
+  const params = callback("importApprovedWeek", {
+    basePlannerVersion: 0, weekId: unicode.repeat(200), targets, manualMealIds: [],
+  }, { callId: "unicode-approved-week" });
+  const bytes = Buffer.byteLength(JSON.stringify(params.arguments), "utf8");
+  assert.ok(bytes <= 1_758_000, `expected ${bytes} bytes to fit the approved-week cap`);
+  const result = decode(await host.handle(params));
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /importApprovedWeek arguments/u);
   sqlite.close();
 });
 

@@ -196,7 +196,7 @@ test("application bootstrap rolls an ambiguous legacy occurrence import back ato
     },
   );
   assert.deepEqual(payload, before);
-  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 12 });
+  assert.deepEqual(service.readWorkspace(), { initialized: false, schemaVersion: 13 });
   assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM command_receipts").get().count, 0);
   store.close();
 });

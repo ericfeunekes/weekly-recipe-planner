@@ -110,7 +110,7 @@ export type NativePlannerToolCall = NativePlannerToolCallIdentity & Readonly<{
   sequence: number;
   status: "running" | "succeeded" | "rejected";
   resultCode: string | null;
-  operationKind: "native_codex_apply_planner_operations_v1" | null;
+  operationKind: "native_codex_apply_planner_operations_v1" | "native_codex_import_approved_week_v1" | null;
   requestId: string | null;
   eventId: string | null;
   basePlannerVersion: number | null;
@@ -132,7 +132,7 @@ export type NativePlannerToolCompletion = NativePlannerToolCallIdentity & Readon
   resultCode: string;
   resultEnvelope: PlannerToolResult;
   completedAt: number;
-  operationKind?: "native_codex_apply_planner_operations_v1";
+  operationKind?: "native_codex_apply_planner_operations_v1" | "native_codex_import_approved_week_v1";
   requestId?: string;
   eventId?: string;
   basePlannerVersion?: number;

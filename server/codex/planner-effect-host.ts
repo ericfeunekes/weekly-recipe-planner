@@ -6,6 +6,7 @@ import {
 } from "../../lib/planner-operation-contract.ts";
 import {
   EMPTY_FOREGROUND_AUTHORITY,
+  PLANNER_APPROVED_WEEK_TOOL_ARGUMENT_BYTES_LIMIT,
   PLANNER_TOOL_ARGUMENT_BYTES_LIMIT,
   PLANNER_TOOL_NAMES,
   PLANNER_TOOL_NAMESPACE,
@@ -15,6 +16,7 @@ import {
   isHistoricalPlannerApplyArguments,
   isPlannerApplyArguments,
   isPlannerImportRecipeArguments,
+  isPlannerImportApprovedWeekArguments,
   isPlannerPreviewArguments,
   isPlannerReadArguments,
   projectPlannerRead,
@@ -132,7 +134,10 @@ function parseDynamicToolCall(value: unknown): DynamicToolCallParams {
     throw new TypeError("Dynamic planner callback identity or tool is invalid.");
   }
   const serializedArguments = canonicalJson(value.arguments);
-  if (Buffer.byteLength(serializedArguments, "utf8") > PLANNER_TOOL_ARGUMENT_BYTES_LIMIT) {
+  const argumentLimit = tool === "importApprovedWeek"
+    ? PLANNER_APPROVED_WEEK_TOOL_ARGUMENT_BYTES_LIMIT
+    : PLANNER_TOOL_ARGUMENT_BYTES_LIMIT;
+  if (Buffer.byteLength(serializedArguments, "utf8") > argumentLimit) {
     throw new TypeError("Dynamic planner callback arguments exceed their byte limit.");
   }
   return {
@@ -291,6 +296,7 @@ export class NativePlannerEffectHost {
     const executeAndComplete = (
       transaction?: SqliteTransaction,
       importedRecipe?: SourcedRecipeReplacement,
+      importedWeekRecipes?: Map<string, SourcedRecipeReplacement>,
     ) => {
       const { result, completion } = this.#runTool(
         call,
@@ -299,13 +305,14 @@ export class NativePlannerEffectHost {
         workspace,
         transaction,
         importedRecipe,
+        importedWeekRecipes,
       );
       return this.#completeOrReplay(call, identity, result, completion, transaction);
     };
-    const executeInTransaction = (importedRecipe?: SourcedRecipeReplacement) => {
+    const executeInTransaction = (importedRecipe?: SourcedRecipeReplacement, importedWeekRecipes?: Map<string, SourcedRecipeReplacement>) => {
       try {
         return this.#options.store.transaction((transaction) =>
-          executeAndComplete(transaction, importedRecipe));
+          executeAndComplete(transaction, importedRecipe, importedWeekRecipes));
       } catch (error) {
         if (error instanceof DurableCompletionLostError) return error.result;
         throw error;
@@ -335,6 +342,22 @@ export class NativePlannerEffectHost {
         );
       }
       return executeInTransaction(recipe);
+    }
+    if (call.tool === "importApprovedWeek") {
+      if (!isPlannerImportApprovedWeekArguments(call.arguments) || this.#options.recipeRoot === undefined) return executeAndComplete();
+      const approvedArguments = call.arguments;
+      try {
+        const recipes = new Map<string, SourcedRecipeReplacement>();
+        for (const target of approvedArguments.targets) {
+          const recipe = await readCanonicalRecipe(this.#options.recipeRoot, target.recipePath);
+          if (recipe.source.kind !== "canonical" || recipe.source.revision !== target.recipeRevision) throw new CanonicalRecipeReadError("Canonical recipe revision no longer matches the reviewed approved-week request.");
+          recipes.set(target.mealId, recipe);
+        }
+        return executeInTransaction(undefined, recipes);
+      } catch (error) {
+        const result = failure(call.callId, workspace, now, "INVALID_ARGUMENTS", error instanceof Error ? error.message : "Approved-week import failed safely.", "revise_new_call");
+        return this.#completeOrReplay(call, identity, result, completionBase(identity, result, now));
+      }
     }
     return call.tool === "apply"
       ? executeInTransaction()
@@ -422,6 +445,7 @@ export class NativePlannerEffectHost {
     workspace: ReturnType<PlannerApplicationService["readWorkspace"]>,
     transaction?: SqliteTransaction,
     importedRecipe?: SourcedRecipeReplacement,
+    importedWeekRecipes?: Map<string, SourcedRecipeReplacement>,
   ): { result: PlannerToolResult; completion: NativePlannerToolCompletion } {
     if (!workspace.initialized) {
       const result = failure(
@@ -567,6 +591,33 @@ export class NativePlannerEffectHost {
       );
       serializePlannerToolResult(applied.result);
       return applied;
+    }
+
+    if (call.tool === "importApprovedWeek") {
+      if (!isPlannerImportApprovedWeekArguments(call.arguments) || importedWeekRecipes === undefined || !transaction) {
+        const result = failure(call.callId, workspace, now, "INVALID_ARGUMENTS", "planner.importApprovedWeek arguments did not match the closed import contract.", "revise_new_call");
+        return { result, completion: completionBase(identity, result, now) };
+      }
+      const approvedArguments = call.arguments;
+      const week = workspace.state.weeks.find((candidate) => candidate.id === approvedArguments.weekId);
+      const shellIds = week?.data.meals.map((meal) => meal.id) ?? [];
+      const requestedIds = [...approvedArguments.targets.map((target) => target.mealId), ...approvedArguments.manualMealIds];
+      const validManuals = week !== undefined && approvedArguments.manualMealIds.every((mealId) => week.data.meals.find((meal) => meal.id === mealId)?.sourceRecipe === undefined);
+      if (!week || new Set(shellIds).size !== requestedIds.length || shellIds.some((id) => !requestedIds.includes(id)) || !validManuals) {
+        const result = failure(call.callId, workspace, now, "DOMAIN_REJECTED", "Approved-week targets and explicitly manual meals must exhaust the existing week shell.", "revise_new_call");
+        return { result, completion: completionBase(identity, result, now) };
+      }
+      const requestId = `native-codex:${identity.callbackIdentityHash}`;
+      const applied = this.#options.planner.applyApprovedWeekImport(transaction, {
+        requestId, basePlannerVersion: approvedArguments.basePlannerVersion, weekId: approvedArguments.weekId,
+        operations: approvedArguments.targets.map((target) => ({ command: { type: "replaceMealRecipeFromSource" as const, weekId: approvedArguments.weekId as import("../../lib/household-contract.ts").WeekId, mealId: target.mealId, recipe: importedWeekRecipes.get(target.mealId)! } })),
+      }, { operationKind: "native_codex_import_approved_week_v1", provenance: EMBEDDED_CODEX_PROVENANCE, now });
+      const result = applied.decision.status === "accepted"
+        ? createPlannerToolSuccess(call.callId, applied.workspace, now, { status: "accepted" as const, eventId: applied.decision.eventId, weekId: approvedArguments.weekId, importedMealIds: approvedArguments.targets.map((target) => target.mealId) })
+        : applied.decision.status === "version_conflict"
+          ? failure(call.callId, applied.workspace, now, "VERSION_CONFLICT", `Planner version changed from ${applied.decision.expectedVersion} to ${applied.decision.actualVersion}.`, "refresh_new_call")
+          : failure(call.callId, applied.workspace, now, "DOMAIN_REJECTED", applied.decision.message, "revise_new_call", applied.decision.operationIndex);
+      return { result, completion: { ...completionBase(identity, result, now), operationKind: "native_codex_import_approved_week_v1", requestId, ...(applied.decision.status === "accepted" ? { eventId: applied.decision.eventId } : {}), basePlannerVersion: approvedArguments.basePlannerVersion, resultPlannerVersion: applied.workspace.plannerVersion } };
     }
 
     let result: PlannerToolResult;
