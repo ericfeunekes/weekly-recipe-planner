@@ -691,7 +691,7 @@ test.describe.serial("family dinner authority", () => {
 
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     await openRecipeEditor(pageB, "Harissa chicken traybake");
-    await pageA.getByRole("button", { name: "Mark cooked" }).click();
+    await pageA.getByRole("radiogroup", { name: "Status for Harissa chicken traybake", exact: true }).getByRole("radio", { name: "cooked", exact: true }).click();
     await expect(pageB.getByRole("radiogroup", { name: "Status for Harissa chicken traybake", exact: true }).getByRole("radio", { name: "cooked", exact: true, checked: true })).toBeChecked();
     await openView(pageB, "Close out");
     await expect(pageB.getByText(/Harissa chicken traybake · 2 portions/)).toBeVisible();
@@ -734,6 +734,8 @@ test.describe.serial("family dinner authority", () => {
     await expect(pageA.getByText("Family dinner planner")).toBeVisible({ timeout: 20_000 });
     await expectSelectedCodexThread(pageA, sharedCodexThreadId, 20_000);
     await expectSelectedCodexThread(pageB, sharedCodexThreadId, 20_000);
+    await expect(pageA.getByRole("radiogroup", { name: "Status for Harissa chicken traybake", exact: true }).getByRole("radio", { name: "cooked", exact: true, checked: true })).toBeChecked();
+    await expect(pageB.getByText(/Harissa chicken traybake · 2 portions/)).toBeVisible();
     runtimeA.setExpectedFailurePhase("normal");
     runtimeB.setExpectedFailurePhase("normal");
     await pageB.getByRole("button", { name: "Open Codex" }).click();
