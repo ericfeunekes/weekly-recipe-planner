@@ -27,6 +27,44 @@ function navigation(page: Page) {
   return (page.viewportSize()?.width ?? 0) <= 840 ? page.locator(".mobile-nav") : page.locator(".view-nav");
 }
 
+type RouteFixture = {
+  state: {
+    activeWeekId: string | null;
+    weeks: Array<{
+      id: string;
+      data: {
+        meals: Array<{ id: string; title: string; date: string; ingredients: Array<{ id: string; [key: string]: unknown }>; instructions: Array<{ id: string; [key: string]: unknown }>; [key: string]: unknown }>;
+        groceries: Array<{ id: string; mealId: string; ingredientId: string; [key: string]: unknown }>;
+        prepSessions: Array<{ steps: Array<{ stepId?: string; [key: string]: unknown }> }>;
+      };
+    }>;
+  };
+};
+
+function threeSameDateFixture(workspace: RouteFixture) {
+  const fixture = structuredClone(workspace);
+  const week = fixture.state.weeks.find((candidate) => candidate.id === fixture.state.activeWeekId)!;
+  const source = week.data.meals.find((meal) => week.data.groceries.some((grocery) => grocery.mealId === meal.id))!;
+  const meals = [1, 2, 3].map((index) => {
+    const meal = structuredClone(source);
+    meal.id = `mounted-route-meal-${index}`;
+    meal.title = `Mounted route meal ${index}`;
+    meal.date = source.date;
+    meal.ingredients = meal.ingredients.map((ingredient, ingredientIndex) => ({ ...ingredient, id: `mounted-route-ingredient-${index}-${ingredientIndex}` }));
+    meal.instructions = meal.instructions.map((step, stepIndex) => ({ ...step, id: `mounted-route-step-${index}-${stepIndex}` }));
+    return meal;
+  });
+  week.data.meals = [...week.data.meals.filter((meal) => meal.id !== source.id), ...meals];
+  const sourceGroceries = week.data.groceries.filter((grocery) => grocery.mealId === source.id);
+  week.data.groceries = [
+    ...week.data.groceries.filter((grocery) => grocery.mealId !== source.id),
+    ...meals.flatMap((meal) => sourceGroceries.map((grocery, index) => ({ ...grocery, id: `mounted-route-grocery-${meal.id}-${index}`, mealId: meal.id, ingredientId: meal.ingredients[index]?.id ?? meal.ingredients[0].id }))),
+  ];
+  const directStep = week.data.prepSessions.flatMap((session) => session.steps).find((entry) => "stepId" in entry);
+  if (directStep) directStep.stepId = meals[1].instructions[0].id;
+  return { fixture, weekId: week.id, meals };
+}
+
 test("mounted origin rejects its unmounted root", async ({ page }) => {
   test.skip(publicBasePath === "/", "Root-mounted QA has no unmounted alias to reject.");
   const response = await page.request.get("/");
@@ -121,5 +159,41 @@ for (const viewport of [
       scenarioId: `${fixture.toLowerCase()}-navigation-recipe`,
       viewportId: viewport.id,
     });
+  });
+}
+
+for (const viewport of [
+  { id: "mobile-320x844", width: 320, height: 844 },
+  { id: "desktop-1280x900", width: 1280, height: 900 },
+]) {
+  test(`${fixture} mounted Week, Prep, and Groceries retain exact same-date Recipe identities on ${viewport.id}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openMountedPlanner(page);
+    const workspace = await (await page.request.get(`${publicBasePath}api/workspace`)).json() as RouteFixture;
+    const { fixture: routedWorkspace, weekId, meals } = threeSameDateFixture(workspace);
+    const selectionBefore = (await (await page.request.get(`${publicBasePath}api/codex/threads`)).json() as { selection: { threadId: string | null; revision: number } }).selection;
+    await page.route(`**${publicBasePath}api/workspace`, async (route) => route.fulfill({ json: routedWorkspace }));
+    await page.reload();
+
+    for (const meal of meals) {
+      await page.getByRole("article", { name: new RegExp(`^${meal.title} on `) }).getByRole("button", { name: new RegExp(`Open ${meal.title} recipe`) }).click();
+      await expect(page).toHaveURL(`${publicBasePath}weeks/${weekId}/recipes/${meal.id}`);
+      await page.getByTitle("Back to Week").click();
+    }
+
+    await navigation(page).getByRole("button", { name: "Prep", exact: true }).click();
+    const prepSource = page.getByTestId("prep-session-step").first();
+    await prepSource.getByRole("button", { name: /More options for step/ }).click();
+    await prepSource.getByRole("menuitem", { name: meals[1].title, exact: true }).click();
+    await expect(page).toHaveURL(`${publicBasePath}weeks/${weekId}/recipes/${meals[1].id}`);
+    await page.getByTitle("Back to Week").click();
+
+    await navigation(page).getByRole("button", { name: "Groceries", exact: true }).click();
+    await page.getByRole("radio", { name: "All", exact: true }).click();
+    await page.getByRole("button", { name: meals[2].title, exact: true }).first().click();
+    await expect(page).toHaveURL(`${publicBasePath}weeks/${weekId}/recipes/${meals[2].id}`);
+    const selectionAfter = (await (await page.request.get(`${publicBasePath}api/codex/threads`)).json() as { selection: { threadId: string | null; revision: number } }).selection;
+    expect(selectionAfter).toEqual(selectionBefore);
+    await captureAccessibleQaEvidence({ page, evidenceDirectory, scenarioId: `${fixture.toLowerCase()}-mounted-identities`, viewportId: viewport.id });
   });
 }
