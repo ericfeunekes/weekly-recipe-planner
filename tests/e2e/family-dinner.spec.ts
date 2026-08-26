@@ -673,7 +673,7 @@ test.describe.serial("family dinner authority", () => {
     }
     await expect(codexConversation(pageB).getByText(/The shared plan changed first\. Review it, then ask Codex again\./)).toBeVisible({ timeout: 8_000 });
     await expect(codexConversation(pageB).getByText(/Codex replied, but its planner change was not applied/)).toBeVisible();
-    await expect(pageB.locator(".meal-drawer .status-badge")).toHaveText("planned");
+    await expect(pageB.getByRole("radiogroup", { name: "Status for Harissa chicken traybake", exact: true }).getByRole("radio", { name: "planned", exact: true, checked: true })).toBeChecked();
 
     await openView(pageB, "Groceries");
     await pageB.getByRole("radio", { name: "Farm box", exact: true }).click();
@@ -692,7 +692,7 @@ test.describe.serial("family dinner authority", () => {
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     await openRecipeEditor(pageB, "Harissa chicken traybake");
     await pageA.getByRole("button", { name: "Mark cooked" }).click();
-    await expect(pageB.locator(".meal-drawer .status-badge")).toHaveText("cooked");
+    await expect(pageB.getByRole("radiogroup", { name: "Status for Harissa chicken traybake", exact: true }).getByRole("radio", { name: "cooked", exact: true, checked: true })).toBeChecked();
     await openView(pageB, "Close out");
     await expect(pageB.getByText(/Harissa chicken traybake · 2 portions/)).toBeVisible();
     const repeatHarissa = pageB.getByRole("radio", { name: "Rate Harissa chicken traybake repeat" });
