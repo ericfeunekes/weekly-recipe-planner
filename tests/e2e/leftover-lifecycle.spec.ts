@@ -1,4 +1,7 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+
+import { assertViewportContained } from "../support/playwright-qa";
 
 const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
 
@@ -76,6 +79,10 @@ function addDays(date: string, days: number): string {
   return value.toISOString().slice(0, 10);
 }
 
+function recipePath(weekId: string, mealId: string): string {
+  return `/weeks/${encodeURIComponent(weekId)}/recipes/${encodeURIComponent(mealId)}`;
+}
+
 test("assigned leftovers survive shared-client readback and authority restart before consumption", async ({ browser, page }) => {
   test.setTimeout(120_000);
   await resetPlanner(page);
@@ -116,12 +123,16 @@ test("assigned leftovers survive shared-client readback and authority restart be
   await peer.goto("/");
   await expect(peer.getByText("Family dinner planner")).toBeVisible();
   await peer.evaluate(() => window.dispatchEvent(new Event("focus")));
-  const leftoverCard = peer.locator(".meal-card").filter({ hasText: source.title }).filter({ hasText: "leftover" });
-  await expect(leftoverCard).toBeVisible();
-  await leftoverCard.getByRole("button", { name: /^Open .* recipe$/u }).click();
+  const unrelatedMeal = localAssignedReadback.state.weeks.find(({ id }) => id === week.id)!.data.meals
+    .find(({ id }) => id !== assignedMealId)!;
+  await peer.goto(recipePath(week.id, unrelatedMeal.id));
+  await expect(peer.getByLabel("Assigned leftovers")).toHaveCount(0);
+  await expect(peer.getByRole("button", { name: /Mark .* leftovers eaten/u })).toHaveCount(0);
+
+  await peer.goto(recipePath(week.id, assignedMealId));
   await expect(peer.getByText(`${source.title}`, { exact: true })).toBeVisible();
-  await expect(peer.getByText(/portions are assigned to this day\./u)).toBeVisible();
-  await expect(peer.getByRole("button", { name: "Mark eaten" })).toBeVisible();
+  await expect(peer.getByText(/portions are assigned to this meal\./u)).toBeVisible();
+  await expect(peer.getByRole("button", { name: /Mark .* leftovers eaten/u })).toBeVisible();
 
   const assignedReadback = await workspace(peer);
   const assignedWeek = assignedReadback.state.weeks.find(({ id }) => id === week.id)!;
@@ -153,13 +164,22 @@ test("assigned leftovers survive shared-client readback and authority restart be
     assignedMealId,
   });
 
-  await peer.locator(".meal-card").filter({ hasText: source.title }).filter({ hasText: "leftover" })
-    .getByRole("button", { name: /^Open .* recipe$/u }).click();
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 }]) {
+    await peer.setViewportSize(viewport);
+    await expect(peer.getByLabel("Assigned leftovers")).toBeVisible();
+    await expect(peer.getByRole("button", { name: /Mark .* leftovers eaten/u })).toBeVisible();
+    await assertViewportContained(peer);
+    const accessibility = await new AxeBuilder({ page: peer })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+    expect(accessibility.violations, accessibility.violations.map((violation) => violation.id).join(", ")).toEqual([]);
+  }
+
   const consumedResponse = peer.waitForResponse((response) => {
     if (!response.url().endsWith("/api/commands") || response.request().method() !== "POST") return false;
     return (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "consumeLeftover";
   });
-  await peer.getByRole("button", { name: "Mark eaten" }).click();
+  await peer.getByRole("button", { name: /Mark .* leftovers eaten/u }).click();
   expect((await consumedResponse).status()).toBe(200);
 
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -173,5 +193,46 @@ test("assigned leftovers survive shared-client readback and authority restart be
   expect(consumedWeek.data.meals.find(({ id }) => id === assignedMealId)?.status).toBe("cooked");
   expect(consumedWeek.data.meals.filter(({ id }) => displacedMeals.some((meal) => meal.id === id))
     .map(({ id, status }) => ({ id, status }))).toEqual(displacedMeals);
+  await peerContext.close();
+});
+
+test("assigned leftover Recipe respects conflict and archived route guards", async ({ browser, page }) => {
+  test.setTimeout(120_000);
+  await resetPlanner(page);
+  const initial = await workspace(page);
+  const week = initial.state.weeks.find(({ id }) => id === initial.state.activeWeekId)!;
+  const targetDate = addDays(week.id, 6);
+  const source = week.data.meals.find((meal) => meal.leftoverNote && meal.date < targetDate)!;
+  const cookedVersion = await command(page, initial.plannerVersion, {
+    type: "updateMealStatus", weekId: week.id, mealId: source.id, status: "cooked",
+  });
+  const cooked = await workspace(page);
+  const leftoverId = cooked.state.weeks.find(({ id }) => id === week.id)!.data.leftovers
+    .find(({ sourceMealId, state }) => sourceMealId === source.id && state === "available")?.id;
+  if (!leftoverId) throw new Error("Cooking the source meal did not create an available leftover.");
+  await command(page, cookedVersion, { type: "assignLeftover", weekId: week.id, leftoverId, targetDate });
+  const assigned = await workspace(page);
+  const assignedMealId = assigned.state.weeks.find(({ id }) => id === week.id)!.data.leftovers
+    .find(({ id }) => id === leftoverId)?.assignedMealId;
+  if (!assignedMealId) throw new Error("Assigning the leftover did not create a destination meal.");
+
+  const peerContext = await browser.newContext();
+  const peer = await peerContext.newPage();
+  await peer.goto(recipePath(week.id, assignedMealId));
+  await expect(peer.getByRole("button", { name: /Mark .* leftovers eaten/u })).toBeVisible();
+  const bumpedVersion = await command(page, assigned.plannerVersion, {
+    type: "captureWeekLesson", weekId: week.id, weekLesson: "Conflict fixture update.",
+  });
+  await peer.getByRole("button", { name: /Mark .* leftovers eaten/u }).click();
+  await expect(peer.locator(".meal-drawer").getByText(/Someone else changed the plan\./u)).toBeVisible();
+  const afterConflict = await workspace(peer);
+  expect(afterConflict.state.weeks.find(({ id }) => id === week.id)!.data.leftovers.find(({ id }) => id === leftoverId))
+    .toMatchObject({ state: "assigned", assignedMealId });
+
+  await command(page, bumpedVersion, { type: "archiveWeek", weekId: week.id });
+  await peer.goto(recipePath(week.id, assignedMealId));
+  await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  await expect(peer.locator(".meal-drawer")).toHaveCount(0);
+  await expect(peer.getByRole("button", { name: /Mark .* leftovers eaten/u })).toHaveCount(0);
   await peerContext.close();
 });
