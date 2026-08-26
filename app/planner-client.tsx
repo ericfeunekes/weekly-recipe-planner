@@ -1184,8 +1184,10 @@ function PlannerAppContent() {
       return;
     }
     if (location.kind === "legacy-day" && resolved.kind === "week") {
-      void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
-      return;
+      const frame = window.requestAnimationFrame(() => {
+        void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
+      });
+      return () => window.cancelAnimationFrame(frame);
     }
     if (resolved.kind === "unavailable") {
       setRouteNotice(resolved.message);
