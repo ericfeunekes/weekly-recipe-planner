@@ -20,9 +20,23 @@ test("Week opens the exact selected meal Recipe and preserves its URL through re
   await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: `${title} recipe` })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//);
   await page.reload();
   await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//);
   await expect(page.getByRole("region", { name: `${title} recipe` })).toBeVisible();
+});
+
+test("root keeps a current remembered Week and unavailable Recipes return to that Week", async ({ page }) => {
+  await resetPlanner(page);
+  await page.evaluate(() => window.localStorage.setItem("weekly-recipe-planner.last-valid-week", "2026-07-06"));
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await page.goto("/weeks/2026-07-06/recipes/missing");
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await expect(page.getByText("That recipe is unavailable for this week.", { exact: true })).toBeVisible();
 });
 
 test("legacy Day URL returns to Week without selecting a recipe", async ({ page }) => {
