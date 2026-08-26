@@ -5,13 +5,12 @@ import {
   type WeeklyRequirementOccurrence,
 } from "./ingredient-quantity.ts";
 import type { GroceryCoverage, GrocerySection, IngredientCatalogue, WeekPlan } from "./household-contract.ts";
-import type { SourceRecipe } from "./sourced-recipe-contract.ts";
 
 export type GroceryFilter = "to_buy" | "all" | GroceryCoverage | "done";
 
 export type GroceryProjectionChild = WeeklyRequirementChild & {
   section: GrocerySection;
-  sourceRecipe: SourceRecipe | null;
+  sourceRecipe: { kind: string; identity: string; revision: string | null } | null;
 };
 
 export type GroceryPresentationGroup = {
@@ -46,7 +45,7 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
   const concepts = new Map(catalogue.concepts.map((concept) => [concept.id, concept]));
   const mealById = new Map(week.data.meals.map((meal) => [meal.id, meal]));
   const occurrences: WeeklyRequirementOccurrence[] = [];
-  const childContext = new Map<string, { section: GrocerySection; sourceRecipe: SourceRecipe | null }>();
+  const childContext = new Map<string, { section: GrocerySection; sourceRecipe: GroceryProjectionChild["sourceRecipe"] }>();
   for (const grocery of week.data.groceries) {
     if (!matchesGroceryFilter(grocery, filter)) continue;
     const meal = mealById.get(grocery.mealId);
@@ -63,14 +62,10 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
       unit: ingredient.unit,
       source: ingredient.source,
       role: ingredient.role,
-      // A household concept can share a safe quantity total only when its
-      // shopping-relevant form is the same. The quantity kernel remains the
-      // sole converter; this presentation key merely prevents qualifiers from
-      // being silently laundered into one purchase requirement.
-      concept: concept ? { id: `${concept.id}\u0000${ingredient.qualifier ?? ""}`, label: concept.preferredLabel } : null,
+      concept: concept ? { id: concept.id, label: concept.preferredLabel } : null,
       execution: { id: grocery.id, section: grocery.section, coverage: grocery.coverage, checked: grocery.checked },
     });
-    childContext.set(grocery.id, { section: grocery.section, sourceRecipe: meal.sourceRecipe ?? null });
+    childContext.set(grocery.id, { section: grocery.section, sourceRecipe: meal.sourceRecipe ? { kind: meal.sourceRecipe.kind, identity: meal.sourceRecipe.identity, revision: meal.sourceRecipe.kind === "canonical" ? meal.sourceRecipe.revision : null } : null });
   }
   const grouped = projectWeeklyGroceryRequirements(occurrences);
   const sections = new Map<GrocerySection, GroceryPresentationGroup[]>();
@@ -92,7 +87,11 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
       } else list.push({ key: `unclassified:${section}`, label: "Unclassified", conceptId: null, quantities: [], provenanceCount: children.length, children: [...children] });
       continue;
     }
-    sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId.split("\u0000", 1)[0], quantities: group.quantities, provenanceCount: children.length, children });
+    const qualifiers = new Set(children.map((child) => child.qualifier ?? ""));
+    const quantities = qualifiers.size > 1
+      ? children.map((child) => ({ kind: "literal" as const, literal: child.amount.source ?? [child.amount.amount, child.amount.unit].filter(Boolean).join(" "), reason: "incompatible" as const }))
+      : group.quantities;
+    sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId, quantities, provenanceCount: children.length, children });
   }
   return { filter, sections: SECTIONS.map((section) => ({ section, groups: sections.get(section)! })).filter((section) => section.groups.length) };
 }
