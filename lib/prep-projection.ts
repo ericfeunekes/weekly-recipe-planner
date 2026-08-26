@@ -20,9 +20,11 @@ export type PrepIngredientOccurrence = {
   mealTitle: string;
   stepId: string;
   ingredientId: string;
+  source: string | null;
   amount: string;
   unit: string | null;
   ingredient: string;
+  qualifier: string | null;
 };
 
 export type PrepSourceProvenance = {
@@ -128,9 +130,11 @@ function projectSources(week: WeekPlan | undefined, sources: readonly Source[]):
         mealTitle: location.meal.title,
         stepId: source.stepId,
         ingredientId,
+        source: ingredient.source,
         amount: ingredient.amount,
         unit: ingredient.unit,
         ingredient: ingredient.ingredient,
+        qualifier: ingredient.qualifier,
       };
       ingredients.push(occurrence);
       allOccurrences.push(occurrence);

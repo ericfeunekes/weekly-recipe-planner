@@ -1,6 +1,6 @@
 import { Check } from "lucide-react";
 
-import type { IngredientAmountLine, InstructionStep } from "@/lib/household-contract";
+import type { IngredientAmountLine, InstructionStep, Meal } from "@/lib/household-contract";
 import {
   ingredientOccurrenceDisplayText,
   isGroceryRequirementRole,
@@ -36,7 +36,8 @@ export function RecipeIngredientList({
       <div className="step-inputs">
         {items.map((item, index) => (
           <span key={"occurrenceId" in item && typeof item.occurrenceId === "string" ? `${item.occurrenceId}:${index}` : `${item.amount}-${item.ingredient}-${index}`}>
-            <strong>{item.amount}</strong> {item.ingredient}
+            {"source" in item && typeof item.source === "string" && item.source ? <span className="block text-[11px] text-[var(--ink-soft)]">{item.source}</span> : null}
+            <span>{ingredientOccurrenceDisplayText({ ...item, source: null })}</span>
           </span>
         ))}
       </div>
@@ -86,11 +87,16 @@ export function RecipeProvenance({ meal }: { meal: { sourceRecipe?: { kind: stri
  * The stable instruction copy and ingredient-input block shared by Day, Prep,
  * and recipe summaries. Contexts add their own checkbox, timer, and actions.
  */
-export function RecipeInstructionContent({ step }: { step: InstructionStep }) {
+export function RecipeInstructionContent({ step, meal }: { step: InstructionStep; meal: Meal }) {
+  const ingredientsById = new Map(meal.ingredients.map((ingredient) => [ingredient.id, ingredient]));
+  const inputs = step.inputs.map((input) => {
+    const occurrence = ingredientsById.get(input.occurrenceId);
+    return occurrence ? { ...occurrence, amount: input.amount, ingredient: input.ingredient } : input;
+  });
   return (
     <div className="instruction-line-content">
       <p className="step-instruction">{step.instruction}</p>
-      <RecipeIngredientList items={step.inputs} variant="step" />
+      <RecipeIngredientList items={inputs} variant="step" />
     </div>
   );
 }
