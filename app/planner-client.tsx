@@ -1696,7 +1696,7 @@ function PlannerAppContent() {
           })}
         </nav>
 
-        <main className={`app-main max-[700px]:!m-0 max-[700px]:!flex max-[700px]:!h-[calc(100dvh-138px)] max-[700px]:!flex-col max-[700px]:!overflow-hidden ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
+        <main className={`app-main max-[700px]:!m-0 max-[700px]:!flex max-[700px]:!h-[calc(100dvh-138px)] max-[700px]:!flex-col max-[700px]:!overflow-hidden [@media(max-width:700px)_and_(max-height:500px)]:!h-auto [@media(max-width:700px)_and_(max-height:500px)]:!overflow-visible ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
           {authorityNotice ? (
             <AuthorityNotice
               notice={authorityNotice}
@@ -1746,8 +1746,8 @@ function PlannerAppContent() {
             ) : null}
           </div>
 
-          <div className="workspace max-[700px]:!min-h-0 max-[700px]:!flex-1">
-            <section ref={primaryWorkspaceRef} className="primary-workspace max-[700px]:!h-full max-[700px]:!overflow-y-auto max-[700px]:[overscroll-behavior:contain]">
+          <div className="workspace max-[700px]:!min-h-0 max-[700px]:!flex-1 [@media(max-width:700px)_and_(max-height:500px)]:!flex-none">
+            <section ref={primaryWorkspaceRef} className="primary-workspace max-[700px]:!h-full max-[700px]:!overflow-y-auto max-[700px]:[overscroll-behavior:contain] [@media(max-width:700px)_and_(max-height:500px)]:!h-auto">
               {!week ? (
                 <section className="lifecycle-surface empty-workspace">
                   <CalendarDays size={30} />
@@ -1773,7 +1773,11 @@ function PlannerAppContent() {
                     onRecoveryDraftChange={updatePlannerRecoveryDraft}
                     restoreFocusRef={mealTriggerRef}
                     {...plannerAuthorityRecovery}
-                    onClose={() => void routerNavigate({ to: weekPath(week.id) })}
+                    onClose={() => void routerNavigate({ to: weekPath(week.id) }).then(() => {
+                      window.requestAnimationFrame(() => document.querySelector<HTMLElement>(
+                        `[data-meal-id="${CSS.escape(selectedMeal.id)}"] .meal-card-primary`,
+                      )?.focus({ preventScroll: true }));
+                    })}
                   />
               ) : resolvedLocation.kind === "closeout" ? (
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} formatCalendarDate={formatCalendarDate} />
@@ -1953,7 +1957,7 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate }: {
                 <strong>{Number(date.slice(-2))}</strong>
               </div>
               {week.data.meals.filter((item) => item.date === date).map((meal) => (
-                  <article key={meal.id} className="meal-card" aria-label={`${meal.title} on ${dayName(date)}`}>
+                  <article key={meal.id} className="meal-card" data-meal-id={meal.id} aria-label={`${meal.title} on ${dayName(date)}`}>
                     <button
                       className="meal-card-primary"
                       type="button"
