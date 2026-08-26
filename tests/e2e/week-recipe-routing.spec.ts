@@ -166,6 +166,24 @@ test("unavailable Groceries returns to the selected Week", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
 });
 
+test("switching Grocery weeks resets local filter and selection state", async ({ page }) => {
+  await resetPlanner(page);
+  const workspace = await (await page.request.get("/api/workspace")).json() as RouteFixture;
+  const fixture = structuredClone(workspace);
+  const source = fixture.state.weeks[0];
+  fixture.state.weeks.push({ ...structuredClone(source), id: "2026-07-13" });
+  await page.route("**/api/workspace", async (route) => route.fulfill({ json: fixture }));
+  await page.reload();
+  await page.getByRole("button", { name: "Groceries", exact: true }).click();
+  await page.getByRole("radio", { name: "All", exact: true }).click();
+  await page.locator(".grocery-row .grocery-item-copy").first().click({ position: { x: 1, y: 1 } });
+  await expect(page.getByTestId("grocery-selection-toolbar")).toBeVisible();
+  await page.getByRole("combobox", { name: "Selected week" }).selectOption("2026-07-13");
+  await expect(page).toHaveURL("/weeks/2026-07-13/groceries");
+  await expect(page.getByRole("radio", { name: "To buy", exact: true })).toBeChecked();
+  await expect(page.getByTestId("grocery-selection-toolbar")).toHaveCount(0);
+});
+
 test("D4 source links keep three same-date meal identities and Recipe context exact", async ({ page }) => {
   await resetPlanner(page);
   const workspace = await (await page.request.get("/api/workspace")).json() as RouteFixture;
