@@ -412,9 +412,9 @@ test.describe.serial("family dinner authority", () => {
 
     const harissaPrepA = prepStep(pageA, "Coat the chicken with harissa");
     await openPrepRecipeSummary(harissaPrepA);
-    const prepRecipeSummary = pageA.getByRole("dialog", { name: "Harissa chicken traybake" });
-    await expect(prepRecipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
-    await prepRecipeSummary.getByTitle("Close", { exact: true }).click();
+    await expect(pageA.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+    await expect(pageA.locator(".meal-drawer").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
+    await pageA.getByTitle("Back to Week").click();
 
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     const mealDrawer = pageA.locator(".meal-drawer");

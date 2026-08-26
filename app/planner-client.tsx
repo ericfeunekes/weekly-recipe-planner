@@ -3442,6 +3442,10 @@ function MealDrawer(props: {
           <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={addOccurrence}><Plus size={15} /> Add ingredient</PlannerActionButton>
           <FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} />
         </section>
+        <section className="snapshot-section" aria-labelledby="meal-grocery-execution-heading">
+          <div className="section-title"><ShoppingBasket size={16} /><h3 id="meal-grocery-execution-heading">Grocery execution</h3></div>
+          <MealIngredientList meal={meal} week={week} disabled={disabled} mutate={mutate} />
+        </section>
         <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" disabled={archived} rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => editRecipeField("notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
         <div className="field-grid">
           <label><span>Prep note</span><textarea aria-label="Prep note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => editRecipeField("prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>

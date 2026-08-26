@@ -351,7 +351,7 @@ test("Recipe is inline while history and Codex retain the short-viewport modal o
   await expect.poll(() => page.locator("body").evaluate((body) => body.style.overflow)).toBe("");
 });
 
-test("archived weeks expose no editable recipe, prep, or grocery drafts", async ({ page }) => {
+test("archived weeks reject Recipe routes and expose no editable prep or grocery drafts", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies an active week to archive.");
   await page.setViewportSize({ width: 1280, height: 900 });
   await resetPlanner(page);
@@ -360,18 +360,8 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   await expect(page.getByRole("heading", { name: "Week archived" })).toBeVisible();
 
   await openFirstRecipe(page);
-  const recipe = page.locator(".meal-drawer");
-  await expect(recipe).toBeVisible();
-  const recipeDrafts = recipe.locator("input:not([type=checkbox]), textarea");
-  expect(await recipeDrafts.count()).toBeGreaterThan(0);
-  expect(await recipeDrafts.evaluateAll((controls) =>
-    controls.every((control) => (control as HTMLInputElement | HTMLTextAreaElement).disabled),
-  )).toBe(true);
-  await expect(recipe.getByLabel(/Meal date for /)).toBeDisabled();
-  await expect(recipe.getByText("Add note or ask Codex")).toHaveCount(0);
-  await expect(recipe.getByRole("button", { name: "Add instruction" })).toHaveCount(0);
-  await assertAccessible(page, `${fixtureId}-archived-recipe`, "desktop-1280x900");
-  await page.getByTitle("Back to Week").click();
+  await expect(page.getByText("That recipe is unavailable for this week.", { exact: true })).toBeVisible();
+  await expect(page.locator(".meal-drawer")).toHaveCount(0);
 
   await openView(page, "Prep");
   await expect(page.getByRole("button", { name: "Add to prep" })).toHaveCount(0);
@@ -416,12 +406,12 @@ test("recipe-derived groceries and read-only prep recipe summaries keep their ac
   const recipeName = (await recipeMenuItem.textContent())?.trim();
   expect(recipeName).toBeTruthy();
   await recipeMenuItem.click();
-  const recipeSummary = page.getByRole("dialog", { name: recipeName! });
-  await expect(recipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
-  await expect(recipeSummary.getByRole("textbox", { name: "Title", exact: true })).toHaveCount(0);
-  await expect(recipeSummary.getByRole("button", { name: "Save recipe details" })).toHaveCount(0);
-  await expectNoHorizontalContentEscape(page, recipeSummary);
-  await recipeSummary.getByTitle("Close").click();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+  const recipe = page.locator(".meal-drawer");
+  await expect(recipe.getByRole("heading", { name: recipeName! })).toBeVisible();
+  await expectNoHorizontalContentEscape(page, recipe);
+  await page.getByTitle("Back to Week").click();
+  await openView(page, "Prep");
   const prepRow = firstPrepStep;
   await expect(prepRow).toBeVisible();
   await expectNoHorizontalContentEscape(page, prepRow);
@@ -452,14 +442,10 @@ test("grocery source filters and dinner links remain compact and actionable on p
   expect(await groceryRow.locator(".grocery-check").boundingBox()).toMatchObject({ width: 44, height: 44 });
 
   await groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true }).click();
-  const recipeSummary = page.getByRole("dialog", { name: "Harissa chicken traybake" });
-  await expect(recipeSummary).toBeVisible();
-  await expect(recipeSummary.getByText("Recipe summary", { exact: true })).toBeVisible();
-  await expect(recipeSummary.getByRole("textbox")).toHaveCount(0);
-  await expect(recipeSummary.getByRole("button", { name: "Save recipe details", exact: true })).toHaveCount(0);
-  await expectNoHorizontalContentEscape(page, recipeSummary);
-  await recipeSummary.getByTitle("Close").click();
-  await expect(groceryRow.getByRole("button", { name: "Harissa chicken traybake", exact: true })).toBeFocused();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+  await expect(page.locator(".meal-drawer").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
+  await page.getByTitle("Back to Week").click();
+  await openView(page, "Groceries");
 
   await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
   await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
