@@ -7,13 +7,19 @@ async function resetPlanner(request: APIRequestContext) {
   expect(response.ok()).toBe(true);
 }
 
-async function openPreview(page: Page, path = "/?codexPreview=1") {
+async function openPreview(page: Page, path = "/?codexPreview=1", openRail = true) {
   await page.goto(path);
   const setup = page.getByRole("heading", { name: "Set up this planner once" });
   const planner = page.getByText("Family dinner planner");
   await expect(setup.or(planner)).toBeVisible();
   if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
   await expect(planner).toBeVisible();
+  if (openRail) {
+    const closeCodex = page.getByRole("button", { name: "Close Codex" });
+    if (await closeCodex.isVisible()) await closeCodex.click();
+    await page.getByRole("button", { name: "Open Codex" }).click();
+    await expect(page.getByRole("complementary", { name: "Codex task" })).toBeVisible();
+  }
 }
 
 async function openNative(page: Page) {
@@ -309,7 +315,7 @@ test.describe("native Codex thread rail", () => {
 
   test("the same native rail opens in the mobile dialog without legacy chat controls", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await openPreview(page);
+    await openPreview(page, "/?codexPreview=1", false);
 
     const trigger = page.getByRole("button", { name: "Open Codex" });
     await trigger.click();

@@ -33,6 +33,9 @@ async function resetPlanner(page: Page): Promise<void> {
     await page.getByRole("button", { name: "Start Fresh" }).click();
   }
   await expect(brand).toBeVisible();
+  const closeCodex = page.getByRole("button", { name: "Close Codex" });
+  if (await closeCodex.isVisible()) await closeCodex.click();
+  await expect(page.getByRole("button", { name: "Open Codex" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
 }
 
@@ -288,6 +291,9 @@ test("all primary views and chat remain contained and accessible", async ({ page
     if (mobile) {
       await page.keyboard.press("Escape");
       await expect(chat).toHaveCount(0);
+    } else {
+      await page.getByRole("button", { name: "Close Codex" }).click();
+      await expect(page.getByRole("button", { name: "Open Codex" })).toBeVisible();
     }
   }
 });

@@ -326,6 +326,11 @@ function expectInjectedTransportNoise(
 }
 
 test.describe.serial("family dinner authority", () => {
+  test.beforeEach(async ({ request }) => {
+    const reset = await request.post(`${controlOrigin}/reset`);
+    expect(reset.ok()).toBe(true);
+  });
+
   test("two clients complete the exact dinner workflow through graceful restart and transport loss", async ({ browser }) => {
     test.setTimeout(300_000);
     const contextA = await browser.newContext({ viewport: { width: 1440, height: 700 } });
