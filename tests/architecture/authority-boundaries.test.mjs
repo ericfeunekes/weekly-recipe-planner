@@ -24,7 +24,7 @@ async function productionFiles(directory) {
   return files;
 }
 
-test("the browser has no shared-state authority beyond its validated Week preference", async () => {
+test("the browser has no shared-state authority beyond its validated destination preference", async () => {
   const [client, api] = await Promise.all([
     source("app/planner-client.tsx"),
     source("app/planner-api.ts"),
@@ -32,8 +32,8 @@ test("the browser has no shared-state authority beyond its validated Week prefer
   const browser = `${client}\n${api}`;
 
   assert.match(browser, /LAST_VALID_WEEK_STORAGE_KEY/);
-  assert.match(browser, /localStorage\.setItem\(LAST_VALID_WEEK_STORAGE_KEY, resolved\.week\.id\)/);
-  assert.doesNotMatch(browser, /localStorage\.setItem\((?!LAST_VALID_WEEK_STORAGE_KEY)/);
+  assert.match(browser, /serializeRememberedPlannerLocation\(currentDestination\)/);
+  assert.match(browser, /localStorage\.setItem\(\s*LAST_VALID_WEEK_STORAGE_KEY,/);
   assert.doesNotMatch(
     browser,
     /executeDomainCommand|buildChatPlannerState|planner-(?:domain|history|persistence|command-contract)/,

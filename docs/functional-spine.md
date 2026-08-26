@@ -54,17 +54,21 @@ The canonical first navigation contract is:
 - `/weeks/<weekId>/groceries` opens that Week's Groceries workspace.
 - `/weeks/<weekId>/closeout` opens that Week's Closeout workspace.
 - A copied canonical URL loads, reloads, and participates in browser
-  back/forward as that same requested Week or Recipe after the current household
-  workspace is available.
+  back/forward as that same requested Week, Recipe, Prep, Groceries, or Closeout
+  destination after the current household workspace is available. Week switching
+  retains Prep, Groceries, or Closeout; switching from Recipe opens the target
+  Week rather than selecting a different meal.
 
 The location is a request for a planner presentation, never a planner mutation
 or an alternative record of household state. The current workspace remains the
 authority that determines whether the requested Week exists and whether the
 requested Recipe belongs to it. A direct valid URL takes precedence over any
 remembered browser context. Without a direct planner location, reopening the
-app returns to the last valid selected-week workspace used on that browser and
+app returns to the last valid selected-week destination used on that browser and
 replaces the root address with that canonical URL; if none remains valid, it
-replaces the root address with the existing authoritative default Week.
+replaces the root address with the existing authoritative default Week. This
+small browser preference contains only a validated destination identity, never
+workspace data, local controls, or Codex state.
 
 Malformed, unavailable, or deleted Week locations replace the address with the
 canonical valid default only after workspace readback rather than allowing raw
@@ -83,10 +87,12 @@ multi-selection, drag state, drafts, timers, history, and modal/detail state
 remain presentation state unless a later requirement explicitly promotes one
 to URL identity.
 
-Meal Detail, recipe-summary and other modal state, timers, history, Codex
-thread selection, and transient controls remain outside the routing contract.
-In particular, the one app-wide selected top-level Codex thread is not a URL
-parameter and does not change when a planner location is opened.
+Recipe is the one exact-meal execution destination; it is not a top-level
+schedule item or a modal alternative. Timers, history, Codex thread selection,
+and transient controls remain outside the routing contract. In particular, the
+one app-wide selected top-level Codex thread is not a URL parameter and does
+not change when a planner location is opened. Day has no retained route or
+browser fallback.
 
 ## Data Model
 

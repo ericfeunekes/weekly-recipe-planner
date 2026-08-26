@@ -11,7 +11,6 @@ import {
   Circle,
   ClipboardCheck,
   Clock3,
-  CookingPot,
   Copy,
   EllipsisVertical,
   GripVertical,
@@ -90,7 +89,6 @@ import {
   type BootstrapWorkspaceRequest,
   type InitializedWorkspace,
   type PlannerEvent,
-  type PlannerCommandDecision,
   type UndoLatestRequest,
   type WorkspaceResponse,
 } from "@/lib/planner-api-contract";
@@ -130,11 +128,14 @@ import {
   LAST_VALID_WEEK_STORAGE_KEY,
   closeoutPath,
   groceriesPath,
+  parseRememberedPlannerLocation,
   parsePlannerLocation,
+  plannerLocationPath,
   prepPath,
   recipePath,
+  rememberedPlannerLocation,
   resolvePlannerLocation,
-  resolveRememberedWeekId,
+  serializeRememberedPlannerLocation,
   weekPath,
 } from "./planner-routing";
 import { CodexThreadRail } from "./codex-thread-rail";
@@ -143,7 +144,7 @@ import { RecipeIngredientList, RecipeInstructionContent, RecipeProvenance } from
 import { PrepView } from "@/components/planner-ui/prep-view";
 import { CloseoutView } from "@/components/planner-ui/closeout-view";
 import { GroceryView } from "@/components/planner-ui/grocery-view";
-import { SegmentedControl, type SegmentedOption } from "@/components/planner-ui/segmented-control";
+import { SegmentedControl } from "@/components/planner-ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -766,10 +767,9 @@ const plannerRecipeRoute = createRoute({ getParentRoute: () => plannerRootRoute,
 const plannerPrepRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/prep" });
 const plannerGroceriesRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/groceries" });
 const plannerCloseoutRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/closeout" });
-const plannerLegacyDayRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/day/$date" });
 function createPlannerRouter() {
   return createRouter({
-    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerPrepRoute, plannerGroceriesRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
+    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerPrepRoute, plannerGroceriesRoute, plannerCloseoutRoute]),
     basepath: import.meta.env?.BASE_URL === "/" ? undefined : import.meta.env?.BASE_URL?.replace(/\/$/u, ""),
   });
 }
@@ -800,7 +800,7 @@ function PlannerAppContent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const routerNavigate = useNavigate();
   const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
-  const selectedWeekId = location.kind === "week" || location.kind === "prep" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "closeout" || location.kind === "legacy-day"
+  const selectedWeekId = location.kind === "week" || location.kind === "prep" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "closeout"
     ? location.weekId
     : null;
   const queryClient = useQueryClient();
@@ -808,9 +808,6 @@ function PlannerAppContent() {
   const [initialError, setInitialError] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [clockNow, setClockNow] = useState(() => Date.now());
-  const [view, setView] = useState<PlannerView>("week");
-  const [legacyFocus, setLegacyFocus] = useState<{ weekId: WeekId; date: IsoDate } | null>(null);
-  const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [timersOpen, setTimersOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -977,17 +974,7 @@ function PlannerAppContent() {
 
   const plannerRetry = pendingRetries.find((retry) => pendingRetryChannel(retry) === "planner") ?? null;
   const pendingRetry = plannerRetry;
-  const recipeSummaryMealAvailable = Boolean(
-    recipeSummaryMealId &&
-    workspace?.initialized &&
-    (
-      workspace.state.weeks.find((item) => item.id === selectedWeekId) ??
-      workspace.state.weeks.at(-1)
-    )?.data.meals.some((meal) => meal.id === recipeSummaryMealId),
-  );
-  const activeOverlay = recipeSummaryMealAvailable
-    ? "recipe-summary"
-    : historyOpen && workspace?.initialized
+  const activeOverlay = historyOpen && workspace?.initialized
       ? "history"
       : mobile && chatOpen && workspace?.initialized
         ? "chat"
@@ -1003,39 +990,27 @@ function PlannerAppContent() {
   }, [syncPendingRetries]);
 
   const navigate = useCallback((nextView: PlannerView) => {
-    if ((nextView === "prep" || nextView === "groceries" || nextView === "closeout") && selectedWeekId) {
-      setView("week");
-      if (nextView === "prep") {
-        void routerNavigate({ to: prepPath(selectedWeekId) });
-        return;
-      }
-      if (nextView === "groceries") {
-        void routerNavigate({ to: groceriesPath(selectedWeekId) });
-        return;
-      }
-      void routerNavigate({ to: closeoutPath(selectedWeekId) });
-      return;
-    }
-    if ((location.kind === "prep" || location.kind === "groceries" || location.kind === "closeout") && selectedWeekId) {
-      setView(nextView);
-      void routerNavigate({ to: weekPath(selectedWeekId) });
-      return;
-    }
-    setView(nextView);
+    if (!selectedWeekId) return;
+    const path = nextView === "prep"
+      ? prepPath(selectedWeekId)
+      : nextView === "groceries"
+        ? groceriesPath(selectedWeekId)
+        : nextView === "closeout"
+          ? closeoutPath(selectedWeekId)
+          : weekPath(selectedWeekId);
+    void routerNavigate({ to: path });
     setTimersOpen(false);
     primaryWorkspaceRef.current?.scrollTo({ top: 0, behavior: "auto" });
     window.scrollTo({ top: 0, behavior: "auto" });
     window.requestAnimationFrame(() => headingRef.current?.focus());
-  }, [location.kind, routerNavigate, selectedWeekId]);
+  }, [routerNavigate, selectedWeekId]);
 
   const openRecipe = useCallback((weekId: WeekId, mealId: string, trigger?: HTMLElement) => {
     if (trigger) mealTriggerRef.current = trigger;
-    setLegacyFocus(null);
     setRouteNotice(null);
     setHistoryOpen(false);
     setTimersOpen(false);
     setChatOpen(false);
-    setRecipeSummaryMealId(null);
     void routerNavigate({ to: recipePath(weekId, mealId) });
   }, [routerNavigate]);
 
@@ -1094,23 +1069,28 @@ function PlannerAppContent() {
     const authoritativeDefaultWeekId = workspace.state.activeWeekId ??
       workspace.state.weeks.find((week) => weekContainsDate(week.id, today))?.id ??
       workspace.state.weeks.at(-1)?.id ?? null;
-    const fallbackWeekId = resolveRememberedWeekId(
-      workspace.state.weeks,
+    const remembered = parseRememberedPlannerLocation(
       window.localStorage.getItem(LAST_VALID_WEEK_STORAGE_KEY),
-      authoritativeDefaultWeekId,
     );
+    const rememberedResolved = remembered
+      ? resolvePlannerLocation(remembered, workspace.state.weeks, authoritativeDefaultWeekId)
+      : null;
+    const rememberedDestination = rememberedResolved && rememberedResolved.kind !== "unavailable"
+      ? rememberedPlannerLocation(rememberedResolved)
+      : null;
+    const fallbackWeekId = rememberedResolved?.week?.id ?? authoritativeDefaultWeekId;
     const resolved = resolvePlannerLocation(location, workspace.state.weeks, fallbackWeekId);
-    if (resolved.week) window.localStorage.setItem(LAST_VALID_WEEK_STORAGE_KEY, resolved.week.id);
-    if (location.kind === "root" && resolved.week) {
-      void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
+    if (location.kind === "root") {
+      const destination = rememberedDestination ?? rememberedPlannerLocation(resolved);
+      if (destination) void routerNavigate({ to: plannerLocationPath(destination), replace: true });
       return;
     }
-    if (location.kind === "legacy-day" && resolved.kind === "week") {
-      setLegacyFocus({ weekId: resolved.week.id, date: resolved.legacyDate as IsoDate });
-      const frame = window.requestAnimationFrame(() => {
-        void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
-      });
-      return () => window.cancelAnimationFrame(frame);
+    const currentDestination = rememberedPlannerLocation(resolved);
+    if (currentDestination) {
+      window.localStorage.setItem(
+        LAST_VALID_WEEK_STORAGE_KEY,
+        serializeRememberedPlannerLocation(currentDestination),
+      );
     }
     if (resolved.kind === "unavailable") {
       setRouteNotice(resolved.message);
@@ -1564,7 +1544,6 @@ function PlannerAppContent() {
   const selectedMeal = resolvedLocation.kind === "recipe"
     ? resolvedLocation.week.data.meals.find((meal) => meal.id === resolvedLocation.mealId) ?? null
     : null;
-  const recipeSummaryMeal = week?.data.meals.find((meal) => meal.id === recipeSummaryMealId) ?? null;
   const recoveryDraftCommand = plannerRetry?.kind === "planner" &&
       (isMealRecipeRecoveryCommand(plannerRetry.operation.editableDraft) ||
         isHouseholdCommand(plannerRetry.operation.editableDraft))
@@ -1580,7 +1559,9 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const currentView = resolvedLocation.kind === "prep" || resolvedLocation.kind === "groceries" || resolvedLocation.kind === "closeout" ? resolvedLocation.kind : view;
+  const currentView: PlannerView = resolvedLocation.kind === "prep" || resolvedLocation.kind === "groceries" || resolvedLocation.kind === "closeout"
+    ? resolvedLocation.kind
+    : "week";
   const heading = resolvedLocation.kind === "recipe" ? "Recipe" : currentView === "closeout" ? "Close out" : `${currentView[0].toUpperCase()}${currentView.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
@@ -1799,16 +1780,7 @@ function PlannerAppContent() {
                 ) : resolvedLocation.kind === "groceries" ? (
                   <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} onOpenRecipe={openRecipeSummary} />
                 ) : currentView === "week" ? (
-                  <WeekView
-                    week={week}
-                    today={today}
-                    legacyDate={resolvedLocation.kind === "week"
-                      ? (resolvedLocation.legacyDate as IsoDate | null) ??
-                        (legacyFocus?.weekId === week.id ? legacyFocus.date : null)
-                      : null}
-                    onOpenRecipeSummary={openRecipeSummary}
-                    onNavigate={navigate}
-                  />
+                  <WeekView week={week} today={today} onOpenRecipeSummary={openRecipeSummary} onNavigate={navigate} />
                 ) : currentView === "prep" ? (
                   <PrepView
                     key={week.id}
@@ -1854,19 +1826,6 @@ function PlannerAppContent() {
         </nav>
       </div>
 
-      {activeOverlay === "recipe-summary" && recipeSummaryMeal && week ? (
-          <RecipeSummaryDrawer
-            meal={recipeSummaryMeal}
-            week={week}
-            disabled={isReadOnly}
-            mutate={mutate}
-            restoreFocusRef={mealTriggerRef}
-            onClose={() => {
-              setRecipeSummaryMealId(null);
-              mealTriggerRef.current = null;
-            }}
-          />
-        ) : null}
       {activeOverlay === "history" ? (
           <HistoryDrawer
             workspace={initialized}
@@ -1947,38 +1906,29 @@ function MealEditorTrigger({
   return <PlannerActionButton className={className} tone={tone} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</PlannerActionButton>;
 }
 
-function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: {
+function WeekView({ week, today, onOpenRecipeSummary, onNavigate }: {
   week: WeekPlan;
   today: IsoDate;
-  legacyDate: IsoDate | null;
   onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
   onNavigate: (view: PlannerView) => void;
 }) {
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   const [visibleDayCount, setVisibleDayCount] = useState<1 | 3 | 5 | 7>(7);
   const [windowStart, setWindowStart] = useState(0);
-  const legacyDayRef = useRef<HTMLDivElement>(null);
-  const displayedDayCount = legacyDate ? 7 : visibleDayCount;
-  const displayedWindowStart = legacyDate ? 0 : windowStart;
-  const maxWindowStart = dates.length - displayedDayCount;
-  const visibleDates = dates.slice(displayedWindowStart, displayedWindowStart + displayedDayCount);
+  const maxWindowStart = dates.length - visibleDayCount;
+  const visibleDates = dates.slice(windowStart, windowStart + visibleDayCount);
 
   const changeVisibleDayCount = (nextCount: 1 | 3 | 5 | 7) => {
     setVisibleDayCount(nextCount);
     setWindowStart((current) => Math.min(current, dates.length - nextCount));
   };
-  useEffect(() => {
-    if (!legacyDate) return;
-    legacyDayRef.current?.focus();
-  }, [legacyDate]);
-
   return (
     <div className="week-view">
       <div className="week-view-toolbar">
         <span className="week-view-toolbar-label">Show</span>
         <ToggleGroup
           type="single"
-          value={String(displayedDayCount)}
+          value={String(visibleDayCount)}
           onValueChange={(value) => {
             if (value === "1" || value === "3" || value === "5" || value === "7") changeVisibleDayCount(Number(value) as 1 | 3 | 5 | 7);
           }}
@@ -1989,15 +1939,15 @@ function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: 
         >
           {[1, 3, 5, 7].map((count) => <ToggleGroupItem key={count} value={String(count)} aria-label={`Show ${count} ${count === 1 ? "day" : "days"}`}>{count}</ToggleGroupItem>)}
         </ToggleGroup>
-        {displayedDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
-          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={displayedWindowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
-          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={displayedWindowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
+        {visibleDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={windowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={windowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
         </div> : null}
       </div>
-      <div className="week-grid" style={{ "--week-visible-days": displayedDayCount } as React.CSSProperties}>
+      <div className="week-grid" style={{ "--week-visible-days": visibleDayCount } as React.CSSProperties}>
         {visibleDates.map((date) => {
           return (
-            <div key={date} ref={date === legacyDate ? legacyDayRef : undefined} tabIndex={date === legacyDate ? -1 : undefined} className={`day-column ${date === today ? "today" : ""}`}>
+            <div key={date} className={`day-column ${date === today ? "today" : ""}`}>
               <div className="day-heading">
                 <div><span>{dayName(date, "short")}</span>{date === today ? <small>Today</small> : null}</div>
                 <strong>{Number(date.slice(-2))}</strong>
@@ -2763,64 +2713,6 @@ function RecipeSource({ meal }: { meal: Meal }) {
         Open {meal.sourceRecipe.identity} <ChevronRight size={13} aria-hidden="true" />
       </a>
     </p>
-  );
-}
-
-function RecipeSummaryDrawer({
-  meal,
-  week,
-  disabled,
-  mutate,
-  restoreFocusRef,
-  onClose,
-}: {
-  meal: Meal;
-  week: WeekPlan;
-  disabled: boolean;
-  mutate: Mutate;
-  restoreFocusRef: { current: HTMLElement | null };
-  onClose: () => void;
-}) {
-  return (
-    <ModalDrawer title={meal.title} className="recipe-summary-drawer" onClose={onClose} restoreFocusRef={restoreFocusRef}>
-      <div className="drawer-body recipe-summary-body" tabIndex={0} data-autofocus="true" aria-label={`${meal.title} recipe summary`}>
-        <p className="eyebrow">Recipe summary</p>
-        <p className="recipe-summary-meta">{formatCalendarDate(meal.date, { weekday: "long", month: "short", day: "numeric" })} dinner · {meal.venue}</p>
-        {meal.subtitle ? <p className="recipe-summary-subtitle">{meal.subtitle}</p> : null}
-        {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
-        <RecipeSource meal={meal} />
-
-        <section className="snapshot-section">
-          <div className="section-title"><ShoppingBasket size={16} /><h3>Ingredients</h3></div>
-          <MealIngredientList meal={meal} week={week} disabled={disabled} mutate={mutate} emptyClassName="recipe-summary-copy" />
-        </section>
-
-        <section className="snapshot-section">
-          <div className="section-title"><CookingPot size={16} /><h3>Instructions</h3><span>{meal.instructions.length} steps</span></div>
-          {meal.instructions.length ? (
-            <div className="grid gap-0">
-              {meal.instructions.map((step, index) => (
-                <InstructionStepLine
-                  key={step.id}
-                  className="border-b border-border py-3 first:pt-0 last:border-b-0 last:pb-0"
-                  step={step}
-                  meal={meal}
-                  stepNumber={index + 1}
-                  disabled={disabled}
-                  onComplete={(complete) => void mutate({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete })}
-                  onTimerAction={(type) => void mutate({ type, weekId: week.id, stepId: step.id })}
-                />
-              ))}
-            </div>
-          ) : <p className="recipe-summary-copy">No instructions listed.</p>}
-        </section>
-
-        {meal.notes ? <section className="snapshot-section"><div className="section-title"><StickyNote size={16} /><h3>Recipe note</h3></div><p className="recipe-summary-copy">{meal.notes}</p></section> : null}
-        {meal.prepNote ? <section className="snapshot-section"><div className="section-title"><ListChecks size={16} /><h3>Prep note</h3></div><p className="recipe-summary-copy">{meal.prepNote}</p></section> : null}
-        {meal.leftoverNote ? <section className="snapshot-section"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><p className="recipe-summary-copy">{meal.leftoverNote}</p></section> : null}
-      </div>
-      <div className="drawer-footer"><PlannerActionButton tone="secondary" type="button" onClick={onClose}>Close</PlannerActionButton></div>
-    </ModalDrawer>
   );
 }
 

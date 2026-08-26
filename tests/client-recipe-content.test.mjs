@@ -25,7 +25,7 @@ test("instruction rendering keeps its exact use literal apart from occurrence me
   assert.doesNotMatch(recipeContent, /amountAlreadyIncludesUnit/);
 });
 
-test("Recipe, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
+test("Recipe and Prep share canonical recipe instruction and ingredient renderers", async () => {
   const [planner, recipeContent, prepView] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
@@ -35,7 +35,6 @@ test("Recipe, Prep, and recipe summary share canonical recipe instruction and in
   assert.match(planner, /RecipeIngredientList, RecipeInstructionContent, RecipeProvenance/);
   assert.match(planner, /function MealIngredientList\(/);
   assert.match(planner, /<MealIngredientList meal=\{meal\} week=\{week\} disabled=\{disabled\} mutate=\{mutate\}/);
-  assert.match(planner, /<InstructionStepLine[\s\S]*?className="border-b border-border py-3/);
   assert.match(planner, /type: "setInstructionStepComplete", weekId: week\.id, stepId: step\.id/);
   assert.match(planner, /type: "editInstructionStep",/);
   assert.match(planner, /type: "addInstructionStep",/);

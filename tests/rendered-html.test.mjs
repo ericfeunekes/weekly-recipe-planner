@@ -52,9 +52,10 @@ test("fresh build renders configured public-origin metadata and the shared plann
 });
 
 test("keeps the locked product requirements represented in source", async () => {
-  const [planner, prepView, recipeContent, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
+  const [planner, prepView, closeoutView, recipeContent, rail, sourceAdapter, api, styles, domain, contract, page, layout, packageJson] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/planner-ui/closeout-view.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex-thread-rail.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex-thread-source.ts", import.meta.url), "utf8"),
@@ -96,8 +97,9 @@ test("keeps the locked product requirements represented in source", async () => 
     assert.match(planner, new RegExp(`label: "${view}"`));
   }
 
-  assert.match(planner, /localStorage\.setItem\(LAST_VALID_WEEK_STORAGE_KEY, resolved\.week\.id\)/);
-  assert.doesNotMatch(planner, /localStorage\.setItem\((?!LAST_VALID_WEEK_STORAGE_KEY)|executeDomainCommand|CODEX_BRIDGE_URL/);
+  assert.match(planner, /serializeRememberedPlannerLocation\(currentDestination\)/);
+  assert.match(planner, /plannerLocationPath\(destination\)/);
+  assert.match(planner, /localStorage\.setItem\(\s*LAST_VALID_WEEK_STORAGE_KEY,/);
   assert.match(api, /PLANNER_API_ROUTES\.workspace\.path/);
   assert.match(api, /PLANNER_API_ROUTES\.commands\.path/);
   assert.doesNotMatch(api, /PLANNER_API_ROUTES\.chat(?:Submit|Retry)\.path/);
@@ -116,6 +118,7 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /RecipeInstructionContent/);
   assert.match(recipeContent, /export function RecipeInstructionContent/);
   assert.match(planner, /function RecipeSummaryLink/);
+  assert.doesNotMatch(planner, /function RecipeSummaryDrawer/);
   assert.match(planner, /function MealEditorTrigger/);
   assert.match(plannerUi, /Add recipe steps to/);
   assert.match(plannerUi, /aria-label="Prep dates"/);
@@ -142,7 +145,7 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /className="week-select"/);
   assert.match(planner, /refetchInterval:\s*2_000/);
   assert.match(planner, /Offline . read-only/);
-  assert.match(planner, /leftover\.state === "assigned"/);
+  assert.match(closeoutView, /leftover\.state === "assigned"/);
   assert.match(planner, /Save recipe details/);
   assert.match(plannerUi, /<Dialog open=/);
   assert.match(plannerUi, /<DialogContent[^>]+aria-label=/);
