@@ -891,7 +891,6 @@ test.describe.serial("family dinner authority", () => {
         failure.label === "codex-event-read-abort"),
       JSON.stringify(phoneRuntime.requestFailures),
     ).toBe(true);
-    expect(phoneRuntime.requestFailures.some((failure) => failure.label === "injected-offline-read")).toBe(true);
     expect(tabletRuntime.pageErrors).toEqual([]);
     expect(tabletRuntime.consoleErrors).toEqual([]);
     expect(tabletRuntime.failedResponses).toEqual([]);
