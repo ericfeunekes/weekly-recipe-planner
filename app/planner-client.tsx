@@ -72,8 +72,10 @@ import {
   normalizedCoreIngredientLiteral,
   type InstructionInputEdit,
 } from "@/lib/ingredient-occurrence";
-import {  MEAL_STATUSES,
+import {
+  MEAL_STATUSES,
   isPrepSessionCombinedStep,
+  type GroceryItem,
   type InstructionStep,
   type IsoDate,
   type Meal,
@@ -149,6 +151,12 @@ import type { PlannerView } from "./planner-view";
 
 type ConnectionState = "loading" | "online" | "offline";
 type Notice = { tone: "info" | "warning" | "error"; message: string } | null;
+const INGREDIENT_CONCEPT_GROCERY_SECTIONS: GroceryItem["section"][] = [
+  "Produce",
+  "Meat & seafood",
+  "Dairy",
+  "Pantry",
+];
 type WorkspaceQueryData = {
   workspace: WorkspaceResponse;
   serverDate: number | null;
@@ -3247,7 +3255,7 @@ function MealDrawer(props: {
                       vocabulary: current[result.correlationId]?.vocabulary ?? "",
                       defaultSection: event.target.value as GroceryItem["section"],
                     },
-                  }))}>{GROCERY_SECTIONS.map((section) => <option key={section} value={section}>{section}</option>)}</select></label>
+                  }))}>{INGREDIENT_CONCEPT_GROCERY_SECTIONS.map((section) => <option key={section} value={section}>{section}</option>)}</select></label>
                   <label className="full-field"><span>Other accepted names (comma or line separated)</span><input aria-label={`Other accepted names for ${input.ingredient}`} disabled={disabled} value={createdConcepts[result.correlationId]?.vocabulary ?? ""} onChange={(event) => setCreatedConcepts((current) => ({
                     ...current,
                     [result.correlationId]: {
