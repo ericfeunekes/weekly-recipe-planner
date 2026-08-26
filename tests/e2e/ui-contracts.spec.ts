@@ -394,6 +394,7 @@ test("recipe-derived groceries and read-only prep recipe summaries keep their ac
   await resetPlanner(page);
 
   await openView(page, "Groceries");
+  await page.getByRole("radio", { name: "All", exact: true }).click();
   const groceryRow = page.locator(".grocery-row").first();
   await expect(groceryRow).toBeVisible();
   await expectNoHorizontalContentEscape(page, groceryRow);
@@ -402,7 +403,7 @@ test("recipe-derived groceries and read-only prep recipe summaries keep their ac
   await assertAccessible(page, `${fixtureId}-long-grocery`, "boundary-701x840");
 
   await openView(page, "Prep");
-  await page.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).click();
+  await page.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).first().click();
   const firstPrepStep = page.getByTestId("prep-session-step").first();
   await firstPrepStep.getByRole("button", { name: /More options for step / }).click();
   const recipeMenuItem = firstPrepStep.getByRole("menuitem").first();
@@ -450,8 +451,10 @@ test("grocery source filters and dinner links remain compact and actionable on p
   await expect(page.locator(".meal-drawer").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
   await page.getByTitle("Back to Week").click();
   await openView(page, "Groceries");
+  await page.getByRole("radio", { name: "Farm box", exact: true }).click();
+  const returnedGroceryRow = page.locator(".grocery-row").filter({ hasText: /red peppers/i });
 
-  await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+  await returnedGroceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
   await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
   await page.getByRole("button", { name: "Move", exact: true }).click();
   await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 1 ingredient to On hand.");

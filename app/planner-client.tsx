@@ -908,6 +908,7 @@ function PlannerAppContent() {
   const [serverOffset, setServerOffset] = useState(0);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [view, setView] = useState<PlannerView>("week");
+  const [legacyFocus, setLegacyFocus] = useState<{ weekId: WeekId; date: IsoDate } | null>(null);
   const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [timersOpen, setTimersOpen] = useState(false);
@@ -1109,6 +1110,7 @@ function PlannerAppContent() {
 
   const openRecipe = useCallback((weekId: WeekId, mealId: string, trigger?: HTMLElement) => {
     if (trigger) mealTriggerRef.current = trigger;
+    setLegacyFocus(null);
     setRouteNotice(null);
     setHistoryOpen(false);
     setTimersOpen(false);
@@ -1184,6 +1186,7 @@ function PlannerAppContent() {
       return;
     }
     if (location.kind === "legacy-day" && resolved.kind === "week") {
+      setLegacyFocus({ weekId: resolved.week.id, date: resolved.legacyDate as IsoDate });
       const frame = window.requestAnimationFrame(() => {
         void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
       });
@@ -1845,7 +1848,10 @@ function PlannerAppContent() {
                   <WeekView
                     week={week}
                     today={today}
-                    legacyDate={resolvedLocation.kind === "week" ? resolvedLocation.legacyDate as IsoDate | null : null}
+                    legacyDate={resolvedLocation.kind === "week"
+                      ? (resolvedLocation.legacyDate as IsoDate | null) ??
+                        (legacyFocus?.weekId === week.id ? legacyFocus.date : null)
+                      : null}
                     onOpenRecipeSummary={openRecipeSummary}
                     onNavigate={navigate}
                   />
