@@ -223,11 +223,17 @@ files are never overwritten.
 ## Verify
 
 ```bash
+npm ci
+npm run provision:browser
 npm run typecheck
 npm run lint
 npm test
 npm run test:e2e
 ```
+
+In a clean checkout, `npm ci` installs the locked dependencies and
+`npm run provision:browser` installs the locked Playwright Chromium required by
+the release-lifecycle browser boundary inside `npm test`.
 
 `npm test` enforces strict TypeScript, builds the Cloudflare Workers-compatible
 Vinext output, and verifies the rendered site and locked command/view surface.
