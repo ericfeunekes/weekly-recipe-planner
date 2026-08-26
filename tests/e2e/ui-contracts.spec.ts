@@ -316,6 +316,7 @@ test("Recipe is inline while history and Codex retain the short-viewport modal o
   const background = page.locator(".app-shell > div").first();
 
   const mealTrigger = page.locator(".week-view .meal-card-primary").first();
+  const weekUrl = page.url();
   await mealTrigger.click();
   const recipe = page.locator(".meal-drawer");
   await expect(recipe).toBeVisible();
@@ -324,6 +325,7 @@ test("Recipe is inline while history and Codex retain the short-viewport modal o
   await expect(recipe.getByLabel(/Meal date for /)).toBeVisible();
   await assertAccessible(page, `${fixtureId}-recipe-inline`, "short-375x400");
   await page.getByTitle("Back to Week").click();
+  await expect(page).toHaveURL(weekUrl);
   await expect(mealTrigger).toBeFocused();
 
   const historyTrigger = page.getByTitle("Change history");
