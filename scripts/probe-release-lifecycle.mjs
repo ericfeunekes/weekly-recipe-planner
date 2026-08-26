@@ -273,18 +273,21 @@ async function runBrowserJourney(origin, evidenceDirectory, executablePath) {
     assert.equal(workspaceResponse.status(), 200, "browser mounted workspace");
     const workspace = await workspaceResponse.json();
     const week = workspace.state.weeks.find((candidate) => candidate.id === workspace.state.activeWeekId) ?? workspace.state.weeks.at(-1);
-    const meal = week?.data.meals[0];
-    assert.ok(week && meal, "browser mounted dinner fixture");
-    const response = await page.goto(`${origin}/recipe-planner/weeks/${encodeURIComponent(week.id)}/recipes/${encodeURIComponent(meal.id)}`, { waitUntil: "domcontentloaded" });
+    assert.ok(week, "browser mounted Closeout fixture");
+    const closeoutPath = `${origin}/recipe-planner/weeks/${encodeURIComponent(week.id)}/closeout`;
+    const response = await page.goto(closeoutPath, { waitUntil: "domcontentloaded" });
     assert.equal(response?.status(), 200, "browser mounted planner page");
     assert.equal(await page.title(), "Weekly Recipe Planner");
     await page.getByText("Family dinner planner", { exact: true }).waitFor({ state: "visible" });
-    await page.getByRole("heading", { level: 1, name: "Recipe", exact: true }).waitFor({ state: "visible" });
-    await page.getByRole("region", { name: `${meal.title} recipe` }).waitFor({ state: "visible" });
-    assert.equal(await page.getByRole("dialog").count(), 0, "browser Recipe stays inline");
+    await page.getByRole("heading", { level: 1, name: "Close out", exact: true }).waitFor({ state: "visible" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    assert.equal(page.url(), closeoutPath, "browser mounted Closeout reload");
+    await page.getByRole("button", { name: "Week", exact: true }).click();
+    await page.goBack();
+    assert.equal(page.url(), closeoutPath, "browser mounted Closeout back navigation");
     assert.deepEqual({ consoleErrors, failedResponses }, { consoleErrors: [], failedResponses: [] }, "browser network and console errors");
     await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
-    await page.screenshot({ path: join(evidenceDirectory, "mounted-dinner.png"), animations: "disabled" });
+    await page.screenshot({ path: join(evidenceDirectory, "mounted-closeout.png"), animations: "disabled" });
   } finally {
     await browser.close();
   }
