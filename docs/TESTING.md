@@ -211,6 +211,37 @@ Disposable proof covers
 the real predecessor migration, backup equality, restore equality, transition
 ordering after quiescence, and data restoration before fallback bootstrap.
 
+### Approved-week import contract
+
+The approved-week import is one host-owned, versioned, idempotent operation
+over the existing approved week shell. It validates every targeted canonical
+recipe or stable variant at the exact reviewed revision, constructs the complete
+candidate meal snapshots and grocery occurrences, and commits all of them or
+none. Missing, duplicate, unknown, stale, changed-revision, or ineligible
+targets leave the week, grocery rows, events, and planner version unchanged.
+
+Tests cover a realistic multi-day week with sides, repeated ingredients,
+components, long timers, visible units/qualifiers, manual meals, and a stable
+variant; one grocery execution occurrence exists for every imported grocery
+requirement. A lost successful response replays the original result with the
+same native tool-call identity and exact arguments without rereading sources or
+importing twice. The accepted response is the ordinary workflow boundary: tests
+prove persistence/replay and visible projection, but clients and skills add no
+receipt, routine readback, or mandatory UI-inspection ceremony.
+
+Imported meal copies are the dated versions to cook. Explicit culinary edits
+before cooking preserve the pinned source revision and update derived groceries;
+marking a meal cooked freezes those culinary fields and anchors feedback to that
+cooked state. Later culinary edits reject. Any reusable stable variant is an
+explicit later food-workflow promotion, never an automatic mutation of source,
+dated meal history, or planner state.
+
+| Proof cell | Required boundary |
+|---|---|
+| Exact week map | Existing meal occurrence IDs map to root-relative canonical paths and exact reviewed revisions; targeted meals plus explicitly untargeted unsourced manual meals exhaust the week shell, meal IDs remain stable, and an untargeted manual meal with `sourceRecipe` or a canonical source pin rejects alongside missing/duplicate/unknown/revision-mismatched targets with no mutation. |
+| One-call workflow | The meal-planning workflow makes one approved-week import call, trusts its accepted response, and stops with an explicit unavailable/rejected result rather than retrying per meal or adding receipt/readback/UI ceremony. |
+| Dated cooked version | An explicit pre-cook edit updates derived groceries and survives restart and undo; cooking anchors culinary state to its event/version and feedback; later culinary edits reject. Ingredient-concept resolution, grocery coverage/check state, instruction completion and running timer state where applicable, Prep organization, logistics, and feedback remain mutable. No implicit edit enters import. An explicit later food-workflow promotion creates a separately reviewed stable variant without changing source or dated history. |
+
 ## Merge Gate
 
 Every implementation merge must keep these deterministic cells green:
@@ -222,6 +253,7 @@ Every implementation merge must keep these deterministic cells green:
 | HTTP contracts | Real loopback application routes with fake Codex transport | `tests/http-*.test.mjs`, `tests/runtime-*.test.mjs` |
 | Codex wrapper and effect bridge | Native thread/item lifecycle stays Codex-owned; the host persists only selection/effect admission, fences tool replay, and never auto-replays an ambiguous user send | `tests/codex-native-thread-service.test.mjs`, `tests/codex-native-planner-effect.test.mjs`, `tests/integration/native-codex-browser-composition.test.mjs`, and `tests/architecture/legacy-conversation-cutover.test.mjs` |
 | Client contracts | Readback ordering, offline/conflict behavior, draft retention | `tests/client-*.test.mjs` |
+| Week/Recipe routing | TanStack Router is the sole location owner; root and mounted Week/Recipe URLs parse, validate, canonicalize, preserve exact meal occurrence identity, retain requested locations through loading/offline/reconnect, restore a valid selected-week destination, reject the production-origin root alias, handle legacy Day URLs without meal selection, and never synthesize planner state from a URL. | Deterministic route-contract tests plus mounted browser coverage |
 | Architecture closure | No browser/shared-localStorage authority or alternate mutation path | `tests/architecture/**` |
 | Accessibility and fixture capability | Direct Playwright axe integration plus closed D4/D7 runtime seeds | `tests/support/playwright-qa.ts`, `tests/support/e2e-runtime.mjs`, `tests/e2e-runtime-fixtures.test.mjs` |
 | Baseline | Typecheck, production web build, lint, existing unit tests | `npm test`, `npm run lint` |
@@ -314,10 +346,10 @@ does not rewrite the completed family-readiness signoff.
 | Native background workers | One native child agent reports parentage, progress, failure/completion, switch-away-and-back, and read-only drill-down. A child-completed/parent-result-absent fixture cannot fabricate or terminate the top-level assistant reply. The active runtime must prove the worker's exact provider-tool manifest; Codex 0.142.5 gives workers no planner dynamic tools, so cancellation, timeout, out-of-tree identity, and late completion cannot create a worker-owned planner effect. The parent alone may act on a returned worker result. |
 | Skill discovery and provenance | Obsidian-owned food skills resolve through exact production links or private dev/QA copies, while dynamically discovered `$HOME/.agents/skills` entries reach the top-level agent in captured input/readback and live behavior. Any skill guidance actually observed on a worker is inventoried rather than assumed. Food-source changes do not pin the app, and adversarial skill content cannot add tools, RPC methods, grants, or planner commands. |
 | Identity typing | Type-level negatives and runtime cases prove top-level thread, child thread/job, turn, item/call, selection revision, request/idempotency, planner version, and sync revision cannot be interchanged. The normal path contains no Plan/Research discriminator or app-owned transcript contract. |
-| Dynamic planner protocol | Deterministic app-server scenarios prove native turn start/steer plus client-message correlation and exactly `planner.read`, `planner.preview`, `planner.apply`, and `planner.importRecipe` on the owning top-level turn. An ordinary running turn steers; there is no browser grant or approval-decision field. Dependent parent calls consume authoritative results; unknown, duplicate, changed-payload, out-of-tree, timed-out, cancelled, and late calls fail with the specified fencing behavior. |
+| Dynamic planner protocol | Before approved-week host/tool/compatibility activation, deterministic app-server scenarios prove native turn start/steer plus client-message correlation, the existing four-tool planner namespace, and explicit approved-week unavailability with no emulation. On and after that activation, they also prove the all-or-nothing approved-week import operation on the owning top-level turn. An ordinary running turn steers; there is no browser grant or approval-decision field. Dependent parent calls consume authoritative results; unknown, duplicate, changed-payload, out-of-tree, timed-out, cancelled, and late calls fail with the specified fencing behavior. |
 | Planner operation parity | UI, embedded, and global callers exercise the same typed-command registry and mutation authority. One to sixteen ordered operations commit as one version/event/receipt/undo unit or not at all, with authoritative readback and no alternate mutation kernel. |
 | Durable effect lifecycle | Real temporary SQLite tests cover accepted top-level effects, rejection of child-attributed callbacks, crash points before and after commit/tool-response/reply, restart readback, and immutable tool-call replay. The wrapper never auto-replays an ambiguous user send; after effect/reply loss, any household follow-up is an ordinary new native turn over authoritative planner readback. |
-| Unified capability surface | One native top-level thread tree exposes hosted web search, the exact four-tool planner namespace, and skills without a mode/intent switch or hidden research/planner context. It proves an interleaved `planner.read -> web_search -> planner.preview -> planner.apply` path, generated-schema and host-boundary `planner.importRecipe` behavior, a worker-assisted path, and a conversational no-tool path. |
+| Unified capability surface | One native top-level thread tree exposes hosted web search, the planner namespace, and skills without a mode/intent switch or hidden research/planner context. Before approved-week host/tool/compatibility activation, it proves the existing four-tool surface and explicit approved-week unavailability without emulation; on and after activation, it also proves generated-schema and host-boundary approved-week import behavior. It always proves an interleaved `planner.read -> web_search -> planner.preview -> planner.apply` path, single-meal import behavior, a worker-assisted path, and a conversational no-tool path. |
 | Web-assisted planning | Hostile/malformed web content may influence reasoning but cannot escape planner schemas, versions, idempotency, protected-state rules, or fixed authority. A real turn binds a completed search observation, informational source reference, accepted effects, and second-client readback without a cross-context candidate or false provenance claim. |
 | No semantic cache | Static ownership checks and deterministic stale-state cases prove there is no native-history/planner/search semantic cache: switches/reconnects read Codex, planner changes force current read/OCC, an explicit search refresh reaches hosted search again, and only immutable idempotency replay returns a stored decision. |
 | Availability and loss | Missing/malformed home, expired auth, history-read/search/app-server/worker/tool failure, restart, and incompatible update leave planner read/write and Global UDS available. Recoverable transport re-reads native history; a readable historical thread that cannot accept the active surface remains visible/unavailable-to-send beside a usable thread, and either can be selected without planner damage or hidden replacement. |

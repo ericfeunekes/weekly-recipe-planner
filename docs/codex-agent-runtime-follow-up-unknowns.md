@@ -26,13 +26,13 @@ Gate status: **CLOSED FOR THE SUPERSEDED CANDIDATE** — every old planning-bloc
 The following current requirements override every conflicting disposition below:
 
 - one selected persistent native top-level thread is shown at a time, while native history may contain many listable/readable/selectable/creatable/archivable threads;
-- one composer has hosted web search, skills, planner `read`/`preview`/`apply`, and native worker orchestration without a Plan/Research intent or context split;
+- one composer has hosted web search, skills, ordinary planner `read`/`preview`/`apply`, the current single-meal import, and native worker orchestration without a Plan/Research intent or context split; approved-week import remains unavailable pending its host/tool activation gate;
 - reasoning summaries and stable human-friendly activity labels are exposed, but raw reasoning is not;
 - workers perform bounded research/reasoning and return results to the parent; they do not receive planner dynamic tools or directly create planner effects;
 - listed-option `request_user_input` questions are answerable exactly once through a host-owned no-free-form channel; approval requests are separately typed, immediately rejected, and exposed only as sanitized non-actionable notices; and
 - the backend owns native history, selected-thread OCC, start-versus-steer, interrupt, interactions, and app-server compatibility; the separately owned UI only consumes that surface.
 
-The remaining sections preserve evidence about the old candidate. Their historical answers, closures, and implementation descriptions are evidence, not instructions for current code.
+The remaining sections preserve evidence about the old candidate. Their historical answers, closures, and implementation descriptions are evidence, not instructions for current code. In particular, their three-tool and single-recipe-import descriptions do not define the intended approved-week import contract; it remains unavailable until the host/tool gate in [`docs/codex-agent-runtime-follow-up-phase.md`](codex-agent-runtime-follow-up-phase.md) passes. [`docs/functional-spine.md`](functional-spine.md) and [`docs/TESTING.md`](TESTING.md) own the intended behavior and proof.
 
 Workspace note: the Git/package root is `site/` inside the shared checkout. Resolver and implementation evidence uses that current worktree, preserves concurrent family-readiness changes, and did not mutate authentication state.
 
