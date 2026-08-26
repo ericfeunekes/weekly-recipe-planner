@@ -1828,10 +1828,6 @@ function PlannerAppContent() {
                     week={week}
                     today={today}
                     ingredientCatalogue={initialized.state.ingredientCatalogue}
-                    legacyDate={resolvedLocation.kind === "week"
-                      ? (resolvedLocation.legacyDate as IsoDate | null) ??
-                        (legacyFocus?.weekId === week.id ? legacyFocus.date : null)
-                      : null}
                     onOpenRecipeSummary={openRecipeSummary}
                     onNavigate={navigate}
                   />
@@ -1960,22 +1956,18 @@ function MealEditorTrigger({
   return <PlannerActionButton className={className} tone={tone} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</PlannerActionButton>;
 }
 
-function WeekView({ week, today, ingredientCatalogue, legacyDate, onOpenRecipeSummary, onNavigate }: {
+function WeekView({ week, today, ingredientCatalogue, onOpenRecipeSummary, onNavigate }: {
   week: WeekPlan;
   today: IsoDate;
   ingredientCatalogue: import("@/lib/household-contract").IngredientCatalogue;
-  legacyDate: IsoDate | null;
   onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
   onNavigate: (view: PlannerView) => void;
 }) {
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   const [visibleDayCount, setVisibleDayCount] = useState<1 | 3 | 5 | 7>(7);
   const [windowStart, setWindowStart] = useState(0);
-  const legacyDayRef = useRef<HTMLDivElement>(null);
-  const displayedDayCount = legacyDate ? 7 : visibleDayCount;
-  const displayedWindowStart = legacyDate ? 0 : windowStart;
-  const maxWindowStart = dates.length - displayedDayCount;
-  const visibleDates = dates.slice(displayedWindowStart, displayedWindowStart + displayedDayCount);
+  const maxWindowStart = dates.length - visibleDayCount;
+  const visibleDates = dates.slice(windowStart, windowStart + visibleDayCount);
   const groceryCue = projectGroceryRequirements(week, ingredientCatalogue, "all").sections.flatMap((section) => section.groups.flatMap((group) => group.children)).reduce((counts, child) => {
     const key = child.coverage === "shop" ? child.checked ? "Bought" : "To buy" : child.coverage === "farm_box" ? "Farm box" : child.coverage === "on_hand" ? "On hand" : "Needs source";
     counts[key] = (counts[key] ?? 0) + 1;
