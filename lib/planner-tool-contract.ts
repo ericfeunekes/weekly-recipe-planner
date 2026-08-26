@@ -19,6 +19,7 @@ import {
   validateHouseholdState,
 } from "./household-domain.ts";
 import { createCoreIngredientCatalogue, isIngredientCandidatePreview } from "./ingredient-catalogue.ts";
+import { projectGroceryRequirements, type GroceryFilter, type GroceryProjection } from "./grocery-projection.ts";
 import type {
   InitializedWorkspace,
   PlannerEvent,
@@ -55,6 +56,7 @@ export type ReadQuery =
   | { kind: "workspace" }
   | { kind: "week"; weekId: string }
   | { kind: "meal"; weekId: string; mealId: string }
+  | { kind: "grocery"; weekId: string; filter: GroceryFilter }
   | { kind: "catalogue"; offset: number }
   | { kind: "history"; afterSequence?: number; limit: number };
 
@@ -153,6 +155,7 @@ export type PlannerReadProjection =
       weeks: Array<{ id: string; weekStartDate: string; status: string }>;
       ingredientCatalogue: PlannerIngredientCataloguePage;
     }
+  | { kind: "grocery"; grocery: GroceryProjection }
   | { kind: "week"; week: InitializedWorkspace["state"]["weeks"][number]; ingredientCatalogue: PlannerIngredientCataloguePage }
   | {
       kind: "meal";
@@ -228,6 +231,16 @@ const readQuerySchema = {
       properties: {
         kind: { type: "string", const: "catalogue" },
         offset: { type: "integer", minimum: 0 },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "weekId", "filter"],
+      properties: {
+        kind: { type: "string", const: "grocery" },
+        weekId: { type: "string", minLength: 1, maxLength: 200 },
+        filter: { type: "string", enum: ["to_buy", "all", "needs_source", "shop", "farm_box", "on_hand", "done"] },
       },
     },
     {
@@ -474,6 +487,9 @@ export function isReadQuery(value: unknown): value is ReadQuery {
     case "meal":
       return hasExactKeys(value, ["kind", "weekId", "mealId"]) &&
         isBoundedId(value.weekId) && isBoundedId(value.mealId);
+    case "grocery":
+      return hasExactKeys(value, ["kind", "weekId", "filter"]) && isBoundedId(value.weekId) &&
+        ["to_buy", "all", "needs_source", "shop", "farm_box", "on_hand", "done"].includes(value.filter as GroceryFilter);
     case "catalogue":
       return hasExactKeys(value, ["kind", "offset"]) && Number.isSafeInteger(value.offset) && Number(value.offset) >= 0;
     case "history":
@@ -666,6 +682,10 @@ export function projectPlannerRead(
       const week = workspace.state.weeks.find((candidate) => candidate.id === query.weekId);
       const meal = week?.data.meals.find((candidate) => candidate.id === query.mealId);
       return meal ? { kind: "meal", meal: structuredClone(meal), ingredientCatalogue: cataloguePage(0) } : null;
+    }
+    case "grocery": {
+      const week = workspace.state.weeks.find((candidate) => candidate.id === query.weekId);
+      return week ? { kind: "grocery", grocery: projectGroceryRequirements(week, ingredientCatalogue, query.filter) } : null;
     }
     case "catalogue":
       return query.offset <= ingredientCatalogue.concepts.length ? { kind: "catalogue", ingredientCatalogue: cataloguePage(query.offset) } : null;
@@ -952,6 +972,11 @@ export function isPlannerReadProjection(value: unknown): value is PlannerReadPro
       return hasExactKeys(value, ["kind", "week", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue) && isWeekPlan(value.week, { revision: value.ingredientCatalogue.revision, concepts: value.ingredientCatalogue.concepts });
     case "meal":
       return hasExactKeys(value, ["kind", "meal", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue) && isMeal(value.meal, { revision: value.ingredientCatalogue.revision, concepts: value.ingredientCatalogue.concepts });
+    case "grocery":
+      return hasExactKeys(value, ["kind", "grocery"]) && isRecord(value.grocery) &&
+        typeof value.grocery.filter === "string" && ["to_buy", "all", "needs_source", "shop", "farm_box", "on_hand", "done"].includes(value.grocery.filter) &&
+        Array.isArray(value.grocery.sections) && value.grocery.sections.every((section) => isRecord(section) &&
+          hasExactKeys(section, ["section", "groups"]) && ["Produce", "Meat & seafood", "Dairy", "Pantry"].includes(section.section as string) && Array.isArray(section.groups) && section.groups.every((group) => isRecord(group) && hasExactKeys(group, ["key", "label", "conceptId", "quantities", "provenanceCount", "children"]) && typeof group.key === "string" && typeof group.label === "string" && (typeof group.conceptId === "string" || group.conceptId === null) && Array.isArray(group.quantities) && Number.isSafeInteger(group.provenanceCount) && Array.isArray(group.children)));
     case "catalogue":
       return hasExactKeys(value, ["kind", "ingredientCatalogue"]) && isIngredientCataloguePage(value.ingredientCatalogue);
     case "history":

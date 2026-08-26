@@ -134,7 +134,7 @@ test("dynamic planner manifest is exactly one four-function registry-derived nam
   const applyTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "apply");
   assert.match(
     applyTool.description,
-    /Readback fields by kind: catalogue\[kind,offset\]; workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
+    /Readback fields by kind: catalogue\[kind,offset\]; grocery\[kind,weekId,filter\]; workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
   );
   const importTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "importRecipe");
   assert.deepEqual(importTool.inputSchema.required, ["basePlannerVersion", "weekId", "mealId", "recipePath"]);

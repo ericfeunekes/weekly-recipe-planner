@@ -82,6 +82,7 @@ const fixtures = {
   removePrepStepsFromDate: { type: "removePrepStepsFromDate", weekId, prepDate: "2026-06-29", entryIds: ["entry-1", "entry-2"] },
   clearPrepDate: { type: "clearPrepDate", weekId, prepDate: "2026-06-29" },
   setGroceryItemsCoverage: { type: "setGroceryItemsCoverage", weekId, itemIds: [id, "id-2"], coverage: "shop" },
+  setGroceryItemsSection: { type: "setGroceryItemsSection", weekId, itemIds: [id, "id-2"], section: "Produce" },
   setGroceryItemChecked: { type: "setGroceryItemChecked", weekId, itemId: id, checked: true },
   captureFeedback: { type: "captureFeedback", weekId, mealId: id, value: "repeat" },
   captureWeekLesson: { type: "captureWeekLesson", weekId, weekLesson: "Prep earlier." },
