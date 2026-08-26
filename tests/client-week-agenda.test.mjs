@@ -8,13 +8,14 @@ test("Week is a prep-free dinner agenda while Prep remains a separate view", asy
     readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
   ]);
   const weekViewStart = planner.indexOf("function WeekView(");
-  const tonightViewStart = planner.indexOf("function TonightView(");
-  assert.ok(weekViewStart >= 0 && tonightViewStart > weekViewStart, "WeekView source boundary exists");
+  const weekViewEnd = planner.indexOf("function useTimerDisplay(");
+  assert.ok(weekViewStart >= 0 && weekViewEnd > weekViewStart, "WeekView source boundary exists");
 
-  const weekView = planner.slice(weekViewStart, tonightViewStart);
+  const weekView = planner.slice(weekViewStart, weekViewEnd);
   for (const forbiddenWeekConcern of ["prepSessions", "prepNote", "day-prep-indicator", "Batch prep", 'onNavigate("prep")']) {
     assert.doesNotMatch(weekView, new RegExp(forbiddenWeekConcern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(planner, /<PrepView/);
   assert.match(prepView, /export function PrepView/);
+  assert.doesNotMatch(planner, /onOpenDay/);
 });

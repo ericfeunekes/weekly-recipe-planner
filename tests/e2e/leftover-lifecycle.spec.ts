@@ -118,7 +118,7 @@ test("assigned leftovers survive shared-client readback and authority restart be
   await peer.evaluate(() => window.dispatchEvent(new Event("focus")));
   const leftoverCard = peer.locator(".meal-card").filter({ hasText: source.title }).filter({ hasText: "leftover" });
   await expect(leftoverCard).toBeVisible();
-  await leftoverCard.getByRole("button", { name: /^Open .* day$/u }).click();
+  await leftoverCard.getByRole("button", { name: /^Open .* recipe$/u }).click();
   await expect(peer.getByText(`${source.title}`, { exact: true })).toBeVisible();
   await expect(peer.getByText(/portions are assigned to this day\./u)).toBeVisible();
   await expect(peer.getByRole("button", { name: "Mark eaten" })).toBeVisible();
@@ -154,7 +154,7 @@ test("assigned leftovers survive shared-client readback and authority restart be
   });
 
   await peer.locator(".meal-card").filter({ hasText: source.title }).filter({ hasText: "leftover" })
-    .getByRole("button", { name: /^Open .* day$/u }).click();
+    .getByRole("button", { name: /^Open .* recipe$/u }).click();
   const consumedResponse = peer.waitForResponse((response) => {
     if (!response.url().endsWith("/api/commands") || response.request().method() !== "POST") return false;
     return (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "consumeLeftover";

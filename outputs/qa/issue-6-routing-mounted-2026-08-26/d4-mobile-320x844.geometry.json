@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "d4",
+  "viewportId": "mobile-320x844",
+  "browserVersion": "151.0.7922.174",
+  "viewport": {
+    "width": 320,
+    "height": 844
+  },
+  "document": {
+    "clientWidth": 320,
+    "clientHeight": 844,
+    "scrollWidth": 320,
+    "scrollHeight": 844
+  },
+  "horizontalOverflow": false,
+  "controls": [
+    {
+      "role": "select",
+      "name": "Aug 24 - Aug 30 · active",
+      "bounds": {
+        "x": 64,
+        "y": 62,
+        "width": 192,
+        "height": 48,
+        "right": 256,
+        "bottom": 110
+      }
+    },
+    {
+      "role": "button",
+      "name": "Change history",
+      "bounds": {
+        "x": 182,
+        "y": 10,
+        "width": 40,
+        "height": 44,
+        "right": 222,
+        "bottom": 54
+      }
+    },
+    {
+      "role": "button",
+      "name": "Active timers",
+      "bounds": {
+        "x": 224,
+        "y": 10,
+        "width": 40,
+        "height": 44,
+        "right": 264,
+        "bottom": 54
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Codex",
+      "bounds": {
+        "x": 266,
+        "y": 10,
+        "width": 40,
+        "height": 44,
+        "right": 306,
+        "bottom": 54
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 1 day",
+      "bounds": {
+        "x": 158.796875,
+        "y": 264.890625,
+        "width": 33.109375,
+        "height": 32,
+        "right": 191.90625,
+        "bottom": 296.890625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 3 days",
+      "bounds": {
+        "x": 191.90625,
+        "y": 264.890625,
+        "width": 34.71875,
+        "height": 32,
+        "right": 226.625,
+        "bottom": 296.890625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 5 days",
+      "bounds": {
+        "x": 226.625,
+        "y": 264.890625,
+        "width": 34.578125,
+        "height": 32,
+        "right": 261.203125,
+        "bottom": 296.890625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 7 days",
+      "bounds": {
+        "x": 261.203125,
+        "y": 264.890625,
+        "width": 33.796875,
+        "height": 32,
+        "right": 295,
+        "bottom": 296.890625
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Harissa chicken traybake recipe",
+      "bounds": {
+        "x": 114,
+        "y": 597.015625,
+        "width": 168,
+        "height": 153.25,
+        "right": 282,
+        "bottom": 750.265625
+      }
+    },
+    {
+      "role": "button",
+      "name": "Peek recipe",
+      "bounds": {
+        "x": 114,
+        "y": 761.265625,
+        "width": 168,
+        "height": 28,
+        "right": 282,
+        "bottom": 789.265625
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Miso salmon rice bowls recipe",
+      "bounds": {
+        "x": 114,
+        "y": 836.265625,
+        "width": 168,
+        "height": 137.3125,
+        "right": 282,
+        "bottom": 973.578125
+      }
+    },
+    {
+      "role": "button",
+      "name": "Peek recipe",
+      "bounds": {
+        "x": 114,
+        "y": 984.578125,
+        "width": 168,
+        "height": 28,
+        "right": 282,
+        "bottom": 1012.578125
+      }
+    },
+    {
+      "role": "button",
+      "name": "Groceries 0/8",
+      "bounds": {
+        "x": 25,
+        "y": 1450.265625,
+        "width": 270,
+        "height": 44,
+        "right": 295,
+        "bottom": 1494.265625
+      }
+    },
+    {
+      "role": "button",
+      "name": "Week",
+      "bounds": {
+        "x": 4,
+        "y": 789,
+        "width": 62.390625,
+        "height": 50,
+        "right": 66.390625,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "button",
+      "name": "Prep",
+      "bounds": {
+        "x": 66.390625,
+        "y": 789,
+        "width": 62.40625,
+        "height": 50,
+        "right": 128.796875,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "button",
+      "name": "Groceries",
+      "bounds": {
+        "x": 128.796875,
+        "y": 789,
+        "width": 62.390625,
+        "height": 50,
+        "right": 191.1875,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "button",
+      "name": "Close out",
+      "bounds": {
+        "x": 191.1875,
+        "y": 789,
+        "width": 62.40625,
+        "height": 50,
+        "right": 253.59375,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "dialog",
+      "name": "Codex taskCodexWhat should change in this plan?Ask Codex to reshape meals, make a prep plan, or check the shopping list.",
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 320,
+        "height": 844,
+        "right": 320,
+        "bottom": 844
+      }
+    },
+    {
+      "role": "button",
+      "name": "Task history",
+      "bounds": {
+        "x": 4.796875,
+        "y": 8.09375,
+        "width": 36,
+        "height": 36,
+        "right": 40.796875,
+        "bottom": 44.09375
+      }
+    },
+    {
+      "role": "button",
+      "name": "Adjust this week’s meals",
+      "bounds": {
+        "x": 20,
+        "y": 304.46875,
+        "width": 280,
+        "height": 35.1875,
+        "right": 300,
+        "bottom": 339.65625
+      }
+    },
+    {
+      "role": "button",
+      "name": "Make a prep plan",
+      "bounds": {
+        "x": 20,
+        "y": 345.25,
+        "width": 280,
+        "height": 35.1875,
+        "right": 300,
+        "bottom": 380.4375
+      }
+    },
+    {
+      "role": "button",
+      "name": "Check the shopping list",
+      "bounds": {
+        "x": 20,
+        "y": 386.03125,
+        "width": 280,
+        "height": 35.1875,
+        "right": 300,
+        "bottom": 421.21875
+      }
+    },
+    {
+      "role": "textarea",
+      "name": "Message Codex",
+      "bounds": {
+        "x": 12.796875,
+        "y": 597,
+        "width": 294.40625,
+        "height": 64,
+        "right": 307.203125,
+        "bottom": 661
+      }
+    },
+    {
+      "role": "button",
+      "name": "Send to Codex",
+      "bounds": {
+        "x": 259.203125,
+        "y": 613,
+        "width": 44,
+        "height": 44,
+        "right": 303.203125,
+        "bottom": 657
+      }
+    },
+    {
+      "role": "button",
+      "name": "Close",
+      "bounds": {
+        "x": 272,
+        "y": 17,
+        "width": 32,
+        "height": 22,
+        "right": 304,
+        "bottom": 39
+      }
+    }
+  ],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36"
+}

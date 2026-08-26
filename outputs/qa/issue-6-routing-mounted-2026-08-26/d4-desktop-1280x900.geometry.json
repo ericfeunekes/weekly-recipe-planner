@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "d4",
+  "viewportId": "desktop-1280x900",
+  "browserVersion": "151.0.7922.174",
+  "viewport": {
+    "width": 1280,
+    "height": 900
+  },
+  "document": {
+    "clientWidth": 1280,
+    "clientHeight": 900,
+    "scrollWidth": 1280,
+    "scrollHeight": 900
+  },
+  "horizontalOverflow": false,
+  "controls": [
+    {
+      "role": "select",
+      "name": "Aug 24 - Aug 30 · active",
+      "bounds": {
+        "x": 515,
+        "y": 14.5,
+        "width": 250,
+        "height": 48,
+        "right": 765,
+        "bottom": 62.5
+      }
+    },
+    {
+      "role": "button",
+      "name": "Change history",
+      "bounds": {
+        "x": 1153.609375,
+        "y": 16.5,
+        "width": 40,
+        "height": 44,
+        "right": 1193.609375,
+        "bottom": 60.5
+      }
+    },
+    {
+      "role": "button",
+      "name": "Active timers",
+      "bounds": {
+        "x": 1201.609375,
+        "y": 16.5,
+        "width": 40,
+        "height": 44,
+        "right": 1241.609375,
+        "bottom": 60.5
+      }
+    },
+    {
+      "role": "button",
+      "name": "Week",
+      "bounds": {
+        "x": 38.390625,
+        "y": 85,
+        "width": 84.984375,
+        "height": 44,
+        "right": 123.375,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "button",
+      "name": "Prep",
+      "bounds": {
+        "x": 127.375,
+        "y": 85,
+        "width": 79.625,
+        "height": 44,
+        "right": 207,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "button",
+      "name": "Groceries",
+      "bounds": {
+        "x": 211,
+        "y": 85,
+        "width": 111.640625,
+        "height": 44,
+        "right": 322.640625,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "button",
+      "name": "Close out",
+      "bounds": {
+        "x": 326.640625,
+        "y": 85,
+        "width": 110.015625,
+        "height": 44,
+        "right": 436.65625,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 1 day",
+      "bounds": {
+        "x": 1094.40625,
+        "y": 239.796875,
+        "width": 33.109375,
+        "height": 32,
+        "right": 1127.515625,
+        "bottom": 271.796875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 3 days",
+      "bounds": {
+        "x": 1127.515625,
+        "y": 239.796875,
+        "width": 34.71875,
+        "height": 32,
+        "right": 1162.234375,
+        "bottom": 271.796875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 5 days",
+      "bounds": {
+        "x": 1162.234375,
+        "y": 239.796875,
+        "width": 34.578125,
+        "height": 32,
+        "right": 1196.8125,
+        "bottom": 271.796875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Show 7 days",
+      "bounds": {
+        "x": 1196.8125,
+        "y": 239.796875,
+        "width": 33.796875,
+        "height": 32,
+        "right": 1230.609375,
+        "bottom": 271.796875
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Harissa chicken traybake recipe",
+      "bounds": {
+        "x": 400.59375,
+        "y": 356.796875,
+        "width": 134.59375,
+        "height": 269,
+        "right": 535.1875,
+        "bottom": 625.796875
+      }
+    },
+    {
+      "role": "button",
+      "name": "Peek recipe",
+      "bounds": {
+        "x": 400.59375,
+        "y": 636.796875,
+        "width": 134.59375,
+        "height": 28,
+        "right": 535.1875,
+        "bottom": 664.796875
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Miso salmon rice bowls recipe",
+      "bounds": {
+        "x": 572.1875,
+        "y": 356.796875,
+        "width": 134.609375,
+        "height": 269,
+        "right": 706.796875,
+        "bottom": 625.796875
+      }
+    },
+    {
+      "role": "button",
+      "name": "Peek recipe",
+      "bounds": {
+        "x": 572.1875,
+        "y": 636.796875,
+        "width": 134.609375,
+        "height": 28,
+        "right": 706.796875,
+        "bottom": 664.796875
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Codex",
+      "bounds": {
+        "x": 1244.8125,
+        "y": 137,
+        "width": 35.1875,
+        "height": 51.1875,
+        "right": 1280,
+        "bottom": 188.1875
+      }
+    }
+  ],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36"
+}
