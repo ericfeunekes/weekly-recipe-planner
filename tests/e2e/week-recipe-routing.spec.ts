@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
 
@@ -75,6 +76,29 @@ test("root keeps a current remembered Week and unavailable Recipes return to tha
   await page.goto("/weeks/2026-07-06/recipes/missing");
   await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
   await expect(page.getByText("That recipe is unavailable for this week.", { exact: true })).toBeVisible();
+});
+
+test("Closeout direct URLs survive reload and history while lesson drafts stay local", async ({ page }) => {
+  await resetPlanner(page);
+  await page.getByRole("button", { name: "Close out", exact: true }).click();
+  await expect(page).toHaveURL("/weeks/2026-07-06/closeout");
+  await expect(page.getByRole("heading", { level: 1, name: "Close out", exact: true })).toBeVisible();
+  const lesson = page.getByRole("textbox", { name: "What should next week remember?" });
+  const originalLesson = await lesson.inputValue();
+  await lesson.fill("Keep the prep shorter.");
+  await expect(page).toHaveURL("/weeks/2026-07-06/closeout");
+  await page.reload();
+  await expect(page).toHaveURL("/weeks/2026-07-06/closeout");
+  await expect(lesson).toHaveValue(originalLesson);
+  const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(accessibility.violations).toEqual([]);
+  expect(await page.locator(".primary-workspace").evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await page.getByRole("button", { name: "Week", exact: true }).click();
+  await expect(page).toHaveURL("/weeks/2026-07-06");
+  await page.goBack();
+  await expect(page).toHaveURL("/weeks/2026-07-06/closeout");
+  await page.goForward();
+  await expect(page).toHaveURL("/weeks/2026-07-06");
 });
 
 test("legacy Day URL returns to Week without selecting a recipe", async ({ page }) => {
