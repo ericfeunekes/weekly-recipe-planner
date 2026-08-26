@@ -25,6 +25,7 @@ const outputDirectory = process.env.PLANNER_E2E_OUTPUT_DIR ??
   "outputs/playwright/test-results";
 const wranglerLogPath = process.env.PLANNER_E2E_WRANGLER_LOG_PATH ??
   join(outputDirectory, "wrangler.log");
+const combinedPrepEvidenceDirectory = process.env.PLANNER_E2E_COMBINED_PREP_EVIDENCE_DIR ?? "outputs/qa/prep-combined";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -37,6 +38,7 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 8_000 },
   outputDir: outputDirectory,
+  metadata: { plannerE2eCombinedPrepEvidenceDirectory: combinedPrepEvidenceDirectory },
   reporter: [["list"]],
   use: {
     baseURL: browserOrigin,
@@ -71,6 +73,8 @@ export default defineConfig({
         ...process.env,
         PLANNER_API_ORIGIN: `http://127.0.0.1:${apiPort}`,
         PLANNER_WEB_PORT: String(webPort),
+        PLANNER_E2E_OUTPUT_DIR: outputDirectory,
+        PLANNER_E2E_WRANGLER_LOG_PATH: wranglerLogPath,
         WRANGLER_LOG_PATH: wranglerLogPath,
       },
     },

@@ -2,7 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { captureAccessibleQaEvidence } from "../support/playwright-qa";
 
 const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
-const evidenceDirectory = `${process.cwd()}/outputs/qa/prep-combined`;
 
 async function resetPlanner(page: Page): Promise<void> {
   const reset = await page.request.post(`${controlOrigin}/reset`);
@@ -15,8 +14,9 @@ async function resetPlanner(page: Page): Promise<void> {
   await expect(planner).toBeVisible();
 }
 
-test("combined Prep batches preview, fulfill sources independently, and expand with confirmation", async ({ page }) => {
+test("combined Prep batches preview, fulfill sources independently, and expand with confirmation", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
+  const evidenceDirectory = String(testInfo.config.metadata.plannerE2eCombinedPrepEvidenceDirectory);
   await resetPlanner(page);
   await page.getByRole("button", { name: "Prep", exact: true }).click();
 
