@@ -427,6 +427,10 @@ test.describe.serial("family dinner authority", () => {
     await roastInDrawer.getByText("Edit instruction").click();
     await roastInDrawer.getByRole("spinbutton").fill("0.5");
     await roastInDrawer.getByRole("button", { name: /Save step .*Roast the chicken/ }).click();
+    await roastInDrawer.getByRole("button", { name: /Add Prep note for step .*Roast the chicken/ }).click();
+    await roastInDrawer.getByRole("textbox", { name: /Prep note or Codex request for step .*Roast the chicken/ }).fill("Start the oven before the vegetables.");
+    await roastInDrawer.getByRole("button", { name: /Save Prep note/ }).click();
+    await expect(roastInDrawer).toContainText("Start the oven before the vegetables.");
     await mealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
 
     await openRecipeEditor(pageA, "Harissa chicken traybake");
@@ -518,6 +522,7 @@ test.describe.serial("family dinner authority", () => {
     await assignedRoastPrepA.dragTo(firstTabA);
     await expect(firstTabA).toHaveAttribute("aria-selected", "true");
     const roastPrepA = prepStep(pageA, "Roast the chicken");
+    await expect(roastPrepA).toContainText("Start the oven before the vegetables.");
     await expect(roastPrepA.getByRole("checkbox", { name: /Complete step .*Roast the chicken/ })).toHaveCount(1);
     await expect(roastPrepA.getByRole("button", { name: /Start timer for step .*Roast the chicken/ })).toHaveCount(1);
     await expect(roastPrepA.getByRole("combobox", { name: /Prep date/ })).toHaveCount(0);
@@ -526,7 +531,7 @@ test.describe.serial("family dinner authority", () => {
     await roastMenuButton.click();
     const roastMenu = roastPrepA.getByRole("menu", { name: /Options for step .*Roast the chicken/ });
     await expect(roastMenu.getByRole("menuitem", { name: "Harissa chicken traybake" })).toHaveCount(1);
-    await expect(roastMenu.getByRole("menuitem", { name: "Add comment" })).toHaveCount(1);
+    await expect(roastMenu.getByRole("menuitem", { name: /Prep note/ })).toHaveCount(0);
     await expect(roastMenu.getByRole("menuitem", { name: "Remove from prep" })).toHaveCount(1);
     const roastTimerMinutes = roastPrepA.getByRole("textbox", { name: /Timer minutes for step .*Roast the chicken/ });
     const roastTimerSeconds = roastPrepA.getByRole("textbox", { name: /Timer seconds for step .*Roast the chicken/ });
@@ -545,9 +550,13 @@ test.describe.serial("family dinner authority", () => {
     await expect(activeTimersMenu).toContainText("Roast the chicken");
     await expect(activeTimersMenu.getByRole("button", { name: /Pause timer for Harissa chicken traybake: Roast the chicken/ })).toHaveCount(1);
     await activeTimersMenu.getByRole("button", { name: "Close active timers" }).click();
-    await roastMenu.getByRole("menuitem", { name: "Add comment" }).click();
-    await roastPrepA.getByRole("textbox", { name: /Note or Codex request for step .*Roast the chicken/ }).fill("Timer started before removing this from prep.");
-    await roastPrepA.getByRole("button", { name: /Save comment/ }).click();
+    await roastPrepA.getByRole("button", { name: /Edit Prep note for step .*Roast the chicken/ }).click();
+    await roastPrepA.getByRole("button", { name: "Clear Prep note" }).click();
+    await expect(roastPrepA.getByText("Prep note", { exact: true })).toHaveCount(0);
+    await expect(roastPrepA).not.toContainText("Start the oven before the vegetables.");
+    await roastPrepA.getByRole("button", { name: /Add Prep note for step .*Roast the chicken/ }).click();
+    await roastPrepA.getByRole("textbox", { name: /Prep note or Codex request for step .*Roast the chicken/ }).fill("Timer started before removing this from prep.");
+    await roastPrepA.getByRole("button", { name: /Save Prep note/ }).click();
     await roastMenuButton.click();
     await roastPrepA.getByRole("menuitem", { name: "Remove from prep" }).click();
     await expect(prepStep(pageA, "Roast the chicken")).toHaveCount(0);
@@ -559,26 +568,24 @@ test.describe.serial("family dinner authority", () => {
     await pageB.getByRole("button", { name: "Open Codex" }).click();
     const globalDraftB = pageB.getByRole("textbox", { name: "Message Codex" });
     await globalDraftB.fill("Keep this separate household draft.");
-    await reloadedHarissa.getByRole("button", { name: /More options for step .*Coat the chicken/ }).click();
-    await reloadedHarissa.getByRole("menuitem", { name: "Add comment" }).click();
-    await reloadedHarissa.getByRole("textbox", { name: /Note or Codex request for step .*Coat the chicken/ }).fill("Marinated on Sunday.");
-    await reloadedHarissa.getByRole("button", { name: /Save comment/ }).click();
+    await reloadedHarissa.getByRole("button", { name: /Add Prep note for step .*Coat the chicken/ }).click();
+    await reloadedHarissa.getByRole("textbox", { name: /Prep note or Codex request for step .*Coat the chicken/ }).fill("Marinated on Sunday.");
+    await reloadedHarissa.getByRole("button", { name: /Save Prep note/ }).click();
     await openView(pageB, "Prep");
     const harissaPrepB = prepStep(pageB, "Coat the chicken with harissa");
-    await harissaPrepB.getByRole("button", { name: /More options for step .*Coat the chicken/ }).click();
-    await expect(harissaPrepB.getByRole("menuitem", { name: "Edit comment" })).toBeVisible();
-    await harissaPrepB.getByRole("menuitem", { name: "Edit comment" }).click();
-    await expect(harissaPrepB.getByRole("textbox", { name: /Note or Codex request for step .*Coat the chicken/ })).toHaveValue("Marinated on Sunday.");
+    await expect(harissaPrepB.getByRole("button", { name: /Edit Prep note for step .*Coat the chicken/ })).toBeVisible();
+    await harissaPrepB.getByRole("button", { name: /Edit Prep note for step .*Coat the chicken/ }).click();
+    await expect(harissaPrepB.getByRole("textbox", { name: /Prep note or Codex request for step .*Coat the chicken/ })).toHaveValue("Marinated on Sunday.");
     await expect(globalDraftB).toHaveValue("Keep this separate household draft.");
 
     await secondTabA.click();
     const reloadedRice = prepStep(pageA, "Rinse the rice");
     await reloadedRice.getByRole("checkbox").click();
     await expect(reloadedRice.getByRole("checkbox")).not.toBeChecked();
-    await reloadedRice.getByRole("button", { name: /More options for step .*Rinse the rice/ }).click();
-    await reloadedRice.getByRole("menuitem", { name: "Add comment" }).click();
-    await reloadedRice.getByRole("textbox", { name: /Note or Codex request for step .*Rinse the rice/ }).fill("Please complete this shared step.");
+    await reloadedRice.getByRole("button", { name: /Add Prep note for step .*Rinse the rice/ }).click();
+    await reloadedRice.getByRole("textbox", { name: /Prep note or Codex request for step .*Rinse the rice/ }).fill("Please complete this shared step.");
     await reloadedRice.getByRole("button", { name: "Ask Codex" }).click();
+    await expect(reloadedRice.getByText("Prep note", { exact: true })).toHaveCount(0);
     await sendPreparedCodexDraft(pageA, "Please complete this shared step.");
     await expect(codexConversation(pageA).getByText("Please complete this shared step.", { exact: true })).toBeVisible();
     await expect(codexConversation(pageA).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible();
@@ -603,8 +610,8 @@ test.describe.serial("family dinner authority", () => {
     await expect(tonightSteps.first().getByRole("checkbox")).toBeChecked();
     await expect(tonightSteps.first().locator(".step-inputs")).toContainText("900 g");
     const roastTonightB = tonightSteps.nth(1);
-    await roastTonightB.getByRole("button", { name: /Edit comment for step .*Roast the chicken/ }).click();
-    await expect(roastTonightB.getByRole("textbox", { name: /Note or Codex request for step .*Roast the chicken/ }))
+    await roastTonightB.getByRole("button", { name: /Edit Prep note for step .*Roast the chicken/ }).click();
+    await expect(roastTonightB.getByRole("textbox", { name: /Prep note or Codex request for step .*Roast the chicken/ }))
       .toHaveValue("Timer started before removing this from prep.");
     await roastTonightB.getByRole("button", { name: "Cancel" }).click();
     await expect(roastTonightB.getByRole("checkbox")).not.toBeChecked();
