@@ -41,6 +41,7 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   const noteControl = existing.getByRole("button", { name: /Edit Prep note/ });
   await expect(noteControl).toBeVisible();
   expect(await noteControl.boundingBox()).toMatchObject({ width: 44, height: 44 });
+  expect((await existing.locator(".step-instruction").boundingBox())?.width).toBeGreaterThan(160);
   await expect(existing).toContainText("Trim excess fat before coating.");
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const sources = page.getByRole("dialog", { name: "Recipe instructions" });

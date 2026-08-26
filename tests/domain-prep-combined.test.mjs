@@ -123,6 +123,17 @@ test("completed combined Prep work requires explicit discard and source edits re
     entryId,
     complete: true,
   }, context)).state;
+  const completedInstruction = activeWeek(state).data.prepSessions[0].steps[0].instruction;
+  state = accepted(householdDomain.execute(state, {
+    type: "updateInstructionStepNote",
+    weekId: week.id,
+    stepId: firstStep.id,
+    note: "Keep the tray uncovered.",
+  }, context)).state;
+  let completedEntry = activeWeek(state).data.prepSessions[0].steps[0];
+  assert.equal(completedEntry.complete, true);
+  assert.equal(completedEntry.needsReview, false);
+  assert.equal(completedEntry.instruction, completedInstruction);
   const blockedEdit = householdDomain.execute(state, {
     type: "updateCombinedPrepStep",
     weekId: week.id,
@@ -149,17 +160,6 @@ test("completed combined Prep work requires explicit discard and source edits re
   let entry = activeWeek(state).data.prepSessions[0].steps[0];
   assert.equal(entry.complete, false);
   assert.equal(entry.needsReview, false);
-
-  const sourceInstruction = activeWeek(state).data.meals[0].instructions.find((step) => step.id === firstStep.id).instruction;
-  state = accepted(householdDomain.execute(state, {
-    type: "updateInstructionStepNote",
-    weekId: week.id,
-    stepId: firstStep.id,
-    note: "Keep the tray uncovered.",
-  }, context)).state;
-  entry = activeWeek(state).data.prepSessions[0].steps[0];
-  assert.equal(entry.needsReview, false);
-  assert.equal(activeWeek(state).data.meals[0].instructions.find((step) => step.id === firstStep.id).instruction, sourceInstruction);
 
   const currentFirst = activeWeek(state).data.meals[0].instructions.find((step) => step.id === firstStep.id);
   state = accepted(householdDomain.execute(state, {

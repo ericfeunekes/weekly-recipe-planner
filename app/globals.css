@@ -3788,7 +3788,12 @@ textarea[aria-invalid="true"] {
   }
 
   .instruction-step-line.has-leading .instruction-line-main.prep-queue-main {
-    grid-template-columns: 44px 24px minmax(0, 1fr) 44px;
+    grid-template-columns: 44px 24px minmax(0, 1fr);
+  }
+
+  .instruction-step-line.has-leading .instruction-line-main.prep-queue-main .instruction-line-trailing {
+    grid-column: 3;
+    justify-content: flex-start;
   }
 
   .prep-drag-handle,

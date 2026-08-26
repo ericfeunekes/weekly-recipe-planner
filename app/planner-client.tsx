@@ -2761,7 +2761,7 @@ function PrepSessionStepRow(props: {
     <InstructionStepLine
       className={`prep-queue-step ${selected ? "selected" : ""} ${isDragging ? "dragging" : ""}`}
       dataTestId="prep-session-step"
-      mainClassName="prep-queue-main max-[620px]:grid-cols-[44px_24px_minmax(0,1fr)_93px]!"
+      mainClassName="prep-queue-main"
       step={step}
       meal={meal}
       stepNumber={stepNumber}
