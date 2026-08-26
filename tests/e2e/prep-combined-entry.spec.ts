@@ -151,9 +151,21 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await expect(mealDialog.getByText("Prepared in batch", { exact: true })).toHaveCount(1);
   await expect(mealDialog.getByRole("checkbox", { name: /Complete step/ })).toHaveCount(2);
   await expect(mealDialog.getByRole("checkbox", { name: /Complete step/ }).first()).not.toBeChecked();
+  await mealDialog.getByRole("button", { name: "Review ingredient concepts" }).click();
+  await expect(mealDialog.getByText(/^Reviewing /u)).toBeVisible();
+  await mealDialog.locator("select[aria-label^='Concept for']").first().selectOption("chicken-thigh");
+  const conceptApplied = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") &&
+    response.request().method() === "POST" &&
+    (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+  );
+  await mealDialog.getByRole("button", { name: "Apply choices" }).click();
+  expect((await conceptApplied).status()).toBe(200);
+  await expect(mealDialog.getByText("Prepared in batch", { exact: true })).toHaveCount(1);
   const roastStep = mealDialog.locator(".instruction-step").filter({ hasText: "Roast the chicken" });
   await roastStep.getByText("Edit instruction", { exact: true }).click();
   await roastStep.getByRole("textbox", { name: /Instruction text/ }).fill("Roast the chicken, peppers, and chickpeas until cooked through, then rest.");
+  await expect(roastStep.getByRole("button", { name: /Save step/ })).toBeEnabled();
   await roastStep.getByRole("button", { name: /Save step/ }).click();
   await expect(mealDialog.getByText("Prepared in batch", { exact: true })).toHaveCount(0);
   await mealDialog.getByRole("button", { name: "Close", exact: true }).last().click();

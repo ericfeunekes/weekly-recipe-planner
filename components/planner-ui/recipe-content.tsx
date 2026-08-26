@@ -91,7 +91,9 @@ export function RecipeInstructionContent({ step, meal }: { step: InstructionStep
   const ingredientsById = new Map(meal.ingredients.map((ingredient) => [ingredient.id, ingredient]));
   const inputs = step.inputs.map((input) => {
     const occurrence = ingredientsById.get(input.occurrenceId);
-    return occurrence ? { ...occurrence, amount: input.amount, ingredient: input.ingredient } : input;
+    if (!occurrence) return input;
+    const amountAlreadyIncludesUnit = occurrence.unit !== null && input.amount.toLocaleLowerCase().includes(occurrence.unit.toLocaleLowerCase());
+    return { ...occurrence, amount: input.amount, ingredient: input.ingredient, unit: amountAlreadyIncludesUnit ? null : occurrence.unit };
   });
   return (
     <div className="instruction-line-content">

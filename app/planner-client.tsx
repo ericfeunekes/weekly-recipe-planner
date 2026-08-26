@@ -158,7 +158,7 @@ const WORKSPACE_QUERY_KEY = ["planner", "workspace"] as const;
 type MutateOptions = {
   basePlannerVersion?: number;
   conflictStrategy?: "recompose";
-  onAccepted?: (decision: Extract<PlannerCommandDecision, { status: "accepted" }>) => void;
+  onAccepted?: (decision: Extract<PlannerCommandDecision, { status: "accepted" }>, currentPlannerVersion: number) => void;
   onConflict?: (plannerVersion: number) => void;
 };
 type PendingAuthorityRetry = {
@@ -1328,7 +1328,7 @@ function PlannerAppContent() {
             inputs,
           });
         }
-        options?.onAccepted?.(result.decision);
+        options?.onAccepted?.(result.decision, result.workspace.plannerVersion);
         await refresh(true);
         return true;
       }
@@ -3481,7 +3481,7 @@ function MealDrawer(props: {
     }, {
       basePlannerVersion: ingredientReview.plannerVersion,
       onConflict: (currentPlannerVersion) => void startIngredientReview(reviewQueue, currentPlannerVersion),
-      onAccepted: (decision) => void startIngredientReview(remaining, decision.plannerVersion),
+      onAccepted: (_decision, currentPlannerVersion) => void startIngredientReview(remaining, currentPlannerVersion),
     });
   };
   const editRecipeField = <Key extends keyof typeof canonicalRecipeDraft>(
