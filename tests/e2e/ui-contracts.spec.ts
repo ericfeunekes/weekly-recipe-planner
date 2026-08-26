@@ -368,7 +368,7 @@ test("archived weeks reject Recipe routes and expose no editable prep or grocery
   await openView(page, "Prep");
   await expect(page.getByRole("button", { name: "Add to prep" })).toHaveCount(0);
   await expect(page.getByText("Add note or ask Codex")).toHaveCount(0);
-  await page.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).click();
+  await page.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).first().click();
   const prepMutations = page.getByTestId("prep-session-step").locator("input, button");
   expect(await prepMutations.count()).toBeGreaterThan(0);
   expect(await prepMutations.evaluateAll((controls) =>
@@ -377,6 +377,7 @@ test("archived weeks reject Recipe routes and expose no editable prep or grocery
   await assertAccessible(page, `${fixtureId}-archived-prep`, "desktop-1280x900");
 
   await openView(page, "Groceries");
+  await page.getByRole("radio", { name: "All", exact: true }).click();
   await expect(page.getByLabel("New grocery item")).toHaveCount(0);
   const groceryChecks = page.locator(".grocery-row input[type=checkbox]");
   expect(await groceryChecks.count()).toBeGreaterThan(0);
