@@ -203,6 +203,71 @@ function codexComposer(page: Page) {
   return page.getByRole("textbox", { name: "Message Codex" });
 }
 
+async function workspaceScrollRange(workspace: Locator) {
+  return workspace.evaluate((element) => element.scrollHeight - element.clientHeight);
+}
+
+async function setWorkspaceScrollBaseline(workspace: Locator) {
+  const range = await workspaceScrollRange(workspace);
+  expect(range).toBeGreaterThan(0);
+  const baseline = Math.floor(range / 2);
+  await workspace.evaluate((element, scrollTop) => {
+    element.scrollTop = scrollTop;
+  }, baseline);
+  await expect.poll(() => workspace.evaluate((element) => element.scrollTop)).toBe(baseline);
+  return baseline;
+}
+
+async function wheelWorkspace(page: Page, workspace: Locator) {
+  const box = await workspace.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + (box!.width / 2), box!.y + (box!.height / 2));
+  await page.mouse.wheel(0, 240);
+}
+
+async function touchDragWorkspace(page: Page, workspace: Locator) {
+  const box = await workspace.boundingBox();
+  expect(box).not.toBeNull();
+  const x = box!.x + (box!.width / 2);
+  const startY = box!.y + (box!.height * 0.7);
+  const endY = box!.y + (box!.height * 0.3);
+  const session = await page.context().newCDPSession(page);
+  await session.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x, y: startY }],
+  });
+  await session.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x, y: endY }],
+  });
+  await session.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await session.detach();
+}
+
+async function expectWorkspaceScrollLocked(
+  page: Page,
+  workspace: Locator,
+  gesture: (page: Page, workspace: Locator) => Promise<void>,
+) {
+  const baseline = await setWorkspaceScrollBaseline(workspace);
+  await gesture(page, workspace);
+  await page.waitForTimeout(250);
+  expect(await workspace.evaluate((element) => element.scrollTop)).toBe(baseline);
+}
+
+async function expectWorkspaceScrollUnlocked(
+  page: Page,
+  workspace: Locator,
+  gesture: (page: Page, workspace: Locator) => Promise<void>,
+) {
+  const baseline = await setWorkspaceScrollBaseline(workspace);
+  await gesture(page, workspace);
+  await expect.poll(() => workspace.evaluate((element) => element.scrollTop)).not.toBe(baseline);
+}
+
 async function sendCodexMessage(page: Page, message: string) {
   await codexComposer(page).fill(message);
   await page.getByRole("button", { name: "Send to Codex" }).click();
@@ -786,7 +851,6 @@ test.describe.serial("family dinner authority", () => {
     await trigger.click();
     const dialog = phonePage.getByRole("dialog", { name: "Codex task" });
     await expect(dialog).toBeVisible();
-    await expect.poll(() => phonePage.locator("body").evaluate((body) => body.style.overflow)).toBe("hidden");
     const phoneComposer = dialog.getByRole("textbox", { name: "Message Codex" });
     await expect(phoneComposer).toBeFocused();
     await phoneComposer.fill("Keep this family Codex draft.");
@@ -806,7 +870,20 @@ test.describe.serial("family dinner authority", () => {
     await phonePage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
-    await expect.poll(() => phonePage.locator("body").evaluate((body) => body.style.overflow)).toBe("");
+
+    await phonePage.locator(".week-view .meal-card-primary").first().click();
+    await expect(phonePage.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+    const phoneWorkspace = phonePage.locator(".primary-workspace");
+    await expect.poll(() => workspaceScrollRange(phoneWorkspace)).toBeGreaterThan(0);
+    await trigger.click();
+    await expect(dialog).toBeVisible();
+    await expectWorkspaceScrollLocked(phonePage, phoneWorkspace, wheelWorkspace);
+    await expectWorkspaceScrollLocked(phonePage, phoneWorkspace, touchDragWorkspace);
+    await phonePage.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expectWorkspaceScrollUnlocked(phonePage, phoneWorkspace, wheelWorkspace);
+    await expectWorkspaceScrollUnlocked(phonePage, phoneWorkspace, touchDragWorkspace);
 
     await trigger.click();
     await expect(dialog).toBeVisible();
