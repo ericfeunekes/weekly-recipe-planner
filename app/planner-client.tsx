@@ -1429,10 +1429,12 @@ function PlannerAppContent() {
     ) return;
     await executeUndo({
       requestId: createRequestId(),
-      basePlannerVersion: current.plannerVersion,
+      basePlannerVersion: workspace?.initialized
+        ? workspace.plannerVersion
+        : current.plannerVersion,
       targetEventId: event.eventId,
     });
-  }, [blockForPendingRetry, connection, executeUndo]);
+  }, [blockForPendingRetry, connection, executeUndo, workspace]);
 
   const retryPendingOperation = useCallback(async (channel?: PendingRetryChannel) => {
     const pending = channel

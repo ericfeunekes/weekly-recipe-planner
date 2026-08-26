@@ -504,7 +504,8 @@ test("recipe editor sends retained IDs, creation correlations, and explicit remo
   expect(savedMeal?.instructions[0]?.timerDurationSeconds).toBe(150);
 
   await page.reload();
-  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+  await expect(page.locator(".meal-drawer")).toBeVisible();
   const reloadedWorkspaceResponse = await page.request.get("/api/workspace");
   expect(reloadedWorkspaceResponse.ok()).toBe(true);
   const reloadedWorkspace = await reloadedWorkspaceResponse.json() as typeof workspace;
@@ -515,10 +516,15 @@ test("recipe editor sends retained IDs, creation correlations, and explicit remo
 
   await page.getByTitle("Change history").click();
   const history = page.getByRole("dialog", { name: "Recent changes" });
+  const undoInstructionRequest = page.waitForRequest((candidate) =>
+    candidate.url().endsWith("/api/undo") && candidate.method() === "POST",
+  );
   const undoInstructionResponse = page.waitForResponse((candidate) =>
     candidate.url().endsWith("/api/undo") && candidate.request().method() === "POST",
   );
   await history.getByRole("button", { name: "Undo latest change" }).click();
+  expect(((await undoInstructionRequest).postDataJSON() as { basePlannerVersion: number }).basePlannerVersion)
+    .toBe(reloadedWorkspace.plannerVersion);
   expect((await undoInstructionResponse).status()).toBe(200);
 
   const undoneWorkspaceResponse = await page.request.get("/api/workspace");
