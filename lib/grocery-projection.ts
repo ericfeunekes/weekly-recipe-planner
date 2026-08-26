@@ -32,6 +32,13 @@ export type GroceryProjection = {
   sections: readonly GroceryPresentationSection[];
 };
 
+export type PagedGroceryProjection = GroceryProjection & {
+  offset: number;
+  nextOffset: number | null;
+};
+
+export const GROCERY_READ_PAGE_SIZE = 8;
+
 const SECTIONS: readonly GrocerySection[] = ["Produce", "Meat & seafood", "Dairy", "Pantry"];
 
 export function matchesGroceryFilter(entry: { coverage: GroceryCoverage; checked: boolean }, filter: GroceryFilter): boolean {
@@ -94,4 +101,24 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
     sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId, quantities, provenanceCount: children.length, children });
   }
   return { filter, sections: SECTIONS.map((section) => ({ section, groups: sections.get(section)! })).filter((section) => section.groups.length) };
+}
+
+export function pageGroceryProjection(
+  projection: GroceryProjection,
+  offset: number,
+  limit = GROCERY_READ_PAGE_SIZE,
+): PagedGroceryProjection {
+  const children = projection.sections.flatMap((section) => section.groups.flatMap((group) => group.children));
+  const selected = new Set(children.slice(offset, offset + limit).map((child) => child.executionId));
+  const sections = projection.sections.map((section) => ({
+    section: section.section,
+    groups: section.groups.flatMap((group) => {
+      const pageChildren = group.children.filter((child) => selected.has(child.executionId));
+      if (!pageChildren.length) return [];
+      const completeGroup = pageChildren.length === group.children.length;
+      return [{ ...group, children: pageChildren, provenanceCount: pageChildren.length, quantities: completeGroup ? group.quantities : [] }];
+    }),
+  })).filter((section) => section.groups.length);
+  const nextOffset = offset + limit < children.length ? offset + limit : null;
+  return { filter: projection.filter, offset, nextOffset, sections };
 }

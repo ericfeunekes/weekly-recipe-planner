@@ -19,7 +19,7 @@ import {
   validateHouseholdState,
 } from "./household-domain.ts";
 import { createCoreIngredientCatalogue, isIngredientCandidatePreview } from "./ingredient-catalogue.ts";
-import { projectGroceryRequirements, type GroceryFilter, type GroceryProjection } from "./grocery-projection.ts";
+import { pageGroceryProjection, projectGroceryRequirements, type GroceryFilter, type PagedGroceryProjection } from "./grocery-projection.ts";
 import type {
   InitializedWorkspace,
   PlannerEvent,
@@ -56,7 +56,7 @@ export type ReadQuery =
   | { kind: "workspace" }
   | { kind: "week"; weekId: string }
   | { kind: "meal"; weekId: string; mealId: string }
-  | { kind: "grocery"; weekId: string; filter: GroceryFilter }
+  | { kind: "grocery"; weekId: string; filter: GroceryFilter; offset?: number }
   | { kind: "catalogue"; offset: number }
   | { kind: "history"; afterSequence?: number; limit: number };
 
@@ -155,7 +155,7 @@ export type PlannerReadProjection =
       weeks: Array<{ id: string; weekStartDate: string; status: string }>;
       ingredientCatalogue: PlannerIngredientCataloguePage;
     }
-  | { kind: "grocery"; grocery: GroceryProjection }
+  | { kind: "grocery"; grocery: PagedGroceryProjection }
   | { kind: "week"; week: InitializedWorkspace["state"]["weeks"][number]; ingredientCatalogue: PlannerIngredientCataloguePage }
   | {
       kind: "meal";
@@ -488,7 +488,8 @@ export function isReadQuery(value: unknown): value is ReadQuery {
       return hasExactKeys(value, ["kind", "weekId", "mealId"]) &&
         isBoundedId(value.weekId) && isBoundedId(value.mealId);
     case "grocery":
-      return hasExactKeys(value, ["kind", "weekId", "filter"]) && isBoundedId(value.weekId) &&
+      return hasExactKeys(value, ["kind", "weekId", "filter"], ["offset"]) && isBoundedId(value.weekId) &&
+        (value.offset === undefined || (Number.isSafeInteger(value.offset) && Number(value.offset) >= 0)) &&
         ["to_buy", "all", "needs_source", "shop", "farm_box", "on_hand", "done"].includes(value.filter as GroceryFilter);
     case "catalogue":
       return hasExactKeys(value, ["kind", "offset"]) && Number.isSafeInteger(value.offset) && Number(value.offset) >= 0;
@@ -685,7 +686,7 @@ export function projectPlannerRead(
     }
     case "grocery": {
       const week = workspace.state.weeks.find((candidate) => candidate.id === query.weekId);
-      return week ? { kind: "grocery", grocery: projectGroceryRequirements(week, ingredientCatalogue, query.filter) } : null;
+      return week ? { kind: "grocery", grocery: pageGroceryProjection(projectGroceryRequirements(week, ingredientCatalogue, query.filter), query.offset ?? 0) } : null;
     }
     case "catalogue":
       return query.offset <= ingredientCatalogue.concepts.length ? { kind: "catalogue", ingredientCatalogue: cataloguePage(query.offset) } : null;
@@ -949,7 +950,7 @@ function isGroceryProjection(value: unknown): boolean {
   const sectionNames = ["Produce", "Meat & seafood", "Dairy", "Pantry"];
   const quantity = (part: unknown) => isRecord(part) && ((part.kind === "quantity" && hasExactKeys(part, ["kind", "dimension", "quantity", "unit", "display"]) && ["count", "mass", "volume"].includes(part.dimension as string) && isRecord(part.quantity) && hasExactKeys(part.quantity, ["numerator", "denominator"]) && Number.isSafeInteger(part.quantity.numerator) && Number.isSafeInteger(part.quantity.denominator) && Number(part.quantity.denominator) > 0 && (typeof part.unit === "string" || part.unit === null) && typeof part.display === "string") || (part.kind === "literal" && hasExactKeys(part, ["kind", "literal", "reason"]) && typeof part.literal === "string" && ["amount", "unit", "incompatible", "overflow"].includes(part.reason as string)));
   const child = (entry: unknown) => isRecord(entry) && hasExactKeys(entry, ["executionId", "occurrenceId", "mealId", "mealTitle", "ingredient", "qualifier", "amount", "coverage", "checked", "section", "sourceRecipe"]) && typeof entry.executionId === "string" && typeof entry.occurrenceId === "string" && typeof entry.mealId === "string" && typeof entry.mealTitle === "string" && typeof entry.ingredient === "string" && (typeof entry.qualifier === "string" || entry.qualifier === null) && isRecord(entry.amount) && hasExactKeys(entry.amount, ["amount", "unit", "source"]) && typeof entry.amount.amount === "string" && (typeof entry.amount.unit === "string" || entry.amount.unit === null) && (typeof entry.amount.source === "string" || entry.amount.source === null) && coverage.includes(entry.coverage as string) && typeof entry.checked === "boolean" && sectionNames.includes(entry.section as string) && (entry.sourceRecipe === null || (isRecord(entry.sourceRecipe) && hasExactKeys(entry.sourceRecipe, ["kind", "identity", "revision"]) && typeof entry.sourceRecipe.kind === "string" && typeof entry.sourceRecipe.identity === "string" && (typeof entry.sourceRecipe.revision === "string" || entry.sourceRecipe.revision === null)));
-  return isRecord(value) && hasExactKeys(value, ["filter", "sections"]) && typeof value.filter === "string" && ["to_buy", "all", ...coverage, "done"].includes(value.filter) && Array.isArray(value.sections) && value.sections.every((section) => isRecord(section) && hasExactKeys(section, ["section", "groups"]) && sectionNames.includes(section.section as string) && Array.isArray(section.groups) && section.groups.every((group) => isRecord(group) && hasExactKeys(group, ["key", "label", "conceptId", "quantities", "provenanceCount", "children"]) && typeof group.key === "string" && typeof group.label === "string" && (typeof group.conceptId === "string" || group.conceptId === null) && Array.isArray(group.quantities) && group.quantities.every(quantity) && Number.isSafeInteger(group.provenanceCount) && Number(group.provenanceCount) >= 0 && Array.isArray(group.children) && group.children.length === Number(group.provenanceCount) && group.children.every(child)));
+  return isRecord(value) && hasExactKeys(value, ["filter", "offset", "nextOffset", "sections"]) && typeof value.filter === "string" && Number.isSafeInteger(value.offset) && Number(value.offset) >= 0 && (value.nextOffset === null || (Number.isSafeInteger(value.nextOffset) && Number(value.nextOffset) > Number(value.offset))) && ["to_buy", "all", ...coverage, "done"].includes(value.filter) && Array.isArray(value.sections) && value.sections.every((section) => isRecord(section) && hasExactKeys(section, ["section", "groups"]) && sectionNames.includes(section.section as string) && Array.isArray(section.groups) && section.groups.every((group) => isRecord(group) && hasExactKeys(group, ["key", "label", "conceptId", "quantities", "provenanceCount", "children"]) && typeof group.key === "string" && typeof group.label === "string" && (typeof group.conceptId === "string" || group.conceptId === null) && Array.isArray(group.quantities) && group.quantities.every(quantity) && Number.isSafeInteger(group.provenanceCount) && Number(group.provenanceCount) >= 0 && Array.isArray(group.children) && group.children.length === Number(group.provenanceCount) && group.children.every(child)));
 }
 
 export function isPlannerReadProjection(value: unknown): value is PlannerReadProjection {

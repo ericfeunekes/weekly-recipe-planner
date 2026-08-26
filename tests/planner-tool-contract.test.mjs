@@ -14,6 +14,7 @@ import {
   freezeForegroundAuthority,
   isPlannerApplyArguments,
   isPlannerReadArguments,
+  isReadQuery,
   isPlannerReadProjection,
   isPlannerPreviewData,
   isPlannerToolResult,
@@ -261,6 +262,8 @@ test("grocery read projections reject malformed quantity and literal parts", () 
     kind: "grocery",
     grocery: {
       filter: "to_buy",
+      offset: 0,
+      nextOffset: null,
       sections: [{
         section: "Produce",
         groups: [{
@@ -316,37 +319,43 @@ test("the maximum valid catalogue fits the embedded read result bound", () => {
   assert.doesNotThrow(() => serializePlannerToolResult(result));
 });
 
-test("a populated thirty-occurrence grocery projection keeps compact provenance within the read bound", () => {
+test("a maximum-legal grocery read pages exact children within the result bound", () => {
   const source = workspace();
   const week = source.state.weeks[0];
   const meal = week.data.meals[0];
-  meal.sourceRecipe = { kind: "canonical", identity: "fixtures/weekly-dinner", revision: "a".repeat(64) };
+  meal.title = "t".repeat(200);
+  meal.sourceRecipe = { kind: "canonical", identity: "i".repeat(200), revision: "a".repeat(64) };
   meal.ingredients = Array.from({ length: 30 }, (_, index) => ({
-    id: `ingredient-${index}`,
-    source: `1 cup fixture ingredient ${index}`,
-    amount: "1",
-    unit: "cup",
-    ingredient: `fixture ingredient ${index}`,
-    qualifier: null,
+    id: `ingredient-${index}-${"i".repeat(180)}`,
+    source: "s".repeat(200),
+    amount: "a".repeat(200),
+    unit: "u".repeat(200),
+    ingredient: "g".repeat(200),
+    qualifier: "q".repeat(200),
     conceptId: null,
     role: "weekly_requirement",
     canonicalIngredientId: null,
   }));
   week.data.groceries = meal.ingredients.map((ingredient, index) => ({
-    id: `grocery-${index}`,
+    id: `grocery-${index}-${"g".repeat(180)}`,
     mealId: meal.id,
     ingredientId: ingredient.id,
     section: "Pantry",
     coverage: "shop",
     checked: false,
   }));
-  const projection = projectPlannerRead(source, { kind: "grocery", weekId: week.id, filter: "to_buy" });
-  assert.equal(isPlannerReadProjection(projection), true);
-  assert.equal(projection.grocery.sections[0].groups[0].children.length, 30);
-  const result = createPlannerToolSuccess("grocery-thirty", source, 1, projection);
-  const wire = serializePlannerToolResult(result);
-  assert.ok(Buffer.byteLength(wire, "utf8") <= 128 * 1024);
-  assert.doesNotMatch(wire, /"title"\s*:\s*"Rice bowls"/u, "the read carries compact source pins, not the full source recipe");
+  const ids = [];
+  for (let offset = 0; offset !== null;) {
+    const projection = projectPlannerRead(source, { kind: "grocery", weekId: week.id, filter: "to_buy", offset });
+    assert.equal(isPlannerReadProjection(projection), true);
+    const children = projection.grocery.sections.flatMap((section) => section.groups.flatMap((group) => group.children));
+    assert.ok(children.length <= 8);
+    ids.push(...children.map((child) => child.executionId));
+    assert.doesNotThrow(() => serializePlannerToolResult(createPlannerToolSuccess(`grocery-${offset}`, source, 1, projection)));
+    offset = projection.grocery.nextOffset;
+  }
+  assert.deepEqual([...ids].sort(), week.data.groceries.map((grocery) => grocery.id).sort());
+  assert.equal(isReadQuery({ kind: "grocery", weekId: week.id, filter: "to_buy", offset: -1 }), false);
 });
 
 test("candidate preview wire data is closed rather than object-shaped", () => {
