@@ -1,6 +1,6 @@
 import { Check } from "lucide-react";
 
-import type { IngredientAmountLine, InstructionStep, Meal } from "@/lib/household-contract";
+import type { IngredientAmountLine, InstructionStep, Meal, RecipeIngredient } from "@/lib/household-contract";
 import {
   ingredientOccurrenceDisplayText,
   isGroceryRequirementRole,
@@ -15,6 +15,12 @@ type RecipeIngredientListProps = {
   disabled?: boolean;
   onCheckedChange?: (ingredientId: string, checked: boolean) => void;
 };
+
+function occurrenceMetadata(item: IngredientAmountLine): RecipeIngredient | null {
+  if (!("source" in item)) return null;
+  const source = item.source;
+  return (typeof source === "string" || source === null) ? item as RecipeIngredient : null;
+}
 
 /**
  * The canonical ingredient renderer for a recipe and its instruction steps.
@@ -34,12 +40,19 @@ export function RecipeIngredientList({
   if (variant === "step") {
     return (
       <div className="step-inputs">
-        {items.map((item, index) => (
-          <span key={"occurrenceId" in item && typeof item.occurrenceId === "string" ? `${item.occurrenceId}:${index}` : `${item.amount}-${item.ingredient}-${index}`}>
-            {"source" in item && typeof item.source === "string" && item.source ? <span className="block text-[11px] text-[var(--ink-soft)]">{item.source}</span> : null}
-            <span>{ingredientOccurrenceDisplayText({ ...item, source: null })}</span>
-          </span>
-        ))}
+        {items.map((item, index) => {
+          const occurrence = occurrenceMetadata(item);
+          return <span key={"occurrenceId" in item && typeof item.occurrenceId === "string" ? `${item.occurrenceId}:${index}` : `${item.amount}-${item.ingredient}-${index}`}>
+            <span>{[item.amount, item.ingredient].filter(Boolean).join(" ")}</span>
+            {occurrence && (occurrence.source || occurrence.unit || occurrence.qualifier) ? (
+              <span className="block text-[11px] text-[var(--ink-soft)]">
+                {[occurrence.source ? `Source: ${occurrence.source}` : null, occurrence.unit ? `Unit: ${occurrence.unit}` : null, occurrence.qualifier ? `Qualifier: ${occurrence.qualifier}` : null]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            ) : null}
+          </span>;
+        })}
       </div>
     );
   }
@@ -92,8 +105,7 @@ export function RecipeInstructionContent({ step, meal }: { step: InstructionStep
   const inputs = step.inputs.map((input) => {
     const occurrence = ingredientsById.get(input.occurrenceId);
     if (!occurrence) return input;
-    const amountAlreadyIncludesUnit = occurrence.unit !== null && input.amount.toLocaleLowerCase().includes(occurrence.unit.toLocaleLowerCase());
-    return { ...occurrence, amount: input.amount, ingredient: input.ingredient, unit: amountAlreadyIncludesUnit ? null : occurrence.unit };
+    return { ...occurrence, amount: input.amount, ingredient: input.ingredient };
   });
   return (
     <div className="instruction-line-content">

@@ -16,6 +16,15 @@ test("recipe occurrence display preserves source or composes every structured li
   }), "3 tbsp harissa paste divided");
 });
 
+test("instruction rendering keeps its exact use literal apart from occurrence metadata", async () => {
+  const recipeContent = await readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8");
+  assert.match(recipeContent, /\[item\.amount, item\.ingredient\]\.filter\(Boolean\)\.join\(" "\)/);
+  assert.match(recipeContent, /Source: \$\{occurrence\.source\}/);
+  assert.match(recipeContent, /Unit: \$\{occurrence\.unit\}/);
+  assert.match(recipeContent, /Qualifier: \$\{occurrence\.qualifier\}/);
+  assert.doesNotMatch(recipeContent, /amountAlreadyIncludesUnit/);
+});
+
 test("Day, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
   const [planner, recipeContent, authoring, prepView] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),

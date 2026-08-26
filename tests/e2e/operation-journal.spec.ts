@@ -301,8 +301,12 @@ test.describe("reload-safe authority operation journal", () => {
       .toHaveValue("");
     await expect(hydratedDrawer.getByRole("textbox", { name: "Venue", exact: true }))
       .toHaveValue(recoveryVenue);
+    const replayedWorkspace = await readWorkspace(page);
     await hydratedDrawer.getByRole("textbox", { name: "Title", exact: true }).fill(finalTitle);
-    await hydratedDrawer.getByRole("button", { name: "Save recipe details" }).click();
+    const continuation = await captureAcceptedReplay(page, "**/api/commands", async () => {
+      await hydratedDrawer.getByRole("button", { name: "Save recipe details" }).click();
+    });
+    expect(bodyJson(continuation).basePlannerVersion).toBe(replayedWorkspace.plannerVersion);
 
     const workspace = await readWorkspace(page);
     expect(workspace.state.weeks.flatMap((week) => week.data.meals)

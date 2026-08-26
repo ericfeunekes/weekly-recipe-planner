@@ -153,6 +153,104 @@ test.describe("native Codex thread rail", () => {
     await expect.poll(() => freshWorkspaceReads.length).toBeGreaterThan(0);
   });
 
+  test("a pinned canonical recipe keeps literal step uses and occurrence context in Recipe and Prep", async ({ page }) => {
+    test.setTimeout(120_000);
+    await openNative(page);
+    let preparatoryWorkspace = await (await page.request.get("/api/workspace")).json() as {
+      plannerVersion: number;
+      state: { activeWeekId: string; weeks: Array<{ id: string; data: { prepSessions: Array<{ prepDate: string }> } }> };
+    };
+    const preparatoryWeek = preparatoryWorkspace.state.weeks.find((week) => week.id === preparatoryWorkspace.state.activeWeekId)!;
+    for (const session of preparatoryWeek.data.prepSessions) {
+      const cleared = await page.request.post("/api/commands", {
+        headers: { Origin: new URL(page.url()).origin },
+        data: {
+          requestId: crypto.randomUUID(),
+          basePlannerVersion: preparatoryWorkspace.plannerVersion,
+          command: { type: "clearPrepDate", weekId: preparatoryWeek.id, prepDate: session.prepDate },
+        },
+      });
+      expect(cleared.ok(), await cleared.text()).toBe(true);
+      preparatoryWorkspace = await (await page.request.get("/api/workspace")).json() as typeof preparatoryWorkspace;
+    }
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await rail.getByRole("textbox", { name: "Message Codex" }).fill("Import the lemon pepper salmon recipe.");
+    await rail.getByRole("button", { name: "Send to Codex" }).click();
+    await expect(rail.getByRole("log", { name: "Codex conversation" }))
+      .toContainText("I imported the pinned Lemon Pepper Salmon recipe as this meal's editable copy.");
+
+    const importedWorkspaceResponse = await page.request.get("/api/workspace");
+    expect(importedWorkspaceResponse.ok()).toBe(true);
+    const importedWorkspace = await importedWorkspaceResponse.json() as {
+      plannerVersion: number;
+      state: {
+        activeWeekId: string;
+        weeks: Array<{ id: string; data: { meals: Array<{
+          id: string;
+          title: string;
+          sourceRecipe?: { kind: string; identity: string; revision: string };
+          instructions: Array<{ id: string; instruction: string; inputs: Array<{ occurrenceId: string; amount: string; ingredient: string }> }>;
+        }> } }>;
+      };
+    };
+    const importedWeek = importedWorkspace.state.weeks.find((week) => week.id === importedWorkspace.state.activeWeekId)!;
+    const importedMeal = importedWeek.data.meals.find((meal) => meal.sourceRecipe?.identity === "lemon-pepper-salmon")!;
+    expect(importedMeal.title).toBe("Lemon Pepper Salmon");
+    expect(importedMeal.sourceRecipe).toMatchObject({ kind: "canonical", identity: "lemon-pepper-salmon" });
+    expect(importedMeal.sourceRecipe?.revision).toMatch(/^[0-9a-f]{64}$/u);
+    const importedStep = importedMeal.instructions.find((step) => step.instruction === "Rub the garlic over the salmon.")!;
+    const salmonUse = importedStep.inputs.find((input) => input.ingredient === "salmon")!;
+
+    const overridden = await page.request.post("/api/commands", {
+      headers: { Origin: new URL(page.url()).origin },
+      data: {
+        requestId: crypto.randomUUID(),
+        basePlannerVersion: importedWorkspace.plannerVersion,
+        command: {
+          type: "editInstructionStep",
+          weekId: importedWeek.id,
+          stepId: importedStep.id,
+          changes: {
+            inputs: [
+              { kind: "retain", occurrenceId: salmonUse.occurrenceId, amount: "half", ingredient: "salmon" },
+              { kind: "retain", occurrenceId: salmonUse.occurrenceId, amount: "one large fillet", ingredient: "salmon" },
+            ],
+            instruction: importedStep.instruction,
+            timerDurationSeconds: null,
+          },
+        },
+      },
+    });
+    expect(overridden.ok(), await overridden.text()).toBe(true);
+
+    await page.getByRole("button", { name: "Week", exact: true }).click();
+    const importedCard = page.locator(".meal-card").filter({ hasText: "Lemon Pepper Salmon" });
+    await importedCard.getByRole("button", { name: /Peek recipe/ }).click();
+    const summary = page.getByRole("dialog", { name: "Lemon Pepper Salmon" });
+    await expect(summary).toContainText("Editable meal copy");
+    await expect(summary).toContainText("lemon-pepper-salmon · pinned");
+    await expect(summary).toContainText("half salmon");
+    await expect(summary).toContainText("one large fillet salmon");
+    await expect(summary).toContainText("Source: 4 (4-6 ounce) salmon fillets");
+    await expect(summary).toContainText("Unit: fillet");
+    await expect(summary).toContainText("Qualifier: 4-6 ounce");
+    await summary.getByRole("button", { name: "Close", exact: true }).last().click();
+
+    await page.getByRole("button", { name: "Prep", exact: true }).click();
+    await page.getByRole("button", { name: /Add recipe steps to/ }).click();
+    const sources = page.getByRole("dialog", { name: "Recipe instructions" });
+    await sources.getByRole("radio", { name: /Lemon Pepper Salmon/ }).click();
+    await sources.getByRole("button", { name: /Rub the garlic over the salmon/ }).click();
+    await sources.getByRole("button", { name: /Add selected recipe steps to/ }).click();
+    const directPrep = page.getByTestId("prep-session-step").filter({ hasText: "Rub the garlic over the salmon." });
+    await expect(directPrep).toContainText("Editable meal copy");
+    await expect(directPrep).toContainText("half salmon");
+    await expect(directPrep).toContainText("one large fillet salmon");
+    await expect(directPrep).toContainText("Source: 4 (4-6 ounce) salmon fillets");
+    await expect(directPrep).toContainText("Unit: fillet");
+    await expect(directPrep).toContainText("Qualifier: 4-6 ounce");
+  });
+
   test("task history exposes an enabled retry and recovers after a list failure", async ({ page }) => {
     await openNative(page);
     let injected = false;
