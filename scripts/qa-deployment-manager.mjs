@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -9,12 +10,13 @@ import {
   rm,
   unlink,
 } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const READY_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 150;
+const PUBLIC_BASE_PATH = "/recipe-planner/";
 
 function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
@@ -33,6 +35,13 @@ function requirePort(value) {
     throw new TypeError("QA_PORTLESS_PORT must be an integer from 1 through 65535.");
   }
   return port;
+}
+
+function requireTimeout(value, name = "QA_READY_TIMEOUT_MS") {
+  if (value === undefined) return READY_TIMEOUT_MS;
+  const timeout = Number(value);
+  if (!Number.isInteger(timeout) || timeout < 1) throw new TypeError(`${name} must be a positive integer.`);
+  return timeout;
 }
 
 function requireAbsolutePath(value, name) {
@@ -62,7 +71,6 @@ function configuredPaths(environment = process.env) {
     root,
     stateDirectory,
     statePath: join(stateDirectory, "deployment.json"),
-    url: `http://${name}.localhost:${port}`,
   });
 }
 
@@ -81,15 +89,16 @@ async function ensureStateDirectory(directory) {
   await chmod(directory, 0o700);
 }
 
-function parseState(value) {
+export function parseState(value) {
   const parsed = JSON.parse(value);
   if (
     typeof parsed !== "object" || parsed === null ||
-    !Number.isSafeInteger(parsed.pid) || parsed.pid <= 1 ||
-    typeof parsed.url !== "string" || typeof parsed.startedAt !== "string"
+    !Number.isSafeInteger(parsed.pid) || parsed.pid <= 1 || typeof parsed.startedAt !== "string"
   ) {
     throw new Error("The QA deployment state file is malformed.");
   }
+  if (parsed.url === undefined) return parsed;
+  if (typeof parsed.url !== "string") throw new Error("The QA deployment state file is malformed.");
   return parsed;
 }
 
@@ -127,6 +136,57 @@ async function writeState(paths, state) {
   await rename(temporaryPath, paths.statePath);
 }
 
+function handoffPath(paths) {
+  return join(paths.stateDirectory, `effective-origin-${randomUUID()}.txt`);
+}
+
+function requireRequestedOrigin(value, name) {
+  const origin = new URL(value);
+  const hostname = origin.hostname;
+  const requestedHostname = `${name}.localhost`;
+  if (
+    origin.protocol !== "http:" ||
+    (hostname !== requestedHostname && !hostname.endsWith(`.${requestedHostname}`)) ||
+    origin.pathname !== "/" || origin.search || origin.hash || origin.username || origin.password
+  ) {
+    throw new TypeError("The Portless handoff origin does not match the requested HTTP .localhost QA name.");
+  }
+  return origin.origin;
+}
+
+export async function readOriginHandoff(paths, path) {
+  if (resolve(path) !== path || relative(paths.stateDirectory, path).startsWith("..")) {
+    throw new Error("The QA origin handoff path must stay inside QA_STATE_DIR.");
+  }
+  const metadata = await lstat(path);
+  const uid = process.getuid?.();
+  if (
+    !metadata.isFile() || metadata.isSymbolicLink() ||
+    !Number.isSafeInteger(uid) || metadata.uid !== uid || (metadata.mode & 0o077) !== 0
+  ) {
+    throw new Error("The QA origin handoff file has unsafe ownership or permissions.");
+  }
+  const value = await readFile(path, "utf8");
+  if (!value.endsWith("\n") || value.slice(0, -1).includes("\n")) {
+    throw new Error("The QA origin handoff file is malformed.");
+  }
+  return requireRequestedOrigin(value.trim(), paths.name);
+}
+
+async function waitForOriginHandoff(paths, pid, path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) throw new Error("The QA deployment exited before reporting its effective origin.");
+    try {
+      return await readOriginHandoff(paths, path);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error("Timed out waiting for the QA deployment effective-origin handoff.");
+}
+
 function processIsAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -152,16 +212,26 @@ async function managedProcessIsCurrent(paths, pid) {
   return output.includes(join(paths.root, "node_modules", ".bin", "portless"));
 }
 
-async function terminateProcessGroup(pid) {
+function processGroupIsAlive(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function terminateProcessGroup(pid, timeoutMs = STOP_TIMEOUT_MS) {
   try {
     process.kill(-pid, "SIGTERM");
   } catch (error) {
     if (error?.code === "ESRCH") return;
     throw error;
   }
-  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!processIsAlive(pid)) return;
+    if (!processGroupIsAlive(pid)) return;
     await sleep(POLL_INTERVAL_MS);
   }
   try {
@@ -169,34 +239,44 @@ async function terminateProcessGroup(pid) {
   } catch (error) {
     if (error?.code !== "ESRCH") throw error;
   }
+  const killDeadline = Date.now() + timeoutMs;
+  while (Date.now() < killDeadline) {
+    if (!processGroupIsAlive(pid)) return;
+    await sleep(POLL_INTERVAL_MS);
+  }
+  if (processGroupIsAlive(pid)) throw new Error("The QA deployment process group did not stop.");
 }
 
-async function stop(paths, { quiet = false } = {}) {
+export async function stop(paths, { quiet = false, timeoutMs, expectedPid, beforeCleanup } = {}) {
   await ensureStateDirectory(paths.stateDirectory);
   const state = await readState(paths);
   if (state === null) {
     if (!quiet) console.log("QA deployment is not running.");
     return false;
   }
+  if (expectedPid !== undefined && state.pid !== expectedPid) return false;
   if (processIsAlive(state.pid)) {
     if (!(await managedProcessIsCurrent(paths, state.pid))) {
       throw new Error("The tracked QA PID no longer belongs to this deployment; refusing to stop it.");
     }
-    await terminateProcessGroup(state.pid);
+    await terminateProcessGroup(state.pid, timeoutMs);
   }
+  await beforeCleanup?.();
+  const current = await readState(paths);
+  if (current === null || current.pid !== state.pid) return false;
   await Promise.all([
     unlink(paths.statePath).catch((error) => {
       if (error?.code !== "ENOENT") throw error;
     }),
     rm(paths.logPath, { force: true }),
   ]);
-  if (!quiet) console.log(`Stopped QA deployment at ${state.url}.`);
+  if (!quiet) console.log(state.url ? `Stopped QA deployment at ${state.url}.` : "Stopped starting QA deployment.");
   return true;
 }
 
 async function readHealth(url) {
   try {
-    const response = await fetch(`${url}/api/health`, {
+    const response = await fetch(`${url}${PUBLIC_BASE_PATH}api/health`, {
       signal: AbortSignal.timeout(1_000),
     });
     if (!response.ok) return null;
@@ -213,25 +293,26 @@ async function readHealth(url) {
   }
 }
 
-async function waitForReady(paths, pid) {
+async function waitForReady(url, pid) {
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     if (!processIsAlive(pid)) {
       throw new Error("The QA deployment exited before becoming ready.");
     }
-    const health = await readHealth(paths.url);
+    const health = await readHealth(url);
     if (health !== null) return health;
     await sleep(POLL_INTERVAL_MS);
   }
-  throw new Error(`Timed out waiting for ${paths.url} to become ready.`);
+  throw new Error(`Timed out waiting for ${url} to become ready.`);
 }
 
-async function start(paths, environment = process.env) {
+export async function start(paths, environment = process.env) {
   await ensureStateDirectory(paths.stateDirectory);
   await stop(paths, { quiet: true });
   const log = await open(paths.logPath, "w", 0o600);
   const portless = join(paths.root, "node_modules", ".bin", "portless");
   const npm = environment.QA_NPM_COMMAND ?? "npm";
+  const originHandoff = handoffPath(paths);
   let child;
   try {
     child = spawn(process.execPath, [
@@ -248,7 +329,9 @@ async function start(paths, environment = process.env) {
       env: {
         ...environment,
         QA_DATA_SOURCE: paths.dataSource,
-        QA_ORIGIN: paths.url,
+        QA_EFFECTIVE_ORIGIN_HANDOFF: originHandoff,
+        QA_STATE_DIR: paths.stateDirectory,
+        PLANNER_PUBLIC_BASE_PATH: PUBLIC_BASE_PATH,
         PORTLESS_HTTPS: "0",
         PORTLESS_PORT: String(paths.port),
       },
@@ -257,20 +340,34 @@ async function start(paths, environment = process.env) {
   } finally {
     await log.close();
   }
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 1) {
+    await unlink(originHandoff).catch(() => undefined);
+    throw new Error("Could not start the QA deployment process.");
+  }
   child.unref();
   const state = {
     pid: child.pid,
     startedAt: new Date().toISOString(),
-    url: paths.url,
   };
-  await writeState(paths, state);
   try {
-    const health = await waitForReady(paths, state.pid);
+    await writeState(paths, state);
+  } catch (error) {
+    await terminateProcessGroup(state.pid);
+    await Promise.all([unlink(originHandoff).catch(() => undefined), rm(paths.logPath, { force: true })]);
+    throw error;
+  }
+  try {
+    const url = await waitForOriginHandoff(paths, state.pid, originHandoff, requireTimeout(environment.QA_READY_TIMEOUT_MS));
+    await unlink(originHandoff);
+    const readyState = { ...state, url };
+    await writeState(paths, readyState);
+    const health = await waitForReady(url, state.pid);
     console.log(
-      `QA deployment ready at ${paths.url} (pid ${state.pid}; ${health.status}).`,
+      `QA deployment ready at ${url} (pid ${state.pid}; ${health.status}).`,
     );
   } catch (error) {
-    await stop(paths, { quiet: true });
+    await stop(paths, { quiet: true, expectedPid: state.pid, timeoutMs: requireTimeout(environment.QA_STOP_TIMEOUT_MS, "QA_STOP_TIMEOUT_MS") });
+    await unlink(originHandoff).catch(() => undefined);
     throw error;
   }
 }
@@ -286,6 +383,10 @@ async function status(paths) {
   if (!(await managedProcessIsCurrent(paths, state.pid))) {
     throw new Error("The tracked QA PID no longer belongs to this deployment; refusing to inspect it.");
   }
+  if (!state.url) {
+    console.log(`QA deployment process ${state.pid} is starting.`);
+    return false;
+  }
   const health = await readHealth(state.url);
   console.log(
     health === null
@@ -295,9 +396,11 @@ async function status(paths) {
   return health !== null;
 }
 
-const command = process.argv[2];
-const paths = configuredPaths();
-if (command === "start") await start(paths);
-else if (command === "stop") await stop(paths);
-else if (command === "status") process.exitCode = (await status(paths)) ? 0 : 1;
-else throw new Error("Usage: qa-deployment-manager.mjs <start|stop|status>");
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const command = process.argv[2];
+  const paths = configuredPaths();
+  if (command === "start") await start(paths);
+  else if (command === "stop") await stop(paths);
+  else if (command === "status") process.exitCode = (await status(paths)) ? 0 : 1;
+  else throw new Error("Usage: qa-deployment-manager.mjs <start|stop|status>");
+}
