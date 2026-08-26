@@ -273,21 +273,26 @@ async function runBrowserJourney(origin, evidenceDirectory, executablePath) {
     assert.equal(workspaceResponse.status(), 200, "browser mounted workspace");
     const workspace = await workspaceResponse.json();
     const week = workspace.state.weeks.find((candidate) => candidate.id === workspace.state.activeWeekId) ?? workspace.state.weeks.at(-1);
-    assert.ok(week, "browser mounted Closeout fixture");
-    const closeoutPath = `${origin}/recipe-planner/weeks/${encodeURIComponent(week.id)}/closeout`;
-    const response = await page.goto(closeoutPath, { waitUntil: "domcontentloaded" });
+    assert.ok(week, "browser mounted dinner fixture");
+    const mountedPrepPath = `/recipe-planner/weeks/${encodeURIComponent(week.id)}/prep`;
+    const response = await page.goto(`${origin}${mountedPrepPath}`, { waitUntil: "domcontentloaded" });
     assert.equal(response?.status(), 200, "browser mounted planner page");
     assert.equal(await page.title(), "Weekly Recipe Planner");
     await page.getByText("Family dinner planner", { exact: true }).waitFor({ state: "visible" });
-    await page.getByRole("heading", { level: 1, name: "Close out", exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("heading", { level: 1, name: "Prep", exact: true }).waitFor({ state: "visible" });
     await page.reload({ waitUntil: "domcontentloaded" });
-    assert.equal(page.url(), closeoutPath, "browser mounted Closeout reload");
+    assert.equal(new URL(page.url()).pathname, mountedPrepPath, "mounted Prep reload keeps its canonical path");
+    await page.getByRole("heading", { level: 1, name: "Prep", exact: true }).waitFor({ state: "visible" });
     await page.getByRole("button", { name: "Week", exact: true }).click();
-    await page.goBack();
-    assert.equal(page.url(), closeoutPath, "browser mounted Closeout back navigation");
+    await page.getByRole("heading", { level: 1, name: "Week", exact: true }).waitFor({ state: "visible" });
+    assert.equal(new URL(page.url()).pathname, `/recipe-planner/weeks/${encodeURIComponent(week.id)}`, "leaving Prep keeps the mounted base path");
+    await page.goBack({ waitUntil: "domcontentloaded" });
+    assert.equal(new URL(page.url()).pathname, mountedPrepPath, "mounted browser Back returns to Prep");
+    await page.getByRole("heading", { level: 1, name: "Prep", exact: true }).waitFor({ state: "visible" });
+    assert.equal((await page.request.get(`${origin}/weeks/${encodeURIComponent(week.id)}/prep`)).status(), 404, "unmounted Prep alias stays rejected");
     assert.deepEqual({ consoleErrors, failedResponses }, { consoleErrors: [], failedResponses: [] }, "browser network and console errors");
     await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
-    await page.screenshot({ path: join(evidenceDirectory, "mounted-closeout.png"), animations: "disabled" });
+    await page.screenshot({ path: join(evidenceDirectory, "mounted-prep.png"), animations: "disabled" });
   } finally {
     await browser.close();
   }

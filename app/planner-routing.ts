@@ -6,6 +6,7 @@ export const LAST_VALID_WEEK_STORAGE_KEY = "weekly-recipe-planner.last-valid-wee
 export type PlannerLocation =
   | { kind: "root" }
   | { kind: "week"; weekId: WeekId }
+  | { kind: "prep"; weekId: WeekId }
   | { kind: "recipe"; weekId: WeekId; mealId: string }
   | { kind: "groceries"; weekId: WeekId }
   | { kind: "closeout"; weekId: WeekId }
@@ -14,6 +15,8 @@ export type PlannerLocation =
 
 export function parsePlannerLocation(pathname: string): PlannerLocation {
   if (pathname === "/") return { kind: "root" };
+  const prep = /^\/weeks\/([^/]+)\/prep$/u.exec(pathname);
+  if (prep) return { kind: "prep", weekId: prep[1] as WeekId };
   const recipe = /^\/weeks\/([^/]+)\/recipes\/([^/]+)$/u.exec(pathname);
   if (recipe) return { kind: "recipe", weekId: recipe[1] as WeekId, mealId: recipe[2] };
   const groceries = /^\/weeks\/([^/]+)\/groceries$/u.exec(pathname);
@@ -33,6 +36,10 @@ export function weekPath(weekId: WeekId): string {
 
 export function recipePath(weekId: WeekId, mealId: string): string {
   return `${weekPath(weekId)}/recipes/${encodeURIComponent(mealId)}`;
+}
+
+export function prepPath(weekId: WeekId): string {
+  return `${weekPath(weekId)}/prep`;
 }
 
 export function groceriesPath(weekId: WeekId): string {
@@ -55,6 +62,7 @@ export function resolveRememberedWeekId(
 
 export type ResolvedPlannerLocation =
   | { kind: "week"; week: WeekPlan; legacyDate: string | null }
+  | { kind: "prep"; week: WeekPlan }
   | { kind: "recipe"; week: WeekPlan; mealId: string }
   | { kind: "groceries"; week: WeekPlan }
   | { kind: "closeout"; week: WeekPlan }
@@ -73,6 +81,7 @@ export function resolvePlannerLocation(
   const week = weeks.find((candidate) => candidate.id === location.weekId) ?? null;
   if (!week) return { kind: "unavailable", week: fallback, message: "That week is unavailable." };
   if (location.kind === "week") return { kind: "week", week, legacyDate: null };
+  if (location.kind === "prep") return { kind: "prep", week };
   if (location.kind === "groceries") return { kind: "groceries", week };
   if (location.kind === "closeout") return { kind: "closeout", week };
   if (location.kind === "legacy-day") {
