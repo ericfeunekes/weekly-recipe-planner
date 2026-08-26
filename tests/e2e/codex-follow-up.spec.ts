@@ -422,14 +422,28 @@ test.describe("native Codex thread rail", () => {
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Codex task" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toBeVisible();
+    const composer = dialog.getByRole("textbox", { name: "Message Codex" });
+    await expect(composer).toBeFocused();
     await expect(dialog.getByRole("button", { name: "Task history" })).toBeVisible();
     await expect(dialog.getByRole("radio")).toHaveCount(0);
     await expectComposerActionTargets(dialog);
 
+    await page.keyboard.press("Shift+Tab");
+    expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+
     await expect(dialog.getByRole("button", { name: "Close" })).toHaveCount(1);
-    await dialog.getByRole("button", { name: "Close" }).click();
+    await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
+  });
+
+  test("ordinary desktop opening does not focus the composer", async ({ page }) => {
+    await openPreview(page, "/?codexPreview=1", false);
+
+    const trigger = page.getByRole("button", { name: "Open Codex" });
+    await trigger.click();
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await expect(rail).toBeVisible();
+    await expect(rail.getByRole("textbox", { name: "Message Codex" })).not.toBeFocused();
   });
 });
