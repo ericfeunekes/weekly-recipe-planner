@@ -7,6 +7,7 @@ import {
   closeoutPath,
   groceriesPath,
   parsePlannerLocation,
+  prepPath,
   recipePath,
   resolvePlannerLocation,
   resolveRememberedWeekId,
@@ -48,6 +49,19 @@ test("Closeout locations preserve the selected Week identity", () => {
   const archived = structuredClone(week);
   archived.status = "archived";
   assert.equal(resolvePlannerLocation(parsePlannerLocation(closeoutPath(archived.id)), [archived], archived.id).kind, "closeout");
+});
+
+test("Prep locations preserve the selected Week, including archived weeks", () => {
+  const week = fixture();
+  assert.equal(prepPath(week.id), `/weeks/${week.id}/prep`);
+  assert.deepEqual(parsePlannerLocation(prepPath(week.id)), { kind: "prep", weekId: week.id });
+  const resolved = resolvePlannerLocation(parsePlannerLocation(prepPath(week.id)), [week], week.id);
+  assert.equal(resolved.kind, "prep");
+  assert.equal(resolved.week.id, week.id);
+
+  const archived = structuredClone(week);
+  archived.status = "archived";
+  assert.equal(resolvePlannerLocation(parsePlannerLocation(prepPath(archived.id)), [archived], archived.id).kind, "prep");
 });
 
 test("Groceries location preserves its selected Week, including archived records", () => {

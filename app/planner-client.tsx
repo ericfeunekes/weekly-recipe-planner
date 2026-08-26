@@ -131,6 +131,7 @@ import {
   closeoutPath,
   groceriesPath,
   parsePlannerLocation,
+  prepPath,
   recipePath,
   resolvePlannerLocation,
   resolveRememberedWeekId,
@@ -762,12 +763,13 @@ const plannerRootRoute = createRootRoute({ component: PlannerAppContent });
 const plannerIndexRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/" });
 const plannerWeekRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId" });
 const plannerRecipeRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/recipes/$mealId" });
+const plannerPrepRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/prep" });
 const plannerGroceriesRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/groceries" });
 const plannerCloseoutRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/closeout" });
 const plannerLegacyDayRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/day/$date" });
 function createPlannerRouter() {
   return createRouter({
-    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerGroceriesRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
+    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerPrepRoute, plannerGroceriesRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
     basepath: import.meta.env?.BASE_URL === "/" ? undefined : import.meta.env?.BASE_URL?.replace(/\/$/u, ""),
   });
 }
@@ -798,7 +800,7 @@ function PlannerAppContent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const routerNavigate = useNavigate();
   const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
-  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "closeout" || location.kind === "legacy-day"
+  const selectedWeekId = location.kind === "week" || location.kind === "prep" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "closeout" || location.kind === "legacy-day"
     ? location.weekId
     : null;
   const queryClient = useQueryClient();
@@ -1001,8 +1003,12 @@ function PlannerAppContent() {
   }, [syncPendingRetries]);
 
   const navigate = useCallback((nextView: PlannerView) => {
-    if ((nextView === "groceries" || nextView === "closeout") && selectedWeekId) {
+    if ((nextView === "prep" || nextView === "groceries" || nextView === "closeout") && selectedWeekId) {
       setView("week");
+      if (nextView === "prep") {
+        void routerNavigate({ to: prepPath(selectedWeekId) });
+        return;
+      }
       if (nextView === "groceries") {
         void routerNavigate({ to: groceriesPath(selectedWeekId) });
         return;
@@ -1010,7 +1016,7 @@ function PlannerAppContent() {
       void routerNavigate({ to: closeoutPath(selectedWeekId) });
       return;
     }
-    if ((location.kind === "groceries" || location.kind === "closeout") && selectedWeekId) {
+    if ((location.kind === "prep" || location.kind === "groceries" || location.kind === "closeout") && selectedWeekId) {
       setView(nextView);
       void routerNavigate({ to: weekPath(selectedWeekId) });
       return;
@@ -1574,7 +1580,7 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const currentView = resolvedLocation.kind === "groceries" || resolvedLocation.kind === "closeout" ? resolvedLocation.kind : view;
+  const currentView = resolvedLocation.kind === "prep" || resolvedLocation.kind === "groceries" || resolvedLocation.kind === "closeout" ? resolvedLocation.kind : view;
   const heading = resolvedLocation.kind === "recipe" ? "Recipe" : currentView === "closeout" ? "Close out" : `${currentView[0].toUpperCase()}${currentView.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
@@ -1617,7 +1623,7 @@ function PlannerAppContent() {
                 onChange={(event) => {
                   setRouteNotice(null);
                   const nextWeekId = event.target.value as WeekId;
-                  void routerNavigate({ to: resolvedLocation.kind === "groceries" ? groceriesPath(nextWeekId) : resolvedLocation.kind === "closeout" ? closeoutPath(nextWeekId) : weekPath(nextWeekId) });
+                  void routerNavigate({ to: resolvedLocation.kind === "prep" ? prepPath(nextWeekId) : resolvedLocation.kind === "groceries" ? groceriesPath(nextWeekId) : resolvedLocation.kind === "closeout" ? closeoutPath(nextWeekId) : weekPath(nextWeekId) });
                 }}
               >
                 {initialized.state.weeks.map((item) => (
@@ -1792,7 +1798,7 @@ function PlannerAppContent() {
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} formatCalendarDate={formatCalendarDate} />
                 ) : resolvedLocation.kind === "groceries" ? (
                   <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} onOpenRecipe={openRecipeSummary} />
-                ) : view === "week" ? (
+                ) : currentView === "week" ? (
                   <WeekView
                     week={week}
                     today={today}
@@ -1803,7 +1809,7 @@ function PlannerAppContent() {
                     onOpenRecipeSummary={openRecipeSummary}
                     onNavigate={navigate}
                   />
-                ) : view === "prep" ? (
+                ) : currentView === "prep" ? (
                   <PrepView
                     key={week.id}
                     SessionStepRow={PrepSessionStepRow}

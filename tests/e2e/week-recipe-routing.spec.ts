@@ -68,6 +68,43 @@ test("Week opens the exact selected meal Recipe and preserves its URL through re
   await expect(page.getByRole("region", { name: `${title} recipe` })).toBeVisible();
 });
 
+test("Prep is directly addressable and returns to its Week when leaving for a local sibling view", async ({ page }) => {
+  await resetPlanner(page);
+  await page.getByRole("button", { name: "Prep", exact: true }).click();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+  await page.getByRole("button", { name: "Groceries", exact: true }).click();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/groceries$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+
+  await page.goto("/weeks/2026-07-06/prep");
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Prep", exact: true })).toBeVisible();
+  await expect(page.getByTestId("prep-session-step").or(page.getByTestId("prep-combined-step")).first()).toBeVisible();
+
+  await page.reload();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Prep", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Week", exact: true }).click();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+
+  await page.getByRole("button", { name: "Groceries", exact: true }).click();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/groceries$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
+});
+
 test("root keeps a current remembered Week and unavailable Recipes return to that Week", async ({ page }) => {
   await resetPlanner(page);
   await page.evaluate(() => window.localStorage.setItem("weekly-recipe-planner.last-valid-week", "2026-07-06"));
@@ -76,6 +113,9 @@ test("root keeps a current remembered Week and unavailable Recipes return to tha
   await page.goto("/weeks/2026-07-06/recipes/missing");
   await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
   await expect(page.getByText("That recipe is unavailable for this week.", { exact: true })).toBeVisible();
+  await page.goto("/weeks/missing/prep");
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await expect(page.getByText("That week is unavailable.", { exact: true })).toBeVisible();
 });
 
 test("Closeout direct URLs survive reload and history while lesson drafts stay local", async ({ page }) => {

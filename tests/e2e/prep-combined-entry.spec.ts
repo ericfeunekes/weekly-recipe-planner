@@ -30,14 +30,25 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await existing.getByRole("button", { name: "Save Prep note" }).click();
   await expect(existing).toContainText("Prep note");
   await expect(existing).toContainText("Trim excess fat before coating.");
+  const workspace = await (await page.request.get("/api/workspace")).json() as {
+    state: { weeks: Array<{ id: string; data: { meals: Array<{ id: string; title: string }> } }> };
+  };
+  const harissaWeek = workspace.state.weeks.find((week) =>
+    week.data.meals.some((meal) => meal.title === "Harissa chicken traybake")
+  )!;
+  const harissaMeal = harissaWeek.data.meals.find((meal) => meal.title === "Harissa chicken traybake")!;
   await existing.getByRole("button", { name: /More options for/ }).click();
   await existing.getByRole("menuitem", { name: /Harissa chicken traybake/ }).click();
-  const summary = page.getByRole("region", { name: "Harissa chicken traybake recipe" });
-  await expect(summary).toContainText("Prep note");
-  await expect(summary).toContainText("Trim excess fat before coating.");
+  await expect(page).toHaveURL(`/weeks/${harissaWeek.id}/recipes/${harissaMeal.id}`);
+  const recipe = page.getByRole("region", { name: "Harissa chicken traybake recipe" });
+  await expect(recipe).toContainText("Prep note");
+  await expect(recipe).toContainText("Trim excess fat before coating.");
   await page.getByTitle("Back to Week").click();
+  await expect(page).toHaveURL(`/weeks/${harissaWeek.id}`);
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Prep", exact: true }).click();
   await sunday.click();
+  await expect(existing).toContainText("Trim excess fat before coating.");
 
   await page.setViewportSize({ width: 320, height: 844 });
   const noteControl = existing.getByRole("button", { name: /Edit Prep note/ });
