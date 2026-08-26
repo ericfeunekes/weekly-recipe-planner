@@ -497,7 +497,7 @@ test.describe.serial("family dinner authority", () => {
     await remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true }).fill("Remote accepted dinner title");
     await remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true }).fill("Neighbourhood kitchen");
     await remoteMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
-    await expect(pageA.locator(".meal-drawer").getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Remote accepted dinner title", { timeout: 8_000 });
+    await expect(remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Remote accepted dinner title", { timeout: 8_000 });
     await expect(staleTitle).toHaveValue("Stale local dinner title");
     await expect(staleMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();

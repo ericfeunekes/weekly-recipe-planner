@@ -533,7 +533,7 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
   assert.deepEqual(JSON.parse(replayResponse.contentItems[0].text), expectedNativeReplay);
   const migrated = migratedService(migratedStore);
   const workspaceBeforeEdit = migrated.readWorkspace();
-  assert.equal(workspaceBeforeEdit.schemaVersion, 12);
+  assert.equal(workspaceBeforeEdit.schemaVersion, 13);
   const migratedFennelConceptId = workspaceBeforeEdit.state.weeks[0].data.meals[0].ingredients[2].conceptId;
   assert.notEqual(migratedFennelConceptId, "scallion", "a legacy reference colliding with core vocabulary receives a bounded collision-safe identity");
   assert.ok(workspaceBeforeEdit.state.ingredientCatalogue.concepts.some(({ id }) => id === migratedFennelConceptId), "schema 11 retains a safe concept for every legacy resolution");
@@ -602,12 +602,12 @@ test("schema-10 migration uses immutable preflight, preserves duplicate occurren
   assert.notEqual(predecessorProof.predecessorExitStatus, 0);
 
   const firstReopen = openPlannerStore({ filename });
-  assert.equal(firstReopen.readWorkspace().schemaVersion, 12);
+  assert.equal(firstReopen.readWorkspace().schemaVersion, 13);
   assert.equal(firstReopen.readWorkspace().syncRevision, 11);
   firstReopen.close();
   const currentInventory = logicalInventory(filename);
   const secondReopen = openPlannerStore({ filename });
-  assert.equal(secondReopen.readWorkspace().schemaVersion, 12);
+  assert.equal(secondReopen.readWorkspace().schemaVersion, 13);
   secondReopen.close();
   assert.deepEqual(logicalInventory(filename), currentInventory, "a second current-schema open must remain logically idempotent");
   const integrity = new DatabaseSync(filename, { readOnly: true });
@@ -635,7 +635,7 @@ test("startup upgrades a schema-8 accepted apply envelope before current-contrac
     const envelope = JSON.parse(row.result_envelope_json);
     assert.deepEqual(envelope.data.occurrenceResults, [{ operationIndex: 0, occurrences: [] }]);
     assert.equal(isPlannerToolResultForTool("apply", envelope), true);
-    assert.equal(store.readWorkspace().schemaVersion, 12);
+    assert.equal(store.readWorkspace().schemaVersion, 13);
   } finally {
     store.close();
   }
