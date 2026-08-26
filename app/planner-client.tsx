@@ -655,11 +655,21 @@ function progressForWeek(week: WeekPlan): { complete: number; total: number } {
   return { complete: steps.filter((step) => step.complete).length, total: steps.length };
 }
 
-function useMobile(): boolean {
+function useMobile(onLeaveMobile?: () => void): boolean {
   const [mobile, setMobile] = useState(false);
+  const mobileRef = useRef(false);
+  const onLeaveMobileRef = useRef(onLeaveMobile);
+  useEffect(() => {
+    onLeaveMobileRef.current = onLeaveMobile;
+  }, [onLeaveMobile]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 840px)");
-    const update = () => setMobile(window.innerWidth <= 840);
+    const update = () => {
+      const nextMobile = window.innerWidth <= 840;
+      if (mobileRef.current && !nextMobile) onLeaveMobileRef.current?.();
+      mobileRef.current = nextMobile;
+      setMobile(nextMobile);
+    };
     update();
     media.addEventListener("change", update);
     window.addEventListener("resize", update);
@@ -826,7 +836,12 @@ function PlannerAppContent() {
     payload: null,
     error: null,
   });
-  const mobile = useMobile();
+  const transferMobileCodexToDesktop = useCallback(() => {
+    if (!chatOpen) return;
+    setCodexCollapsed(false);
+    setChatOpen(false);
+  }, [chatOpen]);
+  const mobile = useMobile(transferMobileCodexToDesktop);
   const etagRef = useRef<string | null>(null);
   const browserOfflineRef = useRef(false);
   const serverOffsetRef = useRef(0);
