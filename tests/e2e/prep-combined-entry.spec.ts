@@ -32,10 +32,12 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await expect(existing).toContainText("Trim excess fat before coating.");
   await existing.getByRole("button", { name: /More options for/ }).click();
   await existing.getByRole("menuitem", { name: /Harissa chicken traybake/ }).click();
-  const summary = page.getByRole("dialog", { name: "Harissa chicken traybake" });
+  const summary = page.getByRole("region", { name: "Harissa chicken traybake recipe" });
   await expect(summary).toContainText("Prep note");
   await expect(summary).toContainText("Trim excess fat before coating.");
-  await summary.getByRole("button", { name: "Close", exact: true }).last().click();
+  await page.getByTitle("Back to Week").click();
+  await page.getByRole("button", { name: "Prep", exact: true }).click();
+  await sunday.click();
 
   await page.setViewportSize({ width: 320, height: 844 });
   const noteControl = existing.getByRole("button", { name: /Edit Prep note/ });
@@ -149,9 +151,21 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await expect(mealRecipe.getByText("Prepared in batch", { exact: true })).toHaveCount(1);
   await expect(mealRecipe.getByRole("checkbox", { name: /Complete step/ })).toHaveCount(2);
   await expect(mealRecipe.getByRole("checkbox", { name: /Complete step/ }).first()).not.toBeChecked();
+  await mealRecipe.getByRole("button", { name: "Review ingredient concepts" }).click();
+  await expect(mealRecipe.getByText(/^Reviewing /u)).toBeVisible();
+  await mealRecipe.locator("select[aria-label^='Concept for']").first().selectOption("chicken-thigh");
+  const conceptApplied = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") &&
+    response.request().method() === "POST" &&
+    (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+  );
+  await mealRecipe.getByRole("button", { name: "Apply choices" }).click();
+  expect((await conceptApplied).status()).toBe(200);
+  await expect(mealRecipe.getByText("Prepared in batch", { exact: true })).toHaveCount(1);
   const roastStep = mealRecipe.locator(".instruction-step").filter({ hasText: "Roast the chicken" });
   await roastStep.getByText("Edit instruction", { exact: true }).click();
   await roastStep.getByRole("textbox", { name: /Instruction text/ }).fill("Roast the chicken, peppers, and chickpeas until cooked through, then rest.");
+  await expect(roastStep.getByRole("button", { name: /Save step/ })).toBeEnabled();
   await roastStep.getByRole("button", { name: /Save step/ }).click();
   await expect(mealRecipe.getByText("Prepared in batch", { exact: true })).toHaveCount(0);
   await page.getByTitle("Back to Week").click();

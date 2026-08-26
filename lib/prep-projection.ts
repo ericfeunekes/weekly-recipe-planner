@@ -20,8 +20,11 @@ export type PrepIngredientOccurrence = {
   mealTitle: string;
   stepId: string;
   ingredientId: string;
+  source: string | null;
   amount: string;
+  unit: string | null;
   ingredient: string;
+  qualifier: string | null;
 };
 
 export type PrepSourceProvenance = {
@@ -81,7 +84,7 @@ function aggregateOccurrences(occurrences: PrepIngredientOccurrence[]): PrepIngr
     else groups.set(key, [occurrence]);
   }
   return [...groups.entries()].map(([key, grouped]) => {
-    const quantity = sumIngredientQuantities(grouped.map((occurrence) => occurrence.amount));
+    const quantity = sumIngredientQuantities(grouped.map((occurrence) => [occurrence.amount, occurrence.unit].filter(Boolean).join(" ")));
     return {
       key: `literal:${key}`,
       ingredient: grouped[0].ingredient,
@@ -89,7 +92,7 @@ function aggregateOccurrences(occurrences: PrepIngredientOccurrence[]): PrepIngr
       quantity,
       display: quantity.ok
         ? `${quantity.display} ${grouped[0].ingredient}`
-        : grouped.map((occurrence) => [occurrence.amount, occurrence.ingredient].filter(Boolean).join(" ")).join("; "),
+        : grouped.map((occurrence) => [occurrence.amount, occurrence.unit, occurrence.ingredient].filter(Boolean).join(" ")).join("; "),
     };
   });
 }
@@ -127,8 +130,11 @@ function projectSources(week: WeekPlan | undefined, sources: readonly Source[]):
         mealTitle: location.meal.title,
         stepId: source.stepId,
         ingredientId,
+        source: ingredient.source,
         amount: ingredient.amount,
+        unit: ingredient.unit,
         ingredient: ingredient.ingredient,
+        qualifier: ingredient.qualifier,
       };
       ingredients.push(occurrence);
       allOccurrences.push(occurrence);

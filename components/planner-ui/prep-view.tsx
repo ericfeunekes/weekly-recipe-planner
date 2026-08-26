@@ -11,6 +11,7 @@ import { addIsoDateDays } from "@/lib/household-domain";
 import { preparedInBatchStepIds, projectCombinedPrepDraft, projectCombinedPrepEntry } from "@/lib/prep-projection";
 import { cn } from "@/lib/utils";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
+import { RecipeIngredientList, RecipeProvenance } from "@/components/planner-ui/recipe-content";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
@@ -117,11 +118,12 @@ function PrepRecipeSource({
       <ToggleGroup className="prep-recipe-picker" type="single" value={selectedMeal?.id} onValueChange={(mealId) => { if (mealId) onSelectMeal(mealId); }} aria-label="Recipes">
         {week.data.meals.map((meal) => {
           const unassignedCount = meal.instructions.filter((step) => !step.complete && !assignedPrepStepIds.has(step.id)).length;
-          return <ToggleGroupItem key={meal.id} value={meal.id}><span>{meal.title}</span>{unassignedCount ? <small>{unassignedCount} to prep</small> : null}</ToggleGroupItem>;
+          return <ToggleGroupItem key={meal.id} value={meal.id}><span>{meal.title}</span>{meal.sourceRecipe ? <small>Editable meal copy</small> : null}{unassignedCount ? <small>{unassignedCount} to prep</small> : null}</ToggleGroupItem>;
         })}
       </ToggleGroup>
       {selectedMeal ? <div className="prep-recipe-steps">
         <strong>{selectedMeal.title}</strong>
+        {selectedMeal.sourceRecipe ? <small className="text-[11px] text-[var(--ink-soft)]">{selectedMeal.sourceRecipe.kind === "canonical" ? `Pinned ${selectedMeal.sourceRecipe.revision.slice(0, 12)}` : selectedMeal.sourceRecipe.identity}</small> : null}
         {selectedCount ? <p className="prep-source-selection-summary"><strong>{selectedCount} selected</strong><span>Drag any selected instruction onto a prep date.</span></p> : null}
         {selectedMeal.instructions.map((step, index) => {
           const assigned = assignedPrepStepIds.has(step.id);
@@ -613,8 +615,7 @@ export function PrepView(props: PrepViewProps) {
                           {projection.sources.map((source) => {
                             const meal = week.data.meals.find((candidate) => candidate.id === source.mealId);
                             const dateLabel = meal ? formatCalendarDate(meal.date, { weekday: "short", month: "short", day: "numeric" }) : "Recipe";
-                            const contribution = source.ingredients.map((ingredient) => [ingredient.amount, ingredient.ingredient].filter(Boolean).join(" ")).join(", ");
-                            return <div className="grid grid-cols-[minmax(0,250px)_minmax(180px,260px)] items-start gap-4 max-[840px]:grid-cols-1 max-[840px]:gap-0.5" key={source.stepId}><div className="grid min-w-0 gap-0.5"><strong className="text-xs leading-[1.35]">{dateLabel} · {source.mealTitle}</strong><span className="[overflow-wrap:anywhere] text-[11px] leading-[1.4] text-[var(--ink-soft)]">{source.instruction}</span></div>{contribution ? <span className="pt-px text-right text-[11px] leading-[1.4] text-[var(--ink-soft)] max-[840px]:text-left">contributes {contribution}</span> : null}</div>;
+                            return <div className="grid min-w-0 gap-0.5" key={source.stepId}><strong className="text-xs leading-[1.35]">{dateLabel} · {source.mealTitle}</strong>{meal ? <RecipeProvenance meal={meal} /> : null}<span className="[overflow-wrap:anywhere] text-[11px] leading-[1.4] text-[var(--ink-soft)]">{source.instruction}</span><RecipeIngredientList items={source.ingredients} variant="step" /></div>;
                           })}
                         </div>
                         <p className="mt-[3px] text-[11px] leading-[1.45] text-[var(--ink-soft)]">{entry.needsReview ? "A source recipe changed. Review this wording before completing the batch." : entry.complete ? `Prepared in batch for ${recipeCount} ${recipeCount === 1 ? "recipe" : "recipes"}; dinner steps remain unchecked.` : `Completing this prep task prepares work for ${recipeCount} ${recipeCount === 1 ? "recipe" : "recipes"}; dinner steps stay unchecked.`}</p>

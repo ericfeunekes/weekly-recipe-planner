@@ -16,13 +16,23 @@ test("recipe occurrence display preserves source or composes every structured li
   }), "3 tbsp harissa paste divided");
 });
 
+test("instruction rendering keeps its exact use literal apart from occurrence metadata", async () => {
+  const recipeContent = await readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8");
+  assert.match(recipeContent, /\[item\.amount, item\.ingredient\]\.filter\(Boolean\)\.join\(" "\)/);
+  assert.match(recipeContent, /Source: \$\{occurrence\.source\}/);
+  assert.match(recipeContent, /Unit: \$\{occurrence\.unit\}/);
+  assert.match(recipeContent, /Qualifier: \$\{occurrence\.qualifier\}/);
+  assert.doesNotMatch(recipeContent, /amountAlreadyIncludesUnit/);
+});
+
 test("Recipe, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
-  const [planner, recipeContent] = await Promise.all([
+  const [planner, recipeContent, prepView] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(planner, /import \{ RecipeIngredientList, RecipeInstructionContent \} from "@\/components\/planner-ui\/recipe-content"/);
+  assert.match(planner, /RecipeIngredientList, RecipeInstructionContent, RecipeProvenance/);
   assert.match(planner, /function MealIngredientList\(/);
   assert.match(planner, /<MealIngredientList meal=\{meal\} week=\{week\} disabled=\{disabled\} mutate=\{mutate\}/);
   assert.match(planner, /<InstructionStepLine[\s\S]*?className="border-b border-border py-3/);
@@ -33,10 +43,27 @@ test("Recipe, Prep, and recipe summary share canonical recipe instruction and in
   assert.match(planner, /correlationId: createRequestId\(\)/);
   assert.match(planner, /type: "editMealRecipe",/);
   assert.match(planner, /removedOccurrenceIds:/);
-  assert.match(planner, /Remove ingredient \$\{index \+ 1\} and linked instruction inputs/);
+  assert.match(planner, /setIngredientReviewSeed/);
+  assert.match(planner, /occurrenceResults\[0\]\?\.occurrences/);
+  assert.doesNotMatch(planner, /plannerVersion: result\.decision\.plannerVersion/);
+  assert.match(planner, /startIngredientReview\(\s*postSaveReviewSeed\.inputs,\s*\)/);
+  assert.match(planner, /type: "previewIngredientCandidates", inputs: batch/);
+  assert.match(planner, /type: "applyIngredientResolutionBatch",/);
+  assert.match(planner, /inputs\.slice\(0, MAX_INGREDIENT_CANDIDATE_BATCH\)/);
+  assert.match(planner, /Leave unresolved/);
+  assert.match(planner, /Household name/);
+  assert.match(planner, /Default grocery section/);
+  assert.match(planner, /Other accepted names/);
+  assert.match(planner, /createdConcepts/);
   assert.match(planner, /type: "setGroceryItemChecked", weekId: week\.id, itemId: item\.id, checked/);
   assert.match(recipeContent, /export function RecipeIngredientList/);
   assert.match(recipeContent, /export function RecipeInstructionContent/);
+  assert.match(recipeContent, /export function RecipeProvenance/);
+  assert.match(recipeContent, /Editable meal copy/);
   assert.match(recipeContent, /occurrenceId/);
-  assert.match(recipeContent, /<RecipeIngredientList items=\{step\.inputs\} variant="step"/);
+  assert.match(recipeContent, /ingredientsById/);
+  assert.match(recipeContent, /<RecipeIngredientList items=\{inputs\} variant="step"/);
+  assert.match(prepView, /RecipeIngredientList, RecipeProvenance/);
+  assert.match(prepView, /<RecipeProvenance meal=\{meal\}/);
+  assert.match(prepView, /<RecipeIngredientList items=\{source\.ingredients\} variant="step"/);
 });

@@ -55,6 +55,7 @@ import {
   MAX_COMMAND_TEXT_LENGTH,
   MAX_ID_LENGTH,
   MAX_INGREDIENT_LINE_LENGTH,
+  MAX_INGREDIENT_CANDIDATE_BATCH,
   MAX_INGREDIENT_LINES,
   MAX_MEAL_SUBTITLE_LENGTH,
   MAX_MEAL_TITLE_LENGTH,
@@ -65,13 +66,16 @@ import {
   isHouseholdCommand,
   type HouseholdCommand,
 } from "@/lib/household-command-contract";
+import type { IngredientCandidateInput, IngredientCandidatePreview } from "@/lib/ingredient-catalogue";
 import {
   isIngredientOccurrenceEdit,
   normalizedCoreIngredientLiteral,
   type InstructionInputEdit,
 } from "@/lib/ingredient-occurrence";
-import {  MEAL_STATUSES,
+import {
+  MEAL_STATUSES,
   isPrepSessionCombinedStep,
+  type GroceryItem,
   type InstructionStep,
   type IsoDate,
   type Meal,
@@ -86,6 +90,7 @@ import {
   type BootstrapWorkspaceRequest,
   type InitializedWorkspace,
   type PlannerEvent,
+  type PlannerCommandDecision,
   type UndoLatestRequest,
   type WorkspaceResponse,
 } from "@/lib/planner-api-contract";
@@ -133,7 +138,7 @@ import {
 } from "./planner-routing";
 import { CodexThreadRail } from "./codex-thread-rail";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
-import { RecipeIngredientList, RecipeInstructionContent } from "@/components/planner-ui/recipe-content";
+import { RecipeIngredientList, RecipeInstructionContent, RecipeProvenance } from "@/components/planner-ui/recipe-content";
 import { PrepView } from "@/components/planner-ui/prep-view";
 import { CloseoutView } from "@/components/planner-ui/closeout-view";
 import { GroceryView } from "@/components/planner-ui/grocery-view";
@@ -146,6 +151,12 @@ import type { PlannerView } from "./planner-view";
 
 type ConnectionState = "loading" | "online" | "offline";
 type Notice = { tone: "info" | "warning" | "error"; message: string } | null;
+const INGREDIENT_CONCEPT_GROCERY_SECTIONS: GroceryItem["section"][] = [
+  "Produce",
+  "Meat & seafood",
+  "Dairy",
+  "Pantry",
+];
 type WorkspaceQueryData = {
   workspace: WorkspaceResponse;
   serverDate: number | null;
@@ -287,6 +298,12 @@ type SendContextMessage = (
   message: string,
   onAccepted?: () => void,
 ) => Promise<boolean>;
+
+type IngredientReviewSeed = {
+  weekId: WeekId;
+  mealId: string;
+  inputs: IngredientCandidateInput[];
+};
 
 const PLANNER_ACTION_LABELS = {
   previewIngredientCandidates: "Review ingredient candidates",
@@ -799,6 +816,7 @@ function PlannerAppContent() {
   const [codexDraft, setCodexDraft] = useState("");
   const [codexFocusKey, setCodexFocusKey] = useState(0);
   const [plannerPending, setPlannerPending] = useState(false);
+  const [ingredientReviewSeed, setIngredientReviewSeed] = useState<IngredientReviewSeed | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [pendingRetries, setPendingRetries] = useState<PendingAuthorityRetry[]>([]);
@@ -1235,6 +1253,26 @@ function PlannerAppContent() {
       acceptWorkspace(result.workspace);
       if (result.decision.status === "accepted") {
         clearPendingRetry("planner");
+        if (request.command.type === "editMealRecipe") {
+          const createdOccurrenceIds = new Map(
+            result.decision.occurrenceResults[0]?.occurrences.map(({ correlationId, occurrenceId }) => [correlationId, occurrenceId]),
+          );
+          const inputs = request.command.occurrences.flatMap((occurrence) => {
+            if (occurrence.kind !== "create") return [];
+            const occurrenceId = createdOccurrenceIds.get(occurrence.correlationId);
+            return occurrenceId ? [{
+              correlationId: occurrenceId,
+              occurrenceId,
+              amount: occurrence.amount,
+              ingredient: occurrence.ingredient,
+            }] : [];
+          });
+          if (inputs.length) setIngredientReviewSeed({
+            weekId: request.command.weekId,
+            mealId: request.command.mealId,
+            inputs,
+          });
+        }
         options?.onAccepted?.(result.workspace.plannerVersion);
         await refresh(true);
         return true;
@@ -1397,10 +1435,12 @@ function PlannerAppContent() {
     ) return;
     await executeUndo({
       requestId: createRequestId(),
-      basePlannerVersion: current.plannerVersion,
+      basePlannerVersion: workspace?.initialized
+        ? workspace.plannerVersion
+        : current.plannerVersion,
       targetEventId: event.eventId,
     });
-  }, [blockForPendingRetry, connection, executeUndo]);
+  }, [blockForPendingRetry, connection, executeUndo, workspace]);
 
   const retryPendingOperation = useCallback(async (channel?: PendingRetryChannel) => {
     const pending = channel
@@ -1736,6 +1776,12 @@ function PlannerAppContent() {
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
+                    postSaveReviewSeed={ingredientReviewSeed?.weekId === week.id && ingredientReviewSeed.mealId === selectedMeal.id
+                      ? ingredientReviewSeed
+                      : null}
+                    onPostSaveReviewConsumed={() => setIngredientReviewSeed((current) =>
+                      current?.weekId === week.id && current.mealId === selectedMeal.id ? null : current
+                    )}
                     recoveryCommand={recoveryMealCommand}
                     onRecoveryDraftChange={updatePlannerRecoveryDraft}
                     restoreFocusRef={mealTriggerRef}
@@ -2280,6 +2326,7 @@ function InstructionStepLine(props: {
   leading?: ReactNode;
   trailing?: ReactNode;
   editableTimer?: boolean;
+  showRecipeProvenance?: boolean;
   onSetRemaining?: (remainingSeconds: number) => void;
   onMouseDown?: (event: ReactMouseEvent<HTMLElement>) => void;
   draggable?: boolean;
@@ -2302,6 +2349,7 @@ function InstructionStepLine(props: {
     leading,
     trailing,
     editableTimer = false,
+    showRecipeProvenance = false,
     onSetRemaining,
     onMouseDown,
     draggable = false,
@@ -2336,7 +2384,10 @@ function InstructionStepLine(props: {
             onChange={(event) => onComplete(event.target.checked)}
           />
         </label>
-        <RecipeInstructionContent step={step} />
+        <div className="min-w-0">
+          {showRecipeProvenance ? <RecipeProvenance meal={meal} /> : null}
+          <RecipeInstructionContent step={step} meal={meal} />
+        </div>
         {trailing ? <div className="instruction-line-trailing">{trailing}</div> : null}
       </div>
       {step.timerDurationSeconds ? (
@@ -2589,6 +2640,7 @@ function PrepSessionStepRow(props: {
       onComplete={(complete) => runMutation({ type: "setInstructionStepComplete", weekId: week.id, stepId: step.id, complete })}
       onTimerAction={(type) => runMutation({ type, weekId: week.id, stepId: step.id })}
       editableTimer
+      showRecipeProvenance
       onSetRemaining={(remainingSeconds) => runMutation({ type: "setInstructionTimerRemaining", weekId: week.id, stepId: step.id, remainingSeconds })}
       draggable={!rowDisabled}
       onDragStart={(event) => {
@@ -2684,6 +2736,7 @@ function RecipeSource({ meal }: { meal: Meal }) {
   if (meal.sourceRecipe.kind === "canonical") {
     return (
       <div>
+        <RecipeProvenance meal={meal} />
         <p className="recipe-source">
           <span>Canonical recipe</span>
           <span>{meal.sourceRecipe.identity} · pinned {meal.sourceRecipe.revision.slice(0, 12)}</span>
@@ -2772,6 +2825,8 @@ function MealDrawer(props: {
   disabled: boolean;
   mutate: Mutate;
   sendContextMessage: SendContextMessage;
+  postSaveReviewSeed: IngredientReviewSeed | null;
+  onPostSaveReviewConsumed: () => void;
   recoveryCommand: Extract<HouseholdCommand, { type: "editMealRecipe" }> | null;
   onRecoveryDraftChange: (
     command: Extract<HouseholdCommand, { type: "editMealRecipe" }>,
@@ -2786,6 +2841,8 @@ function MealDrawer(props: {
     disabled,
     mutate,
     sendContextMessage,
+    postSaveReviewSeed,
+    onPostSaveReviewConsumed,
     recoveryCommand,
     onRecoveryDraftChange,
     restoreFocusRef,
@@ -2808,6 +2865,20 @@ function MealDrawer(props: {
   const [newTimer, setNewTimer] = useState("");
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [newStepAttempted, setNewStepAttempted] = useState(false);
+  const [reviewQueue, setReviewQueue] = useState<IngredientCandidateInput[]>([]);
+  const [ingredientReview, setIngredientReview] = useState<{
+    inputs: IngredientCandidateInput[];
+    preview: IngredientCandidatePreview;
+    plannerVersion: number;
+  } | null>(null);
+  const [reviewDecisions, setReviewDecisions] = useState<Record<string, string>>({});
+  const [createdConcepts, setCreatedConcepts] = useState<Record<string, {
+    preferredLabel: string;
+    vocabulary: string;
+    defaultSection: GroceryItem["section"];
+  }>>({});
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const plannerVersion = useContext(PlannerVersionContext);
   const occurrenceDrafts = visibleRecoveryCommand?.occurrences ?? meal.ingredients.map((ingredient) => ({
     kind: "retain" as const,
     occurrenceId: ingredient.id,
@@ -2872,6 +2943,92 @@ function MealDrawer(props: {
     })),
   });
   const newStepIssues = validateStepDraft({ inputs: newInputs, instruction: newInstruction, timerMinutes: newTimer });
+  const startIngredientReview = useCallback(async (
+    inputs: IngredientCandidateInput[],
+    basePlannerVersion = plannerVersion,
+  ) => {
+    const batch = inputs.slice(0, MAX_INGREDIENT_CANDIDATE_BATCH);
+    setReviewQueue(inputs);
+    setIngredientReview(null);
+    setReviewDecisions({});
+    setCreatedConcepts({});
+    setReviewError(null);
+    if (!batch.length) return;
+    try {
+      const response = await previewPlannerOperations({
+        basePlannerVersion,
+        operations: [{ command: { type: "previewIngredientCandidates", inputs: batch } }],
+      });
+      if (response.decision.status !== "previewed") {
+        setReviewError(response.decision.status === "domain_rejected"
+          ? response.decision.message
+          : "The ingredient list changed before it could be reviewed.");
+        return;
+      }
+      const preview = response.decision.outcomes[0]?.ingredientCandidatePreview;
+      if (!preview) {
+        setReviewError("The planner did not return ingredient candidates.");
+        return;
+      }
+      setIngredientReview({ inputs: batch, preview, plannerVersion: response.decision.plannerVersion });
+    } catch (error) {
+      setReviewError(errorMessage(error));
+    }
+  }, [plannerVersion]);
+  useEffect(() => {
+    if (!postSaveReviewSeed?.inputs.length) return;
+    void Promise.resolve().then(() => startIngredientReview(
+      postSaveReviewSeed.inputs,
+    ));
+    onPostSaveReviewConsumed();
+  }, [onPostSaveReviewConsumed, postSaveReviewSeed, startIngredientReview]);
+  const reviewCurrentIngredients = () => {
+    const inputs = meal.ingredients.filter((ingredient) => ingredient.conceptId === null).map((ingredient) => ({
+      correlationId: ingredient.id,
+      occurrenceId: ingredient.id,
+      amount: ingredient.amount,
+      ingredient: ingredient.ingredient,
+    }));
+    if (!inputs.length) {
+      setReviewError("All current ingredients already have household concept links.");
+      return;
+    }
+    void startIngredientReview(inputs);
+  };
+  const applyIngredientReview = () => {
+    if (!ingredientReview) return;
+    const remaining = reviewQueue.slice(ingredientReview.inputs.length);
+    void mutate({
+      type: "applyIngredientResolutionBatch",
+      weekId: week.id,
+      catalogueRevision: ingredientReview.preview.catalogueRevision,
+      inputDigest: ingredientReview.preview.inputDigest,
+      decisions: ingredientReview.inputs.map((input) => {
+        const selected = reviewDecisions[input.correlationId] ?? "unresolved";
+        const createdConcept = createdConcepts[input.correlationId];
+        return {
+          correlationId: input.correlationId,
+          occurrenceId: input.occurrenceId!,
+          amount: input.amount,
+          ingredient: input.ingredient,
+          decision: selected === "unresolved"
+            ? { kind: "unresolved" as const }
+            : selected === "create"
+              ? {
+                  kind: "create" as const,
+                  preferredLabel: createdConcept?.preferredLabel.trim() || input.ingredient.trim(),
+                  vocabulary: (createdConcept?.vocabulary ?? "").split(/[\n,]/u).map((term) => term.trim()).filter(Boolean),
+                  defaultSection: createdConcept?.defaultSection ?? "Pantry",
+                }
+              : { kind: "existing" as const, conceptId: selected },
+        };
+      }),
+    }, {
+      basePlannerVersion: ingredientReview.plannerVersion,
+      onConflict: (currentPlannerVersion) => void startIngredientReview(reviewQueue, currentPlannerVersion),
+      onAccepted: (currentPlannerVersion) => void startIngredientReview(remaining, currentPlannerVersion),
+    });
+  };
   const editRecipeField = <Key extends keyof typeof canonicalRecipeDraft>(
     field: Key,
     value: (typeof canonicalRecipeDraft)[Key],
@@ -3047,6 +3204,75 @@ function MealDrawer(props: {
           <label><span>Venue</span><input aria-label="Venue" disabled={archived} maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => editRecipeField("venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
         </div>
         <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" disabled={archived} maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => editRecipeField("subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
+        {!archived ? <section className="snapshot-section" aria-labelledby="ingredient-concept-review-heading">
+          <div className="section-title"><ShoppingBasket size={16} /><h3 id="ingredient-concept-review-heading">Ingredient concepts</h3></div>
+          <p className="recipe-summary-copy">Review household concept links separately from this recipe&apos;s wording.</p>
+          <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={reviewCurrentIngredients}>Review ingredient concepts</PlannerActionButton>
+          {reviewError ? <p className="inline-alert error" role="alert">{reviewError}</p> : null}
+          {ingredientReview ? <div className="mt-3 space-y-3" aria-live="polite">
+            <p className="text-sm text-[var(--color-text-muted)]">Reviewing {ingredientReview.inputs.length} occurrence{ingredientReview.inputs.length === 1 ? "" : "s"}{reviewQueue.length > ingredientReview.inputs.length ? `; ${reviewQueue.length - ingredientReview.inputs.length} more remain.` : "."}</p>
+            {ingredientReview.preview.results.map((result) => {
+              const input = ingredientReview.inputs.find((candidate) => candidate.correlationId === result.correlationId);
+              if (!input) return null;
+              return <label className="full-field" key={result.correlationId}>
+                <span>{input.ingredient || "Ingredient"}</span>
+                <select
+                  aria-label={`Concept for ${input.ingredient}`}
+                  disabled={disabled}
+                  value={reviewDecisions[result.correlationId] ?? "unresolved"}
+                  onChange={(event) => {
+                    const decision = event.target.value;
+                    setReviewDecisions((current) => ({ ...current, [result.correlationId]: decision }));
+                    if (decision === "create") {
+                      setCreatedConcepts((current) => current[result.correlationId] ? current : {
+                        ...current,
+                        [result.correlationId]: {
+                          preferredLabel: input.ingredient.trim(),
+                          vocabulary: "",
+                          defaultSection: "Pantry",
+                        },
+                      });
+                    }
+                  }}
+                >
+                  <option value="unresolved">Leave unresolved</option>
+                  <option value="create">Create household concept: {input.ingredient}</option>
+                  {result.candidates.map((candidate) => <option key={candidate.conceptId} value={candidate.conceptId}>{candidate.preferredLabel} — {candidate.kind}: {candidate.reasons.join(", ")}</option>)}
+                </select>
+                {reviewDecisions[result.correlationId] === "create" ? <div className="field-grid mt-2">
+                  <label><span>Household name</span><input aria-label={`Household name for ${input.ingredient}`} disabled={disabled} value={createdConcepts[result.correlationId]?.preferredLabel ?? input.ingredient.trim()} onChange={(event) => setCreatedConcepts((current) => ({
+                    ...current,
+                    [result.correlationId]: {
+                      preferredLabel: event.target.value,
+                      vocabulary: current[result.correlationId]?.vocabulary ?? "",
+                      defaultSection: current[result.correlationId]?.defaultSection ?? "Pantry",
+                    },
+                  }))} /></label>
+                  <label><span>Default grocery section</span><select aria-label={`Default grocery section for ${input.ingredient}`} disabled={disabled} value={createdConcepts[result.correlationId]?.defaultSection ?? "Pantry"} onChange={(event) => setCreatedConcepts((current) => ({
+                    ...current,
+                    [result.correlationId]: {
+                      preferredLabel: current[result.correlationId]?.preferredLabel ?? input.ingredient.trim(),
+                      vocabulary: current[result.correlationId]?.vocabulary ?? "",
+                      defaultSection: event.target.value as GroceryItem["section"],
+                    },
+                  }))}>{INGREDIENT_CONCEPT_GROCERY_SECTIONS.map((section) => <option key={section} value={section}>{section}</option>)}</select></label>
+                  <label className="full-field"><span>Other accepted names (comma or line separated)</span><input aria-label={`Other accepted names for ${input.ingredient}`} disabled={disabled} value={createdConcepts[result.correlationId]?.vocabulary ?? ""} onChange={(event) => setCreatedConcepts((current) => ({
+                    ...current,
+                    [result.correlationId]: {
+                      preferredLabel: current[result.correlationId]?.preferredLabel ?? input.ingredient.trim(),
+                      vocabulary: event.target.value,
+                      defaultSection: current[result.correlationId]?.defaultSection ?? "Pantry",
+                    },
+                  }))} /></label>
+                </div> : null}
+              </label>;
+            })}
+            <div className="flex flex-wrap gap-2">
+              <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={() => { setIngredientReview(null); setReviewQueue([]); }}>Cancel review</PlannerActionButton>
+              <PlannerActionButton tone="primary" type="button" disabled={disabled} onClick={applyIngredientReview}>Apply choices</PlannerActionButton>
+            </div>
+          </div> : null}
+        </section> : null}
         <section className="full-field occurrence-editor" aria-labelledby="meal-ingredients-heading">
           <div className="occurrence-editor-heading">
             <span id="meal-ingredients-heading">Ingredients</span>

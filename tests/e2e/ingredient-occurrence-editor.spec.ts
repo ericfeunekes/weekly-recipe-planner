@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { assertViewportContained, captureAccessibleQaEvidence } from "../support/playwright-qa";
+
 const controlOrigin = process.env.PLANNER_E2E_CONTROL_ORIGIN ?? "http://127.0.0.1:8878";
 
 async function resetPlanner(page: import("@playwright/test").Page): Promise<void> {
@@ -12,6 +14,167 @@ async function resetPlanner(page: import("@playwright/test").Page): Promise<void
   if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
 }
+
+type IngredientReviewWorkspace = {
+  plannerVersion: number;
+  state: {
+    activeWeekId: string;
+    weeks: Array<{
+      id: string;
+      data: { meals: Array<{
+        id: string;
+        ingredients: Array<{ id: string; ingredient: string; conceptId: string | null }>;
+        instructions: Array<{ complete: boolean }>;
+      }> };
+    }>;
+  };
+};
+
+async function openFirstMealDrawer(page: import("@playwright/test").Page) {
+  await page.locator(".week-view .meal-card-primary").first().click();
+  return page.locator(".meal-drawer");
+}
+
+async function workspace(page: import("@playwright/test").Page): Promise<IngredientReviewWorkspace> {
+  const response = await page.request.get("/api/workspace");
+  expect(response.ok()).toBe(true);
+  return response.json() as Promise<IngredientReviewWorkspace>;
+}
+
+test("post-save ingredient review uses accepted occurrence identities for explicit existing, create, and unresolved choices", async ({ page }, testInfo) => {
+  await resetPlanner(page);
+  const before = await workspace(page);
+  const originalMeal = before.state.weeks.find((week) => week.id === before.state.activeWeekId)!.data.meals[0]!;
+  const originalCompletion = originalMeal.instructions.map((step) => step.complete);
+  const drawer = await openFirstMealDrawer(page);
+
+  for (const literal of ["red onions", "lake pepper relish", "unresolved lake herb"]) {
+    await drawer.getByRole("button", { name: "Add ingredient" }).click();
+    await drawer.getByLabel(/Ingredient \d+ core/u).last().fill(literal);
+  }
+
+  const saved = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") &&
+    response.request().method() === "POST" &&
+    (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe",
+  );
+  await drawer.getByRole("button", { name: "Save recipe details" }).click();
+  const saveResponse = await saved;
+  expect(saveResponse.status()).toBe(200);
+  const savedBody = (await saveResponse.json()) as {
+    decision: { status: string; occurrenceResults: Array<{ occurrences: Array<{ correlationId: string; occurrenceId: string }> }> };
+  };
+  expect(savedBody.decision.status).toBe("accepted");
+  const acceptedIds = savedBody.decision.occurrenceResults.flatMap((result) => result.occurrences);
+  expect(acceptedIds).toHaveLength(3);
+  expect(acceptedIds.every((result) => result.occurrenceId.length > 0)).toBe(true);
+
+  await expect(drawer.getByText("Reviewing 3 occurrences.")).toBeVisible();
+  await drawer.getByLabel("Concept for red onions").selectOption("red-onion");
+  await drawer.getByLabel("Concept for lake pepper relish").selectOption("create");
+  await drawer.getByLabel("Household name for lake pepper relish").fill("Lake pepper relish");
+  await drawer.getByLabel("Other accepted names for lake pepper relish").fill("pepper lake relish");
+  await drawer.getByLabel("Default grocery section for lake pepper relish").selectOption("Pantry");
+
+  const applied = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") &&
+    response.request().method() === "POST" &&
+    (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+  );
+  await drawer.getByRole("button", { name: "Apply choices" }).click();
+  const applyResponse = await applied;
+  expect(applyResponse.status()).toBe(200);
+  const applyBody = applyResponse.request().postDataJSON() as { command: { decisions: Array<{ occurrenceId: string; decision: { kind: string } }> } };
+  expect(applyBody.command.decisions.map(({ occurrenceId }) => occurrenceId).sort()).toEqual(acceptedIds.map(({ occurrenceId }) => occurrenceId).sort());
+  expect(applyBody.command.decisions.map(({ decision }) => decision.kind).sort()).toEqual(["create", "existing", "unresolved"]);
+
+  const after = await workspace(page);
+  const meal = after.state.weeks.find((week) => week.id === after.state.activeWeekId)!.data.meals[0]!;
+  const byLiteral = new Map(meal.ingredients.map((ingredient) => [ingredient.ingredient, ingredient]));
+  expect(byLiteral.get("red onions")?.conceptId).toBe("red-onion");
+  expect(byLiteral.get("lake pepper relish")?.conceptId).toEqual(expect.any(String));
+  expect(byLiteral.get("unresolved lake herb")?.conceptId).toBeNull();
+  expect(meal.instructions.map((step) => step.complete)).toEqual(originalCompletion);
+
+  for (const [viewportId, width, height] of [["mobile-320x844", 320, 844], ["tablet-768x1024", 768, 1024], ["desktop-1280x900", 1280, 900]] as const) {
+    await page.setViewportSize({ width, height });
+    await drawer.getByRole("button", { name: "Review ingredient concepts" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(drawer.getByText(/All current ingredients already have household concept links|Reviewing/u).or(drawer.getByRole("alert"))).toBeVisible();
+    await assertViewportContained(page);
+    await captureAccessibleQaEvidence({
+      page,
+      evidenceDirectory: String(testInfo.outputPath("ingredient-review-a11y")),
+      scenarioId: "ingredient-review",
+      viewportId,
+    });
+    if (await drawer.getByRole("button", { name: "Cancel review" }).isVisible()) await drawer.getByRole("button", { name: "Cancel review" }).click();
+  }
+});
+
+test("ingredient concept review batches seventeen saved occurrences and re-previews the remainder", async ({ page }) => {
+  test.setTimeout(90_000);
+  await resetPlanner(page);
+  const drawer = await openFirstMealDrawer(page);
+  for (let index = 1; index <= 17; index += 1) {
+    await drawer.getByRole("button", { name: "Add ingredient" }).click();
+    await drawer.getByLabel(/Ingredient \d+ core/u).last().fill(`batch review ingredient ${index}`);
+  }
+  await drawer.getByRole("button", { name: "Save recipe details" }).click();
+  await expect(drawer.getByText("Reviewing 16 occurrences; 1 more remain.")).toBeVisible();
+
+  const firstApply = page.waitForRequest((request) =>
+    request.url().endsWith("/api/commands") &&
+    (request.postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+  );
+  await drawer.getByRole("button", { name: "Apply choices" }).click();
+  expect(((await firstApply).postDataJSON() as { command: { decisions: unknown[] } }).command.decisions).toHaveLength(16);
+  await expect(drawer.getByText("Reviewing 1 occurrence.")).toBeVisible();
+
+  const secondApply = page.waitForRequest((request) =>
+    request.url().endsWith("/api/commands") &&
+    (request.postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+  );
+  await drawer.getByRole("button", { name: "Apply choices" }).click();
+  expect(((await secondApply).postDataJSON() as { command: { decisions: unknown[] } }).command.decisions).toHaveLength(1);
+});
+
+test("ingredient review re-previews from the planner version returned after a peer conflict", async ({ browser, page }) => {
+  await resetPlanner(page);
+  const drawer = await openFirstMealDrawer(page);
+  await drawer.getByRole("button", { name: "Review ingredient concepts" }).click();
+  await expect(drawer.getByText(/^Reviewing /u)).toBeVisible();
+
+  const peerContext = await browser.newContext();
+  const peer = await peerContext.newPage();
+  await peer.goto("/");
+  const peerDrawer = await openFirstMealDrawer(peer);
+  await peerDrawer.getByLabel("Venue").fill("Peer changed the plan");
+  const peerSave = peer.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") &&
+    response.request().method() === "POST" &&
+    (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "editMealRecipe",
+  );
+  await peerDrawer.getByRole("button", { name: "Save recipe details" }).click();
+  const peerDecision = (await peerSave).json() as Promise<{ decision: { plannerVersion: number } }>;
+
+  const previews: Array<{ basePlannerVersion: number }> = [];
+  page.on("request", (request) => {
+    if (!request.url().endsWith("/api/operations/preview") || request.method() !== "POST") return;
+    previews.push(request.postDataJSON() as { basePlannerVersion: number });
+  });
+  const conflict = page.waitForResponse((response) =>
+    response.url().endsWith("/api/commands") &&
+    response.request().method() === "POST" &&
+    (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+  );
+  await drawer.getByRole("button", { name: "Apply choices" }).click();
+  expect((await conflict).status()).toBe(409);
+  const peerPlannerVersion = (await peerDecision).decision.plannerVersion;
+  await expect.poll(() => previews.at(-1)?.basePlannerVersion).toBe(peerPlannerVersion);
+  await expect(drawer.getByText(/^Reviewing /u)).toBeVisible();
+  await peerContext.close();
+});
 
 test("Duplicate keeps the source occurrence and creates a distinct copied occurrence", async ({ page }) => {
   await resetPlanner(page);
@@ -341,7 +504,8 @@ test("recipe editor sends retained IDs, creation correlations, and explicit remo
   expect(savedMeal?.instructions[0]?.timerDurationSeconds).toBe(150);
 
   await page.reload();
-  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+  await expect(page.locator(".meal-drawer")).toBeVisible();
   const reloadedWorkspaceResponse = await page.request.get("/api/workspace");
   expect(reloadedWorkspaceResponse.ok()).toBe(true);
   const reloadedWorkspace = await reloadedWorkspaceResponse.json() as typeof workspace;
@@ -352,10 +516,15 @@ test("recipe editor sends retained IDs, creation correlations, and explicit remo
 
   await page.getByTitle("Change history").click();
   const history = page.getByRole("dialog", { name: "Recent changes" });
+  const undoInstructionRequest = page.waitForRequest((candidate) =>
+    candidate.url().endsWith("/api/undo") && candidate.method() === "POST",
+  );
   const undoInstructionResponse = page.waitForResponse((candidate) =>
     candidate.url().endsWith("/api/undo") && candidate.request().method() === "POST",
   );
   await history.getByRole("button", { name: "Undo latest change" }).click();
+  expect(((await undoInstructionRequest).postDataJSON() as { basePlannerVersion: number }).basePlannerVersion)
+    .toBe(reloadedWorkspace.plannerVersion);
   expect((await undoInstructionResponse).status()).toBe(200);
 
   const undoneWorkspaceResponse = await page.request.get("/api/workspace");

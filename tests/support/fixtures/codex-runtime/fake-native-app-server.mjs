@@ -652,6 +652,26 @@ async function executeE2ePlannerTurn(thread, turn) {
 
   const { weekId, plannerVersion, week } = await readE2eActiveWeek(thread, turn);
   const meal = e2eSelectedMeal(week);
+  if (request === "Import the lemon pepper salmon recipe.") {
+    const prepStepIds = new Set((week.data.prepSessions ?? []).flatMap((session) =>
+      session.steps.flatMap((entry) => "stepId" in entry ? [entry.stepId] : entry.sources.map((source) => source.stepId)),
+    ));
+    const importMeal = week.data.meals.find((candidate) =>
+      (candidate.status === "planned" || candidate.status === "moved") &&
+      candidate.instructions.every((step) => !step.complete && step.note === undefined &&
+        step.timerStartedAt === undefined && step.timerPaused !== true && !prepStepIds.has(step.id)),
+    );
+    if (!importMeal) throw new Error("Deterministic E2E fixture could not find an eligible meal for canonical recipe import.");
+    const imported = await plannerCallForE2e(thread.id, turn.id, "importRecipe", {
+      basePlannerVersion: plannerVersion,
+      weekId,
+      mealId: importMeal.id,
+      recipePath: "lemon-pepper-salmon.md",
+    });
+    if (!imported.ok) throw new Error(`Deterministic E2E canonical import failed: ${imported.error.code}.`);
+    completeE2eTurn(thread, turn, "I imported the pinned Lemon Pepper Salmon recipe as this meal's editable copy.");
+    return;
+  }
   const completeStep = /complete|check off|done/i.test(request);
   const createNextWeek = /create next week/i.test(request);
   const conflictRequest = /propose conflicting meal change/i.test(request) && meal !== null;

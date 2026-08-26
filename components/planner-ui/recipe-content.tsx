@@ -1,6 +1,6 @@
 import { Check } from "lucide-react";
 
-import type { IngredientAmountLine, InstructionStep } from "@/lib/household-contract";
+import type { IngredientAmountLine, InstructionStep, Meal, RecipeIngredient } from "@/lib/household-contract";
 import {
   ingredientOccurrenceDisplayText,
   isGroceryRequirementRole,
@@ -15,6 +15,12 @@ type RecipeIngredientListProps = {
   disabled?: boolean;
   onCheckedChange?: (ingredientId: string, checked: boolean) => void;
 };
+
+function occurrenceMetadata(item: IngredientAmountLine): RecipeIngredient | null {
+  if (!("source" in item)) return null;
+  const source = item.source;
+  return (typeof source === "string" || source === null) ? item as RecipeIngredient : null;
+}
 
 /**
  * The canonical ingredient renderer for a recipe and its instruction steps.
@@ -34,11 +40,19 @@ export function RecipeIngredientList({
   if (variant === "step") {
     return (
       <div className="step-inputs">
-        {items.map((item, index) => (
-          <span key={"occurrenceId" in item && typeof item.occurrenceId === "string" ? `${item.occurrenceId}:${index}` : `${item.amount}-${item.ingredient}-${index}`}>
-            <strong>{item.amount}</strong> {item.ingredient}
-          </span>
-        ))}
+        {items.map((item, index) => {
+          const occurrence = occurrenceMetadata(item);
+          return <span key={"occurrenceId" in item && typeof item.occurrenceId === "string" ? `${item.occurrenceId}:${index}` : `${item.amount}-${item.ingredient}-${index}`}>
+            <span>{[item.amount, item.ingredient].filter(Boolean).join(" ")}</span>
+            {occurrence && (occurrence.source || occurrence.unit || occurrence.qualifier) ? (
+              <span className="block text-[11px] text-[var(--ink-soft)]">
+                {[occurrence.source ? `Source: ${occurrence.source}` : null, occurrence.unit ? `Unit: ${occurrence.unit}` : null, occurrence.qualifier ? `Qualifier: ${occurrence.qualifier}` : null]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            ) : null}
+          </span>;
+        })}
       </div>
     );
   }
@@ -64,7 +78,10 @@ export function RecipeIngredientList({
               onChange={(event) => onCheckedChange(groceryControlId, event.target.checked)}
             />
           ) : <Check size={13} />}
-          {ingredientOccurrenceDisplayText(item)}
+          <span className="min-w-0">
+            {"source" in item && typeof item.source === "string" && item.source ? <span className="block text-[11px] text-[var(--ink-soft)]">{item.source}</span> : null}
+            <span>{ingredientOccurrenceDisplayText({ ...item, source: null })}</span>
+          </span>
         </li>
         );
       })}
@@ -72,15 +89,28 @@ export function RecipeIngredientList({
   );
 }
 
+/** Source provenance is informational; the dated meal snapshot remains editable. */
+export function RecipeProvenance({ meal }: { meal: { sourceRecipe?: { kind: string; identity: string; revision?: string } } }) {
+  if (!meal.sourceRecipe) return null;
+  const source = meal.sourceRecipe;
+  return <p className="recipe-source"><span>Editable meal copy</span><span>{source.kind === "canonical" && source.revision ? `${source.identity} · pinned ${source.revision.slice(0, 12)}` : source.identity}</span></p>;
+}
+
 /**
  * The stable instruction copy and ingredient-input block shared by Day, Prep,
  * and recipe summaries. Contexts add their own checkbox, timer, and actions.
  */
-export function RecipeInstructionContent({ step }: { step: InstructionStep }) {
+export function RecipeInstructionContent({ step, meal }: { step: InstructionStep; meal: Meal }) {
+  const ingredientsById = new Map(meal.ingredients.map((ingredient) => [ingredient.id, ingredient]));
+  const inputs = step.inputs.map((input) => {
+    const occurrence = ingredientsById.get(input.occurrenceId);
+    if (!occurrence) return input;
+    return { ...occurrence, amount: input.amount, ingredient: input.ingredient };
+  });
   return (
     <div className="instruction-line-content">
       <p className="step-instruction">{step.instruction}</p>
-      <RecipeIngredientList items={step.inputs} variant="step" />
+      <RecipeIngredientList items={inputs} variant="step" />
     </div>
   );
 }

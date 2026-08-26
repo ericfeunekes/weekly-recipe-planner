@@ -542,6 +542,7 @@ function runtimeConfig() {
     port: apiPort,
     dataDirectory,
     databasePath: resolve(dataDirectory, "planner.sqlite"),
+    recipeRoot: resolve(process.cwd(), "tests/support/fixtures/canonical-recipes"),
     webOrigin,
     allowedOrigins: new Set([
       webOrigin.origin,
