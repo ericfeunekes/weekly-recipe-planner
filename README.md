@@ -121,9 +121,12 @@ make qa-deploy
 
 The command snapshots the built runtime, a verified SQLite copy of
 `.planner-data/planner.sqlite` into a private temporary directory, then starts
-a detached front-controller/runtime pair against that immutable QA copy. It is
-reachable at `http://weekly-recipe-planner-qa.localhost:1355` even after the
-shell that started it exits. `make qa-deploy` replaces the prior managed QA
+a detached front-controller/runtime pair against that immutable QA copy. Its
+mounted production profile is reachable at
+`http://weekly-recipe-planner-qa.localhost:1355/recipe-planner/` even after the
+shell that started it exits. When Portless already has a shared proxy, the
+effective origin reported by `make qa-deploy` and `make qa-status` is the one
+Portless registered, rather than the requested proxy port. `make qa-deploy` replaces the prior managed QA
 copy only after its new build succeeds; use `make qa-status` to check it and
 `make qa-stop` to terminate its tracked process group and remove the snapshot.
 The single Portless proxy is a shared local daemon, so stopping this QA target
@@ -223,11 +226,17 @@ files are never overwritten.
 ## Verify
 
 ```bash
+npm ci
+npm run provision:browser
 npm run typecheck
 npm run lint
 npm test
 npm run test:e2e
 ```
+
+In a clean checkout, `npm ci` installs the locked dependencies and
+`npm run provision:browser` installs the locked Playwright Chromium required by
+the release-lifecycle browser boundary inside `npm test`.
 
 `npm test` enforces strict TypeScript, builds the Cloudflare Workers-compatible
 Vinext output, and verifies the rendered site and locked command/view surface.

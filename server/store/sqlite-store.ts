@@ -415,6 +415,58 @@ function normalizeStoredLegacyHouseholdState(database: DatabaseSync, transaction
   }
 }
 
+function backfillStoredCookedMealFreeze(database: DatabaseSync): void {
+  const upgradeState = (text: string, label: string): { state: HouseholdPlannerState; changed: boolean } => {
+    const state = parseJson<HouseholdPlannerState>(text, label);
+    let changed = false;
+    for (const week of state.weeks) {
+      for (const meal of week.data.meals) {
+        if (meal.status === "cooked" && meal.culinaryFrozen !== true) {
+          meal.culinaryFrozen = true;
+          changed = true;
+        }
+      }
+    }
+    const validation = validateHouseholdState(state);
+    if (!validation.ok) {
+      throw new PlannerStoreError(
+        "MIGRATION_FAILED",
+        `${label} is invalid after cooked-meal freeze migration: ${validation.issues.map(({ path, message }) => `${path}: ${message}`).join("; ")}`,
+      );
+    }
+    return { state, changed };
+  };
+
+  const workspace = database
+    .prepare("SELECT state_json FROM workspace WHERE id = 'household'")
+    .get() as { state_json: string } | undefined;
+  if (workspace) {
+    const upgraded = upgradeState(workspace.state_json, "workspace state");
+    if (upgraded.changed) {
+      database
+        .prepare(
+          `UPDATE workspace
+           SET state_json = ?, sync_revision = sync_revision + 1, updated_at = ?
+           WHERE id = 'household'`,
+        )
+        .run(JSON.stringify(upgraded.state), Date.now());
+    }
+  }
+
+  const events = database
+    .prepare("SELECT sequence, before_state_json FROM planner_events")
+    .all() as Array<{ sequence: number; before_state_json: string }>;
+  const updateEvent = database.prepare(
+    "UPDATE planner_events SET before_state_json = ? WHERE sequence = ?",
+  );
+  for (const event of events) {
+    const upgraded = upgradeState(event.before_state_json, "planner event undo state");
+    if (upgraded.changed) {
+      updateEvent.run(JSON.stringify(upgraded.state), event.sequence);
+    }
+  }
+}
+
 type IngredientOccurrenceUpgradeIssue = Readonly<{ path: string; message: string }>;
 
 function occurrenceUpgradeFailure(issues: readonly IngredientOccurrenceUpgradeIssue[]): PlannerStoreError {
@@ -1205,6 +1257,26 @@ export function inspectVerifiedPlannerSchema10Snapshot(
   return after;
 }
 
+export function inspectVerifiedPlannerSchema12Snapshot(
+  filename: string,
+): VerifiedPlannerSnapshotInspection {
+  const before = inspectPlannerSnapshot(filename);
+  const database = new DatabaseSync(before.filename, { readOnly: true });
+  try {
+    assertCoherentV12Store(database);
+  } finally {
+    database.close();
+  }
+  const after = inspectPlannerSnapshot(filename);
+  if (before.sha256 !== after.sha256) {
+    throw new PlannerStoreError(
+      "STORE_CORRUPT",
+      "The schema-12 SQLite snapshot changed during exact verification.",
+    );
+  }
+  return after;
+}
+
 function removeSnapshotArtifacts(filename: string): void {
   for (const artifact of [filename, `${filename}-wal`, `${filename}-shm`]) {
     rmSync(artifact, { force: true });
@@ -1468,6 +1540,7 @@ function applyMigrations(database: DatabaseSync, startingVersion: number): void 
     try {
       executeMigrationEntry(database, migration);
       if (migration.version === 11) normalizeStoredLegacyHouseholdState(database, true);
+      if (migration.version === 13) backfillStoredCookedMealFreeze(database);
       database.exec("COMMIT");
       currentVersion = migration.version;
     } catch (error) {
@@ -1635,6 +1708,26 @@ function assertCoherentV10Store(database: DatabaseSync): void {
     throw new PlannerStoreError(
       "MIGRATION_FAILED",
       "The SQLite household workspace did not reach schema version 10.",
+    );
+  }
+}
+
+function assertCoherentV12Store(database: DatabaseSync): void {
+  quickCheck(database);
+  assertForeignKeyIntegrity(database);
+  const versions = readAppliedMigrationVersions(database);
+  if (!sameLogicalValue(versions, Array.from({ length: 12 }, (_, index) => index + 1))) {
+    throw new PlannerStoreError("MIGRATION_FAILED", "The SQLite store did not reach the contiguous v1 through v12 migration ledger.");
+  }
+  assertExpectedSchemaObjects(database, 12);
+  const workspaceCount = Number((database.prepare("SELECT COUNT(*) AS count FROM workspace").get() as { count: number }).count);
+  const household = database.prepare(
+    "SELECT schema_version FROM workspace WHERE id = 'household'",
+  ).get() as { schema_version: number } | undefined;
+  if (workspaceCount !== 1 || household?.schema_version !== 12) {
+    throw new PlannerStoreError(
+      "MIGRATION_FAILED",
+      "The SQLite household workspace did not reach schema version 12.",
     );
   }
 }

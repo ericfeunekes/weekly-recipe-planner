@@ -106,22 +106,45 @@ test("combined Prep survives file-backed completion, replay, expansion, undo, an
   assert.equal(completed.decision.status, "accepted");
   const completedWeek = activeWeek(completed.workspace);
   assert.equal(combinedEntry(completedWeek).complete, true);
-  const completedPrepSessions = structuredClone(completedWeek.data.prepSessions);
+  const noteRequest = {
+    requestId: "combined-prep-note",
+    basePlannerVersion: 2,
+    command: {
+      type: "updateInstructionStepNote",
+      weekId: initialWeek.id,
+      stepId: sourceStepIds[0],
+      note: "Keep this source step covered.",
+    },
+  };
+  const noted = firstService.applyCommand(noteRequest);
+  assert.equal(noted.decision.status, "accepted");
+  assert.equal(noted.workspace.plannerVersion, 3);
+  assert.equal(noted.workspace.syncRevision, 4);
+  assert.equal(noted.workspace.events[0].command.type, "updateInstructionStepNote");
+  const notedWeek = activeWeek(noted.workspace);
+  assert.equal(combinedEntry(notedWeek).complete, true);
+  assert.equal(combinedEntry(notedWeek).instruction, "Prepare the shared batch.");
+  assert.equal(notedWeek.data.meals.flatMap((meal) => meal.instructions).find((step) => step.id === sourceStepIds[0]).note, "Keep this source step covered.");
+  const completedPrepSessions = structuredClone(notedWeek.data.prepSessions);
   assert.equal(firstStore.database.prepare("PRAGMA quick_check").get().quick_check, "ok");
   firstStore.close();
 
   const reopenedStore = openPlannerStore({ filename });
   const reopenedService = createPlannerApplicationService(dependencies(reopenedStore));
   const reopened = reopenedService.readWorkspace();
-  assert.equal(reopened.plannerVersion, 2);
+  assert.equal(reopened.plannerVersion, 3);
   assert.deepEqual(activeWeek(reopened).data.prepSessions, completedPrepSessions);
+  assert.equal(activeWeek(reopened).data.meals.flatMap((meal) => meal.instructions).find((step) => step.id === sourceStepIds[0]).note, "Keep this source step covered.");
 
   const replayedCreate = reopenedService.applyCommand(structuredClone(combineRequest));
   assert.deepEqual(replayedCreate.decision, created.decision);
-  assert.equal(replayedCreate.workspace.events.length, 2);
+  assert.equal(replayedCreate.workspace.events.length, 3);
   const replayedComplete = reopenedService.applyCommand(structuredClone(completeRequest));
   assert.deepEqual(replayedComplete.decision, completed.decision);
-  assert.equal(replayedComplete.workspace.events.length, 2);
+  assert.equal(replayedComplete.workspace.events.length, 3);
+  const replayedNote = reopenedService.applyCommand(structuredClone(noteRequest));
+  assert.deepEqual(replayedNote.decision, noted.decision);
+  assert.equal(replayedNote.workspace.events.length, 3);
   assert.throws(
     () => reopenedService.applyCommand({
       ...structuredClone(combineRequest),
@@ -135,7 +158,7 @@ test("combined Prep survives file-backed completion, replay, expansion, undo, an
 
   const expanded = reopenedService.applyCommand({
     requestId: "combined-prep-expand",
-    basePlannerVersion: 2,
+    basePlannerVersion: 3,
     command: {
       type: "expandCombinedPrepStep",
       weekId: initialWeek.id,
@@ -155,7 +178,7 @@ test("combined Prep survives file-backed completion, replay, expansion, undo, an
 
   const undone = reopenedService.undoLatest({
     requestId: "combined-prep-expand-undo",
-    basePlannerVersion: 3,
+    basePlannerVersion: 4,
     targetEventId: expanded.decision.eventId,
   });
   assert.equal(undone.decision.status, "accepted");

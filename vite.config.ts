@@ -3,14 +3,14 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
+import { e2eArtifactWatch } from "./scripts/e2e-artifact-watch.mjs";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
 
 const { d1, r2 } = hostingConfig;
 
-// macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
-const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const e2eWatch = e2eArtifactWatch(process.env);
 
 function loopbackOrigin(value: string) {
   const origin = new URL(value);
@@ -78,9 +78,7 @@ export default defineConfig(async () => {
           target: plannerApiOrigin,
         },
       },
-      watch: isCodexSeatbeltSandbox
-        ? { useFsEvents: false, usePolling: true }
-        : undefined,
+      watch: e2eWatch,
     },
     plugins: [
       tailwindcss(),

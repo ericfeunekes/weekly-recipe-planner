@@ -123,6 +123,17 @@ test("completed combined Prep work requires explicit discard and source edits re
     entryId,
     complete: true,
   }, context)).state;
+  const completedInstruction = activeWeek(state).data.prepSessions[0].steps[0].instruction;
+  state = accepted(householdDomain.execute(state, {
+    type: "updateInstructionStepNote",
+    weekId: week.id,
+    stepId: firstStep.id,
+    note: "Keep the tray uncovered.",
+  }, context)).state;
+  let completedEntry = activeWeek(state).data.prepSessions[0].steps[0];
+  assert.equal(completedEntry.complete, true);
+  assert.equal(completedEntry.needsReview, false);
+  assert.equal(completedEntry.instruction, completedInstruction);
   const blockedEdit = householdDomain.execute(state, {
     type: "updateCombinedPrepStep",
     weekId: week.id,

@@ -11,6 +11,7 @@ import {
   MAX_INGREDIENT_LINES,
   MAX_MEALS_PER_WEEK,
 } from "../lib/household-command-contract.ts";
+import { ingredientCandidateDigest } from "../lib/ingredient-catalogue.ts";
 
 const NOW = Date.parse("2026-07-10T12:00:00-03:00");
 
@@ -93,6 +94,27 @@ test("date-first prep commands reject duplicate instruction selections before ma
   assert.equal(result.state, state);
   assert.match(result.message, /each instruction once/i);
   assert.equal(createIdCalls, 0);
+});
+
+test("cooked meals reject resolution-batch occurrence creation without mutation", () => {
+  const context = createContext();
+  let state = createCanonicalSeed(context);
+  const week = activeWeek(state);
+  const meal = week.data.meals[0];
+  state = accepted(householdDomain.execute(state, {
+    type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooked",
+  }, { ...context, cookingAnchor: { eventId: "cooked-event", plannerVersion: 1 } })).state;
+  const frozen = structuredClone(state);
+  const occurrence = { kind: "create", correlationId: "frozen-new", source: "1 lemon", amount: "1", unit: null, ingredient: "lemon", qualifier: null, conceptId: null, canonicalIngredientId: null };
+  const inputs = [{ correlationId: "frozen-new", mealId: meal.id, source: occurrence.source, amount: occurrence.amount, unit: occurrence.unit, ingredient: occurrence.ingredient, qualifier: occurrence.qualifier, conceptId: occurrence.conceptId, canonicalIngredientId: occurrence.canonicalIngredientId }];
+  const result = householdDomain.execute(state, {
+    type: "applyIngredientResolutionBatch", weekId: week.id,
+    catalogueRevision: state.ingredientCatalogue.revision, inputDigest: ingredientCandidateDigest(inputs),
+    decisions: [{ correlationId: "frozen-new", mealId: meal.id, occurrence, decision: { kind: "unresolved" } }],
+  }, context);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.state, frozen);
+  assert.match(result.message, /frozen/i);
 });
 
 test("household domain executes every week-local command through one pure boundary", () => {
@@ -240,7 +262,8 @@ test("household domain executes every week-local command through one pure bounda
     ),
   );
   state = result.state;
-  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 420);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 300);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerRemainingSeconds, 420);
   assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, undefined);
   result = accepted(
     householdDomain.execute(
@@ -259,7 +282,8 @@ test("household domain executes every week-local command through one pure bounda
     ),
   );
   state = result.state;
-  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 360);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 300);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerRemainingSeconds, 360);
   assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, undefined);
   assert.equal(activeWeek(state).data.meals[0].instructions[0].timerPaused, true);
   result = accepted(
@@ -281,7 +305,8 @@ test("household domain executes every week-local command through one pure bounda
     ),
   );
   state = result.state;
-  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 120);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerDurationSeconds, 300);
+  assert.equal(activeWeek(state).data.meals[0].instructions[0].timerRemainingSeconds, 120);
   assert.equal(activeWeek(state).data.meals[0].instructions[0].timerStartedAt, editedContext.now);
   result = accepted(
     householdDomain.execute(

@@ -109,7 +109,9 @@ test("keeps the locked product requirements represented in source", async () => 
   assert.match(planner, /findStep/);
   assert.match(planner, /CodexThreadRail/);
   assert.doesNotMatch(planner, /<ChatPanel/);
-  assert.match(planner, /Add comment/);
+  assert.match(planner, /Add Prep note/);
+  assert.match(planner, /Prep note/);
+  assert.doesNotMatch(prepView, /Add comment/);
   assert.match(planner, /Ask Codex/);
   assert.match(planner, /RecipeInstructionContent/);
   assert.match(recipeContent, /export function RecipeInstructionContent/);

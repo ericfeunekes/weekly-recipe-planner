@@ -36,7 +36,7 @@ qa-local:
 	@cd "$(ROOT_DIR)" && $(NPM) run test:e2e
 
 qa-deploy:
-	@cd "$(ROOT_DIR)" && $(NPM) run build
+	@cd "$(ROOT_DIR)" && PLANNER_PUBLIC_BASE_PATH=/recipe-planner/ $(NPM) run build
 	@cd "$(ROOT_DIR)" && QA_DATA_SOURCE="$(QA_DATA_SOURCE)" QA_NAME="$(QA_NAME)" QA_NPM_COMMAND="$(NPM)" QA_PORTLESS_PORT="$(QA_PORTLESS_PORT)" QA_STATE_DIR="$(QA_STATE_DIR)" $(NODE) --disable-warning=ExperimentalWarning scripts/qa-deployment-manager.mjs start
 
 qa-status:

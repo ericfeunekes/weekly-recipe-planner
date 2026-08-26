@@ -76,6 +76,7 @@ export const OPERATION_KINDS = [
   "chat_retry",
   "embedded_codex_apply_planner_operations_v1",
   "native_codex_apply_planner_operations_v1",
+  "native_codex_import_approved_week_v1",
   "global_codex_apply_planner_batch_v1",
 ] as const;
 
@@ -85,11 +86,20 @@ export type PlannerApplyOperationKind =
   | "planner_chat_command"
   | "embedded_codex_apply_planner_operations_v1"
   | "native_codex_apply_planner_operations_v1"
+  | "native_codex_import_approved_week_v1"
   | "global_codex_apply_planner_batch_v1";
 
 export type ApplyPlannerOperationsRequest = {
   requestId: string;
   basePlannerVersion: number;
+  operations: PlannerOperation[];
+};
+
+/** Host-only admission input; it is deliberately not part of planner.apply. */
+export type ApplyApprovedWeekImportRequest = {
+  requestId: string;
+  basePlannerVersion: number;
+  weekId: string;
   operations: PlannerOperation[];
 };
 
@@ -254,10 +264,10 @@ export function isPlannerOperation(value: unknown): value is PlannerOperation {
   return isRecord(value) && hasExactKeys(value, ["command"]) && isHouseholdCommand(value.command);
 }
 
-export function isPlannerOperationList(value: unknown): value is PlannerOperation[] {
+export function isPlannerOperationList(value: unknown, maximum: number = MAX_PLANNER_OPERATIONS): value is PlannerOperation[] {
   return Array.isArray(value) &&
     value.length >= MIN_PLANNER_OPERATIONS &&
-    value.length <= MAX_PLANNER_OPERATIONS &&
+    value.length <= maximum &&
     value.every(isPlannerOperation);
 }
 
@@ -273,12 +283,13 @@ export function isHistoricalPlannerEventOperationList(
 ): value is HistoricalPlannerEventOperation[] {
   return Array.isArray(value) &&
     value.length >= MIN_PLANNER_OPERATIONS &&
-    value.length <= MAX_PLANNER_OPERATIONS &&
+    value.length <= 256 &&
     value.every(isHistoricalPlannerEventOperation);
 }
 
 export function isApplyPlannerOperationsRequest(
   value: unknown,
+  maximum: number = MAX_PLANNER_OPERATIONS,
 ): value is ApplyPlannerOperationsRequest {
   return isRecord(value) &&
     hasExactKeys(value, ["requestId", "basePlannerVersion", "operations"]) &&
@@ -287,7 +298,7 @@ export function isApplyPlannerOperationsRequest(
     value.requestId.length <= 200 &&
     Number.isSafeInteger(value.basePlannerVersion) &&
     Number(value.basePlannerVersion) >= 0 &&
-    isPlannerOperationList(value.operations);
+    isPlannerOperationList(value.operations, maximum);
 }
 
 export function isPreviewPlannerOperationsRequest(
@@ -326,6 +337,7 @@ function expectedProvenance(
       return EMBEDDED_LEGACY_PROVENANCE;
     case "embedded_codex_apply_planner_operations_v1":
     case "native_codex_apply_planner_operations_v1":
+    case "native_codex_import_approved_week_v1":
       return EMBEDDED_CODEX_PROVENANCE;
     case "global_codex_apply_planner_batch_v1":
       return GLOBAL_CODEX_PROVENANCE;
@@ -338,7 +350,8 @@ export function isValidPlannerMutationContext(
   context: PlannerMutationContext,
   operationCount: number,
 ): boolean {
-  if (!Number.isSafeInteger(operationCount) || operationCount < 1 || operationCount > 16) return false;
+  const maximum = context.operationKind === "native_codex_import_approved_week_v1" ? 256 : 16;
+  if (!Number.isSafeInteger(operationCount) || operationCount < 1 || operationCount > maximum) return false;
   const expected = expectedProvenance(context.operationKind);
   if (expected === null || !sameProvenance(context.provenance, expected)) return false;
   if (

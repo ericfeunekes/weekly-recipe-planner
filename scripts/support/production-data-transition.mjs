@@ -3,26 +3,26 @@ import { join } from "node:path";
 
 import {
   inspectVerifiedPlannerSnapshot,
-  inspectVerifiedPlannerSchema10Snapshot,
+  inspectVerifiedPlannerSchema12Snapshot,
   openPlannerStore,
 } from "../../server/store/sqlite-store.ts";
 import { CURRENT_SCHEMA_VERSION } from "../../server/store/schema-contract.ts";
 import { assertProductionDataCompatible } from "./production-data-compatibility.mjs";
 
-const SUPPORTED_PREDECESSOR_SCHEMA = 10;
+const SUPPORTED_PREDECESSOR_SCHEMA = 12;
 
 function sameArray(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function assertSchema10Predecessor(snapshot) {
+function assertSchema12Predecessor(snapshot) {
   if (
     snapshot.quickCheck !== "ok" ||
     snapshot.schemaVersion !== SUPPORTED_PREDECESSOR_SCHEMA ||
     snapshot.workspaceSchemaVersion !== SUPPORTED_PREDECESSOR_SCHEMA ||
-    !sameArray(snapshot.migrationVersions, Array.from({ length: 10 }, (_, index) => index + 1))
+    !sameArray(snapshot.migrationVersions, Array.from({ length: 12 }, (_, index) => index + 1))
   ) {
-    throw new Error("Production data is neither current nor the exact supported schema-10 predecessor.");
+    throw new Error("Production data is neither current nor the exact supported schema-12 predecessor.");
   }
   return snapshot;
 }
@@ -37,20 +37,20 @@ async function pathExists(path) {
   }
 }
 
-async function appSupportsSchema12(appRoot) {
-  return pathExists(join(appRoot, "server", "store", "migrations", "012-canonical-recipe-import-tool.sql"));
+async function appSupportsSchema13(appRoot) {
+  return pathExists(join(appRoot, "server", "store", "migrations", "013-approved-week-import.sql"));
 }
 
 async function restoreDatabase(databasePath, handle) {
   const current = inspectVerifiedPlannerSnapshot(databasePath);
-  if (current.schemaVersion === 10) return;
+  if (current.schemaVersion === 12) return;
   if (!handle?.backupPath) {
     throw new Error("Automatic schema downgrade requires the active promotion's exact backup handle.");
   }
-  const backup = { path: handle.backupPath, snapshot: inspectVerifiedPlannerSchema10Snapshot(handle.backupPath) };
-  assertSchema10Predecessor(backup.snapshot);
+  const backup = { path: handle.backupPath, snapshot: inspectVerifiedPlannerSchema12Snapshot(handle.backupPath) };
+  assertSchema12Predecessor(backup.snapshot);
   if (backup.snapshot.plannerVersion !== current.plannerVersion) {
-    throw new Error("Schema-10 backup planner version does not match the migrated database.");
+    throw new Error("Schema-12 backup planner version does not match the migrated database.");
   }
 
   const restorePath = `${databasePath}.restore-${process.pid}-${Date.now()}`;
@@ -58,7 +58,7 @@ async function restoreDatabase(databasePath, handle) {
   const staged = inspectVerifiedPlannerSnapshot(restorePath);
   if (staged.sha256 !== backup.snapshot.sha256) {
     await rm(restorePath, { force: true });
-    throw new Error("Staged schema-10 restoration does not match its verified backup.");
+    throw new Error("Staged schema-12 restoration does not match its verified backup.");
   }
   await rm(`${databasePath}-wal`, { force: true });
   await rm(`${databasePath}-shm`, { force: true });
@@ -88,7 +88,7 @@ export function createProductionDataTransition({ databasePath }) {
       } else {
         planned = {
           kind: "migrate",
-          snapshot: assertSchema10Predecessor(inspectVerifiedPlannerSchema10Snapshot(databasePath)),
+          snapshot: assertSchema12Predecessor(inspectVerifiedPlannerSchema12Snapshot(databasePath)),
         };
       }
       return planned;
@@ -116,7 +116,7 @@ export function createProductionDataTransition({ databasePath }) {
         store.close();
         store = null;
         const migrated = assertProductionDataCompatible(databasePath);
-        const backup = assertSchema10Predecessor(inspectVerifiedPlannerSnapshot(backupPath));
+        const backup = assertSchema12Predecessor(inspectVerifiedPlannerSnapshot(backupPath));
         if (
           backup.plannerVersion !== planned.snapshot.plannerVersion ||
           migrated.plannerVersion !== plannerVersion
@@ -139,17 +139,17 @@ export function createProductionDataTransition({ databasePath }) {
 
     async beforeBootstrap(paths) {
       const database = inspectVerifiedPlannerSnapshot(databasePath);
-      const supportsCurrent = await appSupportsSchema12(paths.app);
+      const supportsCurrent = await appSupportsSchema13(paths.app);
       if (supportsCurrent && database.schemaVersion === CURRENT_SCHEMA_VERSION) return;
       if (!supportsCurrent && database.schemaVersion === SUPPORTED_PREDECESSOR_SCHEMA) return;
       if (!supportsCurrent && database.schemaVersion === CURRENT_SCHEMA_VERSION) {
         if (!activeHandle) {
-          throw new Error("Recovery cannot automatically downgrade schema 12 without the active promotion handle.");
+          throw new Error("Recovery cannot automatically downgrade schema 13 without the active promotion handle.");
         }
         await restoreDatabase(databasePath, activeHandle);
         return;
       }
-      throw new Error(`Selected app and database schema are incompatible: app12=${supportsCurrent}, database=${database.schemaVersion}.`);
+      throw new Error(`Selected app and database schema are incompatible: app13=${supportsCurrent}, database=${database.schemaVersion}.`);
     },
 
     afterReadiness() {

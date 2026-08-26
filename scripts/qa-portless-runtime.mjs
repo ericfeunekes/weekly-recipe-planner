@@ -9,6 +9,10 @@ import {
   captureFoodSourceSnapshot,
   discardFoodSourceSnapshot,
 } from "./support/production-agent-sources.mjs";
+import {
+  requireOriginHandoffPath,
+  writeEffectiveOriginHandoff,
+} from "./support/qa-effective-origin-handoff.mjs";
 
 import { acquirePlannerStoreWriteReservation } from "../server/store/sqlite-store.ts";
 
@@ -33,7 +37,7 @@ function requirePortlessOrigin(value) {
     origin.username ||
     origin.password
   ) {
-    throw new TypeError("QA_ORIGIN must be an exact Portless .localhost HTTP origin.");
+    throw new TypeError("PORTLESS_URL must be an exact Portless .localhost HTTP origin.");
   }
   return origin.origin;
 }
@@ -85,7 +89,7 @@ async function waitForHealth(port) {
   let lastError = "no response";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const response = await fetch(`http://127.0.0.1:${port}/recipe-planner/api/health`);
       if (response.ok) return;
       lastError = `HTTP ${response.status}`;
       await response.body.cancel();
@@ -122,7 +126,12 @@ function waitForExit(child) {
 
 async function main() {
   const assignedPort = requireAssignedPort(process.env.PORT);
-  const publicOrigin = requirePortlessOrigin(process.env.QA_ORIGIN);
+  const publicOrigin = requirePortlessOrigin(process.env.PORTLESS_URL);
+  const originHandoff = requireOriginHandoffPath(
+    process.env.QA_EFFECTIVE_ORIGIN_HANDOFF,
+    process.env.QA_STATE_DIR,
+  );
+  await writeEffectiveOriginHandoff(originHandoff, publicOrigin);
   const sourceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const source = resolve(sourceRoot, process.env.QA_DATA_SOURCE ?? ".planner-data/planner.sqlite");
   const root = await realpath(
