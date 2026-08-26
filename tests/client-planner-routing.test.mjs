@@ -5,6 +5,7 @@ import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import {
   LAST_VALID_WEEK_STORAGE_KEY,
   closeoutPath,
+  groceriesPath,
   parsePlannerLocation,
   recipePath,
   resolvePlannerLocation,
@@ -47,6 +48,15 @@ test("Closeout locations preserve the selected Week identity", () => {
   const archived = structuredClone(week);
   archived.status = "archived";
   assert.equal(resolvePlannerLocation(parsePlannerLocation(closeoutPath(archived.id)), [archived], archived.id).kind, "closeout");
+});
+
+test("Groceries location preserves its selected Week, including archived records", () => {
+  const week = fixture();
+  assert.equal(groceriesPath(week.id), `/weeks/${week.id}/groceries`);
+  assert.deepEqual(parsePlannerLocation(groceriesPath(week.id)), { kind: "groceries", weekId: week.id });
+  assert.deepEqual(resolvePlannerLocation(parsePlannerLocation(groceriesPath(week.id)), [week], week.id), { kind: "groceries", week });
+  const archived = { ...week, status: "archived" };
+  assert.equal(resolvePlannerLocation(parsePlannerLocation(groceriesPath(archived.id)), [archived], archived.id).kind, "groceries");
 });
 
 test("invalid and cross-week Recipe targets never select another meal", () => {

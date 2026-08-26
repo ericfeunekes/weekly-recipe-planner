@@ -1,0 +1,49 @@
+{
+  "candidate": "05a4e3dd3f0f43d3568ab6e474ca69b6425f8e33",
+  "origin": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355",
+  "basePath": "/recipe-planner/",
+  "startedAt": "2026-08-26T18:00:59.102Z",
+  "checks": {
+    "/recipe-planner/api/health": {
+      "status": 200,
+      "contentType": "application/json; charset=utf-8"
+    },
+    "/": {
+      "status": 404,
+      "contentType": "text/plain; charset=utf-8"
+    },
+    "/recipe-planner/": {
+      "status": 200,
+      "contentType": "text/html; charset=utf-8"
+    },
+    "directGroceries": {
+      "url": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355/recipe-planner/weeks/2026-08-24/groceries",
+      "heading": true
+    },
+    "reload": {
+      "url": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355/recipe-planner/weeks/2026-08-24/groceries",
+      "heading": true
+    },
+    "historyBack": {
+      "url": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355/recipe-planner/weeks/2026-08-24/groceries",
+      "heading": true
+    },
+    "unavailableFallback": {
+      "url": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355/recipe-planner/weeks/2026-08-24",
+      "heading": true
+    },
+    "responsive-desktop-1280x900": {
+      "url": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355/recipe-planner/weeks/2026-08-24/groceries",
+      "horizontalOverflow": false,
+      "axeViolations": 0
+    },
+    "responsive-mobile-320x844": {
+      "url": "http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355/recipe-planner/weeks/2026-08-24/groceries",
+      "horizontalOverflow": false,
+      "axeViolations": 0
+    }
+  },
+  "consoleErrors": [],
+  "failedResponses": [],
+  "finishedAt": "2026-08-26T18:01:01.104Z"
+}

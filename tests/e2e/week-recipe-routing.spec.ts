@@ -110,6 +110,80 @@ test("legacy Day URL returns to Week without selecting a recipe", async ({ page 
   await expect.poll(() => page.locator(".day-column[tabindex='-1']").evaluate((column) => document.activeElement === column)).toBe(true);
 });
 
+test("Groceries direct URL, reload, and history retain the selected Week without routing local controls", async ({ page }) => {
+  await resetPlanner(page);
+  await page.getByRole("button", { name: "Groceries", exact: true }).click();
+  await expect(page).toHaveURL("/weeks/2026-07-06/groceries");
+  await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: "All", exact: true }).click();
+  await page.locator(".grocery-row .grocery-item-copy").first().click({ position: { x: 1, y: 1 } });
+  await expect(page.getByTestId("grocery-selection-toolbar")).toBeVisible();
+  await expect(page).toHaveURL("/weeks/2026-07-06/groceries");
+  await page.reload();
+  await expect(page).toHaveURL("/weeks/2026-07-06/groceries");
+  await expect(page.getByRole("radio", { name: "To buy", exact: true })).toBeChecked();
+  await expect(page.getByTestId("grocery-selection-toolbar")).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveURL("/weeks/2026-07-06/groceries");
+  await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
+});
+
+test("Groceries recipe return clears the prior local execution view", async ({ page }) => {
+  await resetPlanner(page);
+  for (const origin of ["Prep", "Close out"] as const) {
+    await page.getByRole("button", { name: origin, exact: true }).click();
+    await page.getByRole("button", { name: "Groceries", exact: true }).click();
+    await expect(page).toHaveURL("/weeks/2026-07-06/groceries");
+    await page.getByRole("radio", { name: "All", exact: true }).click();
+    await page.locator(".grocery-row .grocery-meal-link").first().click();
+    await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//);
+    await page.getByTitle("Back to Week").click();
+    await expect(page).toHaveURL("/weeks/2026-07-06");
+    await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  }
+});
+
+test("a requested Groceries URL remains until workspace authority is available", async ({ page }) => {
+  await resetPlanner(page);
+  const groceriesUrl = "/weeks/2026-07-06/groceries";
+  await page.route("**/api/workspace", async (route) => route.abort("failed"));
+  await page.goto(groceriesUrl);
+  await expect(page).toHaveURL(groceriesUrl);
+  await expect(page.getByRole("heading", { name: "Planner unavailable", exact: true })).toBeVisible();
+  await page.unroute("**/api/workspace");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page).toHaveURL(groceriesUrl);
+  await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
+});
+
+test("unavailable Groceries returns to the selected Week", async ({ page }) => {
+  await resetPlanner(page);
+  await page.goto("/weeks/missing/groceries");
+  await expect(page).toHaveURL("/weeks/2026-07-06");
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+});
+
+test("switching Grocery weeks resets local filter and selection state", async ({ page }) => {
+  await resetPlanner(page);
+  const workspace = await (await page.request.get("/api/workspace")).json() as RouteFixture;
+  const fixture = structuredClone(workspace);
+  const source = fixture.state.weeks[0];
+  fixture.state.weeks.push({ ...structuredClone(source), id: "2026-07-13" });
+  await page.route("**/api/workspace", async (route) => route.fulfill({ json: fixture }));
+  await page.reload();
+  await page.getByRole("button", { name: "Groceries", exact: true }).click();
+  await page.getByRole("radio", { name: "All", exact: true }).click();
+  await page.locator(".grocery-row .grocery-item-copy").first().click({ position: { x: 1, y: 1 } });
+  await expect(page.getByTestId("grocery-selection-toolbar")).toBeVisible();
+  await page.getByRole("combobox", { name: "Selected week" }).selectOption("2026-07-13");
+  await expect(page).toHaveURL("/weeks/2026-07-13/groceries");
+  await expect(page.getByRole("radio", { name: "To buy", exact: true })).toBeChecked();
+  await expect(page.getByTestId("grocery-selection-toolbar")).toHaveCount(0);
+});
+
 test("D4 source links keep three same-date meal identities and Recipe context exact", async ({ page }) => {
   await resetPlanner(page);
   const workspace = await (await page.request.get("/api/workspace")).json() as RouteFixture;

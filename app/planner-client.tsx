@@ -70,12 +70,8 @@ import {
   normalizedCoreIngredientLiteral,
   type InstructionInputEdit,
 } from "@/lib/ingredient-occurrence";
-import {
-  GROCERY_COVERAGES,
-  MEAL_STATUSES,
+import {  MEAL_STATUSES,
   isPrepSessionCombinedStep,
-  type GroceryItem,
-  type GroceryCoverage,
   type InstructionStep,
   type IsoDate,
   type Meal,
@@ -128,6 +124,7 @@ import { isoDateForTimeZone } from "./calendar-time";
 import {
   LAST_VALID_WEEK_STORAGE_KEY,
   closeoutPath,
+  groceriesPath,
   parsePlannerLocation,
   recipePath,
   resolvePlannerLocation,
@@ -139,6 +136,7 @@ import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/
 import { RecipeIngredientList, RecipeInstructionContent } from "@/components/planner-ui/recipe-content";
 import { PrepView } from "@/components/planner-ui/prep-view";
 import { CloseoutView } from "@/components/planner-ui/closeout-view";
+import { GroceryView } from "@/components/planner-ui/grocery-view";
 import { SegmentedControl, type SegmentedOption } from "@/components/planner-ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -520,13 +518,6 @@ const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "groceries", label: "Groceries", icon: ShoppingBasket },
   { id: "closeout", label: "Close out", icon: ClipboardCheck },
 ];
-
-const GROCERY_SECTIONS: GroceryItem["section"][] = [
-  "Produce",
-  "Meat & seafood",
-  "Dairy",
-  "Pantry",
-];
 const MAX_STEP_INPUT_TEXT_LENGTH =
   MAX_STEP_INPUTS * (MAX_STEP_INPUT_AMOUNT_LENGTH + MAX_STEP_INPUT_INGREDIENT_LENGTH + 4);
 function formatCalendarDate(
@@ -754,11 +745,12 @@ const plannerRootRoute = createRootRoute({ component: PlannerAppContent });
 const plannerIndexRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/" });
 const plannerWeekRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId" });
 const plannerRecipeRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/recipes/$mealId" });
+const plannerGroceriesRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/groceries" });
 const plannerCloseoutRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/closeout" });
 const plannerLegacyDayRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/day/$date" });
 function createPlannerRouter() {
   return createRouter({
-    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
+    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerGroceriesRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
     basepath: import.meta.env?.BASE_URL === "/" ? undefined : import.meta.env?.BASE_URL?.replace(/\/$/u, ""),
   });
 }
@@ -789,7 +781,7 @@ function PlannerAppContent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const routerNavigate = useNavigate();
   const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
-  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "closeout" || location.kind === "legacy-day"
+  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "closeout" || location.kind === "legacy-day"
     ? location.weekId
     : null;
   const queryClient = useQueryClient();
@@ -991,11 +983,17 @@ function PlannerAppContent() {
   }, [syncPendingRetries]);
 
   const navigate = useCallback((nextView: PlannerView) => {
-    if (nextView === "closeout" && selectedWeekId) {
+    if ((nextView === "groceries" || nextView === "closeout") && selectedWeekId) {
+      setView("week");
+      if (nextView === "groceries") {
+        void routerNavigate({ to: groceriesPath(selectedWeekId) });
+        return;
+      }
       void routerNavigate({ to: closeoutPath(selectedWeekId) });
       return;
     }
-    if (nextView === "week" && location.kind === "closeout" && selectedWeekId) {
+    if ((location.kind === "groceries" || location.kind === "closeout") && selectedWeekId) {
+      setView(nextView);
       void routerNavigate({ to: weekPath(selectedWeekId) });
       return;
     }
@@ -1536,7 +1534,7 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const currentView = resolvedLocation.kind === "closeout" ? "closeout" : view;
+  const currentView = resolvedLocation.kind === "groceries" || resolvedLocation.kind === "closeout" ? resolvedLocation.kind : view;
   const heading = resolvedLocation.kind === "recipe" ? "Recipe" : currentView === "closeout" ? "Close out" : `${currentView[0].toUpperCase()}${currentView.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
@@ -1579,7 +1577,7 @@ function PlannerAppContent() {
                 onChange={(event) => {
                   setRouteNotice(null);
                   const nextWeekId = event.target.value as WeekId;
-                  void routerNavigate({ to: resolvedLocation.kind === "closeout" ? closeoutPath(nextWeekId) : weekPath(nextWeekId) });
+                  void routerNavigate({ to: resolvedLocation.kind === "groceries" ? groceriesPath(nextWeekId) : resolvedLocation.kind === "closeout" ? closeoutPath(nextWeekId) : weekPath(nextWeekId) });
                 }}
               >
                 {initialized.state.weeks.map((item) => (
@@ -1746,6 +1744,8 @@ function PlannerAppContent() {
                   />
               ) : resolvedLocation.kind === "closeout" ? (
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} formatCalendarDate={formatCalendarDate} />
+                ) : resolvedLocation.kind === "groceries" ? (
+                  <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} onOpenRecipe={openRecipeSummary} />
                 ) : view === "week" ? (
                   <WeekView
                     week={week}
@@ -1770,14 +1770,6 @@ function PlannerAppContent() {
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
-                    onOpenRecipeSummary={openRecipeSummary}
-                  />
-                ) : view === "groceries" ? (
-                  <GroceryView
-                    key={week.id}
-                    week={week}
-                    disabled={isReadOnly}
-                    mutate={mutate}
                     onOpenRecipeSummary={openRecipeSummary}
                   />
                 ) : null}
@@ -2683,219 +2675,8 @@ function PrepSessionStepRow(props: {
   );
 }
 
-const GROCERY_SOURCE_LABELS = {
-  needs_source: "Needs source",
-  shop: "Shop",
-  farm_box: "Farm box",
-  on_hand: "On hand",
-} as const;
-
-type GroceryFilter = "to_buy" | "all" | GroceryCoverage | "done";
-
-const GROCERY_FILTERS: Array<{ value: GroceryFilter; label: string }> = [
-  { value: "to_buy", label: "To buy" },
-  { value: "all", label: "All" },
-  { value: "shop", label: "Shop" },
-  { value: "farm_box", label: "Farm box" },
-  { value: "on_hand", label: "On hand" },
-  { value: "done", label: "Done" },
-];
-
-function RecipeSummaryLink({
-  meal,
-  onOpenRecipeSummary,
-  className = "grocery-meal-link",
-  role,
-  onBeforeOpen,
-  children,
-}: {
-  meal: Meal;
-  onOpenRecipeSummary: (mealId: string, trigger: HTMLElement) => void;
-  className?: string;
-  role?: "menuitem";
-  onBeforeOpen?: () => void;
-  children?: ReactNode;
-}) {
-  return (
-    <button
-      className={className}
-      type="button"
-      role={role}
-      onMouseDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        onBeforeOpen?.();
-        onOpenRecipeSummary(meal.id, event.currentTarget);
-      }}
-    >{children ?? <><Utensils size={11} /> {meal.title}</>}</button>
-  );
-}
-
-function isGroceryRowControlTarget(target: EventTarget | null): boolean {
-  const element = target instanceof Element ? target : null;
-  return Boolean(element?.closest("button, input, select, label, a, textarea, [data-grocery-row-control]"));
-}
-
-function GroceryView({
-  week,
-  disabled,
-  mutate,
-  onOpenRecipeSummary,
-}: {
-  week: WeekPlan;
-  disabled: boolean;
-  mutate: Mutate;
-  onOpenRecipeSummary: (mealId: string, trigger: HTMLElement) => void;
-}) {
-  const [filter, setFilter] = useState<GroceryFilter>("to_buy");
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
-  const [bulkCoverage, setBulkCoverage] = useState<GroceryCoverage | "">("");
-  const [moveNotice, setMoveNotice] = useState<{ coverage: GroceryCoverage; count: number } | null>(null);
-  const visible = week.data.groceries.filter((entry) => {
-    if (filter === "all") return true;
-    if (filter === "done") return entry.checked;
-    if (filter === "to_buy") return !entry.checked && entry.coverage === "shop";
-    if (filter === "shop") return entry.coverage === "shop";
-    return entry.coverage === filter;
-  });
-  const selectedGroceries = week.data.groceries.filter((entry) => selectedIds.has(entry.id));
-  const visibleIdsInDisplayOrder = GROCERY_SECTIONS.flatMap((group) =>
-    visible.filter((entry) => entry.section === group).map((entry) => entry.id),
-  );
-  const allVisibleSelected = Boolean(visibleIdsInDisplayOrder.length) && visibleIdsInDisplayOrder.every((id) => selectedIds.has(id));
-  const clearSelection = () => {
-    setSelectedIds(new Set());
-    setSelectionAnchorId(null);
-    setBulkCoverage("");
-  };
-  const toggleSelectAllVisible = () => {
-    if (allVisibleSelected) {
-      clearSelection();
-      setSelectionMode(false);
-      return;
-    }
-    setSelectedIds(new Set(visibleIdsInDisplayOrder));
-    setSelectionAnchorId(visibleIdsInDisplayOrder[0] ?? null);
-    setSelectionMode(true);
-  };
-  const selectRow = (itemId: string, event: ReactMouseEvent<HTMLElement>, allowControlTarget = false) => {
-    if (disabled) return;
-    if (!allowControlTarget && isGroceryRowControlTarget(event.target)) return;
-    const additive = event.ctrlKey || event.metaKey;
-    const anchorIndex = selectionAnchorId ? visibleIdsInDisplayOrder.indexOf(selectionAnchorId) : -1;
-    const itemIndex = visibleIdsInDisplayOrder.indexOf(itemId);
-    if (event.shiftKey && anchorIndex >= 0 && itemIndex >= 0) {
-      const rangeIds = visibleIdsInDisplayOrder.slice(
-        Math.min(anchorIndex, itemIndex),
-        Math.max(anchorIndex, itemIndex) + 1,
-      );
-      setSelectedIds((current) => {
-        const next = additive ? new Set(current) : new Set<string>();
-        rangeIds.forEach((rangeId) => next.add(rangeId));
-        return next;
-      });
-      return;
-    }
-    setSelectedIds((current) => {
-      if (!additive) return new Set([itemId]);
-      const next = new Set(current);
-      if (next.has(itemId)) next.delete(itemId);
-      else next.add(itemId);
-      return next;
-    });
-    setSelectionAnchorId(itemId);
-  };
-  const moveGroceriesToCoverage = (itemIds: string[], coverage: GroceryCoverage) => {
-    if (!itemIds.length) return;
-    void mutate(
-      {
-        type: "setGroceryItemsCoverage",
-        weekId: week.id,
-        itemIds,
-        coverage,
-      },
-      {
-        onAccepted: () => {
-          setMoveNotice({ coverage, count: itemIds.length });
-          clearSelection();
-        },
-      },
-    );
-  };
-  const moveSelectedToCoverage = (coverage: GroceryCoverage) => {
-    const itemIds = selectedGroceries
-      .filter((entry) => entry.coverage !== coverage)
-      .map((entry) => entry.id);
-    moveGroceriesToCoverage(itemIds, coverage);
-  };
-  return (
-    <div className="grocery-layout">
-      <div className={`grocery-list ${selectionMode ? "selection-mode" : ""}`}>
-        <div className="surface-summary grocery-summary">
-          <div><p className="eyebrow">This week&apos;s dinners</p><h2>Shopping list</h2><p className="grocery-list-description">Check off what you have; each item keeps its recipe source for reference.</p></div>
-          <div className="grocery-summary-controls">
-            <SegmentedControl
-              ariaLabel="Grocery filter"
-              options={GROCERY_FILTERS}
-              value={filter}
-              onChange={(value) => { clearSelection(); setMoveNotice(null); setFilter(value); }}
-            />
-          </div>
-        </div>
-        <div className="grocery-list-selection-header">
-          <label className="grocery-select-all"><input type="checkbox" checked={allVisibleSelected} disabled={disabled || !visibleIdsInDisplayOrder.length} onChange={toggleSelectAllVisible} /> Select all</label>
-          {selectedGroceries.length ? <div className="grocery-selection-toolbar" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkCoverage} aria-label="Set selected grocery coverage" onChange={(event) => setBulkCoverage(event.target.value as GroceryCoverage | "")}><option value="">Set coverage…</option>{GROCERY_COVERAGES.map((coverage) => <option key={coverage} value={coverage}>{GROCERY_SOURCE_LABELS[coverage]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkCoverage || !selectedGroceries.some((entry) => entry.coverage !== bulkCoverage)} onClick={() => bulkCoverage && moveSelectedToCoverage(bulkCoverage)}>Set coverage</PlannerActionButton></div> : null}
-        </div>
-        {moveNotice ? <div className="grocery-move-notice" role="status" data-testid="grocery-move-notice">
-          <span>Set {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.coverage]}.</span>
-          <PlannerActionButton tone="quiet" type="button" onClick={() => { setFilter(moveNotice.coverage); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.coverage]}</PlannerActionButton>
-        </div> : null}
-        {GROCERY_SECTIONS.map((group) => {
-          const entries = visible.filter((entry) => entry.section === group);
-          if (!entries.length) return null;
-          return (
-            <section className="grocery-section" key={group}>
-              <h3>{group}<span>{entries.length}</span></h3>
-              {entries.map((entry) => {
-                const linkedMeal = week.data.meals.find((meal) => meal.id === entry.mealId);
-                const ingredient = linkedMeal?.ingredients.find((candidate) => candidate.id === entry.ingredientId);
-                if (!linkedMeal || !ingredient) return null;
-                const item = ingredient.ingredient;
-                const detail = ingredient.amount;
-                return (
-                  <div
-                    className={`grocery-row ${entry.checked ? "checked" : ""} ${selectedIds.has(entry.id) ? "selected" : ""}`}
-                    data-grocery-id={entry.id}
-                    key={entry.id}
-                    onMouseDown={(event) => {
-                      if (event.button !== 0) return;
-                      if (isGroceryRowControlTarget(event.target)) return;
-                      if (!selectionMode) setSelectionMode(true);
-                      selectRow(entry.id, event);
-                    }}
-                  >
-                    <label className="grocery-check" data-grocery-row-control onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
-                      <input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} />
-                    </label>
-                    <div className="grocery-item-copy">
-                      <div className="grocery-primary-line">
-                        <div className="grocery-select-target"><strong>{item}</strong><span className="grocery-detail">{detail || "No amount noted"}</span></div>
-                        <span className="grocery-source-badge" title={`Coverage: ${GROCERY_SOURCE_LABELS[entry.coverage]}`}>{GROCERY_SOURCE_LABELS[entry.coverage]}</span>
-                      </div>
-                      <div className="grocery-recipe-links"><span>For</span><RecipeSummaryLink meal={linkedMeal} onOpenRecipeSummary={onOpenRecipeSummary} /></div>
-                    </div>
-                  </div>
-                );
-              })}
-            </section>
-          );
-        })}
-        {!visible.length ? <p className="empty-copy">No groceries match this filter.</p> : null}
-      </div>
-    </div>
-  );
+function RecipeSummaryLink({ meal, onOpenRecipeSummary, className = "grocery-meal-link", role, onBeforeOpen, children }: { meal: Meal; onOpenRecipeSummary: (mealId: string, trigger: HTMLElement) => void; className?: string; role?: "menuitem"; onBeforeOpen?: () => void; children?: ReactNode }) {
+  return <button className={className} type="button" role={role} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onBeforeOpen?.(); onOpenRecipeSummary(meal.id, event.currentTarget); }}>{children ?? <><Utensils size={11} /> {meal.title}</>}</button>;
 }
 
 function RecipeSource({ meal }: { meal: Meal }) {
