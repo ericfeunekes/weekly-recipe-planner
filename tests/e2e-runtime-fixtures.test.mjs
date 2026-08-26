@@ -25,7 +25,7 @@ test("the E2E seed selector is closed before a runtime can start", () => {
   assert.throws(() => normalizeE2eFixture("zero-week"), /Unsupported E2E fixture/);
 });
 
-test("D7 is a valid initialized zero-week seed and D4 supplies its bulk-source grocery journey", () => {
+test("D7 is a valid initialized zero-week seed and D4 remains canonical", () => {
   const d7 = createE2eFixtureSeed("D7", context);
   assert.equal(validateHouseholdState(d7).ok, true);
   assert.deepEqual(d7, {
@@ -38,19 +38,4 @@ test("D7 is a valid initialized zero-week seed and D4 supplies its bulk-source g
   assert.equal(validateHouseholdState(d4).ok, true);
   assert.equal(d4.weeks.length, 1);
   assert.equal(typeof d4.activeWeekId, "string");
-  const groceries = d4.weeks[0].data.groceries.map((grocery) => {
-    const meal = d4.weeks[0].data.meals.find((candidate) => candidate.id === grocery.mealId);
-    const ingredient = meal?.ingredients.find((candidate) => candidate.id === grocery.ingredientId);
-    return { ingredient: ingredient?.ingredient, coverage: grocery.coverage };
-  });
-  assert.equal(groceries.length, 8);
-  assert.deepEqual(
-    groceries.filter(({ coverage }) => coverage === "shop").map(({ ingredient }) => ingredient).sort(),
-    ["boneless chicken thighs", "salmon", "white miso"],
-  );
-  assert.deepEqual(
-    groceries.filter(({ coverage }) => coverage === "farm_box").map(({ ingredient }) => ingredient),
-    ["red peppers"],
-  );
-  assert.equal(groceries.filter(({ coverage }) => coverage === "needs_source").length, 4);
 });

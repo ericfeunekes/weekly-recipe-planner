@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { createCanonicalSeed } from "../../lib/household-bootstrap.ts";
-import { householdDomain, validateHouseholdState } from "../../lib/household-domain.ts";
+import { validateHouseholdState } from "../../lib/household-domain.ts";
 import { createCoreIngredientCatalogue } from "../../lib/ingredient-catalogue.ts";
 import {
   createGlobalCodexIngressForTests,
@@ -29,7 +29,7 @@ export function normalizeE2eFixture(value = "D4") {
 
 export function createE2eFixtureSeed(fixture, context) {
   const selected = normalizeE2eFixture(fixture);
-  let state = selected === "D4"
+  const state = selected === "D4"
     ? createCanonicalSeed(context)
     : {
         householdTimeZone: "America/Halifax",
@@ -37,23 +37,6 @@ export function createE2eFixtureSeed(fixture, context) {
         weeks: [],
         ingredientCatalogue: createCoreIngredientCatalogue(),
       };
-  if (selected === "D4") {
-    const week = state.weeks.find((candidate) => candidate.id === state.activeWeekId);
-    const itemIds = week?.data.groceries.filter((grocery) => {
-      const meal = week.data.meals.find((candidate) => candidate.id === grocery.mealId);
-      const ingredient = meal?.ingredients.find((candidate) => candidate.id === grocery.ingredientId);
-      return ["boneless chicken thighs", "salmon", "white miso"].includes(ingredient?.ingredient ?? "");
-    }).map(({ id }) => id) ?? [];
-    if (!week || itemIds.length !== 3) throw new Error("D4 did not project the grocery rows required by its bulk-source journey.");
-    const classified = householdDomain.execute(state, {
-      type: "setGroceryItemsCoverage",
-      weekId: week.id,
-      itemIds,
-      coverage: "shop",
-    }, context);
-    if (!classified.ok) throw new Error(`Could not classify D4 grocery fixture rows: ${classified.message}`);
-    state = classified.state;
-  }
   const validation = validateHouseholdState(state);
   if (!validation.ok) {
     throw new Error(`E2E fixture ${selected} is invalid: ${JSON.stringify(validation.issues)}`);

@@ -555,8 +555,12 @@ test("grocery source filters and dinner links remain compact and actionable on p
 test("selected groceries move atomically without expanding the grocery list", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies populated grocery data.");
   await page.setViewportSize({ width: 390, height: 844 });
+  const openAllGroceries = async () => {
+    await openView(page, "Groceries");
+    await page.getByRole("radio", { name: "All", exact: true }).click();
+  };
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await expect(page.getByLabel("New grocery item", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Recipe for grocery", { exact: true })).toHaveCount(0);
 
@@ -575,10 +579,11 @@ test("selected groceries move atomically without expanding the grocery list", as
   const clickGroceryCard = (row: typeof chicken, modifiers?: Array<"Control" | "Meta" | "Shift">) =>
     row.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 }, modifiers });
   await chicken.getByLabel("Check Boneless chicken thighs").click();
-  await expect(chicken).toHaveCount(0);
+  await expect(chicken).toBeVisible();
+  await expect(chicken.getByLabel("Check Boneless chicken thighs")).toBeChecked();
   await expect(bulkActions).toHaveCount(0);
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await expect(bulkActions.getByText("1 item selected", { exact: true })).toBeVisible();
   await expect(chicken.locator("input[type=checkbox]")).toHaveCount(1);
@@ -595,7 +600,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await clickGroceryCard(salmon, ["Meta"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await clickGroceryCard(salmon, ["Control"]);
   await clickGroceryCard(whiteMiso, ["Control", "Shift"]);
@@ -603,7 +608,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await expect(salmon).toHaveClass(/selected/);
   await expect(whiteMiso).toHaveClass(/selected/);
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await clickGroceryCard(salmon, ["Meta"]);
   await clickGroceryCard(whiteMiso, ["Meta", "Shift"]);
@@ -611,7 +616,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await expect(salmon).toHaveClass(/selected/);
   await expect(whiteMiso).toHaveClass(/selected/);
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
