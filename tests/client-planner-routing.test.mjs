@@ -4,6 +4,7 @@ import test from "node:test";
 import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import {
   LAST_VALID_WEEK_STORAGE_KEY,
+  closeoutPath,
   groceriesPath,
   parsePlannerLocation,
   recipePath,
@@ -35,6 +36,18 @@ test("Week and Recipe locations preserve opaque meal identity", () => {
   assert.deepEqual(parsePlannerLocation(recipePath(week.id, second.id)), { kind: "recipe", weekId: week.id, mealId: second.id });
   assert.equal(resolvePlannerLocation(parsePlannerLocation(recipePath(week.id, second.id)), [week], week.id).mealId, second.id);
   assert.notEqual(second.id, first.id);
+});
+
+test("Closeout locations preserve the selected Week identity", () => {
+  const week = fixture();
+  assert.equal(closeoutPath(week.id), `/weeks/${week.id}/closeout`);
+  assert.deepEqual(parsePlannerLocation(closeoutPath(week.id)), { kind: "closeout", weekId: week.id });
+  const resolved = resolvePlannerLocation(parsePlannerLocation(closeoutPath(week.id)), [week], week.id);
+  assert.equal(resolved.kind, "closeout");
+  assert.equal(resolved.week.id, week.id);
+  const archived = structuredClone(week);
+  archived.status = "archived";
+  assert.equal(resolvePlannerLocation(parsePlannerLocation(closeoutPath(archived.id)), [archived], archived.id).kind, "closeout");
 });
 
 test("Groceries location preserves its selected Week, including archived records", () => {

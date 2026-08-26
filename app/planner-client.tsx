@@ -1,13 +1,11 @@
 "use client";
 
 import {
-  Archive,
   ArrowDown,
   ArrowUp,
   Bot,
   CalendarDays,
   Check,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Circle,
@@ -73,10 +71,11 @@ import {
   type InstructionInputEdit,
 } from "@/lib/ingredient-occurrence";
 import {
-  FEEDBACK_VALUES,
-  LEFTOVER_QUALITIES,
+  GROCERY_COVERAGES,
   MEAL_STATUSES,
   isPrepSessionCombinedStep,
+  type GroceryItem,
+  type GroceryCoverage,
   type InstructionStep,
   type IsoDate,
   type Meal,
@@ -124,15 +123,11 @@ import {
   validateStepDraft,
 } from "./planner-validation";
 import { deriveTimerDisplay } from "./timer-display";
-import {
-  composeCompositeDraft,
-  editCompositeDraft,
-  settleCompositeDraft,
-  type CompositeDraft,
-} from "./versioned-draft";
+import { PlannerVersionContext, useVersionedDraft } from "./versioned-draft";
 import { isoDateForTimeZone } from "./calendar-time";
 import {
   LAST_VALID_WEEK_STORAGE_KEY,
+  closeoutPath,
   groceriesPath,
   parsePlannerLocation,
   recipePath,
@@ -140,11 +135,13 @@ import {
   resolveRememberedWeekId,
   weekPath,
 } from "./planner-routing";
-import { GroceryView } from "@/components/planner-ui/grocery-view";
 import { CodexThreadRail } from "./codex-thread-rail";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
 import { RecipeIngredientList, RecipeInstructionContent } from "@/components/planner-ui/recipe-content";
 import { PrepView } from "@/components/planner-ui/prep-view";
+import { CloseoutView } from "@/components/planner-ui/closeout-view";
+import { GroceryView } from "@/components/planner-ui/grocery-view";
+import { SegmentedControl, type SegmentedOption } from "@/components/planner-ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -518,62 +515,6 @@ function mergeIdentityRows<Row extends object>(
 }
 
 const ServerOffsetContext = createContext(0);
-const PlannerVersionContext = createContext(0);
-
-function useVersionedDraft<T extends object = Record<never, never>>() {
-  const plannerVersion = useContext(PlannerVersionContext);
-  const versionRef = useRef<number | null>(null);
-  const editRevisionRef = useRef(0);
-  const compositeDraftRef = useRef<CompositeDraft<T> | null>(null);
-  const [compositeDraft, setCompositeDraft] = useState<CompositeDraft<T> | null>(null);
-  return {
-    versionRef,
-    begin() {
-      versionRef.current ??= plannerVersion;
-      editRevisionRef.current += 1;
-    },
-    edit<K extends keyof T>(canonical: T, field: K, value: T[K]) {
-      versionRef.current ??= plannerVersion;
-      editRevisionRef.current += 1;
-      const next = editCompositeDraft(compositeDraftRef.current, canonical, field, value);
-      compositeDraftRef.current = next;
-      setCompositeDraft(next);
-    },
-    compose(canonical: T, merge?: (canonical: T, draft: CompositeDraft<T>) => T): T {
-      return compositeDraft && merge
-        ? merge(canonical, compositeDraft)
-        : composeCompositeDraft(canonical, compositeDraft);
-    },
-    mutationOptions(onAccepted?: () => void): MutateOptions {
-      const submittedRevision = editRevisionRef.current;
-      const submittedCompositeDraft = compositeDraftRef.current;
-      return {
-        basePlannerVersion: versionRef.current ?? plannerVersion,
-        conflictStrategy: "recompose",
-        onAccepted(nextPlannerVersion) {
-          const settledCompositeDraft = settleCompositeDraft(
-            compositeDraftRef.current,
-            submittedCompositeDraft,
-          );
-          compositeDraftRef.current = settledCompositeDraft;
-          setCompositeDraft(settledCompositeDraft);
-          const hasNewerDraft = settledCompositeDraft !== null ||
-            (submittedCompositeDraft === null && editRevisionRef.current !== submittedRevision);
-          if (!hasNewerDraft) {
-            versionRef.current = null;
-            editRevisionRef.current = 0;
-            onAccepted?.();
-          } else {
-            versionRef.current = nextPlannerVersion;
-          }
-        },
-        onConflict(nextPlannerVersion) {
-          versionRef.current = nextPlannerVersion;
-        },
-      };
-    },
-  };
-}
 
 const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "week", label: "Week", icon: CalendarDays },
@@ -582,6 +523,12 @@ const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "closeout", label: "Close out", icon: ClipboardCheck },
 ];
 
+const GROCERY_SECTIONS: GroceryItem["section"][] = [
+  "Produce",
+  "Meat & seafood",
+  "Dairy",
+  "Pantry",
+];
 const MAX_STEP_INPUT_TEXT_LENGTH =
   MAX_STEP_INPUTS * (MAX_STEP_INPUT_AMOUNT_LENGTH + MAX_STEP_INPUT_INGREDIENT_LENGTH + 4);
 function formatCalendarDate(
@@ -674,55 +621,6 @@ function AuthorityNotice(props: {
         ) : null}
       </div>
     </div>
-  );
-}
-
-type SegmentedOption<T extends string> = {
-  value: T;
-  label: string;
-  ariaLabel?: string;
-};
-
-function SegmentedControl<T extends string>({
-  ariaLabel,
-  className = "",
-  disabled = false,
-  onChange,
-  options,
-  value,
-}: {
-  ariaLabel: string;
-  className?: string;
-  disabled?: boolean | ((option: T) => boolean);
-  onChange: (value: T) => void;
-  options: readonly SegmentedOption<T>[];
-  value: T | undefined;
-}) {
-  return (
-    <ToggleGroup
-      className={`segmented-control ${className}`.trim()}
-      type="single"
-      value={value}
-      onValueChange={(nextValue) => {
-        if (nextValue) onChange(nextValue as T);
-      }}
-      aria-label={ariaLabel}
-      variant="outline"
-      size="sm"
-      spacing={0}
-    >
-      {options.map((option) => {
-        const optionDisabled = typeof disabled === "function" ? disabled(option.value) : disabled;
-        return (
-          <ToggleGroupItem
-            key={option.value}
-            value={option.value}
-            aria-label={option.ariaLabel}
-            disabled={optionDisabled}
-          >{option.label}</ToggleGroupItem>
-        );
-      })}
-    </ToggleGroup>
   );
 }
 
@@ -859,10 +757,11 @@ const plannerIndexRoute = createRoute({ getParentRoute: () => plannerRootRoute, 
 const plannerWeekRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId" });
 const plannerRecipeRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/recipes/$mealId" });
 const plannerGroceriesRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/groceries" });
+const plannerCloseoutRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/closeout" });
 const plannerLegacyDayRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/day/$date" });
 function createPlannerRouter() {
   return createRouter({
-    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerGroceriesRoute, plannerLegacyDayRoute]),
+    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerGroceriesRoute, plannerCloseoutRoute, plannerLegacyDayRoute]),
     basepath: import.meta.env?.BASE_URL === "/" ? undefined : import.meta.env?.BASE_URL?.replace(/\/$/u, ""),
   });
 }
@@ -893,7 +792,7 @@ function PlannerAppContent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const routerNavigate = useNavigate();
   const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
-  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "legacy-day"
+  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "groceries" || location.kind === "closeout" || location.kind === "legacy-day"
     ? location.weekId
     : null;
   const queryClient = useQueryClient();
@@ -901,7 +800,7 @@ function PlannerAppContent() {
   const [initialError, setInitialError] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [clockNow, setClockNow] = useState(() => Date.now());
-  const [localView, setLocalView] = useState<PlannerView>("week");
+  const [view, setView] = useState<PlannerView>("week");
   const [legacyFocus, setLegacyFocus] = useState<{ weekId: WeekId; date: IsoDate } | null>(null);
   const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1095,14 +994,21 @@ function PlannerAppContent() {
   }, [syncPendingRetries]);
 
   const navigate = useCallback((nextView: PlannerView) => {
-    const current = workspaceRef.current;
-    const weekId = selectedWeekId ?? (current?.initialized ? current.state.activeWeekId ?? current.state.weeks.at(-1)?.id ?? null : null);
-    if (nextView === "groceries" && weekId) {
-      void routerNavigate({ to: groceriesPath(weekId) });
-    } else {
-      if (location.kind === "groceries" && weekId) void routerNavigate({ to: weekPath(weekId) });
-      setLocalView(nextView);
+    if ((nextView === "groceries" || nextView === "closeout") && selectedWeekId) {
+      setView("week");
+      if (nextView === "groceries") {
+        void routerNavigate({ to: groceriesPath(selectedWeekId) });
+        return;
+      }
+      void routerNavigate({ to: closeoutPath(selectedWeekId) });
+      return;
     }
+    if ((location.kind === "groceries" || location.kind === "closeout") && selectedWeekId) {
+      setView(nextView);
+      void routerNavigate({ to: weekPath(selectedWeekId) });
+      return;
+    }
+    setView(nextView);
     setTimersOpen(false);
     primaryWorkspaceRef.current?.scrollTo({ top: 0, behavior: "auto" });
     window.scrollTo({ top: 0, behavior: "auto" });
@@ -1613,7 +1519,6 @@ function PlannerAppContent() {
   const defaultWeekId = initialized.state.activeWeekId ?? initialized.state.weeks.at(-1)?.id ?? null;
   const resolvedLocation = resolvePlannerLocation(location, initialized.state.weeks, defaultWeekId);
   const week = resolvedLocation.week;
-  const view: PlannerView = resolvedLocation.kind === "groceries" ? "groceries" : localView;
   const now = clockNow + serverOffset;
   const today = isoDateForTimeZone(now, initialized.state.householdTimeZone);
   const activeTimers = week?.data.meals.flatMap((meal) =>
@@ -1640,7 +1545,8 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const heading = resolvedLocation.kind === "recipe" ? "Recipe" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
+  const currentView = resolvedLocation.kind === "groceries" || resolvedLocation.kind === "closeout" ? resolvedLocation.kind : view;
+  const heading = resolvedLocation.kind === "recipe" ? "Recipe" : currentView === "closeout" ? "Close out" : `${currentView[0].toUpperCase()}${currentView.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
     : routeNotice
@@ -1682,7 +1588,7 @@ function PlannerAppContent() {
                 onChange={(event) => {
                   setRouteNotice(null);
                   const nextWeekId = event.target.value as WeekId;
-                  void routerNavigate({ to: location.kind === "groceries" ? groceriesPath(nextWeekId) : weekPath(nextWeekId) });
+                  void routerNavigate({ to: resolvedLocation.kind === "groceries" ? groceriesPath(nextWeekId) : resolvedLocation.kind === "closeout" ? closeoutPath(nextWeekId) : weekPath(nextWeekId) });
                 }}
               >
                 {initialized.state.weeks.map((item) => (
@@ -1763,9 +1669,9 @@ function PlannerAppContent() {
             return (
               <button
                 key={item.id}
-                className={`nav-item ${view === item.id ? "active" : ""}`}
+                className={`nav-item ${currentView === item.id ? "active" : ""}`}
                 type="button"
-                aria-current={view === item.id ? "page" : undefined}
+                aria-current={currentView === item.id ? "page" : undefined}
                 onClick={() => navigate(item.id)}
               >
                 <Icon size={16} /> {item.label}
@@ -1847,6 +1753,10 @@ function PlannerAppContent() {
                     {...plannerAuthorityRecovery}
                     onClose={() => void routerNavigate({ to: weekPath(week.id) })}
                   />
+              ) : resolvedLocation.kind === "closeout" ? (
+                  <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} formatCalendarDate={formatCalendarDate} />
+                ) : resolvedLocation.kind === "groceries" ? (
+                  <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} onOpenRecipe={openRecipeSummary} />
                 ) : view === "week" ? (
                   <WeekView
                     week={week}
@@ -1873,17 +1783,7 @@ function PlannerAppContent() {
                     sendContextMessage={sendContextMessage}
                     onOpenRecipeSummary={openRecipeSummary}
                   />
-                ) : view === "groceries" ? (
-                  <GroceryView
-                    key={week.id}
-                    week={week}
-                    disabled={isReadOnly}
-                    mutate={mutate}
-                    onOpenRecipe={openRecipeSummary}
-                  />
-                ) : (
-                  <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} />
-              )}
+                ) : null}
             </section>
             {!mobile ? (
               <CodexThreadRail
@@ -1905,7 +1805,7 @@ function PlannerAppContent() {
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             return (
-              <button key={item.id} type="button" className={view === item.id ? "active" : ""} aria-current={view === item.id ? "page" : undefined} onClick={() => navigate(item.id)}>
+              <button key={item.id} type="button" className={currentView === item.id ? "active" : ""} aria-current={currentView === item.id ? "page" : undefined} onClick={() => navigate(item.id)}>
                 <Icon size={17} /><span>{item.label}</span>
               </button>
             );
@@ -2786,6 +2686,24 @@ function PrepSessionStepRow(props: {
   );
 }
 
+const GROCERY_SOURCE_LABELS = {
+  needs_source: "Needs source",
+  shop: "Shop",
+  farm_box: "Farm box",
+  on_hand: "On hand",
+} as const;
+
+type GroceryFilter = "to_buy" | "all" | GroceryCoverage | "done";
+
+const GROCERY_FILTERS: Array<{ value: GroceryFilter; label: string }> = [
+  { value: "to_buy", label: "To buy" },
+  { value: "all", label: "All" },
+  { value: "shop", label: "Shop" },
+  { value: "farm_box", label: "Farm box" },
+  { value: "on_hand", label: "On hand" },
+  { value: "done", label: "Done" },
+];
+
 function RecipeSummaryLink({
   meal,
   onOpenRecipeSummary,
@@ -2816,74 +2734,169 @@ function RecipeSummaryLink({
   );
 }
 
-function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  return (
-    <div className="leftover-feedback">
-      {week.data.leftovers.map((leftover) => {
-        return (
-          <div key={leftover.id}>
-            <span><strong>{leftover.label} · {leftover.portions} portions</strong><small>{leftover.state}{leftover.assignedDate ? ` for ${leftover.assignedDate}` : ""}</small></span>
-            <SegmentedControl
-              ariaLabel={`Quality for ${leftover.label} leftovers`}
-              disabled={disabled}
-              options={LEFTOVER_QUALITIES.map((quality) => ({ value: quality, label: quality, ariaLabel: `Rate ${leftover.label} leftovers ${quality}` }))}
-              value={leftover.quality}
-              onChange={(quality) => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}
-            />
-            {leftover.state === "assigned" ? <PlannerActionButton tone="secondary" type="button" aria-label={`Mark ${leftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</PlannerActionButton> : null}
-          </div>
-        );
-      })}
-      {!week.data.leftovers.length ? <p className="empty-copy">Cooking a meal with planned leftovers will add it here.</p> : null}
-    </div>
+function isGroceryRowControlTarget(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : null;
+  return Boolean(element?.closest("button, input, select, label, a, textarea, [data-grocery-row-control]"));
+}
+
+function LegacyGroceryView({
+  week,
+  disabled,
+  mutate,
+  onOpenRecipeSummary,
+}: {
+  week: WeekPlan;
+  disabled: boolean;
+  mutate: Mutate;
+  onOpenRecipeSummary: (mealId: string, trigger: HTMLElement) => void;
+}) {
+  const [filter, setFilter] = useState<GroceryFilter>("to_buy");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const [bulkCoverage, setBulkCoverage] = useState<GroceryCoverage | "">("");
+  const [moveNotice, setMoveNotice] = useState<{ coverage: GroceryCoverage; count: number } | null>(null);
+  const visible = week.data.groceries.filter((entry) => {
+    if (filter === "all") return true;
+    if (filter === "done") return entry.checked;
+    if (filter === "to_buy") return !entry.checked && entry.coverage === "shop";
+    if (filter === "shop") return entry.coverage === "shop";
+    return entry.coverage === filter;
+  });
+  const selectedGroceries = week.data.groceries.filter((entry) => selectedIds.has(entry.id));
+  const visibleIdsInDisplayOrder = GROCERY_SECTIONS.flatMap((group) =>
+    visible.filter((entry) => entry.section === group).map((entry) => entry.id),
   );
-}
-
-function MealFeedbackRow({ meal, week, disabled, mutate }: { meal: Meal; week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  return <div className="feedback-row">
-    <div><strong>{meal.title}</strong><small>{formatCalendarDate(meal.date, { weekday: "long" })} · {meal.status}</small></div>
-    <SegmentedControl ariaLabel={`Feedback for ${meal.title}`} className="feedback-control" disabled={disabled} options={FEEDBACK_VALUES.map((value) => ({ value, label: value, ariaLabel: `Rate ${meal.title} ${value}` }))} value={week.data.feedback[meal.id]} onChange={(value) => void mutate({ type: "captureFeedback", weekId: week.id, mealId: meal.id, value })} />
-  </div>;
-}
-
-function CloseoutView({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: Mutate }) {
-  const [lesson, setLesson] = useState(week.data.weekLesson);
-  const lessonDraft = useVersionedDraft();
-  const draftLesson = lessonDraft.versionRef.current === null
-    ? week.data.weekLesson
-    : lesson;
-  const feedbackMeals = week.data.meals.filter((meal) => meal.status === "cooked");
-  const feedbackComplete = feedbackMeals.filter((meal) => week.data.feedback[meal.id]).length;
-  const archivedFeedbackCount = week.data.meals.filter((meal) => week.data.feedback[meal.id]).length;
-  if (week.status === "archived") {
-    return (
-      <div className="lifecycle-surface current-archive">
-        <span className="archive-icon"><Archive size={24} /></span>
-        <p className="eyebrow">Read-only record</p><h2>Week archived</h2>
-        <div className="archive-stats"><span><strong>{week.data.meals.length}</strong> meals</span><span><strong>{archivedFeedbackCount}</strong> ratings</span><span><strong>{week.data.leftovers.length}</strong> leftovers</span></div>
-        {week.data.weekLesson ? <div className="lesson-band"><StickyNote size={16} /><span><strong>Planning lesson</strong><p>{week.data.weekLesson}</p></span></div> : null}
-      </div>
+  const allVisibleSelected = Boolean(visibleIdsInDisplayOrder.length) && visibleIdsInDisplayOrder.every((id) => selectedIds.has(id));
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setSelectionAnchorId(null);
+    setBulkCoverage("");
+  };
+  const toggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      clearSelection();
+      setSelectionMode(false);
+      return;
+    }
+    setSelectedIds(new Set(visibleIdsInDisplayOrder));
+    setSelectionAnchorId(visibleIdsInDisplayOrder[0] ?? null);
+    setSelectionMode(true);
+  };
+  const selectRow = (itemId: string, event: ReactMouseEvent<HTMLElement>, allowControlTarget = false) => {
+    if (disabled) return;
+    if (!allowControlTarget && isGroceryRowControlTarget(event.target)) return;
+    const additive = event.ctrlKey || event.metaKey;
+    const anchorIndex = selectionAnchorId ? visibleIdsInDisplayOrder.indexOf(selectionAnchorId) : -1;
+    const itemIndex = visibleIdsInDisplayOrder.indexOf(itemId);
+    if (event.shiftKey && anchorIndex >= 0 && itemIndex >= 0) {
+      const rangeIds = visibleIdsInDisplayOrder.slice(
+        Math.min(anchorIndex, itemIndex),
+        Math.max(anchorIndex, itemIndex) + 1,
+      );
+      setSelectedIds((current) => {
+        const next = additive ? new Set(current) : new Set<string>();
+        rangeIds.forEach((rangeId) => next.add(rangeId));
+        return next;
+      });
+      return;
+    }
+    setSelectedIds((current) => {
+      if (!additive) return new Set([itemId]);
+      const next = new Set(current);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+    setSelectionAnchorId(itemId);
+  };
+  const moveGroceriesToCoverage = (itemIds: string[], coverage: GroceryCoverage) => {
+    if (!itemIds.length) return;
+    void mutate(
+      {
+        type: "setGroceryItemsCoverage",
+        weekId: week.id,
+        itemIds,
+        coverage,
+      },
+      {
+        onAccepted: () => {
+          setMoveNotice({ coverage, count: itemIds.length });
+          clearSelection();
+        },
+      },
     );
-  }
+  };
+  const moveSelectedToCoverage = (coverage: GroceryCoverage) => {
+    const itemIds = selectedGroceries
+      .filter((entry) => entry.coverage !== coverage)
+      .map((entry) => entry.id);
+    moveGroceriesToCoverage(itemIds, coverage);
+  };
   return (
-    <div className="closeout-layout">
-      <div className="feedback-list">
-        <div className="surface-summary"><div><p className="eyebrow">Keep the useful signal</p><h2>Cooked meal feedback</h2></div><span className="summary-chip">{feedbackComplete}/{feedbackMeals.length} rated</span></div>
-        {feedbackMeals.map((meal) => <MealFeedbackRow key={meal.id} meal={meal} week={week} disabled={disabled} mutate={mutate} />)}
-        {!feedbackMeals.length ? <p className="empty-copy">Cook a meal first, then capture the signal worth carrying into the next plan.</p> : null}
+    <div className="grocery-layout">
+      <div className={`grocery-list ${selectionMode ? "selection-mode" : ""}`}>
+        <div className="surface-summary grocery-summary">
+          <div><p className="eyebrow">This week&apos;s dinners</p><h2>Shopping list</h2><p className="grocery-list-description">Check off what you have; each item keeps its recipe source for reference.</p></div>
+          <div className="grocery-summary-controls">
+            <SegmentedControl
+              ariaLabel="Grocery filter"
+              options={GROCERY_FILTERS}
+              value={filter}
+              onChange={(value) => { clearSelection(); setMoveNotice(null); setFilter(value); }}
+            />
+          </div>
+        </div>
+        <div className="grocery-list-selection-header">
+          <label className="grocery-select-all"><input type="checkbox" checked={allVisibleSelected} disabled={disabled || !visibleIdsInDisplayOrder.length} onChange={toggleSelectAllVisible} /> Select all</label>
+          {selectedGroceries.length ? <div className="grocery-selection-toolbar" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkCoverage} aria-label="Set selected grocery coverage" onChange={(event) => setBulkCoverage(event.target.value as GroceryCoverage | "")}><option value="">Set coverage…</option>{GROCERY_COVERAGES.map((coverage) => <option key={coverage} value={coverage}>{GROCERY_SOURCE_LABELS[coverage]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkCoverage || !selectedGroceries.some((entry) => entry.coverage !== bulkCoverage)} onClick={() => bulkCoverage && moveSelectedToCoverage(bulkCoverage)}>Set coverage</PlannerActionButton></div> : null}
+        </div>
+        {moveNotice ? <div className="grocery-move-notice" role="status" data-testid="grocery-move-notice">
+          <span>Set {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.coverage]}.</span>
+          <PlannerActionButton tone="quiet" type="button" onClick={() => { setFilter(moveNotice.coverage); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.coverage]}</PlannerActionButton>
+        </div> : null}
+        {GROCERY_SECTIONS.map((group) => {
+          const entries = visible.filter((entry) => entry.section === group);
+          if (!entries.length) return null;
+          return (
+            <section className="grocery-section" key={group}>
+              <h3>{group}<span>{entries.length}</span></h3>
+              {entries.map((entry) => {
+                const linkedMeal = week.data.meals.find((meal) => meal.id === entry.mealId);
+                const ingredient = linkedMeal?.ingredients.find((candidate) => candidate.id === entry.ingredientId);
+                if (!linkedMeal || !ingredient) return null;
+                const item = ingredient.ingredient;
+                const detail = ingredient.amount;
+                return (
+                  <div
+                    className={`grocery-row ${entry.checked ? "checked" : ""} ${selectedIds.has(entry.id) ? "selected" : ""}`}
+                    data-grocery-id={entry.id}
+                    key={entry.id}
+                    onMouseDown={(event) => {
+                      if (event.button !== 0) return;
+                      if (isGroceryRowControlTarget(event.target)) return;
+                      if (!selectionMode) setSelectionMode(true);
+                      selectRow(entry.id, event);
+                    }}
+                  >
+                    <label className="grocery-check" data-grocery-row-control onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+                      <input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} />
+                    </label>
+                    <div className="grocery-item-copy">
+                      <div className="grocery-primary-line">
+                        <div className="grocery-select-target"><strong>{item}</strong><span className="grocery-detail">{detail || "No amount noted"}</span></div>
+                        <span className="grocery-source-badge" title={`Coverage: ${GROCERY_SOURCE_LABELS[entry.coverage]}`}>{GROCERY_SOURCE_LABELS[entry.coverage]}</span>
+                      </div>
+                      <div className="grocery-recipe-links"><span>For</span><RecipeSummaryLink meal={linkedMeal} onOpenRecipeSummary={onOpenRecipeSummary} /></div>
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+          );
+        })}
+        {!visible.length ? <p className="empty-copy">No groceries match this filter.</p> : null}
       </div>
-      <aside className="closeout-notes">
-        <section className="closeout-note-section">
-          <span className="field-label">Leftovers</span>
-          <LeftoverControls week={week} disabled={disabled} mutate={mutate} />
-        </section>
-        <section className="closeout-note-section">
-          <label><span>What should next week remember?</span><textarea maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLesson} onChange={(event) => { lessonDraft.begin(); setLesson(event.target.value); }} placeholder="A short planning lesson" /><small className="field-limit">{draftLesson.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
-          <PlannerActionButton tone="secondary" type="button" disabled={disabled || draftLesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: draftLesson }, lessonDraft.mutationOptions())}><StickyNote size={15} /> Save lesson</PlannerActionButton>
-        </section>
-        <span className="closeout-check"><CheckCircle2 size={14} /> Archiving freezes this week as a read-only family record.</span>
-        <PlannerActionButton tone="primary" type="button" disabled={disabled || week.status !== "active"} onClick={() => void mutate({ type: "archiveWeek", weekId: week.id })}><Archive size={16} /> Archive active week</PlannerActionButton>
-      </aside>
     </div>
   );
 }
