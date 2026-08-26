@@ -25,6 +25,17 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await sunday.click();
   const existing = page.getByTestId("prep-session-step").first();
   await expect(existing).toContainText("Coat the chicken with harissa");
+  await existing.getByRole("button", { name: /Add Prep note/ }).click();
+  await existing.getByRole("textbox", { name: /Prep note or Codex request/ }).fill("Trim excess fat before coating.");
+  await existing.getByRole("button", { name: "Save Prep note" }).click();
+  await expect(existing).toContainText("Prep note");
+  await expect(existing).toContainText("Trim excess fat before coating.");
+  await existing.getByRole("button", { name: /More options for/ }).click();
+  await existing.getByRole("menuitem", { name: /Harissa chicken traybake/ }).click();
+  const summary = page.getByRole("dialog", { name: "Harissa chicken traybake" });
+  await expect(summary).toContainText("Prep note");
+  await expect(summary).toContainText("Trim excess fat before coating.");
+  await summary.getByRole("button", { name: "Close", exact: true }).last().click();
 
   await page.setViewportSize({ width: 320, height: 844 });
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();

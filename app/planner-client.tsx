@@ -2398,7 +2398,7 @@ function InstructionStepCommentComposer({
   const close = () => onClose();
   return <div className={className}>
     <textarea
-      aria-label={`Note or Codex request for ${controlTarget}`}
+      aria-label={`Prep note or Codex request for ${controlTarget}`}
       maxLength={MAX_COMMAND_TEXT_LENGTH}
       value={comment}
       disabled={disabled}
@@ -2406,7 +2406,7 @@ function InstructionStepCommentComposer({
         noteDraft.begin();
         setComment(event.target.value);
       }}
-      placeholder="What changed, or what should Codex help with?"
+      placeholder="Prep guidance, or what should Codex help with?"
     />
     {showLimit ? <small className="field-limit">{comment.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small> : null}
     <div className={actionsClassName}>
@@ -2419,14 +2419,14 @@ function InstructionStepCommentComposer({
           setComment("");
           close();
         }))}
-      >Clear comment</PlannerActionButton> : null}
+      >Clear Prep note</PlannerActionButton> : null}
       <PlannerActionButton
         tone="secondary"
         type="button"
         disabled={disabled || !comment.trim()}
-        aria-label={`Save comment for ${controlTarget}`}
+        aria-label={`Save Prep note for ${controlTarget}`}
         onClick={() => onUpdateStepNote(comment.trim(), noteDraft.mutationOptions(close))}
-      ><StickyNote size={14} /> Save comment</PlannerActionButton>
+      ><StickyNote size={14} /> Save Prep note</PlannerActionButton>
       <PlannerActionButton
         tone="primary"
         type="button"
@@ -2536,6 +2536,10 @@ function InstructionStepLine(props: {
           />
         </div>
       ) : null}
+      {step.note ? <div className={`mt-2 ${leading ? "ml-15 max-[840px]:ml-[68px]" : "ml-8"} grid gap-0.5 border-l-[3px] border-l-[color-mix(in_srgb,var(--green)_34%,var(--line))] pl-2.5`}>
+        <strong className="text-[10px] tracking-[0.04em] text-[var(--green-dark)] uppercase">Prep note</strong>
+        <p className="m-0 [overflow-wrap:anywhere] text-xs leading-[1.45]">{step.note}</p>
+      </div> : null}
       {children}
     </article>
   );
@@ -2632,8 +2636,8 @@ function StepCard(props: {
         {!archived ? <PlannerIconButton
           className={`instruction-comment-trigger ${step.note ? "has-note" : ""}`}
           type="button"
-          title={step.note ? "Edit step comment" : "Add step comment"}
-          aria-label={`${step.note ? "Edit" : "Add"} comment for ${controlTarget}`}
+          title={step.note ? "Edit Prep note" : "Add Prep note"}
+          aria-label={`${step.note ? "Edit" : "Add"} Prep note for ${controlTarget}`}
           aria-expanded={commentOpen}
           disabled={disabled}
           onClick={() => setCommentOpen((current) => !current)}
@@ -2757,7 +2761,7 @@ function PrepSessionStepRow(props: {
     <InstructionStepLine
       className={`prep-queue-step ${selected ? "selected" : ""} ${isDragging ? "dragging" : ""}`}
       dataTestId="prep-session-step"
-      mainClassName="prep-queue-main"
+      mainClassName="prep-queue-main max-[620px]:grid-cols-[44px_24px_minmax(0,1fr)_93px]!"
       step={step}
       meal={meal}
       stepNumber={stepNumber}
@@ -2796,7 +2800,15 @@ function PrepSessionStepRow(props: {
         onSelect(entry.id, event);
       }}
       leading={selected ? <span className="prep-drag-handle" aria-hidden="true" title={dragLabel}><GripVertical size={17} /></span> : <span className="prep-drag-spacer" aria-hidden="true" />}
-      trailing={<div className="prep-overflow">
+      trailing={<div className="prep-overflow relative z-10">
+        <PlannerIconButton
+          type="button"
+          title={step.note ? "Edit Prep note" : "Add Prep note"}
+          aria-label={`${step.note ? "Edit" : "Add"} Prep note for ${controlTarget}`}
+          aria-expanded={commentOpen}
+          disabled={rowDisabled}
+          onClick={openComment}
+        ><MessageSquareText size={15} /></PlannerIconButton>
         <PlannerIconButton
           className="prep-overflow-trigger"
           type="button"
@@ -2813,7 +2825,6 @@ function PrepSessionStepRow(props: {
             onBeforeOpen={() => setMenuOpen(false)}
             onOpenRecipeSummary={onOpenRecipeSummary}
           />
-          <button type="button" role="menuitem" disabled={rowDisabled} onClick={openComment}><MessageSquareText size={14} /> {step.note ? "Edit comment" : "Add comment"}</button>
           <button
             className="danger"
             type="button"
