@@ -33,6 +33,19 @@ async function openNative(page: Page) {
   await expect(page.getByRole("complementary", { name: "Codex task" }).getByText("Codex", { exact: true })).toBeVisible();
 }
 
+async function selectedThreadId(page: Page): Promise<string> {
+  await expect.poll(async () => {
+    const response = await page.request.get("/api/codex/threads");
+    if (!response.ok()) return null;
+    const payload = await response.json() as { selection: { threadId: string | null } };
+    return payload.selection.threadId;
+  }).not.toBeNull();
+  const response = await page.request.get("/api/codex/threads");
+  expect(response.ok()).toBe(true);
+  const payload = await response.json() as { selection: { threadId: string | null } };
+  return payload.selection.threadId!;
+}
+
 async function expectComposerActionTargets(rail: Locator) {
   const stop = rail.getByRole("button", { name: "Stop Codex" });
   const send = rail.getByRole("button", { name: "Send to Codex" });
@@ -435,6 +448,38 @@ test.describe("native Codex thread rail", () => {
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
+  });
+
+  test("an open mobile task transfers to the desktop rail without reopening after close", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    const setup = page.getByRole("heading", { name: "Set up this planner once" });
+    const planner = page.getByText("Family dinner planner");
+    await expect(setup.or(planner)).toBeVisible();
+    if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
+    await expect(planner).toBeVisible();
+
+    const trigger = page.getByRole("button", { name: "Open Codex" });
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Codex task" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Task history" }).click();
+    await dialog.getByRole("button", { name: "New task" }).click();
+    const threadId = await selectedThreadId(page);
+
+    await page.setViewportSize({ width: 1024, height: 844 });
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await expect(rail).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Codex task" })).toHaveCount(0);
+    await expect(rail).toHaveCount(1);
+    await expect.poll(() => selectedThreadId(page)).toBe(threadId);
+    await expect(rail.getByRole("textbox", { name: "Message Codex" })).not.toBeFocused();
+
+    await rail.getByRole("button", { name: "Close Codex" }).click();
+    await expect(rail).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("dialog", { name: "Codex task" })).toHaveCount(0);
+    await expect(trigger).toBeVisible();
   });
 
   test("ordinary desktop opening does not focus the composer", async ({ page }) => {
