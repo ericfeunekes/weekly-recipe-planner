@@ -208,11 +208,6 @@ async function sendCodexMessage(page: Page, message: string) {
   await page.getByRole("button", { name: "Send to Codex" }).click();
 }
 
-async function sendPreparedCodexDraft(page: Page, message: string) {
-  await expect(codexComposer(page)).toHaveValue(message);
-  await page.getByRole("button", { name: "Send to Codex" }).click();
-}
-
 async function selectedCodexThreadId(page: Page) {
   const response = await page.request.get("/api/codex/threads");
   expect(response.ok()).toBe(true);
@@ -590,12 +585,42 @@ test.describe.serial("family dinner authority", () => {
     await reloadedRice.getByRole("textbox", { name: /Prep note or Codex request for step .*Rinse the rice/ }).fill("Please complete this shared step.");
     await reloadedRice.getByRole("button", { name: "Ask Codex" }).click();
     await expect(reloadedRice.getByText("Prep note", { exact: true })).toHaveCount(0);
-    await sendPreparedCodexDraft(pageA, "Please complete this shared step.");
-    await expect(codexConversation(pageA).getByText("Please complete this shared step.", { exact: true })).toBeVisible();
+    const workspaceResponse = await pageA.request.get("/api/workspace");
+    expect(workspaceResponse.ok()).toBe(true);
+    const workspace = await workspaceResponse.json() as {
+      state: {
+        activeWeekId: string;
+        weeks: Array<{
+          id: string;
+          data: {
+            meals: Array<{
+              id: string;
+              title: string;
+              instructions: Array<{ id: string; instruction: string }>;
+            }>;
+          };
+        }>;
+      };
+    };
+    const activeWeek = workspace.state.weeks.find((week) => week.id === workspace.state.activeWeekId);
+    expect(activeWeek).toBeDefined();
+    const salmonMeal = activeWeek!.data.meals.find((meal) => meal.title === "Miso salmon rice bowls");
+    expect(salmonMeal).toBeDefined();
+    const riceStep = salmonMeal!.instructions.find((step) => step.instruction === "Rinse the rice and cook until tender.");
+    expect(riceStep).toBeDefined();
+    const sent = pageA.waitForRequest((request) =>
+      new URL(request.url()).pathname === "/api/codex/turns/send" && request.method() === "POST",
+    );
+    await pageA.getByRole("button", { name: "Send to Codex" }).click();
+    const expectedContextMessage =
+      `[Planner recipe context: weekId=${activeWeek!.id}; mealId=${salmonMeal!.id}; stepId=${riceStep!.id}]\n\nPlease complete this shared step.`;
+    const sentBody = (await sent).postDataJSON() as { message: string };
+    expect(sentBody.message).toBe(expectedContextMessage);
+    await expect(codexConversation(pageA).getByText(expectedContextMessage, { exact: true })).toBeVisible();
     await expect(codexConversation(pageA).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible();
     const sharedCodexThreadId = await selectedCodexThreadId(pageA);
     await expectSelectedCodexThread(pageB, sharedCodexThreadId);
-    await expect(pageB.getByText("Please complete this shared step.")).toBeVisible();
+    await expect(codexConversation(pageB).getByText(expectedContextMessage, { exact: true })).toBeVisible();
     await expect(codexConversation(pageB).getByText("I marked that shared recipe step complete.", { exact: true })).toBeVisible({ timeout: 8_000 });
     await expect(globalDraftB).toHaveValue("Keep this separate household draft.");
 
