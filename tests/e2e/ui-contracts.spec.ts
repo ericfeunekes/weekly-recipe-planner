@@ -561,8 +561,11 @@ test("selected groceries move atomically without expanding the grocery list", as
   await expect(page.getByLabel("Recipe for grocery", { exact: true })).toHaveCount(0);
 
   const chicken = page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i });
-  const salmon = page.locator(".grocery-row").filter({ hasText: /^salmon$/i });
+  const salmon = page.locator(".grocery-row").filter({ has: page.getByText("salmon", { exact: true }) });
   const whiteMiso = page.locator(".grocery-row").filter({ hasText: /white miso/i });
+  await expect(chicken).toBeVisible();
+  await expect(salmon).toBeVisible();
+  await expect(whiteMiso).toBeVisible();
   const selectedItemIds = await Promise.all([chicken, whiteMiso].map(async (row) => {
     const id = await row.getAttribute("data-grocery-id");
     expect(id).toBeTruthy();
@@ -612,24 +615,24 @@ test("selected groceries move atomically without expanding the grocery list", as
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
-  await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
-  const dropdownCommandBodies: Array<{ command?: { itemIds?: string[]; source?: string; type?: string } }> = [];
+  await bulkActions.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("on_hand");
+  const dropdownCommandBodies: Array<{ command?: { itemIds?: string[]; coverage?: string; type?: string } }> = [];
   const captureDropdownCommand = (request: Request) => {
     if (new URL(request.url()).pathname === "/api/commands" && request.method() === "POST") {
-      dropdownCommandBodies.push(request.postDataJSON() as { command?: { itemIds?: string[]; source?: string; type?: string } });
+      dropdownCommandBodies.push(request.postDataJSON() as { command?: { itemIds?: string[]; coverage?: string; type?: string } });
     }
   };
   page.on("request", captureDropdownCommand);
-  await bulkActions.getByRole("button", { name: "Move", exact: true }).click();
+  await bulkActions.getByRole("button", { name: "Set coverage", exact: true }).click();
   await expect.poll(() => dropdownCommandBodies.length).toBe(1);
   page.off("request", captureDropdownCommand);
   expect(dropdownCommandBodies).toHaveLength(1);
   expect(dropdownCommandBodies[0].command).toMatchObject({
-    type: "moveGroceryItemsToSource",
-    source: "on_hand",
+    type: "setGroceryItemsCoverage",
+    coverage: "on_hand",
   });
   expect([...dropdownCommandBodies[0].command!.itemIds!].sort()).toEqual([...selectedItemIds].sort());
-  await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 2 ingredients to On hand.");
+  await expect(page.getByTestId("grocery-move-notice")).toContainText("Set 2 ingredients to On hand.");
 
   await page.getByLabel("Grocery filter").getByRole("button", { name: "On hand", exact: true }).click();
   await expect(chicken).toBeVisible();
@@ -645,8 +648,8 @@ test("selected groceries move atomically without expanding the grocery list", as
   await chicken.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
   await whiteMiso.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 }, modifiers: ["Control"] });
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
-  await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
-  await bulkActions.getByRole("button", { name: "Move", exact: true }).click();
+  await bulkActions.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("farm_box");
+  await bulkActions.getByRole("button", { name: "Set coverage", exact: true }).click();
   await page.getByLabel("Grocery filter").getByRole("button", { name: "Farm box", exact: true }).click();
   await expect(page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i })).toBeVisible();
   await expect(page.locator(".grocery-row").filter({ hasText: /white miso/i })).toBeVisible();
