@@ -6,11 +6,14 @@ import {
   LAST_VALID_WEEK_STORAGE_KEY,
   closeoutPath,
   groceriesPath,
+  parseRememberedPlannerLocation,
   parsePlannerLocation,
+  plannerLocationPath,
   prepPath,
   recipePath,
+  rememberedPlannerLocation,
   resolvePlannerLocation,
-  resolveRememberedWeekId,
+  serializeRememberedPlannerLocation,
   weekPath,
 } from "../app/planner-routing.ts";
 
@@ -85,19 +88,26 @@ test("invalid and cross-week Recipe targets never select another meal", () => {
   assert.equal(resolvePlannerLocation(parsePlannerLocation(recipePath(archived.id, archived.data.meals[0].id)), [archived], archived.id).kind, "unavailable");
 });
 
-test("legacy Day resolves to Week context without selecting a meal", () => {
+test("only canonical selected-week paths parse, and retired Day URLs cannot fall back to Week", () => {
   const week = fixture();
-  const resolved = resolvePlannerLocation(parsePlannerLocation(`/weeks/${week.id}/day/${week.data.meals[0].date}`), [week], week.id);
-  assert.deepEqual(resolved.kind, "week");
-  assert.equal(resolved.legacyDate, week.data.meals[0].date);
-  assert.equal("mealId" in resolved, false);
+  const retiredDay = parsePlannerLocation(`/weeks/${week.id}/day/${week.data.meals[0].date}`);
+  assert.deepEqual(retiredDay, { kind: "retired-day" });
+  assert.deepEqual(resolvePlannerLocation(retiredDay, [week], week.id), {
+    kind: "unavailable",
+    week: null,
+    message: "Day is no longer a planner destination.",
+  });
 });
 
-test("root restoration uses only a current remembered Week", () => {
+test("root restoration remembers a validated canonical destination and migrates legacy Week values", () => {
   const week = fixture();
-  const alternate = structuredClone(week);
-  alternate.id = "2026-07-13";
+  const meal = week.data.meals[0];
+  const resolvedRecipe = resolvePlannerLocation(parsePlannerLocation(recipePath(week.id, meal.id)), [week], week.id);
+  const remembered = rememberedPlannerLocation(resolvedRecipe);
   assert.equal(LAST_VALID_WEEK_STORAGE_KEY, "weekly-recipe-planner.last-valid-week");
-  assert.equal(resolveRememberedWeekId([week, alternate], alternate.id, week.id), alternate.id);
-  assert.equal(resolveRememberedWeekId([week], alternate.id, week.id), week.id);
+  assert.deepEqual(remembered, { kind: "recipe", weekId: week.id, mealId: meal.id });
+  assert.equal(plannerLocationPath(remembered), recipePath(week.id, meal.id));
+  assert.deepEqual(parseRememberedPlannerLocation(serializeRememberedPlannerLocation(remembered)), remembered);
+  assert.deepEqual(parseRememberedPlannerLocation(week.id), { kind: "week", weekId: week.id });
+  assert.equal(parseRememberedPlannerLocation('{"kind":"recipe","weekId":"bad"}'), null);
 });

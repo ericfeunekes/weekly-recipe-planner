@@ -105,11 +105,16 @@ test("Prep is directly addressable and returns to its Week when leaving for a lo
   await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
 });
 
-test("root keeps a current remembered Week and unavailable Recipes return to that Week", async ({ page }) => {
+test("root restores the last valid canonical destination and unavailable Recipes return to its Week", async ({ page }) => {
   await resetPlanner(page);
-  await page.evaluate(() => window.localStorage.setItem("weekly-recipe-planner.last-valid-week", "2026-07-06"));
+  await page.getByRole("button", { name: "Prep", exact: true }).click();
   await page.goto("/");
-  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/prep$/);
+  await page.getByRole("button", { name: "Week", exact: true }).click();
+  const card = page.locator(".week-view .meal-card-primary").first();
+  await card.click();
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//);
   await page.goto("/weeks/2026-07-06/recipes/missing");
   await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
   await expect(page.getByText("That recipe is unavailable for this week.", { exact: true })).toBeVisible();
@@ -141,13 +146,11 @@ test("Closeout direct URLs survive reload and history while lesson drafts stay l
   await expect(page).toHaveURL("/weeks/2026-07-06");
 });
 
-test("legacy Day URL returns to Week without selecting a recipe", async ({ page }) => {
+test("retired Day URLs remain rejected instead of falling back into Week", async ({ page }) => {
   await resetPlanner(page);
   await page.goto("/weeks/2026-07-06/day/2026-07-09");
-  await expect(page).toHaveURL(/\/weeks\/2026-07-06$/);
-  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect.poll(() => page.locator(".day-column[tabindex='-1']").evaluate((column) => document.activeElement === column)).toBe(true);
+  await expect(page).toHaveURL("/weeks/2026-07-06/day/2026-07-09");
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toHaveCount(0);
 });
 
 test("Groceries direct URL, reload, and history retain the selected Week without routing local controls", async ({ page }) => {
@@ -222,6 +225,25 @@ test("switching Grocery weeks resets local filter and selection state", async ({
   await expect(page).toHaveURL("/weeks/2026-07-13/groceries");
   await expect(page.getByRole("radio", { name: "To buy", exact: true })).toBeChecked();
   await expect(page.getByTestId("grocery-selection-toolbar")).toHaveCount(0);
+});
+
+test("switching weeks from Recipe returns to target Week without selecting another meal", async ({ page }) => {
+  await resetPlanner(page);
+  const workspace = await (await page.request.get("/api/workspace")).json() as RouteFixture;
+  const fixture = structuredClone(workspace);
+  const source = fixture.state.weeks[0];
+  fixture.state.weeks.push({ ...structuredClone(source), id: "2026-07-13" });
+  await page.route("**/api/workspace", async (route) => route.fulfill({ json: fixture }));
+  await page.reload();
+  await page.locator(".week-view .meal-card-primary").first().click();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+  await page.getByRole("combobox", { name: "Selected week" }).selectOption("2026-07-13");
+  await expect(page).toHaveURL("/weeks/2026-07-13");
+  await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveURL("/weeks/2026-07-13");
 });
 
 test("D4 source links keep three same-date meal identities and Recipe context exact", async ({ page }) => {

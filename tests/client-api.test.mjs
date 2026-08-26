@@ -504,15 +504,15 @@ test("workspace export accepts the canonical export envelope", async () => {
   });
 });
 
-test("client authority source keeps browser writes to the validated Week preference", async () => {
+test("client authority source keeps browser writes to the validated destination preference", async () => {
   const [clientSource, prepSource] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
   ]);
   const source = `${clientSource}\n${prepSource}`;
   assert.match(source, /LAST_VALID_WEEK_STORAGE_KEY/);
-  assert.match(source, /localStorage\.setItem\(LAST_VALID_WEEK_STORAGE_KEY, resolved\.week\.id\)/);
-  assert.doesNotMatch(source, /localStorage\.setItem\((?!LAST_VALID_WEEK_STORAGE_KEY)/);
+  assert.match(source, /serializeRememberedPlannerLocation\(currentDestination\)/);
+  assert.match(source, /localStorage\.setItem\(\s*LAST_VALID_WEEK_STORAGE_KEY,/);
   assert.doesNotMatch(source, /planner-domain|planner-history|planner-persistence|buildChatPlannerState/);
   assert.match(source, /refetchInterval:\s*2_000/);
   assert.match(source, /refetchIntervalInBackground:\s*false/);
