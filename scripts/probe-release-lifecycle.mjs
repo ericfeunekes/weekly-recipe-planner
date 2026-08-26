@@ -269,15 +269,19 @@ async function runBrowserJourney(origin, evidenceDirectory, executablePath) {
     });
     // The native Codex event subscription is intentionally long-lived, so this
     // page never reaches Playwright's network-idle heuristic.
-    const response = await page.goto(`${origin}/recipe-planner/`, { waitUntil: "domcontentloaded" });
+    const workspaceResponse = await page.request.get(`${origin}/recipe-planner/api/workspace`);
+    assert.equal(workspaceResponse.status(), 200, "browser mounted workspace");
+    const workspace = await workspaceResponse.json();
+    const week = workspace.state.weeks.find((candidate) => candidate.id === workspace.state.activeWeekId) ?? workspace.state.weeks.at(-1);
+    const meal = week?.data.meals[0];
+    assert.ok(week && meal, "browser mounted dinner fixture");
+    const response = await page.goto(`${origin}/recipe-planner/weeks/${encodeURIComponent(week.id)}/recipes/${encodeURIComponent(meal.id)}`, { waitUntil: "domcontentloaded" });
     assert.equal(response?.status(), 200, "browser mounted planner page");
     assert.equal(await page.title(), "Weekly Recipe Planner");
     await page.getByText("Family dinner planner", { exact: true }).waitFor({ state: "visible" });
-    const recipe = page.locator(".week-view .meal-card-primary").first();
-    await recipe.waitFor({ state: "visible" });
-    await recipe.click();
     await page.getByRole("heading", { level: 1, name: "Recipe", exact: true }).waitFor({ state: "visible" });
-    await page.getByRole("dialog").waitFor({ state: "visible" });
+    await page.getByRole("region", { name: `${meal.title} recipe` }).waitFor({ state: "visible" });
+    assert.equal(await page.getByRole("dialog").count(), 0, "browser Recipe stays inline");
     assert.deepEqual({ consoleErrors, failedResponses }, { consoleErrors: [], failedResponses: [] }, "browser network and console errors");
     await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
     await page.screenshot({ path: join(evidenceDirectory, "mounted-dinner.png"), animations: "disabled" });

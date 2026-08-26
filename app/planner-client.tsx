@@ -899,13 +899,15 @@ function PlannerAppContent() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const routerNavigate = useNavigate();
   const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
+  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "legacy-day"
+    ? location.weekId
+    : null;
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("loading");
   const [initialError, setInitialError] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [view, setView] = useState<PlannerView>("week");
-  const [selectedWeekId, setSelectedWeekId] = useState<WeekId | null>(null);
   const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [timersOpen, setTimersOpen] = useState(false);
@@ -1175,10 +1177,7 @@ function PlannerAppContent() {
       authoritativeDefaultWeekId,
     );
     const resolved = resolvePlannerLocation(location, workspace.state.weeks, fallbackWeekId);
-    if (resolved.week) {
-      setSelectedWeekId(resolved.week.id);
-      window.localStorage.setItem(LAST_VALID_WEEK_STORAGE_KEY, resolved.week.id);
-    }
+    if (resolved.week) window.localStorage.setItem(LAST_VALID_WEEK_STORAGE_KEY, resolved.week.id);
     if (location.kind === "root" && resolved.week) {
       void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
       return;
@@ -1674,7 +1673,6 @@ function PlannerAppContent() {
               <select
                 value={week?.id ?? ""}
                 onChange={(event) => {
-                  setSelectedWeekId(event.target.value as WeekId);
                   void routerNavigate({ to: weekPath(event.target.value as WeekId) });
                 }}
               >
@@ -2007,8 +2005,10 @@ function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: 
   const [visibleDayCount, setVisibleDayCount] = useState<1 | 3 | 5 | 7>(7);
   const [windowStart, setWindowStart] = useState(0);
   const legacyDayRef = useRef<HTMLDivElement>(null);
-  const maxWindowStart = dates.length - visibleDayCount;
-  const visibleDates = dates.slice(windowStart, windowStart + visibleDayCount);
+  const displayedDayCount = legacyDate ? 7 : visibleDayCount;
+  const displayedWindowStart = legacyDate ? 0 : windowStart;
+  const maxWindowStart = dates.length - displayedDayCount;
+  const visibleDates = dates.slice(displayedWindowStart, displayedWindowStart + displayedDayCount);
 
   const changeVisibleDayCount = (nextCount: 1 | 3 | 5 | 7) => {
     setVisibleDayCount(nextCount);
@@ -2016,8 +2016,6 @@ function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: 
   };
   useEffect(() => {
     if (!legacyDate) return;
-    setVisibleDayCount(7);
-    setWindowStart(0);
     legacyDayRef.current?.focus();
   }, [legacyDate]);
 
@@ -2027,7 +2025,7 @@ function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: 
         <span className="week-view-toolbar-label">Show</span>
         <ToggleGroup
           type="single"
-          value={String(visibleDayCount)}
+          value={String(displayedDayCount)}
           onValueChange={(value) => {
             if (value === "1" || value === "3" || value === "5" || value === "7") changeVisibleDayCount(Number(value) as 1 | 3 | 5 | 7);
           }}
@@ -2038,12 +2036,12 @@ function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: 
         >
           {[1, 3, 5, 7].map((count) => <ToggleGroupItem key={count} value={String(count)} aria-label={`Show ${count} ${count === 1 ? "day" : "days"}`}>{count}</ToggleGroupItem>)}
         </ToggleGroup>
-        {visibleDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
-          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={windowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
-          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={windowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
+        {displayedDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={displayedWindowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={displayedWindowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
         </div> : null}
       </div>
-      <div className="week-grid" style={{ "--week-visible-days": visibleDayCount } as React.CSSProperties}>
+      <div className="week-grid" style={{ "--week-visible-days": displayedDayCount } as React.CSSProperties}>
         {visibleDates.map((date) => {
           return (
             <div key={date} ref={date === legacyDate ? legacyDayRef : undefined} tabIndex={date === legacyDate ? -1 : undefined} className={`day-column ${date === today ? "today" : ""}`}>
