@@ -482,6 +482,33 @@ test.describe("native Codex thread rail", () => {
     await expect(trigger).toBeVisible();
   });
 
+  test("an open desktop task transfers to the mobile modal without reopening after close", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 844 });
+    await openNative(page);
+
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await rail.getByRole("button", { name: "Task history" }).click();
+    await rail.getByRole("button", { name: "New task" }).click();
+    const threadId = await selectedThreadId(page);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const dialog = page.getByRole("dialog", { name: "Codex task" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveCount(1);
+    await expect(page.getByRole("complementary", { name: "Codex task" })).toHaveCount(1);
+    await expect(dialog.getByRole("complementary", { name: "Codex task" })).toHaveCount(1);
+    await expect.poll(() => selectedThreadId(page)).toBe(threadId);
+    await dialog.getByRole("button", { name: "Task history" }).click();
+    await expect(dialog.locator('button[aria-current="true"]')).toHaveAccessibleName(/^Open task:/);
+
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await page.setViewportSize({ width: 1024, height: 844 });
+    await expect(page.getByRole("complementary", { name: "Codex task" })).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("dialog", { name: "Codex task" })).toHaveCount(0);
+  });
+
   test("ordinary desktop opening does not focus the composer", async ({ page }) => {
     await openPreview(page, "/?codexPreview=1", false);
 
