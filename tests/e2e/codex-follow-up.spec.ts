@@ -422,13 +422,17 @@ test.describe("native Codex thread rail", () => {
     await trigger.click();
     const dialog = page.getByRole("dialog", { name: "Codex task" });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("textbox", { name: "Message Codex" })).toBeVisible();
+    const composer = dialog.getByRole("textbox", { name: "Message Codex" });
+    await expect(composer).toBeFocused();
     await expect(dialog.getByRole("button", { name: "Task history" })).toBeVisible();
     await expect(dialog.getByRole("radio")).toHaveCount(0);
     await expectComposerActionTargets(dialog);
 
+    await page.keyboard.press("Shift+Tab");
+    expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+
     await expect(dialog.getByRole("button", { name: "Close" })).toHaveCount(1);
-    await dialog.getByRole("button", { name: "Close" }).click();
+    await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
   });
