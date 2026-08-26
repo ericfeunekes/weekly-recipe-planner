@@ -1,6 +1,6 @@
 "use client";
 
-import { ShoppingBasket, Utensils } from "lucide-react";
+import { Utensils } from "lucide-react";
 import { useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import type { HouseholdCommand } from "@/lib/household-command-contract";
