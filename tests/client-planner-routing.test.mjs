@@ -4,6 +4,7 @@ import test from "node:test";
 import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
 import {
   LAST_VALID_WEEK_STORAGE_KEY,
+  groceriesPath,
   parsePlannerLocation,
   recipePath,
   resolvePlannerLocation,
@@ -34,6 +35,15 @@ test("Week and Recipe locations preserve opaque meal identity", () => {
   assert.deepEqual(parsePlannerLocation(recipePath(week.id, second.id)), { kind: "recipe", weekId: week.id, mealId: second.id });
   assert.equal(resolvePlannerLocation(parsePlannerLocation(recipePath(week.id, second.id)), [week], week.id).mealId, second.id);
   assert.notEqual(second.id, first.id);
+});
+
+test("Groceries location preserves its selected Week, including archived records", () => {
+  const week = fixture();
+  assert.equal(groceriesPath(week.id), `/weeks/${week.id}/groceries`);
+  assert.deepEqual(parsePlannerLocation(groceriesPath(week.id)), { kind: "groceries", weekId: week.id });
+  assert.deepEqual(resolvePlannerLocation(parsePlannerLocation(groceriesPath(week.id)), [week], week.id), { kind: "groceries", week });
+  const archived = { ...week, status: "archived" };
+  assert.equal(resolvePlannerLocation(parsePlannerLocation(groceriesPath(archived.id)), [archived], archived.id).kind, "groceries");
 });
 
 test("invalid and cross-week Recipe targets never select another meal", () => {
