@@ -64,12 +64,22 @@ export function RecipeIngredientList({
               onChange={(event) => onCheckedChange(groceryControlId, event.target.checked)}
             />
           ) : <Check size={13} />}
-          {ingredientOccurrenceDisplayText(item)}
+          <span className="min-w-0">
+            {"source" in item && typeof item.source === "string" && item.source ? <span className="block text-[11px] text-[var(--ink-soft)]">{item.source}</span> : null}
+            <span>{ingredientOccurrenceDisplayText({ ...item, source: null })}</span>
+          </span>
         </li>
         );
       })}
     </ul>
   );
+}
+
+/** Source provenance is informational; the dated meal snapshot remains editable. */
+export function RecipeProvenance({ meal }: { meal: { sourceRecipe?: { kind: string; identity: string; revision?: string } } }) {
+  if (!meal.sourceRecipe) return null;
+  const source = meal.sourceRecipe;
+  return <p className="recipe-source"><span>Editable meal copy</span><span>{source.kind === "canonical" && source.revision ? `${source.identity} · pinned ${source.revision.slice(0, 12)}` : source.identity}</span></p>;
 }
 
 /**

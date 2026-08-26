@@ -21,6 +21,7 @@ export type PrepIngredientOccurrence = {
   stepId: string;
   ingredientId: string;
   amount: string;
+  unit: string | null;
   ingredient: string;
 };
 
@@ -81,7 +82,7 @@ function aggregateOccurrences(occurrences: PrepIngredientOccurrence[]): PrepIngr
     else groups.set(key, [occurrence]);
   }
   return [...groups.entries()].map(([key, grouped]) => {
-    const quantity = sumIngredientQuantities(grouped.map((occurrence) => occurrence.amount));
+    const quantity = sumIngredientQuantities(grouped.map((occurrence) => [occurrence.amount, occurrence.unit].filter(Boolean).join(" ")));
     return {
       key: `literal:${key}`,
       ingredient: grouped[0].ingredient,
@@ -89,7 +90,7 @@ function aggregateOccurrences(occurrences: PrepIngredientOccurrence[]): PrepIngr
       quantity,
       display: quantity.ok
         ? `${quantity.display} ${grouped[0].ingredient}`
-        : grouped.map((occurrence) => [occurrence.amount, occurrence.ingredient].filter(Boolean).join(" ")).join("; "),
+        : grouped.map((occurrence) => [occurrence.amount, occurrence.unit, occurrence.ingredient].filter(Boolean).join(" ")).join("; "),
     };
   });
 }
@@ -128,6 +129,7 @@ function projectSources(week: WeekPlan | undefined, sources: readonly Source[]):
         stepId: source.stepId,
         ingredientId,
         amount: ingredient.amount,
+        unit: ingredient.unit,
         ingredient: ingredient.ingredient,
       };
       ingredients.push(occurrence);

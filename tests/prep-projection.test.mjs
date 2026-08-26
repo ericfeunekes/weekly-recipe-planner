@@ -72,6 +72,16 @@ test("combined Prep projection keeps differently named and unsupported literals 
   assert.equal(projection.aggregates[1].quantity.ok, false);
 });
 
+test("combined Prep projection preserves separately stored units", () => {
+  const workspace = state();
+  workspace.weeks[0].data.meals[0].ingredients[0] = {
+    ...workspace.weeks[0].data.meals[0].ingredients[0], amount: "680", unit: "g", ingredient: "salmon",
+  };
+  const projection = projectCombinedPrepEntry(workspace, combined({ sources: [{ stepId: "step-one", ingredientIds: ["rice-one"] }] }));
+  assert.equal(projection.aggregates[0].display, "680 g salmon");
+  assert.equal(projection.sources[0].ingredients[0].unit, "g");
+});
+
 test("combined Prep projection follows live literals and reports broken lineage explicitly", () => {
   const live = state();
   live.weeks[0].data.meals[0].ingredients[0].amount = "2 cups";

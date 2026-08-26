@@ -613,7 +613,7 @@ export function PrepView(props: PrepViewProps) {
                           {projection.sources.map((source) => {
                             const meal = week.data.meals.find((candidate) => candidate.id === source.mealId);
                             const dateLabel = meal ? formatCalendarDate(meal.date, { weekday: "short", month: "short", day: "numeric" }) : "Recipe";
-                            const contribution = source.ingredients.map((ingredient) => [ingredient.amount, ingredient.ingredient].filter(Boolean).join(" ")).join(", ");
+                            const contribution = source.ingredients.map((ingredient) => [ingredient.amount, ingredient.unit, ingredient.ingredient].filter(Boolean).join(" ")).join(", ");
                             return <div className="grid grid-cols-[minmax(0,250px)_minmax(180px,260px)] items-start gap-4 max-[840px]:grid-cols-1 max-[840px]:gap-0.5" key={source.stepId}><div className="grid min-w-0 gap-0.5"><strong className="text-xs leading-[1.35]">{dateLabel} · {source.mealTitle}</strong><span className="[overflow-wrap:anywhere] text-[11px] leading-[1.4] text-[var(--ink-soft)]">{source.instruction}</span></div>{contribution ? <span className="pt-px text-right text-[11px] leading-[1.4] text-[var(--ink-soft)] max-[840px]:text-left">contributes {contribution}</span> : null}</div>;
                           })}
                         </div>

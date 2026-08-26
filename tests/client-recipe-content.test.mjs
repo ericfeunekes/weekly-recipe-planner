@@ -17,12 +17,14 @@ test("recipe occurrence display preserves source or composes every structured li
 });
 
 test("Day, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
-  const [planner, recipeContent] = await Promise.all([
+  const [planner, recipeContent, authoring] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/planner-ui/ingredient-authoring.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(planner, /import \{ RecipeIngredientList, RecipeInstructionContent \} from "@\/components\/planner-ui\/recipe-content"/);
+  assert.match(planner, /RecipeIngredientList, RecipeInstructionContent, RecipeProvenance/);
+  assert.match(planner, /<IngredientAuthoring occurrences=\{draftOccurrences\}/);
   assert.match(planner, /function MealIngredientList\(/);
   assert.match(planner, /<MealIngredientList meal=\{meal\} week=\{week\} disabled=\{disabled\} mutate=\{mutate\}/);
   assert.match(planner, /<InstructionStepLine[\s\S]*?className="border-b border-border py-3/);
@@ -33,10 +35,15 @@ test("Day, Prep, and recipe summary share canonical recipe instruction and ingre
   assert.match(planner, /correlationId: createRequestId\(\)/);
   assert.match(planner, /type: "editMealRecipe",/);
   assert.match(planner, /removedOccurrenceIds:/);
-  assert.match(planner, /Remove ingredient \$\{index \+ 1\} and linked instruction inputs/);
   assert.match(planner, /type: "setGroceryItemChecked", weekId: week\.id, itemId: item\.id, checked/);
   assert.match(recipeContent, /export function RecipeIngredientList/);
   assert.match(recipeContent, /export function RecipeInstructionContent/);
+  assert.match(recipeContent, /export function RecipeProvenance/);
+  assert.match(recipeContent, /Editable meal copy/);
   assert.match(recipeContent, /occurrenceId/);
   assert.match(recipeContent, /<RecipeIngredientList items=\{step\.inputs\} variant="step"/);
+  assert.match(authoring, /export function IngredientAuthoring/);
+  assert.match(authoring, /occurrenceId/);
+  assert.match(authoring, /correlationId/);
+  assert.match(authoring, /Remove ingredient \$\{index \+ 1\} and linked instruction inputs/);
 });

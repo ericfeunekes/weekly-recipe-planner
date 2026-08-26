@@ -135,7 +135,8 @@ import { isoDateForTimeZone } from "./calendar-time";
 import { resolveDayDate } from "./day-selection";
 import { CodexThreadRail } from "./codex-thread-rail";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
-import { RecipeIngredientList, RecipeInstructionContent } from "@/components/planner-ui/recipe-content";
+import { RecipeIngredientList, RecipeInstructionContent, RecipeProvenance } from "@/components/planner-ui/recipe-content";
+import { IngredientAuthoring } from "@/components/planner-ui/ingredient-authoring";
 import { PrepView } from "@/components/planner-ui/prep-view";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -3145,6 +3146,7 @@ function RecipeSource({ meal }: { meal: Meal }) {
   if (meal.sourceRecipe.kind === "canonical") {
     return (
       <div>
+        <RecipeProvenance meal={meal} />
         <p className="recipe-source">
           <span>Canonical recipe</span>
           <span>{meal.sourceRecipe.identity} · pinned {meal.sourceRecipe.revision.slice(0, 12)}</span>
@@ -3506,31 +3508,8 @@ function MealDrawer(props: {
           <label><span>Venue</span><input aria-label="Venue" disabled={archived} maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => editRecipeField("venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
         </div>
         <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" disabled={archived} maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => editRecipeField("subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
-        <section className="full-field occurrence-editor" aria-labelledby="meal-ingredients-heading">
-          <div className="occurrence-editor-heading">
-            <span id="meal-ingredients-heading">Ingredients</span>
-            <small>Each row is one recipe occurrence. Editing a row keeps its identity; removing it also removes linked instruction inputs.</small>
-          </div>
-          <div className="occurrence-editor-rows" aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined}>
-            {draftOccurrences.map((occurrence, index) => (
-              <fieldset className="occurrence-editor-row" key={occurrence.kind === "retain" ? occurrence.occurrenceId : occurrence.correlationId}>
-                <legend className="sr-only">Ingredient {index + 1}</legend>
-                <label><span>Source</span><input aria-label={`Ingredient ${index + 1} source`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.source ?? ""} onChange={(event) => updateOccurrence(index, "source", event.target.value)} /></label>
-                <label><span>Amount</span><input aria-label={`Ingredient ${index + 1} amount`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.amount} onChange={(event) => updateOccurrence(index, "amount", event.target.value)} /></label>
-                <label><span>Unit</span><input aria-label={`Ingredient ${index + 1} unit`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.unit ?? ""} onChange={(event) => updateOccurrence(index, "unit", event.target.value)} /></label>
-                <label><span>Ingredient</span><input aria-label={`Ingredient ${index + 1} core`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.ingredient} onChange={(event) => updateOccurrence(index, "ingredient", event.target.value)} /></label>
-                <label><span>Qualifier</span><input aria-label={`Ingredient ${index + 1} qualifier`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.qualifier ?? ""} onChange={(event) => updateOccurrence(index, "qualifier", event.target.value)} /></label>
-                <PlannerIconButton type="button" title={`Move ingredient ${index + 1} up`} aria-label={`Move ingredient ${index + 1} up`} disabled={disabled || index === 0} onClick={() => moveOccurrence(index, index - 1)}><ArrowUp size={14} /></PlannerIconButton>
-                <PlannerIconButton type="button" title={`Move ingredient ${index + 1} down`} aria-label={`Move ingredient ${index + 1} down`} disabled={disabled || index === draftOccurrences.length - 1} onClick={() => moveOccurrence(index, index + 1)}><ArrowDown size={14} /></PlannerIconButton>
-                <PlannerIconButton type="button" title={`Duplicate ingredient ${index + 1}`} aria-label={`Duplicate ingredient ${index + 1} as a new occurrence`} disabled={disabled} onClick={() => copyOccurrence(index)}><Copy size={14} /></PlannerIconButton>
-                <PlannerIconButton type="button" title={`Split ingredient ${index + 1}`} aria-label={`Split ingredient ${index + 1}; this row keeps its identity`} disabled={disabled} onClick={() => copyOccurrence(index)}><Split size={14} /></PlannerIconButton>
-                <PlannerIconButton type="button" tone="attention" title={`Remove ingredient ${index + 1}`} aria-label={`Remove ingredient ${index + 1} and linked instruction inputs`} disabled={disabled} onClick={() => removeOccurrence(index)}><Trash2 size={14} /></PlannerIconButton>
-              </fieldset>
-            ))}
-          </div>
-          <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={addOccurrence}><Plus size={15} /> Add ingredient</PlannerActionButton>
-          <FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} />
-        </section>
+        <IngredientAuthoring occurrences={draftOccurrences} disabled={disabled} invalid={saveAttempted && Boolean(mealIssues.ingredients)} describedBy={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined} onChange={updateOccurrence} onMove={moveOccurrence} onCopy={copyOccurrence} onRemove={removeOccurrence} onAdd={addOccurrence} />
+        <FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} />
         <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" disabled={archived} rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => editRecipeField("notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
         <div className="field-grid">
           <label><span>Prep note</span><textarea aria-label="Prep note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => editRecipeField("prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>
