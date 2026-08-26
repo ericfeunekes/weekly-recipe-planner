@@ -480,7 +480,9 @@ test("recipe-derived groceries and read-only prep recipe summaries keep their ac
   await recipeMenuItem.click();
   await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
   const recipe = page.locator(".meal-drawer");
+  const longRecipeIngredient = recipe.locator(".ingredient-list > li > span > span:last-child").filter({ hasText: "900 g boneless chicken thighs" });
   await expect(recipe.getByRole("heading", { name: recipeName! })).toBeVisible();
+  await expect(longRecipeIngredient).toHaveText("900 g boneless chicken thighs");
   await expectNoHorizontalContentEscape(page, recipe);
   await page.getByTitle("Back to Week").click();
   await openView(page, "Prep");

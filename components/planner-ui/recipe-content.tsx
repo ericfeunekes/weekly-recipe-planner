@@ -67,7 +67,7 @@ export function RecipeIngredientList({
           ? ingredientId
           : null;
         return (
-        <li key={ingredientId ?? `${item.amount}-${item.ingredient}-${index}`}>
+        <li className="min-w-0" key={ingredientId ?? `${item.amount}-${item.ingredient}-${index}`}>
           {groceryControlId && onCheckedChange ? (
             <input
               className="mt-0.5 size-4 shrink-0 accent-[var(--green)]"
@@ -80,7 +80,7 @@ export function RecipeIngredientList({
           ) : <Check size={13} />}
           <span className="min-w-0">
             {"source" in item && typeof item.source === "string" && item.source ? <span className="block text-[11px] text-[var(--ink-soft)]">{item.source}</span> : null}
-            <span>{ingredientOccurrenceDisplayText({ ...item, source: null })}</span>
+            <span className="break-words">{ingredientOccurrenceDisplayText({ ...item, source: null })}</span>
           </span>
         </li>
         );
