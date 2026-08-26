@@ -655,10 +655,21 @@ function progressForWeek(week: WeekPlan): { complete: number; total: number } {
   return { complete: steps.filter((step) => step.complete).length, total: steps.length };
 }
 
-function useMobile(onLeaveMobile?: () => void): boolean {
+function useMobile({
+  onEnterMobile,
+  onLeaveMobile,
+}: {
+  onEnterMobile?: () => void;
+  onLeaveMobile?: () => void;
+} = {}): boolean {
   const [mobile, setMobile] = useState(false);
   const mobileRef = useRef(false);
+  const initializedRef = useRef(false);
+  const onEnterMobileRef = useRef(onEnterMobile);
   const onLeaveMobileRef = useRef(onLeaveMobile);
+  useEffect(() => {
+    onEnterMobileRef.current = onEnterMobile;
+  }, [onEnterMobile]);
   useEffect(() => {
     onLeaveMobileRef.current = onLeaveMobile;
   }, [onLeaveMobile]);
@@ -666,8 +677,12 @@ function useMobile(onLeaveMobile?: () => void): boolean {
     const media = window.matchMedia("(max-width: 840px)");
     const update = () => {
       const nextMobile = window.innerWidth <= 840;
-      if (mobileRef.current && !nextMobile) onLeaveMobileRef.current?.();
+      if (initializedRef.current) {
+        if (!mobileRef.current && nextMobile) onEnterMobileRef.current?.();
+        if (mobileRef.current && !nextMobile) onLeaveMobileRef.current?.();
+      }
       mobileRef.current = nextMobile;
+      initializedRef.current = true;
       setMobile(nextMobile);
     };
     update();
@@ -841,7 +856,15 @@ function PlannerAppContent() {
     setCodexCollapsed(false);
     setChatOpen(false);
   }, [chatOpen]);
-  const mobile = useMobile(transferMobileCodexToDesktop);
+  const transferDesktopCodexToMobile = useCallback(() => {
+    if (codexCollapsed) return;
+    setChatOpen(true);
+    setCodexCollapsed(true);
+  }, [codexCollapsed]);
+  const mobile = useMobile({
+    onEnterMobile: transferDesktopCodexToMobile,
+    onLeaveMobile: transferMobileCodexToDesktop,
+  });
   const etagRef = useRef<string | null>(null);
   const browserOfflineRef = useRef(false);
   const serverOffsetRef = useRef(0);
