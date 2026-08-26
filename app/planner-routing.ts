@@ -1,6 +1,8 @@
 import type { WeekId, WeekPlan } from "../lib/household-contract.ts";
 import { weekContainsDate } from "../lib/household-domain.ts";
 
+export const LAST_VALID_WEEK_STORAGE_KEY = "weekly-recipe-planner.last-valid-week";
+
 export type PlannerLocation =
   | { kind: "root" }
   | { kind: "week"; weekId: WeekId }
@@ -27,6 +29,16 @@ export function recipePath(weekId: WeekId, mealId: string): string {
   return `${weekPath(weekId)}/recipes/${encodeURIComponent(mealId)}`;
 }
 
+export function resolveRememberedWeekId(
+  weeks: readonly WeekPlan[],
+  rememberedWeekId: string | null,
+  authoritativeDefaultWeekId: WeekId | null,
+): WeekId | null {
+  return rememberedWeekId && weeks.some((week) => week.id === rememberedWeekId)
+    ? rememberedWeekId as WeekId
+    : authoritativeDefaultWeekId;
+}
+
 export type ResolvedPlannerLocation =
   | { kind: "week"; week: WeekPlan; legacyDate: string | null }
   | { kind: "recipe"; week: WeekPlan; mealId: string }
@@ -51,6 +63,9 @@ export function resolvePlannerLocation(
     return validDate
       ? { kind: "week", week, legacyDate: location.date }
       : { kind: "unavailable", week, message: "That legacy Day location is unavailable." };
+  }
+  if (week.status === "archived") {
+    return { kind: "unavailable", week, message: "That recipe is unavailable for this week." };
   }
   if (!week.data.meals.some((meal) => meal.id === location.mealId)) {
     return { kind: "unavailable", week, message: "That recipe is unavailable for this week." };

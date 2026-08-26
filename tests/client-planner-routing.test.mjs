@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCanonicalSeed } from "../lib/household-bootstrap.ts";
-import { parsePlannerLocation, recipePath, resolvePlannerLocation, weekPath } from "../app/planner-routing.ts";
+import {
+  LAST_VALID_WEEK_STORAGE_KEY,
+  parsePlannerLocation,
+  recipePath,
+  resolvePlannerLocation,
+  resolveRememberedWeekId,
+  weekPath,
+} from "../app/planner-routing.ts";
 
 function fixture() {
   let sequence = 0;
@@ -36,6 +43,9 @@ test("invalid and cross-week Recipe targets never select another meal", () => {
   assert.equal(missing.week?.id, week.id);
   const crossWeek = resolvePlannerLocation(parsePlannerLocation("/weeks/2026-07-13/recipes/meal-1"), [week], week.id);
   assert.equal(crossWeek.kind, "unavailable");
+  const archived = structuredClone(week);
+  archived.status = "archived";
+  assert.equal(resolvePlannerLocation(parsePlannerLocation(recipePath(archived.id, archived.data.meals[0].id)), [archived], archived.id).kind, "unavailable");
 });
 
 test("legacy Day resolves to Week context without selecting a meal", () => {
@@ -44,4 +54,13 @@ test("legacy Day resolves to Week context without selecting a meal", () => {
   assert.deepEqual(resolved.kind, "week");
   assert.equal(resolved.legacyDate, week.data.meals[0].date);
   assert.equal("mealId" in resolved, false);
+});
+
+test("root restoration uses only a current remembered Week", () => {
+  const week = fixture();
+  const alternate = structuredClone(week);
+  alternate.id = "2026-07-13";
+  assert.equal(LAST_VALID_WEEK_STORAGE_KEY, "weekly-recipe-planner.last-valid-week");
+  assert.equal(resolveRememberedWeekId([week, alternate], alternate.id, week.id), alternate.id);
+  assert.equal(resolveRememberedWeekId([week], alternate.id, week.id), week.id);
 });

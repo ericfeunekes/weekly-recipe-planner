@@ -96,7 +96,8 @@ test("keeps the locked product requirements represented in source", async () => 
     assert.match(planner, new RegExp(`label: "${view}"`));
   }
 
-  assert.doesNotMatch(planner, /localStorage\.setItem|executeDomainCommand|CODEX_BRIDGE_URL/);
+  assert.match(planner, /localStorage\.setItem\(LAST_VALID_WEEK_STORAGE_KEY, resolved\.week\.id\)/);
+  assert.doesNotMatch(planner, /localStorage\.setItem\((?!LAST_VALID_WEEK_STORAGE_KEY)|executeDomainCommand|CODEX_BRIDGE_URL/);
   assert.match(api, /PLANNER_API_ROUTES\.workspace\.path/);
   assert.match(api, /PLANNER_API_ROUTES\.commands\.path/);
   assert.doesNotMatch(api, /PLANNER_API_ROUTES\.chat(?:Submit|Retry)\.path/);

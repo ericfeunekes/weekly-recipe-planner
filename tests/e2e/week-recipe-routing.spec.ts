@@ -13,15 +13,16 @@ async function resetPlanner(page: Page) {
 
 test("Week opens the exact selected meal Recipe and preserves its URL through reload", async ({ page }) => {
   await resetPlanner(page);
-  const card = page.locator(".week-view .meal-card").first();
+  const card = page.locator(".week-view .meal-card:has(.meal-card-primary)").first();
   const title = await card.locator(".meal-title").innerText();
   await card.locator(".meal-card-primary").click();
   await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//);
   await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
-  await expect(page.getByRole("dialog", { name: title })).toBeVisible();
+  await expect(page.getByRole("region", { name: `${title} recipe` })).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.reload();
   await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//);
-  await expect(page.getByRole("dialog", { name: title })).toBeVisible();
+  await expect(page.getByRole("region", { name: `${title} recipe` })).toBeVisible();
 });
 
 test("legacy Day URL returns to Week without selecting a recipe", async ({ page }) => {

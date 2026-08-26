@@ -24,14 +24,16 @@ async function productionFiles(directory) {
   return files;
 }
 
-test("the browser has no shared-state authority or alternate chat transport", async () => {
+test("the browser has no shared-state authority beyond its validated Week preference", async () => {
   const [client, api] = await Promise.all([
     source("app/planner-client.tsx"),
     source("app/planner-api.ts"),
   ]);
   const browser = `${client}\n${api}`;
 
-  assert.doesNotMatch(browser, /localStorage\.setItem/);
+  assert.match(browser, /LAST_VALID_WEEK_STORAGE_KEY/);
+  assert.match(browser, /localStorage\.setItem\(LAST_VALID_WEEK_STORAGE_KEY, resolved\.week\.id\)/);
+  assert.doesNotMatch(browser, /localStorage\.setItem\((?!LAST_VALID_WEEK_STORAGE_KEY)/);
   assert.doesNotMatch(
     browser,
     /executeDomainCommand|buildChatPlannerState|planner-(?:domain|history|persistence|command-contract)/,
