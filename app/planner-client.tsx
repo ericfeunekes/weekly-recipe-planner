@@ -3432,7 +3432,7 @@ function MealDrawer(props: {
           </div>
           <div className="occurrence-editor-rows" aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined}>
             {draftOccurrences.map((occurrence, index) => (
-              <fieldset className="occurrence-editor-row" key={occurrence.kind === "retain" ? occurrence.occurrenceId : occurrence.correlationId}>
+              <fieldset className="occurrence-editor-row max-[720px]:!grid-cols-2 max-[720px]:[&>button]:!col-start-2 max-[720px]:[&>button]:!justify-self-end" key={occurrence.kind === "retain" ? occurrence.occurrenceId : occurrence.correlationId}>
                 <legend className="sr-only">Ingredient {index + 1}</legend>
                 <label><span>Source</span><input aria-label={`Ingredient ${index + 1} source`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.source ?? ""} onChange={(event) => updateOccurrence(index, "source", event.target.value)} /></label>
                 <label><span>Amount</span><input aria-label={`Ingredient ${index + 1} amount`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.amount} onChange={(event) => updateOccurrence(index, "amount", event.target.value)} /></label>

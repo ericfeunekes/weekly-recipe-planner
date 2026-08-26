@@ -454,10 +454,10 @@ test("grocery source filters and dinner links remain compact and actionable on p
   await page.getByRole("radio", { name: "Farm box", exact: true }).click();
   const returnedGroceryRow = page.locator(".grocery-row").filter({ hasText: /red peppers/i });
 
-  await returnedGroceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
-  await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
-  await page.getByRole("button", { name: "Move", exact: true }).click();
-  await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 1 ingredient to On hand.");
+  await returnedGroceryRow.locator(".grocery-select-target").click();
+  await page.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("on_hand");
+  await page.getByRole("button", { name: "Set coverage", exact: true }).click();
+  await expect(page.getByTestId("grocery-move-notice")).toContainText("Set 1 ingredient to On hand.");
   await page.getByLabel("Grocery filter").getByRole("radio", { name: "On hand", exact: true }).click();
   await expect(page.locator(".grocery-row").filter({ hasText: /red peppers/i })).toBeVisible();
   await assertAccessible(page, `${fixtureId}-grocery-source-provenance`, "mobile-390x844");
