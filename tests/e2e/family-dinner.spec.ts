@@ -839,7 +839,7 @@ test.describe.serial("family dinner authority", () => {
     );
     if (archivedWeekValue) await phoneWeekSelect.selectOption(archivedWeekValue);
     await phonePage.locator(".mobile-nav").getByRole("button", { name: "Prep" }).click();
-    await phonePage.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: /prep step on/ }).click();
+    await phonePage.getByRole("tablist", { name: "Prep dates" }).getByRole("tab", { name: "Open 1 prep step on Sun, Jul 5", exact: true }).click();
     const mobileOverflow = phonePage.getByTestId("prep-session-step").first().getByRole("button", { name: /More options for step / });
     await expect(mobileOverflow).toBeVisible();
     const mobileOverflowBox = await mobileOverflow.boundingBox();
