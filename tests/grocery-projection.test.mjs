@@ -37,3 +37,27 @@ test("shopping-relevant qualifiers remain separate even when the concept and uni
   assert.equal(groups.length, 2);
   assert.deepEqual(groups.map((group) => group.quantities[0].display), ["1 cup", "1 cup"]);
 });
+
+test("grocery projection totals only compatible children while retaining package, form, and unresolved literals", () => {
+  const state = week();
+  state.data.meals[0].ingredients.push(
+    ingredient("d", "2", "cup", "sliced"),
+    ingredient("e", "1", "package", "sliced"),
+  );
+  state.data.meals[1].ingredients.push(ingredient("f", "half", null, null, null));
+  state.data.groceries.push(
+    { id: "g-d", mealId: "meal-a", ingredientId: "d", section: "Produce", coverage: "shop", checked: false },
+    { id: "g-e", mealId: "meal-a", ingredientId: "e", section: "Produce", coverage: "shop", checked: false },
+    { id: "g-f", mealId: "meal-b", ingredientId: "f", section: "Pantry", coverage: "needs_source", checked: false },
+  );
+
+  const all = projectGroceryRequirements(state, catalogue, "all");
+  const produce = all.sections.find((section) => section.section === "Produce");
+  const sliced = produce.groups.find((group) => group.label === "Green onion");
+  assert.deepEqual(sliced.quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["3 cup", "1 package sliced green onion"]);
+  assert.deepEqual(sliced.children.map((child) => child.executionId), ["g-a", "g-d", "g-e"]);
+  const unclassified = all.sections.find((section) => section.section === "Pantry").groups[0];
+  assert.equal(unclassified.label, "Unclassified");
+  assert.deepEqual(unclassified.children.map((child) => child.executionId), ["g-c", "g-f"]);
+  assert.deepEqual(unclassified.quantities, []);
+});
