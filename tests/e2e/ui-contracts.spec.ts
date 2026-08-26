@@ -634,7 +634,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   expect([...dropdownCommandBodies[0].command!.itemIds!].sort()).toEqual([...selectedItemIds].sort());
   await expect(page.getByTestId("grocery-move-notice")).toContainText("Set 2 ingredients to On hand.");
 
-  await page.getByLabel("Grocery filter").getByRole("button", { name: "On hand", exact: true }).click();
+  await page.getByLabel("Grocery filter").getByRole("radio", { name: "On hand", exact: true }).click();
   await expect(chicken).toBeVisible();
   await expect(whiteMiso).toBeVisible();
   await expectNoHorizontalContentEscape(page, chicken);
@@ -650,7 +650,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
   await bulkActions.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("farm_box");
   await bulkActions.getByRole("button", { name: "Set coverage", exact: true }).click();
-  await page.getByLabel("Grocery filter").getByRole("button", { name: "Farm box", exact: true }).click();
+  await page.getByLabel("Grocery filter").getByRole("radio", { name: "Farm box", exact: true }).click();
   await expect(page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i })).toBeVisible();
   await expect(page.locator(".grocery-row").filter({ hasText: /white miso/i })).toBeVisible();
   await assertAccessible(page, `${fixtureId}-grocery-bulk-source-moves`, "mobile-390x844");
