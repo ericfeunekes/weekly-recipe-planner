@@ -2755,6 +2755,9 @@ function MealDrawer(props: {
     onReconnect,
   } = props;
   const archived = week.status === "archived";
+  const assignedLeftover = week.data.leftovers.find((leftover) =>
+    leftover.state === "assigned" && leftover.assignedMealId === meal.id
+  );
   const [retainedRecoveryCommand] = useState(recoveryCommand);
   const visibleRecoveryCommand = recoveryCommand ?? retainedRecoveryCommand;
   const [targetDate, setTargetDate] = useState<IsoDate>(meal.date);
@@ -3095,6 +3098,15 @@ function MealDrawer(props: {
         ) : null}
         {offline ? <OfflineAuthorityNotice onReconnect={onReconnect} /> : null}
         {week.status === "archived" ? <p className="inline-alert warning">Archived weeks are read-only.</p> : null}
+        {assignedLeftover ? <section className="rounded-md border border-[var(--color-border)] bg-[var(--blue-soft)] p-3" aria-label="Assigned leftovers">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="grid gap-0.5">
+              <strong>{assignedLeftover.portions} portion{assignedLeftover.portions === 1 ? "" : "s"} are assigned to this meal.</strong>
+              <small className="capitalize text-[var(--color-text-muted)]">{assignedLeftover.label} leftovers</small>
+            </span>
+            <PlannerActionButton tone="secondary" type="button" aria-label={`Mark ${assignedLeftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: assignedLeftover.id })}><Check size={15} /> Mark eaten</PlannerActionButton>
+          </div>
+        </section> : null}
         {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
         <RecipeSource meal={meal} />
         <div className="field-grid">
