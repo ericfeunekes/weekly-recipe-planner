@@ -38,9 +38,12 @@ import {
 
 export const PLANNER_TOOL_SCHEMA_VERSION = 1 as const;
 export const PLANNER_TOOL_NAMESPACE = "planner" as const;
-export const PLANNER_TOOL_NAMES = ["read", "preview", "apply", "importRecipe"] as const;
+export const PLANNER_TOOL_NAMES = ["read", "preview", "apply", "importRecipe", "importApprovedWeek"] as const;
 export const PLANNER_TOOL_CALL_LIMIT = 32;
 export const PLANNER_TOOL_ARGUMENT_BYTES_LIMIT = 65_536;
+// Maximum legal UTF-8 envelope (256 bounded three-byte Unicode identifiers and
+// paths) is 1,756,315 bytes; retain only fixed serialization headroom.
+export const PLANNER_APPROVED_WEEK_TOOL_ARGUMENT_BYTES_LIMIT = 1_758_000;
 export const PLANNER_TOOL_RESULT_BYTES_LIMIT = 131_072;
 export const PLANNER_TOOL_HISTORY_LIMIT = 20;
 export const PLANNER_TOOL_FIELD_ERROR_LIMIT = 20;
@@ -68,6 +71,12 @@ export type PlannerImportRecipeArguments = {
   weekId: string;
   mealId: string;
   recipePath: string;
+};
+export type PlannerImportApprovedWeekArguments = {
+  basePlannerVersion: number;
+  weekId: string;
+  targets: Array<{ mealId: string; recipePath: string; recipeRevision: string }>;
+  manualMealIds: string[];
 };
 
 export type ForegroundGrant = {
@@ -195,12 +204,19 @@ export type PlannerApplyData = {
 export type PlannerImportRecipeData = Omit<PlannerApplyData, "readback"> & {
   readback: Extract<PlannerReadProjection, { kind: "meal" }>;
 };
+export type PlannerImportApprovedWeekData = {
+  status: "accepted" | "replayed";
+  eventId: string;
+  weekId: string;
+  importedMealIds: string[];
+};
 
 export type PlannerToolDataByName = {
   read: PlannerReadProjection;
   preview: PlannerPreviewData;
   apply: PlannerApplyData;
   importRecipe: PlannerImportRecipeData;
+  importApprovedWeek: PlannerImportApprovedWeekData;
 };
 
 const readQuerySchema = {
@@ -405,6 +421,22 @@ export const PLANNER_DYNAMIC_TOOL_NAMESPACE = Object.freeze({
         },
       },
     }),
+    Object.freeze({
+      type: "function",
+      name: "importApprovedWeek",
+      description: "Atomically import every reviewed canonical recipe in an approved week. Map each selected existing meal ID to its root-relative recipe path and exact reviewed SHA-256 revision; list every deliberately manual unsourced meal ID. The accepted compact result is authoritative. Do not use preview, apply, repeated importRecipe calls, or a follow-up read.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["basePlannerVersion", "weekId", "targets", "manualMealIds"],
+        properties: {
+          basePlannerVersion: { type: "integer", minimum: 0 },
+          weekId: { type: "string", minLength: 1, maxLength: 200 },
+          targets: { type: "array", minItems: 1, maxItems: 256, items: { type: "object", additionalProperties: false, required: ["mealId", "recipePath", "recipeRevision"], properties: { mealId: { type: "string", minLength: 1, maxLength: 200 }, recipePath: { type: "string", minLength: 1, maxLength: 2048 }, recipeRevision: { type: "string", pattern: "^[0-9a-f]{64}$" } } } },
+          manualMealIds: { type: "array", maxItems: 256, items: { type: "string", minLength: 1, maxLength: 200 } },
+        },
+      },
+    }),
   ]),
 });
 
@@ -481,6 +513,22 @@ export function isPlannerImportRecipeArguments(
     isBoundedId(value.weekId) && isBoundedId(value.mealId) &&
     typeof value.recipePath === "string" && value.recipePath.length >= 1 &&
     value.recipePath.length <= 2_048 && !value.recipePath.includes("\0");
+}
+
+export function isPlannerImportApprovedWeekArguments(
+  value: unknown,
+): value is PlannerImportApprovedWeekArguments {
+  if (!isRecord(value) || !hasExactKeys(value, ["basePlannerVersion", "weekId", "targets", "manualMealIds"]) ||
+      !Number.isSafeInteger(value.basePlannerVersion) || Number(value.basePlannerVersion) < 0 ||
+      !isBoundedId(value.weekId) || !Array.isArray(value.targets) || value.targets.length < 1 || value.targets.length > 256 ||
+      !Array.isArray(value.manualMealIds) || value.manualMealIds.length > 256) return false;
+  const targets = value.targets;
+  if (!targets.every((target) => isRecord(target) && hasExactKeys(target, ["mealId", "recipePath", "recipeRevision"]) &&
+    isBoundedId(target.mealId) && typeof target.recipePath === "string" && target.recipePath.length > 0 && target.recipePath.length <= 2048 && !target.recipePath.includes("\0") &&
+    typeof target.recipeRevision === "string" && /^[0-9a-f]{64}$/u.test(target.recipeRevision))) return false;
+  if (!value.manualMealIds.every(isBoundedId)) return false;
+  const ids = [...targets.map((target) => target.mealId), ...value.manualMealIds];
+  return new Set(ids).size === ids.length && ids.length <= 256;
 }
 
 export function isHistoricalPlannerApplyArguments(
@@ -963,6 +1011,13 @@ export function isPlannerImportRecipeData(value: unknown): value is PlannerImpor
   return isPlannerApplyData(value) && value.readback.kind === "meal";
 }
 
+export function isPlannerImportApprovedWeekData(value: unknown): value is PlannerImportApprovedWeekData {
+  return isRecord(value) && hasExactKeys(value, ["status", "eventId", "weekId", "importedMealIds"]) &&
+    (value.status === "accepted" || value.status === "replayed") && isBoundedId(value.eventId) && isBoundedId(value.weekId) &&
+    Array.isArray(value.importedMealIds) && value.importedMealIds.length >= 1 && value.importedMealIds.length <= 256 &&
+    value.importedMealIds.every(isBoundedId) && new Set(value.importedMealIds).size === value.importedMealIds.length;
+}
+
 function isOccurrenceResolutions(value: unknown): boolean {
   return Array.isArray(value) && value.every((resolution) =>
     isRecord(resolution) && hasExactKeys(resolution, ["correlationId", "occurrenceId"]) &&
@@ -984,6 +1039,8 @@ export function isPlannerToolResultForTool<Tool extends PlannerToolName>(
       return isPlannerApplyData(value.data);
     case "importRecipe":
       return isPlannerImportRecipeData(value.data);
+    case "importApprovedWeek":
+      return isPlannerImportApprovedWeekData(value.data);
     default:
       return false;
   }

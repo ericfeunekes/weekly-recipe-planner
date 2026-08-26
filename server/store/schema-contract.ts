@@ -11,7 +11,7 @@ export type PlannerSchemaObject = Readonly<{
   name: string;
 }>;
 
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 export const PLANNER_SCHEMA_MIGRATIONS: readonly PlannerSchemaMigration[] = Object.freeze([
   { version: 1, path: fileURLToPath(new URL("migrations/001-initial.sql", import.meta.url)) },
@@ -73,6 +73,7 @@ export const PLANNER_SCHEMA_MIGRATIONS: readonly PlannerSchemaMigration[] = Obje
     version: 12,
     path: fileURLToPath(new URL("migrations/012-canonical-recipe-import-tool.sql", import.meta.url)),
   },
+  { version: 13, path: fileURLToPath(new URL("migrations/013-approved-week-import.sql", import.meta.url)) },
 ]);
 
 // This is the selected schema-v12 shape after every migration has run. Release

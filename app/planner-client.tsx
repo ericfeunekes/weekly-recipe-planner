@@ -2185,6 +2185,7 @@ function useTimerDisplay(step: InstructionStep) {
     step.timerStartedAt,
     now + serverOffset,
     step.timerPaused === true,
+    step.timerRemainingSeconds,
   );
 }
 
@@ -2274,7 +2275,7 @@ function EditablePrepTimer(props: {
 }) {
   const { step, display, disabled, controlTarget, onSetRemaining } = props;
   const currentParts = timerParts(display.remainingSeconds);
-  const timerKey = `${step.timerDurationSeconds ?? 0}:${step.timerStartedAt ?? "stopped"}:${step.timerPaused ? "paused" : "ready"}`;
+  const timerKey = `${step.timerDurationSeconds ?? 0}:${step.timerRemainingSeconds ?? "full"}:${step.timerStartedAt ?? "stopped"}:${step.timerPaused ? "paused" : "ready"}`;
   const [draft, setDraft] = useState<{
     minutes: string;
     seconds: string;

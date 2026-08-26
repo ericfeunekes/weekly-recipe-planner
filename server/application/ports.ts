@@ -18,6 +18,7 @@ import type {
 } from "../../lib/planner-chat-contract.ts";
 import type {
   ApplyPlannerOperationsRequest,
+  ApplyApprovedWeekImportRequest,
   ApplyPlannerOperationsResponse,
   HistoricalApplyPlannerOperationsRequest,
   PlannerMutationContext,
@@ -37,6 +38,11 @@ export interface PlannerMutationKernel<Transaction> {
   applyPlannerOperations(
     transaction: Transaction,
     request: ApplyPlannerOperationsRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse;
+  applyApprovedWeekImport(
+    transaction: Transaction,
+    request: ApplyApprovedWeekImportRequest,
     context: PlannerMutationContext,
   ): ApplyPlannerOperationsResponse;
   replayHistoricalPlannerOperations(

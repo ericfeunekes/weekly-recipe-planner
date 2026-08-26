@@ -536,8 +536,9 @@ export class PlannerApplicationServiceImpl
     transaction: SqliteTransaction,
     request: ApplyPlannerOperationsRequest,
     context: PlannerMutationContext,
+    operationLimit: number = 16,
   ): ApplyPlannerOperationsResponse {
-    if (!isApplyPlannerOperationsRequest(request)) {
+    if (!isApplyPlannerOperationsRequest(request, operationLimit)) {
       throw new PlannerServiceError(
         "INVALID_REQUEST",
         "Planner apply requires one to sixteen valid ordered operations.",
@@ -573,6 +574,7 @@ export class PlannerApplicationServiceImpl
 
     const workspace = this.store.readInitializedWorkspace(transaction);
     const now = context.now ?? this.clock.now();
+    const acceptedEventId = this.idFactory.createId("event");
     let decision: PlannerOperationsDecision | undefined;
     let httpStatus: number | undefined;
 
@@ -614,6 +616,7 @@ export class PlannerApplicationServiceImpl
           const result = this.domain.execute(candidate, request.operations[operationIndex].command, {
             now,
             createId: (prefix) => this.idFactory.createId(prefix),
+            cookingAnchor: { eventId: acceptedEventId, plannerVersion: workspace.plannerVersion + 1 },
           });
           if (!result.ok) {
             decision = {
@@ -655,7 +658,7 @@ export class PlannerApplicationServiceImpl
         }
         this.failureInjector.hit("after_workspace_update");
 
-        const eventId = this.idFactory.createId("event");
+        const eventId = acceptedEventId;
         const one = outcomes[0];
         const isBatch = request.operations.length > 1;
         this.store.insertPlannerEvent(
@@ -727,6 +730,18 @@ export class PlannerApplicationServiceImpl
       decision,
       workspace: this.store.readInitializedWorkspace(transaction),
     };
+  }
+
+  applyApprovedWeekImport(
+    transaction: SqliteTransaction,
+    request: import("../../lib/planner-operation-contract.ts").ApplyApprovedWeekImportRequest,
+    context: PlannerMutationContext,
+  ): ApplyPlannerOperationsResponse {
+    return this.applyPlannerOperations(transaction, {
+      requestId: request.requestId,
+      basePlannerVersion: request.basePlannerVersion,
+      operations: request.operations,
+    }, context, 256);
   }
 
   undoLatest(request: UndoLatestRequest): ApplyPlannerCommandResponse {

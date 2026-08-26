@@ -75,6 +75,7 @@ export type InstructionStep = {
   timerDurationSeconds?: number;
   timerStartedAt?: number;
   timerPaused?: boolean;
+  timerRemainingSeconds?: number;
   note?: string;
 };
 
@@ -86,6 +87,8 @@ export type Meal = {
   title: string;
   yieldText?: string;
   sourceRecipe?: SourceRecipe;
+  culinaryFrozen?: true;
+  cookedAnchor?: { eventId: string; plannerVersion: number };
   subtitle: string;
   venue: string;
   status: MealStatus;
