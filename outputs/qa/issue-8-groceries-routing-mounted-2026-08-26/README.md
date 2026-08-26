@@ -1,10 +1,14 @@
 # Mounted Groceries routing QA
 
-- Candidate: pending commit from this worktree
-- Origin: `http://issue-8-groceries-routing-delivery.issue-8-groceries-routing-qa.localhost:1355`
+- Candidate: `05a4e3dd3f0f43d3568ab6e474ca69b6425f8e33`
+- Origin: `http://issue-8-groceries-routing-delivery.weekly-recipe-planner-dev.localhost:1355`
 - Public base path: `/recipe-planner/`
-- Data: isolated QA SQLite database, initialized with **Start Fresh**
-- Browser: agent-browser on the mounted runtime
-- Checks: direct `/recipe-planner/weeks/2026-08-24/groceries` load rendered the selected Week's Shopping list; navigating to Week then browser Back restored that exact Groceries URL and view.
+- Data: isolated QA SQLite snapshot, initialized with **Start Fresh**.
+- Browser: headless Chromium `151.0.7922.174` on the mounted runtime.
+- Route checks: mounted health and base returned 200; unmounted root returned 404. Direct `/recipe-planner/weeks/2026-08-24/groceries`, reload, and navigation to Week then browser Back each retained the selected week's Groceries URL and heading. An unavailable Groceries week fell back to the selected Week.
+- Responsive checks: the direct Groceries route passed at desktop `1280x900` and phone `320x844`, with zero axe violations and no horizontal overflow.
+- Runtime checks: no browser console errors or failed HTTP responses were observed.
 
-`groceries-mounted.png` and `groceries-history.png` are the visible browser captures.
+`run-summary.json` is the concise result record. The paired `d8-*.axe.json`,
+`d8-*.geometry.json`, `d8-*.viewport.png`, and `d8-*.full.png` files are the
+visible, accessible-browser evidence. The disposable runtime was stopped after capture.

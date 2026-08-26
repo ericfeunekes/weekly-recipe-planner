@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "d8",
+  "viewportId": "desktop-1280x900",
+  "browserVersion": "149.0.7827.55",
+  "viewport": {
+    "width": 1280,
+    "height": 900
+  },
+  "document": {
+    "clientWidth": 1280,
+    "clientHeight": 900,
+    "scrollWidth": 1280,
+    "scrollHeight": 900
+  },
+  "horizontalOverflow": false,
+  "controls": [
+    {
+      "role": "select",
+      "name": "Aug 24 - Aug 30 · active",
+      "bounds": {
+        "x": 515,
+        "y": 14.5,
+        "width": 250,
+        "height": 48,
+        "right": 765,
+        "bottom": 62.5
+      }
+    },
+    {
+      "role": "button",
+      "name": "Change history",
+      "bounds": {
+        "x": 1153.609375,
+        "y": 16.5,
+        "width": 40,
+        "height": 44,
+        "right": 1193.609375,
+        "bottom": 60.5
+      }
+    },
+    {
+      "role": "button",
+      "name": "Active timers",
+      "bounds": {
+        "x": 1201.609375,
+        "y": 16.5,
+        "width": 40,
+        "height": 44,
+        "right": 1241.609375,
+        "bottom": 60.5
+      }
+    },
+    {
+      "role": "button",
+      "name": "Week",
+      "bounds": {
+        "x": 38.390625,
+        "y": 85,
+        "width": 84.984375,
+        "height": 44,
+        "right": 123.375,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "button",
+      "name": "Prep",
+      "bounds": {
+        "x": 127.375,
+        "y": 85,
+        "width": 79.625,
+        "height": 44,
+        "right": 207,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "button",
+      "name": "Groceries",
+      "bounds": {
+        "x": 211,
+        "y": 85,
+        "width": 111.640625,
+        "height": 44,
+        "right": 322.640625,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "button",
+      "name": "Close out",
+      "bounds": {
+        "x": 326.640625,
+        "y": 85,
+        "width": 110.015625,
+        "height": 44,
+        "right": 436.65625,
+        "bottom": 129
+      }
+    },
+    {
+      "role": "radio",
+      "name": "To buy",
+      "bounds": {
+        "x": 877.21875,
+        "y": 281.015625,
+        "width": 54.0625,
+        "height": 44,
+        "right": 931.28125,
+        "bottom": 325.015625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "All",
+      "bounds": {
+        "x": 934.28125,
+        "y": 281.015625,
+        "width": 33.34375,
+        "height": 44,
+        "right": 967.625,
+        "bottom": 325.015625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Shop",
+      "bounds": {
+        "x": 970.625,
+        "y": 281.015625,
+        "width": 45.96875,
+        "height": 44,
+        "right": 1016.59375,
+        "bottom": 325.015625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Farm box",
+      "bounds": {
+        "x": 1019.59375,
+        "y": 281.015625,
+        "width": 67.0625,
+        "height": 44,
+        "right": 1086.65625,
+        "bottom": 325.015625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "On hand",
+      "bounds": {
+        "x": 1089.65625,
+        "y": 281.015625,
+        "width": 63.734375,
+        "height": 44,
+        "right": 1153.390625,
+        "bottom": 325.015625
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Done",
+      "bounds": {
+        "x": 1156.390625,
+        "y": 281.015625,
+        "width": 46.21875,
+        "height": 44,
+        "right": 1202.609375,
+        "bottom": 325.015625
+      }
+    },
+    {
+      "role": "input",
+      "name": "",
+      "bounds": {
+        "x": 73.390625,
+        "y": 368.734375,
+        "width": 16,
+        "height": 16,
+        "right": 89.390625,
+        "bottom": 384.734375
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Codex",
+      "bounds": {
+        "x": 1244.8125,
+        "y": 137,
+        "width": 35.1875,
+        "height": 51.1875,
+        "right": 1280,
+        "bottom": 188.1875
+      }
+    }
+  ],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36"
+}

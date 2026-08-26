@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "d8",
+  "viewportId": "mobile-320x844",
+  "browserVersion": "149.0.7827.55",
+  "viewport": {
+    "width": 320,
+    "height": 844
+  },
+  "document": {
+    "clientWidth": 320,
+    "clientHeight": 844,
+    "scrollWidth": 320,
+    "scrollHeight": 844
+  },
+  "horizontalOverflow": false,
+  "controls": [
+    {
+      "role": "select",
+      "name": "Aug 24 - Aug 30 · active",
+      "bounds": {
+        "x": 64,
+        "y": 62,
+        "width": 192,
+        "height": 48,
+        "right": 256,
+        "bottom": 110
+      }
+    },
+    {
+      "role": "button",
+      "name": "Change history",
+      "bounds": {
+        "x": 182,
+        "y": 10,
+        "width": 40,
+        "height": 44,
+        "right": 222,
+        "bottom": 54
+      }
+    },
+    {
+      "role": "button",
+      "name": "Active timers",
+      "bounds": {
+        "x": 224,
+        "y": 10,
+        "width": 40,
+        "height": 44,
+        "right": 264,
+        "bottom": 54
+      }
+    },
+    {
+      "role": "button",
+      "name": "Open Codex",
+      "bounds": {
+        "x": 266,
+        "y": 10,
+        "width": 40,
+        "height": 44,
+        "right": 306,
+        "bottom": 54
+      }
+    },
+    {
+      "role": "radio",
+      "name": "To buy",
+      "bounds": {
+        "x": 37,
+        "y": 387.171875,
+        "width": 50.0625,
+        "height": 36,
+        "right": 87.0625,
+        "bottom": 423.171875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "All",
+      "bounds": {
+        "x": 90.0625,
+        "y": 387.171875,
+        "width": 29.34375,
+        "height": 36,
+        "right": 119.40625,
+        "bottom": 423.171875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Shop",
+      "bounds": {
+        "x": 122.40625,
+        "y": 387.171875,
+        "width": 41.96875,
+        "height": 36,
+        "right": 164.375,
+        "bottom": 423.171875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Farm box",
+      "bounds": {
+        "x": 167.375,
+        "y": 387.171875,
+        "width": 63.0625,
+        "height": 36,
+        "right": 230.4375,
+        "bottom": 423.171875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "On hand",
+      "bounds": {
+        "x": 37,
+        "y": 426.171875,
+        "width": 59.734375,
+        "height": 36,
+        "right": 96.734375,
+        "bottom": 462.171875
+      }
+    },
+    {
+      "role": "radio",
+      "name": "Done",
+      "bounds": {
+        "x": 99.734375,
+        "y": 426.171875,
+        "width": 42.21875,
+        "height": 36,
+        "right": 141.953125,
+        "bottom": 462.171875
+      }
+    },
+    {
+      "role": "input",
+      "name": "",
+      "bounds": {
+        "x": 33,
+        "y": 495.671875,
+        "width": 16,
+        "height": 16,
+        "right": 49,
+        "bottom": 511.671875
+      }
+    },
+    {
+      "role": "button",
+      "name": "Week",
+      "bounds": {
+        "x": 4,
+        "y": 789,
+        "width": 62.390625,
+        "height": 50,
+        "right": 66.390625,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "button",
+      "name": "Prep",
+      "bounds": {
+        "x": 66.390625,
+        "y": 789,
+        "width": 62.40625,
+        "height": 50,
+        "right": 128.796875,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "button",
+      "name": "Groceries",
+      "bounds": {
+        "x": 128.796875,
+        "y": 789,
+        "width": 62.390625,
+        "height": 50,
+        "right": 191.1875,
+        "bottom": 839
+      }
+    },
+    {
+      "role": "button",
+      "name": "Close out",
+      "bounds": {
+        "x": 191.1875,
+        "y": 789,
+        "width": 62.40625,
+        "height": 50,
+        "right": 253.59375,
+        "bottom": 839
+      }
+    }
+  ],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.7827.55 Safari/537.36"
+}
