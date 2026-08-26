@@ -1109,6 +1109,7 @@ function PlannerAppContent() {
 
   const openRecipe = useCallback((weekId: WeekId, mealId: string, trigger?: HTMLElement) => {
     if (trigger) mealTriggerRef.current = trigger;
+    setRouteNotice(null);
     setHistoryOpen(false);
     setTimersOpen(false);
     setChatOpen(false);
@@ -1191,7 +1192,6 @@ function PlannerAppContent() {
       if (resolved.week) void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
       return;
     }
-    setRouteNotice(null);
   }, [location, routerNavigate, workspace]);
 
   const clearLocalRecoveryAfterReadback = useCallback(async () => {
@@ -1673,6 +1673,7 @@ function PlannerAppContent() {
               <select
                 value={week?.id ?? ""}
                 onChange={(event) => {
+                  setRouteNotice(null);
                   void routerNavigate({ to: weekPath(event.target.value as WeekId) });
                 }}
               >
