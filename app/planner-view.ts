@@ -1,1 +1,1 @@
-export type PlannerView = "week" | "tonight" | "prep" | "groceries" | "closeout";
+export type PlannerView = "week" | "prep" | "groceries" | "closeout";

@@ -89,6 +89,7 @@ export type HouseholdCommandExecution =
 export type HouseholdCommandContext = {
   now: number;
   createId(prefix: string): string;
+  cookingAnchor?: { eventId: string; plannerVersion: number };
 };
 
 export interface HouseholdDomainPort {
@@ -227,7 +228,7 @@ function validateInstructionStep(
     value,
     path,
     ["id", "inputs", "instruction", "complete"],
-    ["timerDurationSeconds", "timerStartedAt", "timerPaused", "note"],
+    ["timerDurationSeconds", "timerStartedAt", "timerPaused", "timerRemainingSeconds", "note"],
   );
   if (!isId(value.id)) addIssue(issues, `${path}.id`, "Must be a nonempty bounded ID.");
   if (!Array.isArray(value.inputs) || value.inputs.length > MAX_STEP_INPUTS) {
@@ -271,6 +272,7 @@ function validateInstructionStep(
   if (value.timerPaused !== undefined && typeof value.timerPaused !== "boolean") {
     addIssue(issues, `${path}.timerPaused`, "Must be a Boolean.");
   }
+  if (value.timerRemainingSeconds !== undefined && (!Number.isSafeInteger(value.timerRemainingSeconds) || Number(value.timerRemainingSeconds) < 1 || Number(value.timerRemainingSeconds) > MAX_TIMER_DURATION_SECONDS)) addIssue(issues, `${path}.timerRemainingSeconds`, "Must be a bounded positive timer value.");
   if (value.timerPaused === true && value.timerDurationSeconds === undefined) {
     addIssue(issues, `${path}.timerPaused`, "A paused timer requires a duration.");
   }
@@ -318,7 +320,7 @@ function validateMeal(
       "ingredients",
       "instructions",
     ],
-    ["yieldText", "sourceRecipe", "slot"],
+    ["yieldText", "sourceRecipe", "slot", "culinaryFrozen", "cookedAnchor"],
   );
   if (!isId(value.id)) addIssue(issues, `${path}.id`, "Must be a nonempty bounded ID.");
   if (!isIsoDate(value.date)) {
@@ -333,6 +335,8 @@ function validateMeal(
   if (value.sourceRecipe !== undefined && !isSourceRecipe(value.sourceRecipe)) {
     addIssue(issues, `${path}.sourceRecipe`, "Must be a canonical informational source reference.");
   }
+  if (value.culinaryFrozen !== undefined && value.culinaryFrozen !== true) addIssue(issues, `${path}.culinaryFrozen`, "Must be true when present.");
+  if (value.cookedAnchor !== undefined && (!isRecord(value.cookedAnchor) || Object.keys(value.cookedAnchor).length !== 2 || !isId(value.cookedAnchor.eventId) || !Number.isSafeInteger(value.cookedAnchor.plannerVersion) || Number(value.cookedAnchor.plannerVersion) < 0)) addIssue(issues, `${path}.cookedAnchor`, "Must be a valid cooked event/version anchor.");
   if (!isText(value.subtitle, 1_000)) addIssue(issues, `${path}.subtitle`, "Must be at most 1,000 characters.");
   if (!isText(value.venue, 300, { nonempty: true })) addIssue(issues, `${path}.venue`, "Must be a nonempty venue up to 300 characters.");
   if (!MEAL_STATUSES.includes(value.status as (typeof MEAL_STATUSES)[number])) addIssue(issues, `${path}.status`, "Must be a supported meal status.");
@@ -1185,6 +1189,10 @@ function equalJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function isCulinaryFrozen(meal: Meal): boolean {
+  return meal.culinaryFrozen === true;
+}
+
 export type SourcedRecipeReplacementEligibility =
   | { ok: true }
   | { ok: false; message: string };
@@ -1262,6 +1270,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const meal = week.data.meals.find((candidate) => candidate.id === command.mealId);
       if (!meal) return failure(state, "Meal not found.");
+      if (isCulinaryFrozen(meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
       if (command.occurrence.kind !== "create") return failure(state, "A new ingredient requires a create occurrence input.");
       const occurrenceId = materializeId(context, "ingredient", allIngredientIds(next));
       if (!occurrenceId) return failure(state, "Could not materialize a unique ingredient occurrence ID.");
@@ -1311,6 +1320,7 @@ export function executeHouseholdCommand(
         } else {
           const meal = week?.data.meals.find((candidate) => candidate.id === entry.mealId);
           if (!meal) return failure(state, "Ingredient batch refers to a missing meal.");
+          if (isCulinaryFrozen(meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
           const occurrenceId = materializeId(context, "ingredient", allIngredientIds(next));
           if (!occurrenceId) return failure(state, "Could not materialize a unique ingredient occurrence ID.");
           occurrence = materializeOccurrence(entry.occurrence, occurrenceId);
@@ -1475,6 +1485,10 @@ export function executeHouseholdCommand(
       }
       const previous = meal.status;
       meal.status = command.status;
+      if (command.status === "cooked") {
+        meal.culinaryFrozen = true;
+        if (context.cookingAnchor !== undefined) meal.cookedAnchor = { ...context.cookingAnchor };
+      }
       const createdIds: Record<string, string> = {};
       const changes = [`Status: ${previous} to ${command.status}`];
       if (
@@ -1496,6 +1510,11 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const meal = week.data.meals.find((item) => item.id === command.mealId);
       if (!meal) return failure(state, "Meal not found.", { mealId: "Choose a meal in the selected week." });
+      if (isCulinaryFrozen(meal)) {
+        const unchangedRecipe = command.changes.title === meal.title && command.changes.yieldText === (meal.yieldText ?? null) &&
+          equalJson(command.occurrences, meal.ingredients.map((ingredient) => ({ kind: "retain", occurrenceId: ingredient.id, source: ingredient.source, amount: ingredient.amount, unit: ingredient.unit, ingredient: ingredient.ingredient, qualifier: ingredient.qualifier, conceptId: ingredient.conceptId }))) && command.removedOccurrenceIds.length === 0;
+        if (!unchangedRecipe) return failure(state, "Culinary fields are frozen after this meal was cooked.");
+      }
       const previous = {
         title: meal.title,
         subtitle: meal.subtitle,
@@ -1567,6 +1586,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const meal = week.data.meals.find((item) => item.id === command.mealId);
       if (!meal) return failure(state, "Meal not found.");
+      if (isCulinaryFrozen(meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
       const existingStepIds = new Set(
         week.data.meals.flatMap((item) => item.instructions.map((step) => step.id)),
       );
@@ -1634,6 +1654,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const meal = week.data.meals.find((item) => item.id === command.mealId);
       if (!meal) return failure(state, "Meal not found.", { mealId: "Choose a meal in the selected week." });
+      if (isCulinaryFrozen(meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
       if (meal.instructions.length >= MAX_STEPS_PER_MEAL || command.position > meal.instructions.length) return failure(state, "Instruction position is outside the recipe.", { position: "Choose an insertion position in the current recipe." });
       const stepIds = new Set(week.data.meals.flatMap((item) => item.instructions.map((step) => step.id)));
       const id = materializeId(context, "step", stepIds);
@@ -1666,6 +1687,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const resolved = findStep(week, command.stepId);
       if (!resolved) return failure(state, "Instruction step not found.", { stepId: "Choose a step in the selected week." });
+      if (isCulinaryFrozen(resolved.meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
       const previous = {
         inputs: resolved.step.inputs,
         instruction: resolved.step.instruction,
@@ -1684,6 +1706,7 @@ export function executeHouseholdCommand(
       if (durationChanged) {
         delete resolved.step.timerStartedAt;
         delete resolved.step.timerPaused;
+        delete resolved.step.timerRemainingSeconds;
       }
       const invalidatedPrepEntries = prepRelevantChanged
         ? invalidateCombinedPrepForStep(week, resolved.step.id)
@@ -1707,6 +1730,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const resolved = findStep(week, command.stepId);
       if (!resolved) return failure(state, "Instruction step not found.", { stepId: "Choose a step in the selected week." });
+      if (isCulinaryFrozen(resolved.meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
       if (command.targetPosition >= resolved.meal.instructions.length) return failure(state, "Instruction position is outside the recipe.", { targetPosition: "Choose a position in the current recipe." });
       if (command.targetPosition === resolved.stepIndex) return failure(state, "Instruction step is already in that position.");
       resolved.meal.instructions.splice(resolved.stepIndex, 1);
@@ -1718,6 +1742,7 @@ export function executeHouseholdCommand(
       if (!week) return rejectMissingWeek(state, command.weekId);
       const resolved = findStep(week, command.stepId);
       if (!resolved) return failure(state, "Instruction step not found.", { stepId: "Choose a step in the selected week." });
+      if (isCulinaryFrozen(resolved.meal)) return failure(state, "Culinary fields are frozen after this meal was cooked.");
       if (week.data.prepSessions.some((session) => sessionReferencesAnyStep(session, new Set([command.stepId])))) {
         return failure(state, "Remove this step from its prep dates before deleting it.", { stepId: "The step still has a prep-date reference." });
       }
@@ -1735,6 +1760,7 @@ export function executeHouseholdCommand(
       if (command.complete) {
         delete resolved.step.timerStartedAt;
         delete resolved.step.timerPaused;
+        delete resolved.step.timerRemainingSeconds;
       }
       return success(state, next, command.complete ? "Completed instruction step" : "Reopened instruction step", resolved.step.id, [`Complete: ${previous} to ${command.complete}`, command.complete ? "Running timer cleared" : "Timer remains stopped"]);
     }
@@ -1769,9 +1795,9 @@ export function executeHouseholdCommand(
       if (!resolved.step.timerDurationSeconds) return failure(state, "This instruction step has no timer duration.");
       if (resolved.step.timerStartedAt === undefined) return failure(state, "The instruction timer is not running.");
       const elapsed = Math.max(0, Math.floor((context.now - resolved.step.timerStartedAt) / 1_000));
-      const remainingSeconds = Math.max(0, resolved.step.timerDurationSeconds - elapsed);
+      const remainingSeconds = Math.max(0, (resolved.step.timerRemainingSeconds ?? resolved.step.timerDurationSeconds) - elapsed);
       if (remainingSeconds === 0) return failure(state, "The instruction timer has already elapsed. Reset it to run it again.");
-      resolved.step.timerDurationSeconds = remainingSeconds;
+      resolved.step.timerRemainingSeconds = remainingSeconds;
       delete resolved.step.timerStartedAt;
       resolved.step.timerPaused = true;
       return success(state, next, "Paused instruction timer", resolved.step.id, [`Remaining time: ${remainingSeconds}s`]);
@@ -1784,6 +1810,7 @@ export function executeHouseholdCommand(
       if (resolved.step.timerStartedAt === undefined && resolved.step.timerPaused !== true) return failure(state, "The instruction timer has not been started.");
       delete resolved.step.timerStartedAt;
       delete resolved.step.timerPaused;
+      delete resolved.step.timerRemainingSeconds;
       return success(state, next, "Reset instruction timer", resolved.step.id, ["Persisted timer start cleared"]);
     }
 
@@ -1796,11 +1823,11 @@ export function executeHouseholdCommand(
       const elapsed = resolved.step.timerStartedAt === undefined
         ? 0
         : Math.max(0, Math.floor((context.now - resolved.step.timerStartedAt) / 1_000));
-      const previousRemaining = Math.max(0, resolved.step.timerDurationSeconds - elapsed);
+      const previousRemaining = Math.max(0, (resolved.step.timerRemainingSeconds ?? resolved.step.timerDurationSeconds) - elapsed);
       if (previousRemaining === command.remainingSeconds) return failure(state, "Instruction timer time is unchanged.");
       const wasRunning = resolved.step.timerStartedAt !== undefined;
       const wasPaused = resolved.step.timerPaused === true;
-      resolved.step.timerDurationSeconds = command.remainingSeconds;
+      resolved.step.timerRemainingSeconds = command.remainingSeconds;
       if (wasRunning) {
         resolved.step.timerStartedAt = context.now;
         delete resolved.step.timerPaused;

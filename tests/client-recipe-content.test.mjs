@@ -25,16 +25,14 @@ test("instruction rendering keeps its exact use literal apart from occurrence me
   assert.doesNotMatch(recipeContent, /amountAlreadyIncludesUnit/);
 });
 
-test("Day, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
-  const [planner, recipeContent, authoring, prepView] = await Promise.all([
+test("Recipe, Prep, and recipe summary share canonical recipe instruction and ingredient renderers", async () => {
+  const [planner, recipeContent, prepView] = await Promise.all([
     readFile(new URL("../app/planner-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/recipe-content.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../components/planner-ui/ingredient-authoring.tsx", import.meta.url), "utf8"),
     readFile(new URL("../components/planner-ui/prep-view.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(planner, /RecipeIngredientList, RecipeInstructionContent, RecipeProvenance/);
-  assert.match(planner, /<IngredientAuthoring occurrences=\{draftOccurrences\}/);
   assert.match(planner, /function MealIngredientList\(/);
   assert.match(planner, /<MealIngredientList meal=\{meal\} week=\{week\} disabled=\{disabled\} mutate=\{mutate\}/);
   assert.match(planner, /<InstructionStepLine[\s\S]*?className="border-b border-border py-3/);
@@ -68,8 +66,4 @@ test("Day, Prep, and recipe summary share canonical recipe instruction and ingre
   assert.match(prepView, /RecipeIngredientList, RecipeProvenance/);
   assert.match(prepView, /<RecipeProvenance meal=\{meal\}/);
   assert.match(prepView, /<RecipeIngredientList items=\{source\.ingredients\} variant="step"/);
-  assert.match(authoring, /export function IngredientAuthoring/);
-  assert.match(authoring, /occurrenceId/);
-  assert.match(authoring, /correlationId/);
-  assert.match(authoring, /Remove ingredient \$\{index \+ 1\} and linked instruction inputs/);
 });

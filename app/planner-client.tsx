@@ -42,6 +42,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -50,6 +51,7 @@ import {
   type ReactNode,
 } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import { RouterProvider, createRootRoute, createRoute, createRouter, useNavigate, useRouterState } from "@tanstack/react-router";
 
 import {
   MAX_COMMAND_TEXT_LENGTH,
@@ -135,11 +137,17 @@ import {
   type CompositeDraft,
 } from "./versioned-draft";
 import { isoDateForTimeZone } from "./calendar-time";
-import { resolveDayDate } from "./day-selection";
+import {
+  LAST_VALID_WEEK_STORAGE_KEY,
+  parsePlannerLocation,
+  recipePath,
+  resolvePlannerLocation,
+  resolveRememberedWeekId,
+  weekPath,
+} from "./planner-routing";
 import { CodexThreadRail } from "./codex-thread-rail";
 import { PlannerActionButton, PlannerIconButton } from "@/components/planner-ui/action-button";
 import { RecipeIngredientList, RecipeInstructionContent, RecipeProvenance } from "@/components/planner-ui/recipe-content";
-import { IngredientAuthoring } from "@/components/planner-ui/ingredient-authoring";
 import { PrepView } from "@/components/planner-ui/prep-view";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -579,7 +587,6 @@ function useVersionedDraft<T extends object = Record<never, never>>() {
 
 const NAV_ITEMS: Array<{ id: PlannerView; label: string; icon: LucideIcon }> = [
   { id: "week", label: "Week", icon: CalendarDays },
-  { id: "tonight", label: "Day", icon: CookingPot },
   { id: "prep", label: "Prep", icon: ListChecks },
   { id: "groceries", label: "Groceries", icon: ShoppingBasket },
   { id: "closeout", label: "Close out", icon: ClipboardCheck },
@@ -863,6 +870,18 @@ function InitialLoading({ error, onRetry }: { error: string | null; onRetry: () 
   );
 }
 
+const plannerRootRoute = createRootRoute({ component: PlannerAppContent });
+const plannerIndexRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/" });
+const plannerWeekRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId" });
+const plannerRecipeRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/recipes/$mealId" });
+const plannerLegacyDayRoute = createRoute({ getParentRoute: () => plannerRootRoute, path: "/weeks/$weekId/day/$date" });
+function createPlannerRouter() {
+  return createRouter({
+    routeTree: plannerRootRoute.addChildren([plannerIndexRoute, plannerWeekRoute, plannerRecipeRoute, plannerLegacyDayRoute]),
+    basepath: import.meta.env?.BASE_URL === "/" ? undefined : import.meta.env?.BASE_URL?.replace(/\/$/u, ""),
+  });
+}
+
 export default function PlannerApp() {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
@@ -872,19 +891,33 @@ export default function PlannerApp() {
       },
     },
   }));
-  return <QueryClientProvider client={queryClient}><PlannerAppContent /></QueryClientProvider>;
+  const [mounted, setMounted] = useState(false);
+  // Vinext renders this client surface on the server; Router needs browser history.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return <InitialLoading error={null} onRetry={() => {}} />;
+  return <QueryClientProvider client={queryClient}><PlannerRouterMount /></QueryClientProvider>;
+}
+
+function PlannerRouterMount() {
+  const [router] = useState(createPlannerRouter);
+  return <RouterProvider router={router} />;
 }
 
 function PlannerAppContent() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const routerNavigate = useNavigate();
+  const location = useMemo(() => parsePlannerLocation(pathname), [pathname]);
+  const selectedWeekId = location.kind === "week" || location.kind === "recipe" || location.kind === "legacy-day"
+    ? location.weekId
+    : null;
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("loading");
   const [initialError, setInitialError] = useState<string | null>(null);
   const [serverOffset, setServerOffset] = useState(0);
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [view, setView] = useState<PlannerView>("week");
-  const [selectedWeekId, setSelectedWeekId] = useState<WeekId | null>(null);
-  const [selectedDayDate, setSelectedDayDate] = useState<IsoDate | null>(null);
-  const [selectedMealId, setSelectedMealId] = useState<string | null>(null);
+  const [legacyFocus, setLegacyFocus] = useState<{ weekId: WeekId; date: IsoDate } | null>(null);
   const [recipeSummaryMealId, setRecipeSummaryMealId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [timersOpen, setTimersOpen] = useState(false);
@@ -895,6 +928,7 @@ function PlannerAppContent() {
   const [plannerPending, setPlannerPending] = useState(false);
   const [ingredientReviewSeed, setIngredientReviewSeed] = useState<IngredientReviewSeed | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [pendingRetries, setPendingRetries] = useState<PendingAuthorityRetry[]>([]);
   const [journalError, setJournalError] = useState<string | null>(null);
   const [journalRecoveryPending, setJournalRecoveryPending] = useState(false);
@@ -982,8 +1016,7 @@ function PlannerAppContent() {
         retry.kind === "planner" && retry.request.command.type === "editMealRecipe"
       );
       if (pendingMeal?.kind === "planner" && pendingMeal.request.command.type === "editMealRecipe") {
-        setSelectedWeekId(pendingMeal.request.command.weekId);
-        setSelectedMealId(pendingMeal.request.command.mealId);
+        void routerNavigate({ to: recipePath(pendingMeal.request.command.weekId, pendingMeal.request.command.mealId) });
       }
     } catch (error) {
       const message = errorMessage(error);
@@ -992,7 +1025,7 @@ function PlannerAppContent() {
       setJournalError(message);
       setNotice({ tone: "error", message });
     }
-  }, []);
+  }, [routerNavigate]);
 
   const setPendingRetry = useCallback((retry: unknown) => {
     if (retry !== null && typeof retry === "object" && "kind" in retry && "request" in retry) {
@@ -1052,14 +1085,6 @@ function PlannerAppContent() {
 
   const plannerRetry = pendingRetries.find((retry) => pendingRetryChannel(retry) === "planner") ?? null;
   const pendingRetry = plannerRetry;
-  const selectedMealAvailable = Boolean(
-    selectedMealId &&
-    workspace?.initialized &&
-    (
-      workspace.state.weeks.find((item) => item.id === selectedWeekId) ??
-      workspace.state.weeks.at(-1)
-    )?.data.meals.some((meal) => meal.id === selectedMealId),
-  );
   const recipeSummaryMealAvailable = Boolean(
     recipeSummaryMealId &&
     workspace?.initialized &&
@@ -1070,8 +1095,6 @@ function PlannerAppContent() {
   );
   const activeOverlay = recipeSummaryMealAvailable
     ? "recipe-summary"
-    : selectedMealAvailable
-    ? "meal"
     : historyOpen && workspace?.initialized
       ? "history"
       : mobile && chatOpen && workspace?.initialized
@@ -1095,10 +1118,16 @@ function PlannerAppContent() {
     window.requestAnimationFrame(() => headingRef.current?.focus());
   }, []);
 
-  const openDay = useCallback((date: IsoDate) => {
-    setSelectedDayDate(date);
-    navigate("tonight");
-  }, [navigate]);
+  const openRecipe = useCallback((weekId: WeekId, mealId: string, trigger?: HTMLElement) => {
+    if (trigger) mealTriggerRef.current = trigger;
+    setLegacyFocus(null);
+    setRouteNotice(null);
+    setHistoryOpen(false);
+    setTimersOpen(false);
+    setChatOpen(false);
+    setRecipeSummaryMealId(null);
+    void routerNavigate({ to: recipePath(weekId, mealId) });
+  }, [routerNavigate]);
 
   const acceptWorkspace = useCallback((incoming: WorkspaceResponse) => {
     const current = workspaceRef.current;
@@ -1150,19 +1179,35 @@ function PlannerAppContent() {
   }, [workspaceQuery.data]);
 
   useEffect(() => {
-    if (!workspace?.initialized) return;
-    setSelectedWeekId((selected) => {
-      if (selected && workspace.state.weeks.some((week) => week.id === selected)) return selected;
-      const now = Date.now() + serverOffsetRef.current;
-      const today = isoDateForTimeZone(now, workspace.state.householdTimeZone);
-      return (
-        workspace.state.activeWeekId ??
-        workspace.state.weeks.find((week) => weekContainsDate(week.id, today))?.id ??
-        workspace.state.weeks.at(-1)?.id ??
-        null
-      );
-    });
-  }, [workspace]);
+    if (!workspace?.initialized || connection !== "online") return;
+    const today = isoDateForTimeZone(Date.now() + serverOffsetRef.current, workspace.state.householdTimeZone);
+    const authoritativeDefaultWeekId = workspace.state.activeWeekId ??
+      workspace.state.weeks.find((week) => weekContainsDate(week.id, today))?.id ??
+      workspace.state.weeks.at(-1)?.id ?? null;
+    const fallbackWeekId = resolveRememberedWeekId(
+      workspace.state.weeks,
+      window.localStorage.getItem(LAST_VALID_WEEK_STORAGE_KEY),
+      authoritativeDefaultWeekId,
+    );
+    const resolved = resolvePlannerLocation(location, workspace.state.weeks, fallbackWeekId);
+    if (resolved.week) window.localStorage.setItem(LAST_VALID_WEEK_STORAGE_KEY, resolved.week.id);
+    if (location.kind === "root" && resolved.week) {
+      void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
+      return;
+    }
+    if (location.kind === "legacy-day" && resolved.kind === "week") {
+      setLegacyFocus({ weekId: resolved.week.id, date: resolved.legacyDate as IsoDate });
+      const frame = window.requestAnimationFrame(() => {
+        void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (resolved.kind === "unavailable") {
+      setRouteNotice(resolved.message);
+      if (resolved.week) void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
+      return;
+    }
+  }, [connection, location, routerNavigate, workspace]);
 
   const clearLocalRecoveryAfterReadback = useCallback(async () => {
     if (!journalError || journalRecoveryPending) return;
@@ -1210,22 +1255,18 @@ function PlannerAppContent() {
   }, [activeOverlay]);
 
   const openMeal = useCallback((mealId: string, trigger: HTMLElement) => {
-    mealTriggerRef.current = trigger;
-    setHistoryOpen(false);
-    setTimersOpen(false);
-    setChatOpen(false);
-    setRecipeSummaryMealId(null);
-    setSelectedMealId(mealId);
-  }, []);
+    const week = workspaceRef.current?.initialized
+      ? workspaceRef.current.state.weeks.find((candidate) => candidate.id === selectedWeekId) ?? null
+      : null;
+    if (week) openRecipe(week.id, mealId, trigger);
+  }, [openRecipe, selectedWeekId]);
 
   const openRecipeSummary = useCallback((mealId: string, trigger: HTMLElement) => {
-    mealTriggerRef.current = trigger;
-    setHistoryOpen(false);
-    setTimersOpen(false);
-    setChatOpen(false);
-    setSelectedMealId(null);
-    setRecipeSummaryMealId(mealId);
-  }, []);
+    const week = workspaceRef.current?.initialized
+      ? workspaceRef.current.state.weeks.find((candidate) => candidate.id === selectedWeekId) ?? null
+      : null;
+    if (week) openRecipe(week.id, mealId, trigger);
+  }, [openRecipe, selectedWeekId]);
 
   const executeBootstrap = useCallback(async (request: BootstrapWorkspaceRequest) => {
     if (plannerMutationInFlight.current) return;
@@ -1598,19 +1639,19 @@ function PlannerAppContent() {
   }
 
   const initialized = workspace;
-  const week =
-    initialized.state.weeks.find((item) => item.id === selectedWeekId) ??
-    initialized.state.weeks.at(-1) ??
-    null;
+  const defaultWeekId = initialized.state.activeWeekId ?? initialized.state.weeks.at(-1)?.id ?? null;
+  const resolvedLocation = resolvePlannerLocation(location, initialized.state.weeks, defaultWeekId);
+  const week = resolvedLocation.week;
   const now = clockNow + serverOffset;
   const today = isoDateForTimeZone(now, initialized.state.householdTimeZone);
-  const dayDate = resolveDayDate(week?.id ?? null, today, selectedDayDate);
   const activeTimers = week?.data.meals.flatMap((meal) =>
     meal.instructions
       .filter((step) => step.timerDurationSeconds !== undefined && step.timerStartedAt !== undefined)
       .map((step) => ({ meal, step })),
   ) ?? [];
-  const selectedMeal = week?.data.meals.find((meal) => meal.id === selectedMealId) ?? null;
+  const selectedMeal = resolvedLocation.kind === "recipe"
+    ? resolvedLocation.week.data.meals.find((meal) => meal.id === resolvedLocation.mealId) ?? null
+    : null;
   const recipeSummaryMeal = week?.data.meals.find((meal) => meal.id === recipeSummaryMealId) ?? null;
   const recoveryDraftCommand = plannerRetry?.kind === "planner" &&
       (isMealRecipeRecoveryCommand(plannerRetry.operation.editableDraft) ||
@@ -1627,10 +1668,12 @@ function PlannerAppContent() {
     : null;
   const isReadOnly = connection !== "online" || plannerPending || Boolean(plannerRetry) || week?.status === "archived";
   const progress = week ? progressForWeek(week) : { complete: 0, total: 0 };
-  const heading = view === "tonight" ? "Day" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
+  const heading = resolvedLocation.kind === "recipe" ? "Recipe" : view === "closeout" ? "Close out" : `${view[0].toUpperCase()}${view.slice(1)}`;
   const authorityNotice: Notice = pendingRetry
     ? { tone: pendingRetry.tone, message: pendingRetry.message }
-    : notice;
+    : routeNotice
+      ? { tone: "warning", message: routeNotice }
+      : notice;
   const plannerAuthorityRecovery: AuthorityRecoveryProps = {
     notice: plannerRetry ? { tone: plannerRetry.tone, message: plannerRetry.message } : notice,
     pendingRetryLabel: plannerRetry?.label,
@@ -1646,7 +1689,7 @@ function PlannerAppContent() {
   return (
     <PlannerVersionContext.Provider value={initialized.plannerVersion}>
       <ServerOffsetContext.Provider value={serverOffset}>
-      <div className="app-shell">
+      <div className="app-shell max-[700px]:!h-dvh max-[700px]:!overflow-hidden">
       <div ref={appContentRef}>
         <header className="app-header">
           <div className="brand-block">
@@ -1665,9 +1708,8 @@ function PlannerAppContent() {
               <select
                 value={week?.id ?? ""}
                 onChange={(event) => {
-                  setSelectedWeekId(event.target.value as WeekId);
-                  setSelectedDayDate(null);
-                  setSelectedMealId(null);
+                  setRouteNotice(null);
+                  void routerNavigate({ to: weekPath(event.target.value as WeekId) });
                 }}
               >
                 {initialized.state.weeks.map((item) => (
@@ -1678,7 +1720,6 @@ function PlannerAppContent() {
           </div>
           <div className="header-actions">
             <PlannerIconButton ref={historyTriggerRef} type="button" title="Change history" aria-pressed={historyOpen} onClick={() => {
-              setSelectedMealId(null);
               setChatOpen(false);
               setTimersOpen(false);
               setHistoryOpen(true);
@@ -1693,7 +1734,6 @@ function PlannerAppContent() {
                 aria-expanded={timersOpen}
                 aria-haspopup="dialog"
                 onClick={() => {
-                  setSelectedMealId(null);
                   setChatOpen(false);
                   setHistoryOpen(false);
                   setTimersOpen((open) => !open);
@@ -1733,7 +1773,6 @@ function PlannerAppContent() {
               className="mobile-codex-trigger"
               type="button"
               onClick={() => {
-                setSelectedMealId(null);
                 setHistoryOpen(false);
                 setTimersOpen(false);
                 setChatOpen(true);
@@ -1762,7 +1801,7 @@ function PlannerAppContent() {
           })}
         </nav>
 
-        <main className={`app-main ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
+        <main className={`app-main max-[700px]:!m-0 max-[700px]:!flex max-[700px]:!h-[calc(100dvh-138px)] max-[700px]:!flex-col max-[700px]:!overflow-hidden ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
           {authorityNotice ? (
             <AuthorityNotice
               notice={authorityNotice}
@@ -1812,31 +1851,45 @@ function PlannerAppContent() {
             ) : null}
           </div>
 
-          <div className="workspace">
-            <section ref={primaryWorkspaceRef} className="primary-workspace">
+          <div className="workspace max-[700px]:!min-h-0 max-[700px]:!flex-1">
+            <section ref={primaryWorkspaceRef} className="primary-workspace max-[700px]:!h-full max-[700px]:!overflow-y-auto max-[700px]:[overscroll-behavior:contain]">
               {!week ? (
                 <section className="lifecycle-surface empty-workspace">
                   <CalendarDays size={30} />
                   <h2>No weeks yet</h2>
                   <p>Open Codex to build the first week plan.</p>
                 </section>
-              ) : view === "week" ? (
-                  <WeekView
+              ) : resolvedLocation.kind === "recipe" && selectedMeal ? (
+                  <MealDrawer
+                    key={selectedMeal.id}
+                    inline
+                    meal={selectedMeal}
                     week={week}
-                    today={today}
-                    onOpenRecipeSummary={openRecipeSummary}
-                    onNavigate={navigate}
-                    onOpenDay={openDay}
-                  />
-                ) : view === "tonight" ? (
-                  <TonightView
-                    week={week}
-                    selectedDate={dayDate}
                     disabled={isReadOnly}
                     mutate={mutate}
                     sendContextMessage={sendContextMessage}
-                    onOpenMeal={openMeal}
-                    onOpenDay={openDay}
+                    postSaveReviewSeed={ingredientReviewSeed?.weekId === week.id && ingredientReviewSeed.mealId === selectedMeal.id
+                      ? ingredientReviewSeed
+                      : null}
+                    onPostSaveReviewConsumed={() => setIngredientReviewSeed((current) =>
+                      current?.weekId === week.id && current.mealId === selectedMeal.id ? null : current
+                    )}
+                    recoveryCommand={recoveryMealCommand}
+                    onRecoveryDraftChange={updatePlannerRecoveryDraft}
+                    restoreFocusRef={mealTriggerRef}
+                    {...plannerAuthorityRecovery}
+                    onClose={() => void routerNavigate({ to: weekPath(week.id) })}
+                  />
+                ) : view === "week" ? (
+                  <WeekView
+                    week={week}
+                    today={today}
+                    legacyDate={resolvedLocation.kind === "week"
+                      ? (resolvedLocation.legacyDate as IsoDate | null) ??
+                        (legacyFocus?.weekId === week.id ? legacyFocus.date : null)
+                      : null}
+                    onOpenRecipeSummary={openRecipeSummary}
+                    onNavigate={navigate}
                   />
                 ) : view === "prep" ? (
                   <PrepView
@@ -1898,32 +1951,6 @@ function PlannerAppContent() {
         </nav>
       </div>
 
-      {activeOverlay === "meal" && selectedMeal && week ? (
-          <MealDrawer
-            key={`${selectedMeal.id}:${recoveryMealCommand && plannerRetry?.operation.state === "resolved_conflict"
-              ? plannerRetry.operation.requestId
-              : "stable"}`}
-            meal={selectedMeal}
-            week={week}
-            disabled={isReadOnly}
-            mutate={mutate}
-            sendContextMessage={sendContextMessage}
-            postSaveReviewSeed={ingredientReviewSeed?.weekId === week.id && ingredientReviewSeed.mealId === selectedMeal.id
-              ? ingredientReviewSeed
-              : null}
-            onPostSaveReviewConsumed={() => setIngredientReviewSeed((current) =>
-              current?.weekId === week.id && current.mealId === selectedMeal.id ? null : current
-            )}
-            recoveryCommand={recoveryMealCommand}
-            onRecoveryDraftChange={updatePlannerRecoveryDraft}
-            restoreFocusRef={mealTriggerRef}
-            {...plannerAuthorityRecovery}
-            onClose={() => {
-              setSelectedMealId(null);
-              mealTriggerRef.current = null;
-            }}
-          />
-        ) : null}
       {activeOverlay === "recipe-summary" && recipeSummaryMeal && week ? (
           <RecipeSummaryDrawer
             meal={recipeSummaryMeal}
@@ -2017,23 +2044,30 @@ function MealEditorTrigger({
   return <PlannerActionButton className={className} tone={tone} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</PlannerActionButton>;
 }
 
-function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
+function WeekView({ week, today, legacyDate, onOpenRecipeSummary, onNavigate }: {
   week: WeekPlan;
   today: IsoDate;
+  legacyDate: IsoDate | null;
   onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
   onNavigate: (view: PlannerView) => void;
-  onOpenDay: (date: IsoDate) => void;
 }) {
   const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
   const [visibleDayCount, setVisibleDayCount] = useState<1 | 3 | 5 | 7>(7);
   const [windowStart, setWindowStart] = useState(0);
-  const maxWindowStart = dates.length - visibleDayCount;
-  const visibleDates = dates.slice(windowStart, windowStart + visibleDayCount);
+  const legacyDayRef = useRef<HTMLDivElement>(null);
+  const displayedDayCount = legacyDate ? 7 : visibleDayCount;
+  const displayedWindowStart = legacyDate ? 0 : windowStart;
+  const maxWindowStart = dates.length - displayedDayCount;
+  const visibleDates = dates.slice(displayedWindowStart, displayedWindowStart + displayedDayCount);
 
   const changeVisibleDayCount = (nextCount: 1 | 3 | 5 | 7) => {
     setVisibleDayCount(nextCount);
     setWindowStart((current) => Math.min(current, dates.length - nextCount));
   };
+  useEffect(() => {
+    if (!legacyDate) return;
+    legacyDayRef.current?.focus();
+  }, [legacyDate]);
 
   return (
     <div className="week-view">
@@ -2041,7 +2075,7 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
         <span className="week-view-toolbar-label">Show</span>
         <ToggleGroup
           type="single"
-          value={String(visibleDayCount)}
+          value={String(displayedDayCount)}
           onValueChange={(value) => {
             if (value === "1" || value === "3" || value === "5" || value === "7") changeVisibleDayCount(Number(value) as 1 | 3 | 5 | 7);
           }}
@@ -2052,15 +2086,15 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
         >
           {[1, 3, 5, 7].map((count) => <ToggleGroupItem key={count} value={String(count)} aria-label={`Show ${count} ${count === 1 ? "day" : "days"}`}>{count}</ToggleGroupItem>)}
         </ToggleGroup>
-        {visibleDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
-          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={windowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
-          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={windowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
+        {displayedDayCount < 7 ? <div className="week-window-shifts" aria-label="Move visible days">
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show earlier days" disabled={displayedWindowStart === 0} onClick={() => setWindowStart((current) => Math.max(0, current - 1))}><ChevronLeft /></Button>
+          <Button type="button" variant="outline" size="icon-sm" aria-label="Show later days" disabled={displayedWindowStart === maxWindowStart} onClick={() => setWindowStart((current) => Math.min(maxWindowStart, current + 1))}><ChevronRight /></Button>
         </div> : null}
       </div>
-      <div className="week-grid" style={{ "--week-visible-days": visibleDayCount } as React.CSSProperties}>
+      <div className="week-grid" style={{ "--week-visible-days": displayedDayCount } as React.CSSProperties}>
         {visibleDates.map((date) => {
           return (
-            <div key={date} className={`day-column ${date === today ? "today" : ""}`}>
+            <div key={date} ref={date === legacyDate ? legacyDayRef : undefined} tabIndex={date === legacyDate ? -1 : undefined} className={`day-column ${date === today ? "today" : ""}`}>
               <div className="day-heading">
                 <div><span>{dayName(date, "short")}</span>{date === today ? <small>Today</small> : null}</div>
                 <strong>{Number(date.slice(-2))}</strong>
@@ -2070,8 +2104,8 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
                     <button
                       className="meal-card-primary"
                       type="button"
-                      aria-label={`Open ${formatCalendarDate(meal.date, { weekday: "long", month: "short", day: "numeric" })} day`}
-                      onClick={() => onOpenDay(meal.date)}
+                      aria-label={`Open ${meal.title} recipe`}
+                      onClick={(event) => onOpenRecipeSummary(meal.id, event.currentTarget)}
                     >
                       <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
                       <strong className="meal-title">{meal.title}</strong>
@@ -2096,124 +2130,6 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate, onOpenDay }: {
   );
 }
 
-function TonightView(props: {
-  week: WeekPlan;
-  selectedDate: IsoDate;
-  disabled: boolean;
-  mutate: Mutate;
-  sendContextMessage: SendContextMessage;
-  onOpenMeal: (id: string, trigger: HTMLElement) => void;
-  onOpenDay: (date: IsoDate) => void;
-}) {
-  const { week, selectedDate, disabled, mutate, sendContextMessage, onOpenMeal, onOpenDay } = props;
-  const dates = Array.from({ length: 7 }, (_, index) => addIsoDateDays(week.id, index));
-  const dayIndex = dates.indexOf(selectedDate);
-  const dayNavigation = dayIndex >= 0 ? (
-    <nav className="day-navigation" aria-label="Day navigation">
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="Open previous day" title="Previous day" disabled={dayIndex === 0} onClick={() => onOpenDay(dates[dayIndex - 1])}><ChevronLeft /></Button>
-      <span>{dayIndex + 1} of {dates.length}</span>
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="Open next day" title="Next day" disabled={dayIndex === dates.length - 1} onClick={() => onOpenDay(dates[dayIndex + 1])}><ChevronRight /></Button>
-    </nav>
-  ) : null;
-  const meal = week.data.meals.find((item) => item.date === selectedDate);
-  const assignedLeftover = week.data.leftovers.find(
-    (leftover) =>
-      leftover.state === "assigned" &&
-      leftover.assignedDate === selectedDate,
-  );
-  if (!weekContainsDate(week.id, selectedDate)) {
-    return (
-      <div className="finished-state">
-        {dayNavigation}
-        <CalendarDays size={34} />
-        <h3>No dinner on this day</h3>
-        <p>Choose a dinner date from Week or select a different week.</p>
-      </div>
-    );
-  }
-  if (assignedLeftover) {
-    return (
-      <div className="finished-state assigned-leftover">
-        {dayNavigation}
-        <PackageCheck size={34} />
-        <p className="eyebrow">{formatCalendarDate(selectedDate, { weekday: "long", month: "short", day: "numeric" })} dinner · leftovers</p>
-        <h3>{assignedLeftover.label}</h3>
-        <p>{assignedLeftover.portions} portions are assigned to this day.</p>
-        <PlannerActionButton
-          tone="primary"
-          type="button"
-          disabled={disabled}
-          onClick={() => void mutate({
-            type: "consumeLeftover",
-            weekId: week.id,
-            leftoverId: assignedLeftover.id,
-          })}
-        ><Check size={16} /> Mark eaten</PlannerActionButton>
-      </div>
-    );
-  }
-  if (!meal) {
-    return (
-      <div className="finished-state">
-        {dayNavigation}
-        <CalendarDays size={34} />
-        <h3>No dinner on this day</h3>
-        <p>Choose a dinner date from Week or select a different week.</p>
-      </div>
-    );
-  }
-  const complete = meal.instructions.filter((step) => step.complete).length;
-  return (
-    <div className="tonight-layout">
-      <div className="tonight-main">
-        <div className="tonight-hero">
-          <div>
-            <p className="eyebrow">{formatCalendarDate(selectedDate, { weekday: "long", month: "short", day: "numeric" })} dinner · {meal.venue}</p>
-            <h2>{meal.title}</h2>
-            <p className="meal-subtitle">{meal.subtitle}</p>
-            {meal.yieldText ? <p className="recipe-yield">Yield: {meal.yieldText}</p> : null}
-            <RecipeSource meal={meal} />
-          </div>
-          <span className={`status-badge ${statusTone(meal.status)}`}>{meal.status}</span>
-        </div>
-        {dayNavigation}
-        <div className="tonight-actions">
-          <MealEditorTrigger tone="secondary" mealId={meal.id} onOpenMeal={onOpenMeal}><PencilLine size={16} /> Edit meal</MealEditorTrigger>
-          {meal.status !== "cooking" && meal.status !== "cooked" ? (
-            <PlannerActionButton tone="primary" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooking" })}><Play size={16} /> Start cooking</PlannerActionButton>
-          ) : null}
-          {meal.status !== "cooked" ? (
-            <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={() => void mutate({ type: "updateMealStatus", weekId: week.id, mealId: meal.id, status: "cooked" })}><Check size={16} /> Mark cooked</PlannerActionButton>
-          ) : null}
-        </div>
-        <div className="section-title"><ListChecks size={17} /><h3>Instructions</h3><span>{complete}/{meal.instructions.length} done</span></div>
-        <div className="instruction-steps">
-          {meal.instructions.map((step, index) => (
-            <StepCard
-              key={step.id}
-              step={step}
-              meal={meal}
-              stepNumber={index + 1}
-              week={week}
-              disabled={disabled}
-              mutate={mutate}
-              sendContextMessage={sendContextMessage}
-            />
-          ))}
-        </div>
-      </div>
-      <aside className="tonight-side">
-        <div className="plain-panel"><div className="section-title"><ShoppingBasket size={16} /><h3>Ingredients</h3></div>
-          <MealIngredientList meal={meal} week={week} disabled={disabled} mutate={mutate} />
-        </div>
-        <div className="plain-panel"><div className="section-title"><StickyNote size={16} /><h3>Recipe note</h3></div><p>{meal.notes || "No recipe note."}</p></div>
-        <div className="plain-panel leftover-plan"><div className="section-title"><PackageCheck size={16} /><h3>Leftovers</h3></div><strong>{meal.leftoverNote || "No leftover plan."}</strong></div>
-        {meal.status === "cooked" ? <div className="plain-panel meal-feedback-panel"><div className="section-title"><CheckCircle2 size={16} /><h3>How was it?</h3></div><MealFeedbackRow meal={meal} week={week} disabled={disabled} mutate={mutate} /></div> : null}
-      </aside>
-    </div>
-  );
-}
-
 function useTimerDisplay(step: InstructionStep) {
   const serverOffset = useContext(ServerOffsetContext);
   const [now, setNow] = useState(() => Date.now());
@@ -2227,6 +2143,7 @@ function useTimerDisplay(step: InstructionStep) {
     step.timerStartedAt,
     now + serverOffset,
     step.timerPaused === true,
+    step.timerRemainingSeconds,
   );
 }
 
@@ -2316,7 +2233,7 @@ function EditablePrepTimer(props: {
 }) {
   const { step, display, disabled, controlTarget, onSetRemaining } = props;
   const currentParts = timerParts(display.remainingSeconds);
-  const timerKey = `${step.timerDurationSeconds ?? 0}:${step.timerStartedAt ?? "stopped"}:${step.timerPaused ? "paused" : "ready"}`;
+  const timerKey = `${step.timerDurationSeconds ?? 0}:${step.timerRemainingSeconds ?? "full"}:${step.timerStartedAt ?? "stopped"}:${step.timerPaused ? "paused" : "ready"}`;
   const [draft, setDraft] = useState<{
     minutes: string;
     seconds: string;
@@ -2414,8 +2331,14 @@ function EditablePrepTimer(props: {
   );
 }
 
+function recipeCodexContext(week: WeekPlan, meal: Meal, step: InstructionStep, message: string): string {
+  return `[Planner recipe context: weekId=${week.id}; mealId=${meal.id}; stepId=${step.id}]\n\n${message}`;
+}
+
 function InstructionStepCommentComposer({
   step,
+  week,
+  meal,
   controlTarget,
   disabled,
   onClose,
@@ -2426,6 +2349,8 @@ function InstructionStepCommentComposer({
   showLimit = true,
 }: {
   step: InstructionStep;
+  week: WeekPlan;
+  meal: Meal;
   controlTarget: string;
   disabled: boolean;
   onClose: () => void;
@@ -2476,7 +2401,7 @@ function InstructionStepCommentComposer({
         aria-label={`Ask Codex about ${controlTarget}`}
         onClick={() => {
           const submittedComment = comment.trim();
-          void sendContextMessage(submittedComment).then((accepted) => {
+          void sendContextMessage(recipeCodexContext(week, meal, step, submittedComment)).then((accepted) => {
             if (!accepted) return;
             setComment((current) => {
               if (current.trim() !== submittedComment) return current;
@@ -2722,6 +2647,8 @@ function StepCard(props: {
       ) : null}
       {!archived && commentOpen ? <InstructionStepCommentComposer
         step={step}
+        week={week}
+        meal={meal}
         controlTarget={controlTarget}
         disabled={disabled}
         onClose={() => setCommentOpen(false)}
@@ -2889,6 +2816,8 @@ function PrepSessionStepRow(props: {
     >
       {commentOpen ? <InstructionStepCommentComposer
         step={step}
+        week={week}
+        meal={meal}
         controlTarget={controlTarget}
         disabled={rowDisabled}
         onClose={() => setCommentOpen(false)}
@@ -3276,6 +3205,7 @@ function RecipeSummaryDrawer({
 }
 
 function MealDrawer(props: {
+  inline?: boolean;
   meal: Meal;
   week: WeekPlan;
   disabled: boolean;
@@ -3292,6 +3222,7 @@ function MealDrawer(props: {
 } & AuthorityRecoveryProps) {
   const {
     meal,
+    inline = false,
     week,
     disabled,
     mutate,
@@ -3638,7 +3569,7 @@ function MealDrawer(props: {
     );
   };
   return (
-    <ModalDrawer title={meal.title} className="meal-drawer" onClose={onClose} restoreFocusRef={restoreFocusRef}>
+    <ModalDrawer inline={inline} title={meal.title} className="meal-drawer" onClose={onClose} restoreFocusRef={restoreFocusRef}>
       <div className="drawer-body" tabIndex={0} aria-label={`${meal.title} recipe details`}>
         {notice ? (
           <AuthorityNotice
@@ -3659,8 +3590,6 @@ function MealDrawer(props: {
           <label><span>Venue</span><input aria-label="Venue" disabled={archived} maxLength={MAX_MEAL_VENUE_LENGTH} value={draftVenue} aria-invalid={saveAttempted && Boolean(mealIssues.venue)} aria-describedby={saveAttempted && mealIssues.venue ? "meal-venue-error" : undefined} onChange={(event) => editRecipeField("venue", event.target.value)} /><FieldError id="meal-venue-error" message={saveAttempted ? mealIssues.venue : undefined} /></label>
         </div>
         <label className="full-field"><span>Subtitle</span><input aria-label="Subtitle" disabled={archived} maxLength={MAX_MEAL_SUBTITLE_LENGTH} value={draftSubtitle} aria-invalid={saveAttempted && Boolean(mealIssues.subtitle)} aria-describedby={saveAttempted && mealIssues.subtitle ? "meal-subtitle-error" : undefined} onChange={(event) => editRecipeField("subtitle", event.target.value)} /><FieldError id="meal-subtitle-error" message={saveAttempted ? mealIssues.subtitle : undefined} /></label>
-        <IngredientAuthoring occurrences={draftOccurrences} disabled={disabled} invalid={saveAttempted && Boolean(mealIssues.ingredients)} describedBy={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined} onChange={updateOccurrence} onMove={moveOccurrence} onCopy={copyOccurrence} onRemove={removeOccurrence} onAdd={addOccurrence} />
-        <FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} />
         {!archived ? <section className="snapshot-section" aria-labelledby="ingredient-concept-review-heading">
           <div className="section-title"><ShoppingBasket size={16} /><h3 id="ingredient-concept-review-heading">Ingredient concepts</h3></div>
           <p className="recipe-summary-copy">Review household concept links separately from this recipe&apos;s wording.</p>
@@ -3730,6 +3659,35 @@ function MealDrawer(props: {
             </div>
           </div> : null}
         </section> : null}
+        <section className="full-field occurrence-editor" aria-labelledby="meal-ingredients-heading">
+          <div className="occurrence-editor-heading">
+            <span id="meal-ingredients-heading">Ingredients</span>
+            <small>Each row is one recipe occurrence. Editing a row keeps its identity; removing it also removes linked instruction inputs.</small>
+          </div>
+          <div className="occurrence-editor-rows" aria-describedby={saveAttempted && mealIssues.ingredients ? "meal-ingredients-error" : undefined}>
+            {draftOccurrences.map((occurrence, index) => (
+              <fieldset className="occurrence-editor-row max-[720px]:!grid-cols-2 max-[720px]:[&>button]:!col-start-2 max-[720px]:[&>button]:!justify-self-end" key={occurrence.kind === "retain" ? occurrence.occurrenceId : occurrence.correlationId}>
+                <legend className="sr-only">Ingredient {index + 1}</legend>
+                <label><span>Source</span><input aria-label={`Ingredient ${index + 1} source`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.source ?? ""} onChange={(event) => updateOccurrence(index, "source", event.target.value)} /></label>
+                <label><span>Amount</span><input aria-label={`Ingredient ${index + 1} amount`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.amount} onChange={(event) => updateOccurrence(index, "amount", event.target.value)} /></label>
+                <label><span>Unit</span><input aria-label={`Ingredient ${index + 1} unit`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.unit ?? ""} onChange={(event) => updateOccurrence(index, "unit", event.target.value)} /></label>
+                <label><span>Ingredient</span><input aria-label={`Ingredient ${index + 1} core`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.ingredient} onChange={(event) => updateOccurrence(index, "ingredient", event.target.value)} /></label>
+                <label><span>Qualifier</span><input aria-label={`Ingredient ${index + 1} qualifier`} disabled={archived} maxLength={MAX_INGREDIENT_LINE_LENGTH} value={occurrence.qualifier ?? ""} onChange={(event) => updateOccurrence(index, "qualifier", event.target.value)} /></label>
+                <PlannerIconButton type="button" title={`Move ingredient ${index + 1} up`} aria-label={`Move ingredient ${index + 1} up`} disabled={disabled || index === 0} onClick={() => moveOccurrence(index, index - 1)}><ArrowUp size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" title={`Move ingredient ${index + 1} down`} aria-label={`Move ingredient ${index + 1} down`} disabled={disabled || index === draftOccurrences.length - 1} onClick={() => moveOccurrence(index, index + 1)}><ArrowDown size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" title={`Duplicate ingredient ${index + 1}`} aria-label={`Duplicate ingredient ${index + 1} as a new occurrence`} disabled={disabled} onClick={() => copyOccurrence(index)}><Copy size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" title={`Split ingredient ${index + 1}`} aria-label={`Split ingredient ${index + 1}; this row keeps its identity`} disabled={disabled} onClick={() => copyOccurrence(index)}><Split size={14} /></PlannerIconButton>
+                <PlannerIconButton type="button" tone="attention" title={`Remove ingredient ${index + 1}`} aria-label={`Remove ingredient ${index + 1} and linked instruction inputs`} disabled={disabled} onClick={() => removeOccurrence(index)}><Trash2 size={14} /></PlannerIconButton>
+              </fieldset>
+            ))}
+          </div>
+          <PlannerActionButton tone="secondary" type="button" disabled={disabled} onClick={addOccurrence}><Plus size={15} /> Add ingredient</PlannerActionButton>
+          <FieldError id="meal-ingredients-error" message={saveAttempted ? mealIssues.ingredients : undefined} />
+        </section>
+        <section className="snapshot-section" aria-labelledby="meal-grocery-execution-heading">
+          <div className="section-title"><ShoppingBasket size={16} /><h3 id="meal-grocery-execution-heading">Grocery execution</h3></div>
+          <MealIngredientList meal={meal} week={week} disabled={disabled} mutate={mutate} />
+        </section>
         <label className="full-field"><span>Recipe note</span><textarea aria-label="Recipe note" disabled={archived} rows={3} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftNotes} aria-invalid={saveAttempted && Boolean(mealIssues.notes)} aria-describedby={saveAttempted && mealIssues.notes ? "meal-notes-error" : undefined} onChange={(event) => editRecipeField("notes", event.target.value)} /><FieldError id="meal-notes-error" message={saveAttempted ? mealIssues.notes : undefined} /></label>
         <div className="field-grid">
           <label><span>Prep note</span><textarea aria-label="Prep note" disabled={archived} maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftPrepNote} aria-invalid={saveAttempted && Boolean(mealIssues.prepNote)} aria-describedby={saveAttempted && mealIssues.prepNote ? "meal-prep-note-error" : undefined} onChange={(event) => editRecipeField("prepNote", event.target.value)} /><FieldError id="meal-prep-note-error" message={saveAttempted ? mealIssues.prepNote : undefined} /></label>
@@ -3840,18 +3798,26 @@ function HistoryDrawer(props: {
 }
 
 function ModalDrawer({
+  inline = false,
   title,
   className = "",
   onClose,
   restoreFocusRef,
   children,
 }: {
+  inline?: boolean;
   title: string;
   className?: string;
   onClose: () => void;
   restoreFocusRef?: { current: HTMLElement | null };
   children: ReactNode;
 }) {
+  if (inline) {
+    return <section className={`drawer ${className}`} aria-label={`${title} recipe`}>
+      <div className="drawer-header"><div><p className="eyebrow">Shared workspace</p><h2>{title}</h2></div><PlannerIconButton type="button" title="Back to Week" onClick={onClose}><X size={19} /></PlannerIconButton></div>
+      {children}
+    </section>;
+  }
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
       <SheetContent

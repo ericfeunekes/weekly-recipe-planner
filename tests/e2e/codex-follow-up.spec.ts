@@ -7,13 +7,19 @@ async function resetPlanner(request: APIRequestContext) {
   expect(response.ok()).toBe(true);
 }
 
-async function openPreview(page: Page, path = "/?codexPreview=1") {
+async function openPreview(page: Page, path = "/?codexPreview=1", openRail = true) {
   await page.goto(path);
   const setup = page.getByRole("heading", { name: "Set up this planner once" });
   const planner = page.getByText("Family dinner planner");
   await expect(setup.or(planner)).toBeVisible();
   if (await setup.isVisible()) await page.getByRole("button", { name: "Start Fresh" }).click();
   await expect(planner).toBeVisible();
+  if (openRail) {
+    const closeCodex = page.getByRole("button", { name: "Close Codex" });
+    if (await closeCodex.isVisible()) await closeCodex.click();
+    await page.getByRole("button", { name: "Open Codex" }).click();
+    await expect(page.getByRole("complementary", { name: "Codex task" })).toBeVisible();
+  }
 }
 
 async function openNative(page: Page) {
@@ -226,7 +232,7 @@ test.describe("native Codex thread rail", () => {
     await page.getByRole("button", { name: "Week", exact: true }).click();
     const importedCard = page.locator(".meal-card").filter({ hasText: "Lemon Pepper Salmon" });
     await importedCard.getByRole("button", { name: /Peek recipe/ }).click();
-    const summary = page.getByRole("dialog", { name: "Lemon Pepper Salmon" });
+    const summary = page.getByRole("region", { name: "Lemon Pepper Salmon recipe" });
     await expect(summary).toContainText("Editable meal copy");
     await expect(summary).toContainText("lemon-pepper-salmon · pinned");
     await expect(summary).toContainText("half salmon");
@@ -234,7 +240,7 @@ test.describe("native Codex thread rail", () => {
     await expect(summary).toContainText("Source: 4 (4-6 ounce) salmon fillets");
     await expect(summary).toContainText("Unit: fillet");
     await expect(summary).toContainText("Qualifier: 4-6 ounce");
-    await summary.getByRole("button", { name: "Close", exact: true }).last().click();
+    await page.getByTitle("Back to Week").click();
 
     await page.getByRole("button", { name: "Prep", exact: true }).click();
     await page.getByRole("button", { name: /Add recipe steps to/ }).click();
@@ -407,7 +413,7 @@ test.describe("native Codex thread rail", () => {
 
   test("the same native rail opens in the mobile dialog without legacy chat controls", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await openPreview(page);
+    await openPreview(page, "/?codexPreview=1", false);
 
     const trigger = page.getByRole("button", { name: "Open Codex" });
     await trigger.click();

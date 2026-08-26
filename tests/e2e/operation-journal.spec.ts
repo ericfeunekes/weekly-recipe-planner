@@ -202,7 +202,7 @@ async function waitForAmbiguity(
 async function reloadPlanner(page: Page): Promise<void> {
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText("Family dinner planner", { exact: true })).toBeVisible();
-  await expect(page.getByText(/was interrupted\. Reconnect, then resolve that exact request\./))
+  await expect(page.getByText(/was interrupted\. Reconnect, then resolve that exact request\./).first())
     .toBeVisible();
 }
 
@@ -248,8 +248,7 @@ test.describe("reload-safe authority operation journal", () => {
   test("planner recipe edits restore their submitted draft and settle once", async ({ page }) => {
     test.setTimeout(120_000);
     await initializePlanner(page);
-    await page.locator(".view-nav").getByRole("button", { name: "Day", exact: true }).click();
-    await page.getByRole("button", { name: "Edit meal" }).first().click();
+    await page.locator(".week-view .meal-card-primary").first().click();
     const drawer = page.locator(".meal-drawer");
     const title = "Journal recovery traybake";
     const finalTitle = "Journal recovery traybake final";
@@ -260,7 +259,7 @@ test.describe("reload-safe authority operation journal", () => {
       (body) => {
         const command = body.command as Record<string, unknown> | undefined;
         const changes = command?.changes as Record<string, unknown> | undefined;
-        return command?.type === "updateMealSnapshot" && changes?.title === title;
+        return command?.type === "editMealRecipe" && changes?.title === title;
       },
     );
 
@@ -268,7 +267,7 @@ test.describe("reload-safe authority operation journal", () => {
     await drawer.getByRole("button", { name: "Save recipe details" }).click();
     const operation = await waitForAmbiguity(page, loss, "planner");
     expect(operation.submittedDraft).toMatchObject({
-      type: "updateMealSnapshot",
+      type: "editMealRecipe",
       changes: { title },
     });
     await drawer.getByRole("textbox", { name: "Title", exact: true }).fill("");
@@ -276,7 +275,7 @@ test.describe("reload-safe authority operation journal", () => {
     const editedJournal = await expectJournalKinds(page, ["planner"]);
     expect(editedJournal.operations[0].serializedBody).toBe(operation.serializedBody);
     expect(editedJournal.operations[0].editableDraft).toMatchObject({
-      type: "updateMealSnapshot",
+      type: "editMealRecipe",
       changes: { title: "", venue: recoveryVenue },
     });
 
@@ -313,13 +312,78 @@ test.describe("reload-safe authority operation journal", () => {
       .filter((meal) => meal.title === finalTitle)).toHaveLength(1);
     expect(workspace.events.filter((event) => {
       const changes = event.command.changes as Record<string, unknown> | undefined;
-      return event.command.type === "updateMealSnapshot" && changes?.title === title;
+      return event.command.type === "editMealRecipe" && changes?.title === title;
     })).toHaveLength(1);
     expect(workspace.events.filter((event) => {
       const changes = event.command.changes as Record<string, unknown> | undefined;
-      return event.command.type === "updateMealSnapshot" &&
+      return event.command.type === "editMealRecipe" &&
         changes?.title === finalTitle && changes?.venue === recoveryVenue;
     })).toHaveLength(1);
+  });
+
+  test("an interrupted created occurrence replays exactly, opens review for its returned ID, and continues at the current version", async ({ page }) => {
+    test.setTimeout(120_000);
+    await initializePlanner(page);
+    await page.locator(".week-view .meal-card-primary").first().click();
+    const drawer = page.locator(".meal-drawer");
+    const literal = "journal replay lake herb";
+    await drawer.getByRole("button", { name: "Add ingredient" }).click();
+    await drawer.getByLabel(/Ingredient \d+ core/u).last().fill(literal);
+    const loss = await armCommittedResponseLoss(
+      page,
+      "**/api/commands",
+      (body) => {
+        const command = body.command as Record<string, unknown> | undefined;
+        const occurrences = command?.occurrences;
+        return command?.type === "editMealRecipe" && Array.isArray(occurrences) && occurrences.some((occurrence) =>
+          typeof occurrence === "object" && occurrence !== null &&
+          (occurrence as Record<string, unknown>).kind === "create" &&
+          (occurrence as Record<string, unknown>).ingredient === literal,
+        );
+      },
+    );
+    await drawer.getByRole("button", { name: "Save recipe details" }).click();
+    const operation = await waitForAmbiguity(page, loss, "planner");
+    const submitted = bodyJson(operation.serializedBody).command as Record<string, unknown>;
+    const created = (submitted.occurrences as Array<Record<string, unknown>>).find((occurrence) => occurrence.ingredient === literal)!;
+    expect(created.correlationId).toEqual(expect.any(String));
+
+    await reloadPlanner(page);
+    const retry = page.locator(".meal-drawer").getByRole("button", { name: "Retry Save recipe details" });
+    await expect(retry).toBeVisible();
+    await stopResponseLoss(page, loss);
+    const replayBody = await captureAcceptedReplay(page, "**/api/commands", async () => {
+      await retry.click();
+      await expect(retry).toHaveCount(0);
+    });
+    expect(replayBody).toBe(operation.serializedBody);
+
+    const replayedWorkspace = await readWorkspace(page);
+    const replayedIngredient = replayedWorkspace.state.weeks
+      .flatMap((week) => week.data.meals)
+      .flatMap((meal) => meal.ingredients)
+      .find((ingredient) => ingredient.ingredient === literal);
+    expect(replayedIngredient?.id).toEqual(expect.any(String));
+    const hydratedDrawer = page.locator(".meal-drawer");
+    await expect(hydratedDrawer.getByText("Reviewing 1 occurrence.")).toBeVisible();
+
+    const reviewed = page.waitForRequest((request) =>
+      request.url().endsWith("/api/commands") &&
+      (request.postDataJSON() as { command?: { type?: string } }).command?.type === "applyIngredientResolutionBatch",
+    );
+    await hydratedDrawer.getByRole("button", { name: "Apply choices" }).click();
+    const reviewedBody = (await reviewed).postDataJSON() as {
+      command: { decisions: Array<{ occurrenceId: string }> };
+    };
+    expect(reviewedBody.command.decisions.map((decision) => decision.occurrenceId)).toEqual([replayedIngredient!.id]);
+    await expect(hydratedDrawer.getByText("Reviewing 1 occurrence.")).toHaveCount(0);
+
+    const currentWorkspace = await readWorkspace(page);
+    await hydratedDrawer.getByLabel("Venue").fill("Journal replay continuation");
+    const continuation = await captureAcceptedReplay(page, "**/api/commands", async () => {
+      await hydratedDrawer.getByRole("button", { name: "Save recipe details" }).click();
+    });
+    expect(bodyJson(continuation).basePlannerVersion).toBe(currentWorkspace.plannerVersion);
   });
 
   test("cross-site renderer replacement preserves a recipe-derived source move for exact replay", async ({ page }) => {

@@ -138,7 +138,7 @@ export const CODEX_FOLLOW_UP_TOOL_MANIFESTS = Object.freeze({
   // they no longer represent separate research and planner sessions.
   research: Object.freeze(["update_plan", "web_search"]),
   planner: Object.freeze(["update_plan", "planner"]),
-  plannerNamespace: Object.freeze(["read", "preview", "apply", "importRecipe"]),
+  plannerNamespace: Object.freeze(["read", "preview", "apply", "importRecipe", "importApprovedWeek"]),
   ambient: Object.freeze({ update_plan: "inert_client_progress" }),
 });
 
