@@ -13,6 +13,10 @@ const fixture = process.env.PLANNER_E2E_FIXTURE_EXPECTED ??
   "D4";
 const fixtureId = fixture.toLowerCase();
 const evidenceDirectory = process.env.PLANNER_E2E_EVIDENCE_DIR;
+const browserOrigin = process.env.PLANNER_E2E_WEB_MODE === "installed-production"
+  ? process.env.PLANNER_E2E_BASE_URL ?? "http://127.0.0.1:8877"
+  : process.env.PLANNER_E2E_WEB_ORIGIN ?? "http://127.0.0.1:3101";
+const rememberedRouteStorageKey = "weekly-recipe-planner.last-valid-week";
 
 const VIEWS = [
   { id: "week", label: "Week", heading: "Week" },
@@ -24,6 +28,9 @@ const VIEWS = [
 async function resetPlanner(page: Page): Promise<void> {
   const reset = await page.request.post(`${controlOrigin}/reset`);
   expect(reset.ok()).toBe(true);
+  if (new URL(page.url()).origin === browserOrigin) {
+    await page.evaluate((storageKey) => localStorage.removeItem(storageKey), rememberedRouteStorageKey);
+  }
   await page.goto("/");
   const setup = page.getByRole("heading", { name: "Set up this planner once" });
   const brand = page.getByText("Family dinner planner");
@@ -35,6 +42,10 @@ async function resetPlanner(page: Page): Promise<void> {
   const closeCodex = page.getByRole("button", { name: "Close Codex" });
   if (await closeCodex.isVisible()) await closeCodex.click();
   await expect(page.getByRole("button", { name: "Open Codex" })).toBeVisible();
+  if (fixture === "D7") {
+    await expect(page.getByRole("heading", { name: "No weeks yet" })).toBeVisible();
+    return;
+  }
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
 }
 
@@ -226,6 +237,14 @@ async function expectDialogFocusCycle(
 }
 
 test.describe.configure({ mode: "serial" });
+
+test("reset returns the D4 fixture to Week after Groceries", async ({ page }) => {
+  test.skip(fixture !== "D4", "D4 supplies the active-week fallback.");
+  await resetPlanner(page);
+  await openView(page, "Groceries");
+  await expect(page.getByRole("heading", { level: 1, name: "Groceries", exact: true })).toBeVisible();
+  await resetPlanner(page);
+});
 
 test("all primary views and chat remain contained and accessible", async ({ page }) => {
   test.setTimeout(300_000);
