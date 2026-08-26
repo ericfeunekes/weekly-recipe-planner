@@ -1746,8 +1746,8 @@ function PlannerAppContent() {
             ) : null}
           </div>
 
-          <div className="workspace max-[700px]:!min-h-0 max-[700px]:!flex-1 [@media(max-width:700px)_and_(max-height:500px)]:!flex-none">
-            <section ref={primaryWorkspaceRef} className="primary-workspace max-[700px]:!h-full max-[700px]:!overflow-y-auto max-[700px]:[overscroll-behavior:contain] [@media(max-width:700px)_and_(max-height:500px)]:!h-auto">
+          <div className="workspace min-[841px]:!flex-1 max-[700px]:!min-h-0 max-[700px]:!flex-1 [@media(max-width:700px)_and_(max-height:500px)]:!flex-none">
+            <section ref={primaryWorkspaceRef} className="primary-workspace min-[841px]:[contain:layout] max-[700px]:!h-full max-[700px]:!overflow-y-auto max-[700px]:[overscroll-behavior:contain] [@media(max-width:700px)_and_(max-height:500px)]:!h-auto">
               {!week ? (
                 <section className="lifecycle-surface empty-workspace">
                   <CalendarDays size={30} />

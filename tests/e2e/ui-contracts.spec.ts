@@ -309,6 +309,66 @@ test("all primary views and chat remain contained and accessible", async ({ page
   }
 });
 
+test("desktop routed Recipe stays in the primary workspace scroll container", async ({ page }) => {
+  test.skip(fixture !== "D4", "D4 supplies a full editable Recipe.");
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 841, height: 900 });
+  await resetPlanner(page);
+
+  for (const viewport of QA_VIEWPORTS.filter(({ width }) => width >= 841 && width <= 1280)) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const mealTrigger = page.locator(".week-view .meal-card-primary").first();
+    await mealTrigger.click();
+    await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Open Codex" }).click();
+
+    const geometry = await page.locator(".primary-workspace").evaluate((primary) => ({
+      documentScrollHeight: document.documentElement.scrollHeight,
+      primaryClientHeight: primary.clientHeight,
+      primaryScrollHeight: primary.scrollHeight,
+      viewportHeight: window.innerHeight,
+      windowScrollY: window.scrollY,
+    }));
+    expect(geometry.documentScrollHeight).toBeLessThanOrEqual(geometry.viewportHeight + 1);
+    expect(geometry.primaryScrollHeight).toBeGreaterThan(geometry.primaryClientHeight);
+    expect(geometry.windowScrollY).toBe(0);
+
+    await page.locator(".primary-workspace").evaluate((primary) => {
+      primary.scrollTop = primary.scrollHeight;
+    });
+    await expect(page.getByRole("button", { name: "Add instruction" })).toBeVisible();
+
+    const composer = page.getByRole("complementary", { name: "Codex task" })
+      .getByRole("textbox", { name: "Message Codex" });
+    await expect(composer).toBeVisible();
+    await expectInsideViewport(page, composer);
+
+    await page.getByTitle("Back to Week").click();
+    await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+    await expect(mealTrigger).toBeFocused();
+    const weekGeometry = await page.locator(".primary-workspace").evaluate(() => ({
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+    }));
+    expect(weekGeometry.documentScrollHeight).toBeLessThanOrEqual(weekGeometry.viewportHeight + 1);
+
+    await mealTrigger.click();
+    const reopenedGeometry = await page.locator(".primary-workspace").evaluate((primary) => ({
+      documentScrollHeight: document.documentElement.scrollHeight,
+      primaryClientHeight: primary.clientHeight,
+      primaryScrollHeight: primary.scrollHeight,
+      viewportHeight: window.innerHeight,
+    }));
+    expect(reopenedGeometry.documentScrollHeight).toBeLessThanOrEqual(reopenedGeometry.viewportHeight + 1);
+    expect(reopenedGeometry.primaryScrollHeight).toBeGreaterThan(reopenedGeometry.primaryClientHeight);
+    await assertAccessible(page, `${fixtureId}-recipe-workspace-scroll`, viewport.id);
+    await page.getByTitle("Back to Week").click();
+    await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Close Codex" }).click();
+    await expect(page.getByRole("button", { name: "Open Codex" })).toBeVisible();
+  }
+});
+
 test("Recipe is inline while history and Codex retain the short-viewport modal owner", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies meal and history content.");
   await page.setViewportSize({ width: 375, height: 400 });
