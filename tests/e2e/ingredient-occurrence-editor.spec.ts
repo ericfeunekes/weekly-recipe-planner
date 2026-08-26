@@ -27,8 +27,7 @@ test("Duplicate keeps the source occurrence and creates a distinct copied occurr
   const meal = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals[0]!;
   const source = meal.ingredients[0]!;
 
-  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
-  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  await page.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
   const drawer = page.locator(".meal-drawer");
   await drawer.getByRole("button", { name: "Duplicate ingredient 1 as a new occurrence" }).click();
   await expect(drawer.locator(".occurrence-editor-row")).toHaveCount(meal.ingredients.length + 1);
@@ -91,8 +90,7 @@ test("Split keeps the labeled row's identity while both resulting literals can d
   const meal = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals[0]!;
   const sourceId = meal.ingredients[0]!.id;
 
-  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
-  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  await page.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
   const drawer = page.locator(".meal-drawer");
   await drawer.getByRole("button", { name: "Split ingredient 1; this row keeps its identity" }).click();
   await drawer.getByLabel("Ingredient 1 core").fill("split survivor literal");
@@ -151,8 +149,7 @@ test("Split identity follows the survivor when the created result moves before i
   const meal = before.state.weeks.find(({ id }) => id === before.state.activeWeekId)!.data.meals[0]!;
   const sourceId = meal.ingredients[0]!.id;
 
-  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
-  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  await page.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
   const drawer = page.locator(".meal-drawer");
   await drawer.getByRole("button", { name: "Split ingredient 1; this row keeps its identity" }).click();
   await drawer.getByRole("button", { name: "Move ingredient 2 up" }).click();
@@ -228,8 +225,7 @@ test("recipe editor sends retained IDs, creation correlations, and explicit remo
   const originalOccurrences = originalMeal?.ingredients ?? [];
   const originalIds = originalOccurrences.map(({ id }) => id);
   expect(originalIds.length).toBeGreaterThan(2);
-  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
-  await page.getByRole("button", { name: "Edit meal" }).first().click();
+  await page.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
   const drawer = page.locator(".meal-drawer");
   await expect(drawer.getByText("Ingredients", { exact: true })).toBeVisible();
 
@@ -393,8 +389,7 @@ test("known two-client conflicts recompose into an editable occurrence draft wit
   const originalIds = meal!.ingredients.map(({ id }) => id);
 
   for (const candidate of [page, peer]) {
-    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
-    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
+    await candidate.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
   }
   const localDrawer = page.locator(".meal-drawer");
   const remoteDrawer = peer.locator(".meal-drawer");
@@ -478,12 +473,11 @@ test("two-client conflict preserves separate edits to repeated uses of one occur
   await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
 
   for (const candidate of [page, peer]) {
-    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
-    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
-    await candidate.getByRole("dialog").getByLabel(/^Edit step 1 /u).click();
+    await candidate.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
+    await candidate.locator(".meal-drawer").getByLabel(/^Edit step 1 /u).click();
   }
-  const localStep = page.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
-  const remoteStep = peer.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const localStep = page.locator(".meal-drawer").getByRole("article", { name: /^step 1 for /u });
+  const remoteStep = peer.locator(".meal-drawer").getByRole("article", { name: /^step 1 for /u });
   const remoteAmounts = remoteStep.locator(".instruction-input-row input[aria-label^='Amount']");
   await expect(localStep.locator(".instruction-input-row")).toHaveCount(2);
   await localStep.locator(".instruction-input-row").nth(0).getByRole("textbox").first().fill("2");
@@ -569,12 +563,11 @@ test("two-client conflict preserves a local edit when identical repeated uses ma
   await peer.goto("/");
   await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
   for (const candidate of [page, peer]) {
-    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
-    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
-    await candidate.getByRole("dialog").getByLabel(/^Edit step 1 /u).click();
+    await candidate.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
+    await candidate.locator(".meal-drawer").getByLabel(/^Edit step 1 /u).click();
   }
-  const localStep = page.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
-  const remoteStep = peer.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const localStep = page.locator(".meal-drawer").getByRole("article", { name: /^step 1 for /u });
+  const remoteStep = peer.locator(".meal-drawer").getByRole("article", { name: /^step 1 for /u });
   await localStep.locator(".instruction-input-row").nth(1).getByRole("textbox").first().fill("5");
   await remoteStep.getByRole("button", { name: "Remove ingredient input 1" }).click();
   const remoteAccepted = peer.waitForResponse((response) =>
@@ -655,12 +648,11 @@ test("two-client conflict preserves edited peer multiplicity beside an ambiguous
   await peer.goto("/");
   await expect(peer.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
   for (const candidate of [page, peer]) {
-    await candidate.getByRole("button", { name: /^Open .* day$/u }).first().click();
-    await candidate.getByRole("button", { name: "Edit meal" }).first().click();
-    await candidate.getByRole("dialog").getByLabel(/^Edit step 1 /u).click();
+    await candidate.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
+    await candidate.locator(".meal-drawer").getByLabel(/^Edit step 1 /u).click();
   }
-  const localStep = page.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
-  const remoteStep = peer.getByRole("dialog").getByRole("article", { name: /^step 1 for /u });
+  const localStep = page.locator(".meal-drawer").getByRole("article", { name: /^step 1 for /u });
+  const remoteStep = peer.locator(".meal-drawer").getByRole("article", { name: /^step 1 for /u });
   await localStep.locator(".instruction-input-row").nth(2).getByRole("textbox").first().fill("5");
   await remoteStep.getByRole("button", { name: "Remove ingredient input 1" }).click();
   for (const row of await remoteStep.locator(".instruction-input-row").all()) {

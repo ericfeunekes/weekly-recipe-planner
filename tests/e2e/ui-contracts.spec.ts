@@ -16,7 +16,6 @@ const evidenceDirectory = process.env.PLANNER_E2E_EVIDENCE_DIR;
 
 const VIEWS = [
   { id: "week", label: "Week", heading: "Week" },
-  { id: "tonight", label: "Day", heading: "Day" },
   { id: "prep", label: "Prep", heading: "Prep" },
   { id: "groceries", label: "Groceries", heading: "Groceries" },
   { id: "closeout", label: "Close out", heading: "Close out" },
@@ -37,10 +36,19 @@ async function resetPlanner(page: Page): Promise<void> {
 }
 
 async function openView(page: Page, label: string): Promise<void> {
+  if (label === "Week" && /\/recipes\//u.test(page.url())) {
+    await page.getByTitle("Back to Week").click();
+  }
   const navigation = (page.viewportSize()?.width ?? 0) <= 840
     ? page.locator(".mobile-nav")
     : page.locator(".view-nav");
   await navigation.getByRole("button", { name: label, exact: true }).click();
+}
+
+async function openFirstRecipe(page: Page): Promise<void> {
+  await openView(page, "Week");
+  await page.locator(".week-view .meal-card-primary").first().click();
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
 }
 
 async function assertAccessible(
@@ -255,6 +263,9 @@ test("all primary views and chat remain contained and accessible", async ({ page
       await assertAccessible(page, `${fixtureId}-${view.id}`, viewport.id);
     }
 
+    await openFirstRecipe(page);
+    await assertAccessible(page, `${fixtureId}-recipe`, viewport.id);
+
     await page.getByRole("button", { name: "Open Codex" }).click();
     const chat = mobile
       ? page.getByRole("dialog", { name: "Codex task" })
@@ -292,26 +303,21 @@ test("all primary views and chat remain contained and accessible", async ({ page
   }
 });
 
-test("meal, history, and Codex share one short-viewport modal owner", async ({ page }) => {
+test("Recipe is inline while history and Codex retain the short-viewport modal owner", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies meal and history content.");
   await page.setViewportSize({ width: 375, height: 400 });
   await resetPlanner(page);
   const background = page.locator(".app-shell > div").first();
 
-  await openView(page, "Day");
-  const mealTrigger = page.getByRole("button", { name: "Edit meal" }).first();
+  const mealTrigger = page.locator(".week-view .meal-card-primary").first();
   await mealTrigger.click();
-  const mealDialog = page.getByRole("dialog").filter({ has: page.getByLabel("Title") });
-  await expect(mealDialog).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(1);
-  await expect(background).toHaveJSProperty("inert", true);
-  await expect.poll(() => page.locator("body").evaluate((body) => body.style.overflow)).toBe("hidden");
-  expect(await mealDialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
-  await expectDialogFocusCycle(page, mealDialog);
-  await expect(mealDialog.getByLabel(/Meal date for /)).toBeVisible();
-  await assertAccessible(page, `${fixtureId}-meal-dialog`, "short-375x400");
-  await page.keyboard.press("Escape");
-  await expect(mealDialog).toHaveCount(0);
+  const recipe = page.locator(".meal-drawer");
+  await expect(recipe).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(background).toHaveJSProperty("inert", false);
+  await expect(recipe.getByLabel(/Meal date for /)).toBeVisible();
+  await assertAccessible(page, `${fixtureId}-recipe-inline`, "short-375x400");
+  await page.getByTitle("Back to Week").click();
   await expect(mealTrigger).toBeFocused();
 
   const historyTrigger = page.getByTitle("Change history");
@@ -353,20 +359,19 @@ test("archived weeks expose no editable recipe, prep, or grocery drafts", async 
   await page.getByRole("button", { name: "Archive active week" }).click();
   await expect(page.getByRole("heading", { name: "Week archived" })).toBeVisible();
 
-  await openView(page, "Day");
-  await page.getByRole("button", { name: "Edit meal" }).first().click();
-  const mealDialog = page.getByRole("dialog").filter({ has: page.getByLabel("Title") });
-  await expect(mealDialog).toBeVisible();
-  const recipeDrafts = mealDialog.locator("input:not([type=checkbox]), textarea");
+  await openFirstRecipe(page);
+  const recipe = page.locator(".meal-drawer");
+  await expect(recipe).toBeVisible();
+  const recipeDrafts = recipe.locator("input:not([type=checkbox]), textarea");
   expect(await recipeDrafts.count()).toBeGreaterThan(0);
   expect(await recipeDrafts.evaluateAll((controls) =>
     controls.every((control) => (control as HTMLInputElement | HTMLTextAreaElement).disabled),
   )).toBe(true);
-  await expect(mealDialog.getByLabel(/Meal date for /)).toBeDisabled();
-  await expect(mealDialog.getByText("Add note or ask Codex")).toHaveCount(0);
-  await expect(mealDialog.getByRole("button", { name: "Add instruction" })).toHaveCount(0);
-  await assertAccessible(page, `${fixtureId}-archived-meal`, "desktop-1280x900");
-  await page.keyboard.press("Escape");
+  await expect(recipe.getByLabel(/Meal date for /)).toBeDisabled();
+  await expect(recipe.getByText("Add note or ask Codex")).toHaveCount(0);
+  await expect(recipe.getByRole("button", { name: "Add instruction" })).toHaveCount(0);
+  await assertAccessible(page, `${fixtureId}-archived-recipe`, "desktop-1280x900");
+  await page.getByTitle("Back to Week").click();
 
   await openView(page, "Prep");
   await expect(page.getByRole("button", { name: "Add to prep" })).toHaveCount(0);

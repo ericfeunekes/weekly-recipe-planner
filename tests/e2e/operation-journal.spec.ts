@@ -248,8 +248,7 @@ test.describe("reload-safe authority operation journal", () => {
   test("planner recipe edits restore their submitted draft and settle once", async ({ page }) => {
     test.setTimeout(120_000);
     await initializePlanner(page);
-    await page.locator(".view-nav").getByRole("button", { name: "Day", exact: true }).click();
-    await page.getByRole("button", { name: "Edit meal" }).first().click();
+    await page.locator(".week-view .meal-card-primary").first().click();
     const drawer = page.locator(".meal-drawer");
     const title = "Journal recovery traybake";
     const finalTitle = "Journal recovery traybake final";

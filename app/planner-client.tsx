@@ -1167,7 +1167,7 @@ function PlannerAppContent() {
   }, [workspaceQuery.data]);
 
   useEffect(() => {
-    if (!workspace?.initialized) return;
+    if (!workspace?.initialized || connection !== "online") return;
     const today = isoDateForTimeZone(Date.now() + serverOffsetRef.current, workspace.state.householdTimeZone);
     const authoritativeDefaultWeekId = workspace.state.activeWeekId ??
       workspace.state.weeks.find((week) => weekContainsDate(week.id, today))?.id ??
@@ -1192,7 +1192,7 @@ function PlannerAppContent() {
       if (resolved.week) void routerNavigate({ to: weekPath(resolved.week.id), replace: true });
       return;
     }
-  }, [location, routerNavigate, workspace]);
+  }, [connection, location, routerNavigate, workspace]);
 
   const clearLocalRecoveryAfterReadback = useCallback(async () => {
     if (!journalError || journalRecoveryPending) return;
@@ -1654,7 +1654,7 @@ function PlannerAppContent() {
   return (
     <PlannerVersionContext.Provider value={initialized.plannerVersion}>
       <ServerOffsetContext.Provider value={serverOffset}>
-      <div className="app-shell">
+      <div className="app-shell max-[700px]:!h-dvh max-[700px]:!overflow-hidden">
       <div ref={appContentRef}>
         <header className="app-header">
           <div className="brand-block">
@@ -1766,7 +1766,7 @@ function PlannerAppContent() {
           })}
         </nav>
 
-        <main className={`app-main ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
+        <main className={`app-main max-[700px]:!m-0 max-[700px]:!flex max-[700px]:!h-[calc(100dvh-138px)] max-[700px]:!flex-col max-[700px]:!overflow-hidden ${!mobile && codexCollapsed ? "codex-collapsed" : ""}`}>
           {authorityNotice ? (
             <AuthorityNotice
               notice={authorityNotice}
@@ -1816,8 +1816,8 @@ function PlannerAppContent() {
             ) : null}
           </div>
 
-          <div className="workspace">
-            <section ref={primaryWorkspaceRef} className="primary-workspace">
+          <div className="workspace max-[700px]:!min-h-0 max-[700px]:!flex-1">
+            <section ref={primaryWorkspaceRef} className="primary-workspace max-[700px]:!h-full max-[700px]:!overflow-y-auto max-[700px]:[overscroll-behavior:contain]">
               {!week ? (
                 <section className="lifecycle-surface empty-workspace">
                   <CalendarDays size={30} />

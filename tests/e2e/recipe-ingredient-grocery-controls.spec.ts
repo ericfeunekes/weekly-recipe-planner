@@ -60,9 +60,9 @@ test("output and leftover recipe rows do not expose grocery execution controls",
   });
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /^Open .* day$/u }).first().click();
+  await page.getByRole("button", { name: /^Open .* recipe$/u }).first().click();
 
-  const ingredients = page.locator(".tonight-side .ingredient-list");
+  const ingredients = page.locator(".meal-drawer .ingredient-list");
   await expect(ingredients.getByText("fixture requirement", { exact: false })).toBeVisible();
   await expect(ingredients.getByText("fixture output", { exact: false })).toBeVisible();
   await expect(ingredients.getByText("fixture leftover", { exact: false })).toBeVisible();

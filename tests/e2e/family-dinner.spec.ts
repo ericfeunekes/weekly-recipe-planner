@@ -188,8 +188,7 @@ async function openPrepRecipeSummary(step: Locator) {
 
 async function openRecipeEditor(page: Page, title: string) {
   await openView(page, "Week");
-  await page.getByRole("article", { name: new RegExp(`^${title} on `) }).getByRole("button", { name: /^Open .* day$/ }).click();
-  await page.getByRole("button", { name: "Edit meal" }).click();
+  await page.getByRole("article", { name: new RegExp(`^${title} on `) }).getByRole("button", { name: /^Open .* recipe$/ }).click();
 }
 
 function apiPath(url: string) {
@@ -418,7 +417,7 @@ test.describe.serial("family dinner authority", () => {
     await prepRecipeSummary.getByTitle("Close", { exact: true }).click();
 
     await openRecipeEditor(pageA, "Harissa chicken traybake");
-    const mealDrawer = pageA.getByRole("dialog", { name: "Harissa chicken traybake" });
+    const mealDrawer = pageA.locator(".meal-drawer");
     await mealDrawer.getByRole("textbox", { name: "Title", exact: true }).fill("");
     await mealDrawer.getByRole("button", { name: "Save recipe details" }).click();
     await expect(mealDrawer.getByText("Enter a meal title.")).toBeVisible();
@@ -427,7 +426,7 @@ test.describe.serial("family dinner authority", () => {
     await roastInDrawer.getByText("Edit instruction").click();
     await roastInDrawer.getByRole("spinbutton").fill("0.5");
     await roastInDrawer.getByRole("button", { name: /Save step .*Roast the chicken/ }).click();
-    await mealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
+    await pageA.getByTitle("Back to Week").click();
 
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     const ambiguousMealDrawer = pageA.locator(".meal-drawer");
@@ -477,8 +476,8 @@ test.describe.serial("family dinner authority", () => {
       .find((candidate: { title?: string }) => candidate.title === "Harissa chicken traybake");
     expect(conflictMeal.ingredients.map(({ id }: { id: string }) => id)).toEqual(ambiguousOccurrenceIds);
     runtimeA.setExpectedFailurePhase("normal");
-    await ambiguousMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
-    await ambiguousRemoteDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
+    await pageA.getByTitle("Back to Week").click();
+    await pageB.getByTitle("Back to Week").click();
 
     await openRecipeEditor(pageA, "Harissa chicken traybake");
     const staleMealDrawer = pageA.locator(".meal-drawer");
@@ -489,7 +488,7 @@ test.describe.serial("family dinner authority", () => {
     await remoteMealDrawer.getByRole("textbox", { name: "Title", exact: true }).fill("Remote accepted dinner title");
     await remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true }).fill("Neighbourhood kitchen");
     await remoteMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
-    await expect(pageA.getByRole("dialog", { name: "Remote accepted dinner title" })).toBeVisible({ timeout: 8_000 });
+    await expect(pageA.locator(".meal-drawer").getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Remote accepted dinner title", { timeout: 8_000 });
     await expect(staleTitle).toHaveValue("Stale local dinner title");
     await expect(staleMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
@@ -500,10 +499,10 @@ test.describe.serial("family dinner authority", () => {
     await expect(staleMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
     await staleTitle.fill("Harissa chicken traybake");
     await staleMealDrawer.getByRole("button", { name: "Save recipe details" }).click();
-    await expect(pageB.getByRole("dialog", { name: "Harissa chicken traybake" })).toBeVisible({ timeout: 8_000 });
+    await expect(pageB.locator(".meal-drawer").getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Harissa chicken traybake", { timeout: 8_000 });
     await expect(remoteMealDrawer.getByRole("textbox", { name: "Venue", exact: true })).toHaveValue("Neighbourhood kitchen");
-    await staleMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
-    await remoteMealDrawer.locator(".drawer-footer").getByRole("button", { name: "Close" }).click();
+    await pageA.getByTitle("Back to Week").click();
+    await pageB.getByTitle("Back to Week").click();
 
     await openView(pageA, "Prep");
     await pageA.getByRole("button", { name: /Add recipe steps to/ }).click();
@@ -593,26 +592,26 @@ test.describe.serial("family dinner authority", () => {
       [pageA, pageB],
       Date.parse("2026-07-07T18:00:00-03:00"),
     );
-    await openView(pageB, "Day");
-    await expect(pageB.getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
-    const tonightSteps = pageB.locator(".tonight-main .instruction-step");
-    await expect(tonightSteps.locator(".step-instruction")).toHaveText([
+    await openRecipeEditor(pageB, "Harissa chicken traybake");
+    await expect(pageB.locator(".meal-drawer").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
+    const recipeInstructionSteps = pageB.locator(".meal-drawer .instruction-step");
+    await expect(recipeInstructionSteps.locator(".step-instruction")).toHaveText([
       "Coat the chicken with harissa and refrigerate.",
       "Roast the chicken, peppers, and chickpeas until cooked through.",
     ]);
-    await expect(tonightSteps.first().getByRole("checkbox")).toBeChecked();
-    await expect(tonightSteps.first().locator(".step-inputs")).toContainText("900 g");
-    const roastTonightB = tonightSteps.nth(1);
-    await roastTonightB.getByRole("button", { name: /Edit comment for step .*Roast the chicken/ }).click();
-    await expect(roastTonightB.getByRole("textbox", { name: /Note or Codex request for step .*Roast the chicken/ }))
+    await expect(recipeInstructionSteps.first().getByRole("checkbox")).toBeChecked();
+    await expect(recipeInstructionSteps.first().locator(".step-inputs")).toContainText("900 g");
+    const roastRecipeB = recipeInstructionSteps.nth(1);
+    await roastRecipeB.getByRole("button", { name: /Edit comment for step .*Roast the chicken/ }).click();
+    await expect(roastRecipeB.getByRole("textbox", { name: /Note or Codex request for step .*Roast the chicken/ }))
       .toHaveValue("Timer started before removing this from prep.");
-    await roastTonightB.getByRole("button", { name: "Cancel" }).click();
-    await expect(roastTonightB.getByRole("checkbox")).not.toBeChecked();
-    await expect(roastTonightB.locator(".step-timer")).toContainText("elapsed", { timeout: 40_000 });
+    await roastRecipeB.getByRole("button", { name: "Cancel" }).click();
+    await expect(roastRecipeB.getByRole("checkbox")).not.toBeChecked();
+    await expect(roastRecipeB.locator(".step-timer")).toContainText("elapsed", { timeout: 40_000 });
     expect(await pageB.evaluate(() => Notification.permission)).not.toBe("granted");
-    await roastTonightB.getByTitle("Reset timer").click();
-    await expect(roastTonightB.locator(".step-timer")).toContainText("timer");
-    await expect(roastTonightB.getByRole("checkbox")).not.toBeChecked();
+    await roastRecipeB.getByTitle("Reset timer").click();
+    await expect(roastRecipeB.locator(".step-timer")).toContainText("timer");
+    await expect(roastRecipeB.getByRole("checkbox")).not.toBeChecked();
 
     await sendCodexMessage(pageB, "Which dinner is in the Tonight context?");
     await expect(codexConversation(pageB).getByText("Tonight is Harissa chicken traybake.", { exact: true })).toBeVisible();
@@ -637,7 +636,7 @@ test.describe.serial("family dinner authority", () => {
     }
     await expect(codexConversation(pageB).getByText(/The shared plan changed first\. Review it, then ask Codex again\./)).toBeVisible({ timeout: 8_000 });
     await expect(codexConversation(pageB).getByText(/Codex replied, but its planner change was not applied/)).toBeVisible();
-    await expect(pageB.locator(".tonight-hero .status-badge")).toHaveText("planned");
+    await expect(pageB.locator(".meal-drawer .status-badge")).toHaveText("planned");
 
     await openView(pageB, "Groceries");
     await pageB.getByRole("radio", { name: "Farm box", exact: true }).click();
@@ -653,10 +652,10 @@ test.describe.serial("family dinner authority", () => {
     await expect(offlineGrocerySource).toBeVisible();
     runtimeA.setExpectedFailurePhase("normal");
 
-    await openView(pageA, "Day");
-    await openView(pageB, "Day");
+    await openRecipeEditor(pageA, "Harissa chicken traybake");
+    await openRecipeEditor(pageB, "Harissa chicken traybake");
     await pageA.getByRole("button", { name: "Mark cooked" }).click();
-    await expect(pageB.locator(".tonight-hero .status-badge")).toHaveText("cooked");
+    await expect(pageB.locator(".meal-drawer .status-badge")).toHaveText("cooked");
     await openView(pageB, "Close out");
     await expect(pageB.getByText(/Harissa chicken traybake · 2 portions/)).toBeVisible();
     const repeatHarissa = pageB.getByRole("radio", { name: "Rate Harissa chicken traybake repeat" });
