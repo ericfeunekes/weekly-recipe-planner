@@ -256,6 +256,49 @@ test("read projections exclude transcript, chat, receipts, before-state, and req
   assert.equal(isPlannerReadProjection({ kind: "workspace", activeWeekId: null, weeks: [], ingredientCatalogue: "forged" }), false);
 });
 
+test("grocery read projections reject malformed quantity and literal parts", () => {
+  const grocery = {
+    kind: "grocery",
+    grocery: {
+      filter: "to_buy",
+      sections: [{
+        section: "Produce",
+        groups: [{
+          key: "concept:test",
+          label: "Test",
+          conceptId: "test",
+          quantities: [{ kind: "quantity", dimension: "count", quantity: { numerator: 1, denominator: 1 }, unit: null, display: "1" }],
+          provenanceCount: 1,
+          children: [{
+            executionId: "grocery-1",
+            occurrenceId: "ingredient-1",
+            mealId: "meal-1",
+            mealTitle: "Rice bowls",
+            ingredient: "test",
+            qualifier: null,
+            amount: { amount: "1", unit: null, source: "1 test" },
+            coverage: "shop",
+            checked: false,
+            section: "Produce",
+            sourceRecipe: null,
+          }],
+        }],
+      }],
+    },
+  };
+  assert.equal(isPlannerReadProjection(grocery), true);
+  for (const badPart of [
+    { ...grocery.grocery.sections[0].groups[0].quantities[0], dimension: "bogus" },
+    { ...grocery.grocery.sections[0].groups[0].quantities[0], quantity: { numerator: "1", denominator: 1 } },
+    { ...grocery.grocery.sections[0].groups[0].quantities[0], quantity: { numerator: 1, denominator: 0 } },
+    { kind: "literal", literal: "one package", reason: "unknown" },
+  ]) {
+    const candidate = structuredClone(grocery);
+    candidate.grocery.sections[0].groups[0].quantities = [badPart];
+    assert.equal(isPlannerReadProjection(candidate), false);
+  }
+});
+
 test("the maximum valid catalogue fits the embedded read result bound", () => {
   const source = workspace();
   source.state.ingredientCatalogue = {
