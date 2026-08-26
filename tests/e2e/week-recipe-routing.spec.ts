@@ -46,3 +46,26 @@ test("legacy Day URL returns to Week without selecting a recipe", async ({ page 
   await expect(page.getByRole("heading", { level: 1, name: "Week", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
+
+test("direct and history Recipe locations stay intact while workspace reads fail, then recover", async ({ page }) => {
+  await resetPlanner(page);
+  await page.locator(".week-view .meal-card-primary").first().click();
+  const recipeUrl = page.url();
+  await page.goBack();
+  const weekUrl = page.url();
+
+  await page.route("**/api/workspace", async (route) => route.abort("failed"));
+  await page.goto(recipeUrl);
+  await expect(page).toHaveURL(recipeUrl);
+  await expect(page.getByRole("heading", { name: "Planner unavailable", exact: true })).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(weekUrl);
+  await page.goForward();
+  await expect(page).toHaveURL(recipeUrl);
+
+  await page.unroute("**/api/workspace");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page).toHaveURL(recipeUrl);
+  await expect(page.getByRole("heading", { level: 1, name: "Recipe", exact: true })).toBeVisible();
+});
