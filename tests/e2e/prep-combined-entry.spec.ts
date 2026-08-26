@@ -38,6 +38,10 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await summary.getByRole("button", { name: "Close", exact: true }).last().click();
 
   await page.setViewportSize({ width: 320, height: 844 });
+  const noteControl = existing.getByRole("button", { name: /Edit Prep note/ });
+  await expect(noteControl).toBeVisible();
+  expect(await noteControl.boundingBox()).toMatchObject({ width: 44, height: 44 });
+  await expect(existing).toContainText("Trim excess fat before coating.");
   await page.getByRole("button", { name: /Add recipe steps to/ }).click();
   const sources = page.getByRole("dialog", { name: "Recipe instructions" });
   await captureAccessibleQaEvidence({ page, evidenceDirectory, scenarioId: "prep-source", viewportId: "mobile-320x844" });
@@ -104,6 +108,8 @@ test("combined Prep batches preview, fulfill sources independently, and expand w
   await expect(combined).toHaveCount(1);
   await expect(page.getByTestId("prep-session-step")).toHaveCount(1);
   await expect(combined).toContainText("Combined prep");
+  await expect(combined.getByRole("button", { name: /Prep note/ })).toHaveCount(0);
+  await expect(combined.getByText("Prep note", { exact: true })).toHaveCount(0);
   await expect(combined).toContainText("Glaze the salmon and roast until just cooked.");
   await expect(combined).toContainText("Roast the chicken, peppers, and chickpeas until cooked through.");
   await expect(combined).toContainText("680 g salmon");

@@ -1479,6 +1479,7 @@ svg {
 }
 
 .prep-drag-handle:focus-visible,
+.prep-note-trigger:focus-visible,
 .prep-overflow-trigger:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 2px;
@@ -3791,6 +3792,7 @@ textarea[aria-invalid="true"] {
   }
 
   .prep-drag-handle,
+  .prep-note-trigger,
   .prep-overflow-trigger {
     height: 44px;
     min-height: 44px;

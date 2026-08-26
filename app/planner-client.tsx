@@ -2802,6 +2802,7 @@ function PrepSessionStepRow(props: {
       leading={selected ? <span className="prep-drag-handle" aria-hidden="true" title={dragLabel}><GripVertical size={17} /></span> : <span className="prep-drag-spacer" aria-hidden="true" />}
       trailing={<div className="prep-overflow relative z-10">
         <PlannerIconButton
+          className="prep-note-trigger"
           type="button"
           title={step.note ? "Edit Prep note" : "Add Prep note"}
           aria-label={`${step.note ? "Edit" : "Add"} Prep note for ${controlTarget}`}
