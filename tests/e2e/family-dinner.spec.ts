@@ -825,7 +825,7 @@ test.describe.serial("family dinner authority", () => {
     await dialog.getByRole("textbox", { name: "Message Codex" }).fill("");
     await phonePage.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
-    await expect(phonePage.getByTitle("Change history")).toBeFocused();
+    await expect(trigger).toBeFocused();
     await expect(phonePage.locator(".app-shell > div").first()).toHaveJSProperty("inert", false);
 
     await phonePage.reload();
