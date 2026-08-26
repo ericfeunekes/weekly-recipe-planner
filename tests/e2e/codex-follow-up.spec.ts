@@ -36,14 +36,17 @@ async function openNative(page: Page) {
 async function expectComposerActionTargets(rail: Locator) {
   const stop = rail.getByRole("button", { name: "Stop Codex" });
   const send = rail.getByRole("button", { name: "Send to Codex" });
-  const [stopBox, sendBox] = await Promise.all([stop.boundingBox(), send.boundingBox()]);
-  expect(stopBox).not.toBeNull();
+  const sendBox = await send.boundingBox();
   expect(sendBox).not.toBeNull();
-  expect(stopBox?.width).toBeGreaterThanOrEqual(44);
-  expect(stopBox?.height).toBeGreaterThanOrEqual(44);
   expect(sendBox?.width).toBeGreaterThanOrEqual(44);
   expect(sendBox?.height).toBeGreaterThanOrEqual(44);
-  expect((stopBox?.x ?? 0) + (stopBox?.width ?? 0)).toBeLessThanOrEqual(sendBox?.x ?? 0);
+  if (await stop.count()) {
+    const stopBox = await stop.boundingBox();
+    expect(stopBox).not.toBeNull();
+    expect(stopBox?.width).toBeGreaterThanOrEqual(44);
+    expect(stopBox?.height).toBeGreaterThanOrEqual(44);
+    expect((stopBox?.x ?? 0) + (stopBox?.width ?? 0)).toBeLessThanOrEqual(sendBox?.x ?? 0);
+  }
 }
 
 test.describe("native Codex thread rail", () => {

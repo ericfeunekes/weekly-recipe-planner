@@ -37,7 +37,7 @@ type Workspace = {
           mealId: string;
           ingredientId: string;
           checked: boolean;
-          source: "shop" | "farm_box" | "on_hand";
+          coverage: "needs_source" | "shop" | "farm_box" | "on_hand";
         }>;
         meals: Array<{
           id: string;
@@ -67,14 +67,14 @@ function bodyJson(body: string): Record<string, unknown> {
 function groceryIngredient(
   workspace: Workspace,
   itemId: string,
-): { ingredient: string; source: "shop" | "farm_box" | "on_hand"; checked: boolean } | undefined {
+): { ingredient: string; coverage: "needs_source" | "shop" | "farm_box" | "on_hand"; checked: boolean } | undefined {
   for (const week of workspace.state.weeks) {
     const grocery = week.data.groceries.find((item) => item.id === itemId);
     if (!grocery) continue;
     const meal = week.data.meals.find((candidate) => candidate.id === grocery.mealId);
     const ingredient = meal?.ingredients.find((candidate) => candidate.id === grocery.ingredientId);
     if (ingredient) {
-      return { ingredient: ingredient.ingredient, source: grocery.source, checked: grocery.checked };
+      return { ingredient: ingredient.ingredient, coverage: grocery.coverage, checked: grocery.checked };
     }
   }
   return undefined;
@@ -386,29 +386,35 @@ test.describe("reload-safe authority operation journal", () => {
     expect(bodyJson(continuation).basePlannerVersion).toBe(currentWorkspace.plannerVersion);
   });
 
-  test("cross-site renderer replacement preserves a recipe-derived source move for exact replay", async ({ page }) => {
+  test("cross-site renderer replacement preserves a needs-source coverage change for exact replay", async ({ page }) => {
     test.setTimeout(120_000);
     await initializePlanner(page);
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
     const ingredient = "Boneless chicken thighs";
+    const initialWorkspace = await readWorkspace(page);
+    const initialItemId = groceryIdForIngredient(initialWorkspace, ingredient);
+    expect(groceryIngredient(initialWorkspace, initialItemId)).toEqual({
+      ingredient: ingredient.toLocaleLowerCase("en-CA"), coverage: "needs_source", checked: false,
+    });
+    await page.getByRole("radio", { name: "All", exact: true }).click();
     const loss = await armCommittedResponseLoss(
       page,
       "**/api/commands",
       (body) => {
         const command = body.command as Record<string, unknown> | undefined;
-        return command?.type === "moveGroceryItemsToSource" &&
-          command?.source === "farm_box" &&
+        return command?.type === "setGroceryItemsCoverage" &&
+          command?.coverage === "farm_box" &&
           Array.isArray(command.itemIds) && command.itemIds.length === 1;
       },
     );
     const groceryRow = page.locator(".grocery-row").filter({ hasText: ingredient });
     await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
-    await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
-    await page.getByRole("button", { name: "Move", exact: true }).click();
+    await page.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("farm_box");
+    await page.getByRole("button", { name: "Set coverage", exact: true }).click();
     const operation = await waitForAmbiguity(page, loss, "planner");
     expect(operation.submittedDraft).toMatchObject({
-      type: "moveGroceryItemsToSource",
-      source: "farm_box",
+      type: "setGroceryItemsCoverage",
+      coverage: "farm_box",
       itemIds: [expect.any(String)],
     });
     await stopResponseLoss(page, loss);
@@ -416,7 +422,7 @@ test.describe("reload-safe authority operation journal", () => {
     await page.goto("data:text/html,<title>Renderer replacement</title>");
     await expect(page).toHaveTitle("Renderer replacement");
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    const retry = mainRetry(page, "Move selected groceries");
+    const retry = mainRetry(page, "Set grocery coverage");
     await expect(retry).toBeVisible();
     const replayBody = await captureAcceptedReplay(page, "**/api/commands", async () => {
       await retry.click();
@@ -431,13 +437,13 @@ test.describe("reload-safe authority operation journal", () => {
     expect(typeof movedItemId).toBe("string");
     expect(groceryIngredient(workspace, movedItemId as string)).toEqual({
       ingredient: ingredient.toLocaleLowerCase("en-CA"),
-      source: "farm_box",
+      coverage: "farm_box",
       checked: false,
     });
     expect(workspace.events.filter((event) => {
       const itemIds = event.command.itemIds;
-      return event.command.type === "moveGroceryItemsToSource" &&
-        event.command.source === "farm_box" &&
+      return event.command.type === "setGroceryItemsCoverage" &&
+        event.command.coverage === "farm_box" &&
         Array.isArray(itemIds) && itemIds.includes(movedItemId);
     })).toHaveLength(1);
   });
@@ -446,9 +452,10 @@ test.describe("reload-safe authority operation journal", () => {
     test.setTimeout(120_000);
     await initializePlanner(page);
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
+    await page.getByRole("radio", { name: "All", exact: true }).click();
     const chicken = page.getByRole("checkbox", { name: "Check Boneless chicken thighs" });
     await chicken.click();
-    await expect(chicken).toHaveCount(0);
+    await expect(chicken).toBeChecked();
     const beforeUndo = await readWorkspace(page);
     const checkedChickenId = groceryIdForIngredient(beforeUndo, "Boneless chicken thighs");
     expect(groceryIngredient(beforeUndo, checkedChickenId)?.checked).toBe(true);
@@ -489,20 +496,26 @@ test.describe("reload-safe authority operation journal", () => {
     await initializePlanner(page);
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
     const ingredient = "Boneless chicken thighs";
+    const initialWorkspace = await readWorkspace(page);
+    const initialItemId = groceryIdForIngredient(initialWorkspace, ingredient);
+    expect(groceryIngredient(initialWorkspace, initialItemId)).toEqual({
+      ingredient: ingredient.toLocaleLowerCase("en-CA"), coverage: "needs_source", checked: false,
+    });
+    await page.getByRole("radio", { name: "All", exact: true }).click();
     const loss = await armCommittedResponseLoss(
       page,
       "**/api/commands",
       (body) => {
         const command = body.command as Record<string, unknown> | undefined;
-        return command?.type === "moveGroceryItemsToSource" &&
-          command?.source === "farm_box" &&
+        return command?.type === "setGroceryItemsCoverage" &&
+          command?.coverage === "farm_box" &&
           Array.isArray(command.itemIds) && command.itemIds.length === 1;
       },
     );
     const groceryRow = page.locator(".grocery-row").filter({ hasText: ingredient });
     await groceryRow.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
-    await page.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
-    await page.getByRole("button", { name: "Move", exact: true }).click();
+    await page.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("farm_box");
+    await page.getByRole("button", { name: "Set coverage", exact: true }).click();
     const operation = await waitForAmbiguity(page, loss, "planner");
 
     const popupPromise = page.context().waitForEvent("page");
@@ -519,7 +532,7 @@ test.describe("reload-safe authority operation journal", () => {
       auxiliary,
       "**/api/commands",
       async () => {
-        const retry = mainRetry(auxiliary, "Move selected groceries");
+        const retry = mainRetry(auxiliary, "Set grocery coverage");
         await expect(retry).toBeVisible();
         await retry.click();
         await expect(retry).toHaveCount(0);
@@ -531,7 +544,7 @@ test.describe("reload-safe authority operation journal", () => {
     await stopResponseLoss(page, loss);
     await reloadPlanner(page);
     const primaryReplay = await captureAcceptedReplay(page, "**/api/commands", async () => {
-      const retry = mainRetry(page, "Move selected groceries");
+      const retry = mainRetry(page, "Set grocery coverage");
       await expect(retry).toBeVisible();
       await retry.click();
       await expect(retry).toHaveCount(0);
@@ -545,13 +558,13 @@ test.describe("reload-safe authority operation journal", () => {
     expect(typeof movedItemId).toBe("string");
     expect(groceryIngredient(workspace, movedItemId as string)).toEqual({
       ingredient: ingredient.toLocaleLowerCase("en-CA"),
-      source: "farm_box",
+      coverage: "farm_box",
       checked: false,
     });
     expect(workspace.events.filter((event) => {
       const itemIds = event.command.itemIds;
-      return event.command.type === "moveGroceryItemsToSource" &&
-        event.command.source === "farm_box" &&
+      return event.command.type === "setGroceryItemsCoverage" &&
+        event.command.coverage === "farm_box" &&
         Array.isArray(itemIds) && itemIds.includes(movedItemId);
     })).toHaveLength(1);
     await auxiliary.close();
@@ -670,9 +683,10 @@ test.describe("reload-safe authority operation journal", () => {
     expect(await readJournal(page)).toBeNull();
 
     await page.locator(".view-nav").getByRole("button", { name: "Groceries", exact: true }).click();
+    await page.getByRole("radio", { name: "All", exact: true }).click();
     const chicken = page.getByRole("checkbox", { name: "Check Boneless chicken thighs" });
     await chicken.click();
-    await expect(chicken).toHaveCount(0);
+    await expect(chicken).toBeChecked();
     const workspace = await readWorkspace(page);
     const chickenId = groceryIdForIngredient(workspace, "Boneless chicken thighs");
     expect(groceryIngredient(workspace, chickenId)?.checked).toBe(true);

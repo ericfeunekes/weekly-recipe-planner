@@ -111,9 +111,9 @@ export function probeCanonicalImportPredecessor({
     const beforeInventory = inventory(fixtureDirectory);
 
     const predecessor = runPredecessorStoreOpen(predecessorDirectory, database);
-    assert.notEqual(predecessor.status, 0, "the schema-11 predecessor must reject a schema-12 candidate");
-    assert.match(`${predecessor.stdout}\n${predecessor.stderr}`, /schema 12 is newer than supported schema 11/iu);
-    assert.equal(sha256(database), beforeHash, "the predecessor must not mutate the schema-12 candidate");
+    assert.notEqual(predecessor.status, 0, "the schema-11 predecessor must reject a schema-13 candidate");
+    assert.match(`${predecessor.stdout}\n${predecessor.stderr}`, /schema 13 is newer than supported schema 11/iu);
+    assert.equal(sha256(database), beforeHash, "the predecessor must not mutate the schema-13 candidate");
     assert.deepEqual(
       inventory(fixtureDirectory),
       beforeInventory,
