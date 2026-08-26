@@ -278,6 +278,7 @@ test("D4 source links keep three same-date meal identities and Recipe context ex
   await step.getByRole("button", { name: /Add Prep note for step/ }).click();
   await step.getByRole("textbox", { name: /Prep note or Codex request for step/ }).fill("Exact route context");
   await step.getByRole("button", { name: "Ask Codex" }).click();
+  await expect(page.getByRole("textbox", { name: "Message Codex" })).toBeFocused();
   const sent = page.waitForRequest((request) => request.url().endsWith("/api/codex/turns/send") && request.method() === "POST");
   await page.getByRole("button", { name: "Send to Codex" }).click();
   expect((await sent).postData()).toContain(`[Planner recipe context: weekId=${weekId}; mealId=${meals[0].id}; stepId=${meals[0].instructions[0].id}]`);

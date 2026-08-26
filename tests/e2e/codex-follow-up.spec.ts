@@ -432,4 +432,14 @@ test.describe("native Codex thread rail", () => {
     await expect(dialog).toHaveCount(0);
     await expect(trigger).toBeFocused();
   });
+
+  test("ordinary desktop opening does not focus the composer", async ({ page }) => {
+    await openPreview(page, "/?codexPreview=1", false);
+
+    const trigger = page.getByRole("button", { name: "Open Codex" });
+    await trigger.click();
+    const rail = page.getByRole("complementary", { name: "Codex task" });
+    await expect(rail).toBeVisible();
+    await expect(rail.getByRole("textbox", { name: "Message Codex" })).not.toBeFocused();
+  });
 });

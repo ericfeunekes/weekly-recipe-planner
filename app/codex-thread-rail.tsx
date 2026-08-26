@@ -414,8 +414,8 @@ export function CodexThreadRail({
     : null;
 
   useEffect(() => {
-    if (focusKey > 0 && !collapsed) composerRef.current?.focus();
-  }, [collapsed, focusKey]);
+    if ((modal || focusKey > 0) && !collapsed) composerRef.current?.focus();
+  }, [collapsed, focusKey, modal]);
 
   useEffect(() => {
     if (!snapshot.thread) {
