@@ -555,14 +555,21 @@ test("grocery source filters and dinner links remain compact and actionable on p
 test("selected groceries move atomically without expanding the grocery list", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies populated grocery data.");
   await page.setViewportSize({ width: 390, height: 844 });
+  const openAllGroceries = async () => {
+    await openView(page, "Groceries");
+    await page.getByRole("radio", { name: "All", exact: true }).click();
+  };
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await expect(page.getByLabel("New grocery item", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Recipe for grocery", { exact: true })).toHaveCount(0);
 
   const chicken = page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i });
-  const salmon = page.locator(".grocery-row").filter({ hasText: /^salmon$/i });
+  const salmon = page.locator(".grocery-row").filter({ has: page.getByText("salmon", { exact: true }) });
   const whiteMiso = page.locator(".grocery-row").filter({ hasText: /white miso/i });
+  await expect(chicken).toBeVisible();
+  await expect(salmon).toBeVisible();
+  await expect(whiteMiso).toBeVisible();
   const selectedItemIds = await Promise.all([chicken, whiteMiso].map(async (row) => {
     const id = await row.getAttribute("data-grocery-id");
     expect(id).toBeTruthy();
@@ -572,10 +579,11 @@ test("selected groceries move atomically without expanding the grocery list", as
   const clickGroceryCard = (row: typeof chicken, modifiers?: Array<"Control" | "Meta" | "Shift">) =>
     row.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 }, modifiers });
   await chicken.getByLabel("Check Boneless chicken thighs").click();
-  await expect(chicken).toHaveCount(0);
+  await expect(chicken).toBeVisible();
+  await expect(chicken.getByLabel("Check Boneless chicken thighs")).toBeChecked();
   await expect(bulkActions).toHaveCount(0);
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await expect(bulkActions.getByText("1 item selected", { exact: true })).toBeVisible();
   await expect(chicken.locator("input[type=checkbox]")).toHaveCount(1);
@@ -592,7 +600,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await clickGroceryCard(salmon, ["Meta"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await clickGroceryCard(salmon, ["Control"]);
   await clickGroceryCard(whiteMiso, ["Control", "Shift"]);
@@ -600,7 +608,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await expect(salmon).toHaveClass(/selected/);
   await expect(whiteMiso).toHaveClass(/selected/);
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await clickGroceryCard(salmon, ["Meta"]);
   await clickGroceryCard(whiteMiso, ["Meta", "Shift"]);
@@ -608,30 +616,30 @@ test("selected groceries move atomically without expanding the grocery list", as
   await expect(salmon).toHaveClass(/selected/);
   await expect(whiteMiso).toHaveClass(/selected/);
   await resetPlanner(page);
-  await openView(page, "Groceries");
+  await openAllGroceries();
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
-  await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("on_hand");
-  const dropdownCommandBodies: Array<{ command?: { itemIds?: string[]; source?: string; type?: string } }> = [];
+  await bulkActions.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("on_hand");
+  const dropdownCommandBodies: Array<{ command?: { itemIds?: string[]; coverage?: string; type?: string } }> = [];
   const captureDropdownCommand = (request: Request) => {
     if (new URL(request.url()).pathname === "/api/commands" && request.method() === "POST") {
-      dropdownCommandBodies.push(request.postDataJSON() as { command?: { itemIds?: string[]; source?: string; type?: string } });
+      dropdownCommandBodies.push(request.postDataJSON() as { command?: { itemIds?: string[]; coverage?: string; type?: string } });
     }
   };
   page.on("request", captureDropdownCommand);
-  await bulkActions.getByRole("button", { name: "Move", exact: true }).click();
+  await bulkActions.getByRole("button", { name: "Set coverage", exact: true }).click();
   await expect.poll(() => dropdownCommandBodies.length).toBe(1);
   page.off("request", captureDropdownCommand);
   expect(dropdownCommandBodies).toHaveLength(1);
   expect(dropdownCommandBodies[0].command).toMatchObject({
-    type: "moveGroceryItemsToSource",
-    source: "on_hand",
+    type: "setGroceryItemsCoverage",
+    coverage: "on_hand",
   });
   expect([...dropdownCommandBodies[0].command!.itemIds!].sort()).toEqual([...selectedItemIds].sort());
-  await expect(page.getByTestId("grocery-move-notice")).toContainText("Moved 2 ingredients to On hand.");
+  await expect(page.getByTestId("grocery-move-notice")).toContainText("Set 2 ingredients to On hand.");
 
-  await page.getByLabel("Grocery filter").getByRole("button", { name: "On hand", exact: true }).click();
+  await page.getByLabel("Grocery filter").getByRole("radio", { name: "On hand", exact: true }).click();
   await expect(chicken).toBeVisible();
   await expect(whiteMiso).toBeVisible();
   await expectNoHorizontalContentEscape(page, chicken);
@@ -645,9 +653,9 @@ test("selected groceries move atomically without expanding the grocery list", as
   await chicken.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
   await whiteMiso.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 }, modifiers: ["Control"] });
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
-  await bulkActions.getByLabel("Move selected groceries to source", { exact: true }).selectOption("farm_box");
-  await bulkActions.getByRole("button", { name: "Move", exact: true }).click();
-  await page.getByLabel("Grocery filter").getByRole("button", { name: "Farm box", exact: true }).click();
+  await bulkActions.getByLabel("Set selected grocery coverage", { exact: true }).selectOption("farm_box");
+  await bulkActions.getByRole("button", { name: "Set coverage", exact: true }).click();
+  await page.getByLabel("Grocery filter").getByRole("radio", { name: "Farm box", exact: true }).click();
   await expect(page.locator(".grocery-row").filter({ hasText: /boneless chicken thighs/i })).toBeVisible();
   await expect(page.locator(".grocery-row").filter({ hasText: /white miso/i })).toBeVisible();
   await assertAccessible(page, `${fixtureId}-grocery-bulk-source-moves`, "mobile-390x844");
