@@ -552,6 +552,70 @@ test("grocery source filters and dinner links remain compact and actionable on p
   await assertAccessible(page, `${fixtureId}-grocery-source-provenance`, "mobile-390x844");
 });
 
+test("grouped D4 groceries keep child quantities, filters, and Recipe identity usable at every supported viewport", async ({ page }) => {
+  test.skip(fixture !== "D4", "D4 supplies populated grocery and dinner data.");
+  for (const viewport of [
+    { id: "phone-390x844", width: 390, height: 844 },
+    { id: "tablet-701x840", width: 701, height: 840 },
+    { id: "desktop-1280x900", width: 1280, height: 900 },
+  ]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await resetPlanner(page);
+    await openView(page, "Groceries");
+    await page.getByRole("radio", { name: "All", exact: true }).click();
+    const groupHeading = page.locator(".grocery-group h4").first();
+    await expect(groupHeading).toBeVisible();
+    await expect(groupHeading.getByRole("button")).toHaveCount(0);
+    const rowWithUnit = page.locator(".grocery-row").filter({
+      has: page.locator(".grocery-detail").filter({ hasText: /\b(cup|cups|lb|lbs|oz|ounces)\b/iu }),
+    }).first();
+    await expect(rowWithUnit).toBeVisible();
+    await expect(rowWithUnit.locator(".grocery-detail")).toContainText(/\b(cup|cups|lb|lbs|oz|ounces)\b/iu);
+    await expect(rowWithUnit.locator(".grocery-select-target")).toHaveAttribute("title", /.+/u);
+    await expectNoHorizontalContentEscape(page, rowWithUnit);
+    await page.getByRole("radio", { name: "Farm box", exact: true }).click();
+    await expect(page.locator(".grocery-row").filter({ hasText: /red peppers/i })).toBeVisible();
+    await page.getByRole("radio", { name: "Needs source", exact: true }).click();
+    await expect(page.locator(".grocery-row").first()).toBeVisible();
+    await page.getByRole("radio", { name: "Farm box", exact: true }).click();
+    const peppers = page.locator(".grocery-row").filter({ hasText: /red peppers/i });
+    await peppers.getByRole("button", { name: "Harissa chicken traybake", exact: true }).click();
+    await expect(page).toHaveURL(/\/weeks\/2026-07-06\/recipes\//u);
+    await expect(page.locator(".meal-drawer").getByRole("heading", { name: "Harissa chicken traybake" })).toBeVisible();
+    await page.getByTitle("Back to Week").click();
+    await assertAccessible(page, `${fixtureId}-grouped-groceries`, viewport.id);
+  }
+});
+
+test("a grocery child section correction uses the existing child command", async ({ page }) => {
+  test.skip(fixture !== "D4", "D4 supplies populated grocery data.");
+  await page.setViewportSize({ width: 701, height: 840 });
+  await resetPlanner(page);
+  await openView(page, "Groceries");
+  await page.getByRole("radio", { name: "Farm box", exact: true }).click();
+  const peppers = page.locator(".grocery-row").filter({ hasText: /red peppers/i });
+  const itemId = await peppers.getAttribute("data-grocery-id");
+  expect(itemId).toBeTruthy();
+  await peppers.locator(".grocery-item-copy").click({ position: { x: 1, y: 1 } });
+  const toolbar = page.getByTestId("grocery-selection-toolbar");
+  await expect(toolbar).toContainText("1 item selected");
+  await toolbar.getByLabel("Set selected grocery section", { exact: true }).selectOption("Produce");
+  const request = page.waitForRequest((candidate) =>
+    new URL(candidate.url()).pathname === "/api/commands" && candidate.method() === "POST" &&
+    (candidate.postDataJSON() as { command?: { type?: string } }).command?.type === "setGroceryItemsSection",
+  );
+  await toolbar.getByRole("button", { name: "Set section", exact: true }).click();
+  const body = (await request).postDataJSON() as { command: { type: string; weekId: string; itemIds: string[]; section: string } };
+  expect(body.command).toEqual({
+    type: "setGroceryItemsSection",
+    weekId: "2026-07-06",
+    itemIds: [itemId],
+    section: "Produce",
+  });
+  await expect(peppers.locator("xpath=ancestor::section[contains(@class, 'grocery-section')]").getByRole("heading", { level: 3, name: /Produce/ })).toBeVisible();
+  await assertAccessible(page, `${fixtureId}-grocery-section-command`, "tablet-701x840");
+});
+
 test("selected groceries move atomically without expanding the grocery list", async ({ page }) => {
   test.skip(fixture !== "D4", "D4 supplies populated grocery data.");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -595,6 +659,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
+  await expectNoHorizontalContentEscape(page, bulkActions);
   await clickGroceryCard(salmon, ["Meta"]);
   await expect(bulkActions.getByText("3 items selected", { exact: true })).toBeVisible();
   await clickGroceryCard(salmon, ["Meta"]);

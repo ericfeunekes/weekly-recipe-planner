@@ -4,11 +4,11 @@ import { Utensils } from "lucide-react";
 import { useState, type MouseEvent as ReactMouseEvent } from "react";
 
 import type { HouseholdCommand } from "@/lib/household-command-contract";
-import { GROCERY_COVERAGES, type GroceryCoverage, type GroceryItem, type Meal, type WeekPlan } from "@/lib/household-contract";
+import { GROCERY_COVERAGES, type GroceryCoverage, type GrocerySection, type IngredientCatalogue, type Meal, type WeekPlan } from "@/lib/household-contract";
+import { projectGroceryRequirements, type GroceryFilter } from "@/lib/grocery-projection";
 import { PlannerActionButton } from "@/components/planner-ui/action-button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
-type GroceryFilter = "to_buy" | "all" | GroceryCoverage | "done";
 
 type GroceryMutateOptions = {
   onAccepted?: () => void;
@@ -16,6 +16,7 @@ type GroceryMutateOptions = {
 
 export type GroceryViewProps = {
   week: WeekPlan;
+  ingredientCatalogue: IngredientCatalogue;
   disabled: boolean;
   mutate: (command: HouseholdCommand, options?: GroceryMutateOptions) => Promise<boolean>;
   onOpenRecipe: (mealId: string, trigger: HTMLElement) => void;
@@ -28,16 +29,11 @@ const GROCERY_SOURCE_LABELS = {
   on_hand: "On hand",
 } as const;
 
-const GROCERY_SECTIONS: GroceryItem["section"][] = [
-  "Produce",
-  "Meat & seafood",
-  "Dairy",
-  "Pantry",
-];
 
 const GROCERY_FILTERS: Array<{ value: GroceryFilter; label: string }> = [
   { value: "to_buy", label: "To buy" },
   { value: "all", label: "All" },
+  { value: "needs_source", label: "Needs source" },
   { value: "shop", label: "Shop" },
   { value: "farm_box", label: "Farm box" },
   { value: "on_hand", label: "On hand" },
@@ -70,27 +66,24 @@ function GroceryRecipeLink({ meal, onOpenRecipe }: { meal: Meal; onOpenRecipe: (
   return <button className="grocery-meal-link" type="button" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenRecipe(meal.id, event.currentTarget); }}><Utensils size={11} /> {meal.title}</button>;
 }
 
-export function GroceryView({ week, disabled, mutate, onOpenRecipe }: GroceryViewProps) {
+export function GroceryView({ week, ingredientCatalogue, disabled, mutate, onOpenRecipe }: GroceryViewProps) {
   const [filter, setFilter] = useState<GroceryFilter>("to_buy");
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const [bulkCoverage, setBulkCoverage] = useState<GroceryCoverage | "">("");
+  const [bulkSection, setBulkSection] = useState<GrocerySection | "">("");
   const [moveNotice, setMoveNotice] = useState<{ coverage: GroceryCoverage; count: number } | null>(null);
-  const visible = week.data.groceries.filter((entry) => {
-    if (filter === "all") return true;
-    if (filter === "done") return entry.checked;
-    if (filter === "to_buy") return !entry.checked && entry.coverage === "shop";
-    if (filter === "shop") return entry.coverage === "shop";
-    return entry.coverage === filter;
-  });
+  const projection = projectGroceryRequirements(week, ingredientCatalogue, filter);
+  const visible = projection.sections.flatMap((section) => section.groups.flatMap((group) => group.children));
   const selectedGroceries = week.data.groceries.filter((entry) => selectedIds.has(entry.id));
-  const visibleIdsInDisplayOrder = GROCERY_SECTIONS.flatMap((group) => visible.filter((entry) => entry.section === group).map((entry) => entry.id));
+  const visibleIdsInDisplayOrder = visible.map((entry) => entry.executionId);
   const allVisibleSelected = Boolean(visibleIdsInDisplayOrder.length) && visibleIdsInDisplayOrder.every((id) => selectedIds.has(id));
   const clearSelection = () => {
     setSelectedIds(new Set());
     setSelectionAnchorId(null);
     setBulkCoverage("");
+    setBulkSection("");
   };
   const toggleSelectAllVisible = () => {
     if (allVisibleSelected) {
@@ -135,6 +128,10 @@ export function GroceryView({ week, disabled, mutate, onOpenRecipe }: GroceryVie
     });
   };
   const moveSelectedToCoverage = (coverage: GroceryCoverage) => moveGroceriesToCoverage(selectedGroceries.filter((entry) => entry.coverage !== coverage).map((entry) => entry.id), coverage);
+  const moveSelectedToSection = (section: GrocerySection) => {
+    const itemIds = selectedGroceries.filter((entry) => entry.section !== section).map((entry) => entry.id);
+    if (itemIds.length) void mutate({ type: "setGroceryItemsSection", weekId: week.id, itemIds, section }, { onAccepted: clearSelection });
+  };
   return (
     <div className="grocery-layout">
       <div className={`grocery-list ${selectionMode ? "selection-mode" : ""}`}>
@@ -144,19 +141,17 @@ export function GroceryView({ week, disabled, mutate, onOpenRecipe }: GroceryVie
         </div>
         <div className="grocery-list-selection-header">
           <label className="grocery-select-all"><input type="checkbox" checked={allVisibleSelected} disabled={disabled || !visibleIdsInDisplayOrder.length} onChange={toggleSelectAllVisible} /> Select all</label>
-          {selectedGroceries.length ? <div className="grocery-selection-toolbar" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkCoverage} aria-label="Set selected grocery coverage" onChange={(event) => setBulkCoverage(event.target.value as GroceryCoverage | "")}><option value="">Set coverage…</option>{GROCERY_COVERAGES.map((coverage) => <option key={coverage} value={coverage}>{GROCERY_SOURCE_LABELS[coverage]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkCoverage || !selectedGroceries.some((entry) => entry.coverage !== bulkCoverage)} onClick={() => bulkCoverage && moveSelectedToCoverage(bulkCoverage)}>Set coverage</PlannerActionButton></div> : null}
+          {selectedGroceries.length ? <div className="grocery-selection-toolbar w-full flex-wrap" role="status" data-testid="grocery-selection-toolbar"><strong>{selectedGroceries.length} {selectedGroceries.length === 1 ? "item" : "items"} selected</strong><select value={bulkCoverage} aria-label="Set selected grocery coverage" onChange={(event) => setBulkCoverage(event.target.value as GroceryCoverage | "")}><option value="">Set coverage…</option>{GROCERY_COVERAGES.map((coverage) => <option key={coverage} value={coverage}>{GROCERY_SOURCE_LABELS[coverage]}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkCoverage || !selectedGroceries.some((entry) => entry.coverage !== bulkCoverage)} onClick={() => bulkCoverage && moveSelectedToCoverage(bulkCoverage)}>Set coverage</PlannerActionButton><select value={bulkSection} aria-label="Set selected grocery section" onChange={(event) => setBulkSection(event.target.value as GrocerySection | "")}><option value="">Set section…</option>{["Produce", "Meat & seafood", "Dairy", "Pantry"].map((section) => <option key={section} value={section}>{section}</option>)}</select><PlannerActionButton tone="secondary" type="button" disabled={disabled || !bulkSection || !selectedGroceries.some((entry) => entry.section !== bulkSection)} onClick={() => bulkSection && moveSelectedToSection(bulkSection)}>Set section</PlannerActionButton></div> : null}
         </div>
         {moveNotice ? <div className="grocery-move-notice" role="status" data-testid="grocery-move-notice"><span>Set {moveNotice.count} {moveNotice.count === 1 ? "ingredient" : "ingredients"} to {GROCERY_SOURCE_LABELS[moveNotice.coverage]}.</span><PlannerActionButton tone="quiet" type="button" onClick={() => { setFilter(moveNotice.coverage); setMoveNotice(null); }}>View {GROCERY_SOURCE_LABELS[moveNotice.coverage]}</PlannerActionButton></div> : null}
-        {GROCERY_SECTIONS.map((group) => {
-          const entries = visible.filter((entry) => entry.section === group);
-          if (!entries.length) return null;
-          return <section className="grocery-section" key={group}><h3>{group}<span>{entries.length}</span></h3>{entries.map((entry) => {
-            const linkedMeal = week.data.meals.find((meal) => meal.id === entry.mealId);
-            const ingredient = linkedMeal?.ingredients.find((candidate) => candidate.id === entry.ingredientId);
-            if (!linkedMeal || !ingredient) return null;
-            const item = ingredient.ingredient;
-            return <div className={`grocery-row ${entry.checked ? "checked" : ""} ${selectedIds.has(entry.id) ? "selected" : ""}`} data-grocery-id={entry.id} key={entry.id} onMouseDown={(event) => { if (event.button !== 0) return; if (!selectionMode) setSelectionMode(true); selectRow(entry.id, event); }}><label className="grocery-check" data-grocery-row-control onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${item}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.id, checked: event.target.checked })} /></label><div className="grocery-item-copy"><div className="grocery-primary-line"><div className="grocery-select-target"><strong>{item}</strong><span className="grocery-detail">{ingredient.amount || "No amount noted"}</span></div><span className="grocery-source-badge" title={`Coverage: ${GROCERY_SOURCE_LABELS[entry.coverage]}`}>{GROCERY_SOURCE_LABELS[entry.coverage]}</span></div><div className="grocery-recipe-links"><span>For</span><GroceryRecipeLink meal={linkedMeal} onOpenRecipe={onOpenRecipe} /></div></div></div>;
-          })}</section>;
+        {projection.sections.map(({ section, groups }) => {
+          const count = groups.reduce((total, group) => total + group.children.length, 0);
+          return <section className="grocery-section" key={section}><h3>{section}<span>{count}</span></h3>{groups.map((group) => <div key={group.key} className="grocery-group"><h4>{group.label} <span>{group.quantities.map((part) => part.kind === "quantity" ? part.display : part.literal).join(" + ")} · {group.provenanceCount} requirements</span></h4>{group.children.map((entry) => {
+            const linkedMeal = week.data.meals.find((meal) => meal.id === entry.mealId)!;
+            const amount = [entry.amount.amount, entry.amount.unit].filter(Boolean).join(" ") || entry.amount.source || "No amount noted";
+            const item = [entry.ingredient, entry.qualifier].filter(Boolean).join(", ");
+            return <div className={`grocery-row ${entry.checked ? "checked" : ""} ${selectedIds.has(entry.executionId) ? "selected" : ""}`} data-grocery-id={entry.executionId} key={entry.executionId} onMouseDown={(event) => { if (event.button !== 0) return; if (!selectionMode) setSelectionMode(true); selectRow(entry.executionId, event); }}><label className="grocery-check" data-grocery-row-control onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={entry.checked} disabled={disabled} aria-label={`Check ${entry.ingredient}`} onChange={(event) => void mutate({ type: "setGroceryItemChecked", weekId: week.id, itemId: entry.executionId, checked: event.target.checked })} /></label><div className="grocery-item-copy"><div className="grocery-primary-line"><div className="grocery-select-target" title={entry.amount.source ?? undefined} aria-label={entry.amount.source ? `${item}. Source: ${entry.amount.source}` : undefined}><strong>{item}</strong><span className="grocery-detail">{amount}</span></div><span className="grocery-source-badge" title={`Coverage: ${GROCERY_SOURCE_LABELS[entry.coverage]}`}>{GROCERY_SOURCE_LABELS[entry.coverage]}</span></div><div className="grocery-recipe-links"><span>For</span>{week.status === "archived" ? <span>{linkedMeal.title}{entry.sourceRecipe?.kind === "canonical" && entry.sourceRecipe.revision ? ` · ${entry.sourceRecipe.identity} · pinned ${entry.sourceRecipe.revision.slice(0, 12)}` : ""}</span> : <GroceryRecipeLink meal={linkedMeal} onOpenRecipe={onOpenRecipe} />}</div></div></div>;
+          })}</div>)}</section>;
         })}
         {!visible.length ? <p className="empty-copy">No groceries match this filter.</p> : null}
       </div>

@@ -14,6 +14,7 @@ export const MEAL_STATUSES = [
 export const FEEDBACK_VALUES = ["repeat", "modify", "drop"] as const;
 export const LEFTOVER_QUALITIES = ["good", "mixed", "poor"] as const;
 export const GROCERY_COVERAGES = ["needs_source", "shop", "farm_box", "on_hand"] as const;
+export const GROCERY_SECTIONS = ["Produce", "Meat & seafood", "Dairy", "Pantry"] as const;
 /** @deprecated Schema 9 name; use GROCERY_COVERAGES for new values. */
 export const GROCERY_SOURCES = ["shop", "farm_box", "on_hand"] as const;
 export const INGREDIENT_ROLES = ["weekly_requirement", "output", "leftover"] as const;
@@ -32,7 +33,7 @@ export type LeftoverQuality = (typeof LEFTOVER_QUALITIES)[number];
 export type GrocerySource = (typeof GROCERY_SOURCES)[number];
 export type GroceryCoverage = (typeof GROCERY_COVERAGES)[number];
 export type IngredientRole = (typeof INGREDIENT_ROLES)[number];
-export type GrocerySection = "Produce" | "Meat & seafood" | "Dairy" | "Pantry";
+export type GrocerySection = (typeof GROCERY_SECTIONS)[number];
 
 export type IngredientConcept = {
   id: string;

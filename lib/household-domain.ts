@@ -2,6 +2,7 @@ import {
   DEFAULT_HOUSEHOLD_TIME_ZONE,
   FEEDBACK_VALUES,
   GROCERY_COVERAGES,
+  GROCERY_SECTIONS,
   LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   PREP_DAYS_AFTER_WEEK_START,
@@ -114,7 +115,6 @@ type StepLocation = {
 };
 
 const DAY_MS = 86_400_000;
-const GROCERY_SECTIONS = ["Produce", "Meat & seafood", "Dairy", "Pantry"] as const;
 const LEFTOVER_STATES = ["available", "assigned", "consumed"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2184,6 +2184,27 @@ export function executeHouseholdCommand(
         `Set ${moved.length} ${moved.length === 1 ? "grocery" : "groceries"} to ${coverageLabel}`,
         `${week.id}:grocery-coverage:${command.coverage}`,
         moved.map(({ grocery, previousCoverage }) => `${groceryIngredientLabel(week, grocery)}: ${previousCoverage} to ${command.coverage}`),
+      );
+    }
+
+    case "setGroceryItemsSection": {
+      if (!week) return rejectMissingWeek(state, command.weekId);
+      if (!GROCERY_SECTIONS.includes(command.section)) return failure(state, "Choose supported grocery section.", { section: "Choose Produce, Meat & seafood, Dairy, or Pantry." });
+      if (new Set(command.itemIds).size !== command.itemIds.length) return failure(state, "Choose each grocery item only once.", { itemIds: "Remove duplicate grocery items." });
+      const groceries = command.itemIds.map((itemId) => week.data.groceries.find((item) => item.id === itemId));
+      const missingItemId = command.itemIds.find((_itemId, index) => !groceries[index]);
+      if (missingItemId) return failure(state, "Grocery item not found.", { itemIds: `Could not find ${missingItemId} in the selected week.` });
+      const moved = (groceries as GroceryItem[])
+        .filter((grocery) => grocery.section !== command.section)
+        .map((grocery) => ({ grocery, previousSection: grocery.section }));
+      if (!moved.length) return failure(state, "Grocery section is unchanged.");
+      for (const { grocery } of moved) grocery.section = command.section;
+      return success(
+        state,
+        next,
+        `Set ${moved.length} ${moved.length === 1 ? "grocery" : "groceries"} to ${command.section}`,
+        `${week.id}:grocery-section:${command.section}`,
+        moved.map(({ grocery, previousSection }) => `${groceryIngredientLabel(week, grocery)}: ${previousSection} to ${command.section}`),
       );
     }
 

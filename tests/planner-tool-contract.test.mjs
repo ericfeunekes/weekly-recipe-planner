@@ -14,6 +14,7 @@ import {
   freezeForegroundAuthority,
   isPlannerApplyArguments,
   isPlannerReadArguments,
+  isReadQuery,
   isPlannerReadProjection,
   isPlannerPreviewData,
   isPlannerToolResult,
@@ -134,8 +135,12 @@ test("dynamic planner manifest is exactly one four-function registry-derived nam
   const applyTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "apply");
   assert.match(
     applyTool.description,
-    /Readback fields by kind: catalogue\[kind,offset\]; workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
+    /Readback fields by kind: catalogue\[kind,offset\]; grocery\[kind,weekId,filter; optional offset\]; workspace\[kind\]; week\[kind,weekId\]; meal\[kind,weekId,mealId\]; history\[kind,limit; optional afterSequence\]\.$/u,
   );
+  const readTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "read");
+  assert.equal(new Ajv({ allErrors: true, schemaId: "auto" }).compile(readTool.inputSchema)({
+    query: { kind: "grocery", weekId: "2026-07-06", filter: "to_buy", offset: 8 },
+  }), true);
   const importTool = PLANNER_DYNAMIC_TOOL_NAMESPACE.tools.find((tool) => tool.name === "importRecipe");
   assert.deepEqual(importTool.inputSchema.required, ["basePlannerVersion", "weekId", "mealId", "recipePath"]);
 });
@@ -256,6 +261,54 @@ test("read projections exclude transcript, chat, receipts, before-state, and req
   assert.equal(isPlannerReadProjection({ kind: "workspace", activeWeekId: null, weeks: [], ingredientCatalogue: "forged" }), false);
 });
 
+test("grocery read projections reject malformed quantity and literal parts", () => {
+  const grocery = {
+    kind: "grocery",
+    grocery: {
+      filter: "to_buy",
+      offset: 0,
+      nextOffset: null,
+      sections: [{
+        section: "Produce",
+        groups: [{
+          key: "concept:test",
+          label: "Test",
+          conceptId: "test",
+          quantities: [{ kind: "quantity", dimension: "count", quantity: { numerator: 1, denominator: 1 }, unit: null, display: "1" }],
+          provenanceCount: 1,
+          children: [{
+            executionId: "grocery-1",
+            occurrenceId: "ingredient-1",
+            mealId: "meal-1",
+            mealTitle: "Rice bowls",
+            ingredient: "test",
+            qualifier: null,
+            amount: { amount: "1", unit: null, source: "1 test" },
+            coverage: "shop",
+            checked: false,
+            section: "Produce",
+            sourceRecipe: null,
+          }],
+        }],
+      }],
+    },
+  };
+  assert.equal(isPlannerReadProjection(grocery), true);
+  const belowChildren = structuredClone(grocery);
+  belowChildren.grocery.sections[0].groups[0].provenanceCount = 0;
+  assert.equal(isPlannerReadProjection(belowChildren), false);
+  for (const badPart of [
+    { ...grocery.grocery.sections[0].groups[0].quantities[0], dimension: "bogus" },
+    { ...grocery.grocery.sections[0].groups[0].quantities[0], quantity: { numerator: "1", denominator: 1 } },
+    { ...grocery.grocery.sections[0].groups[0].quantities[0], quantity: { numerator: 1, denominator: 0 } },
+    { kind: "literal", literal: "one package", reason: "unknown" },
+  ]) {
+    const candidate = structuredClone(grocery);
+    candidate.grocery.sections[0].groups[0].quantities = [badPart];
+    assert.equal(isPlannerReadProjection(candidate), false);
+  }
+});
+
 test("the maximum valid catalogue fits the embedded read result bound", () => {
   const source = workspace();
   source.state.ingredientCatalogue = {
@@ -271,6 +324,45 @@ test("the maximum valid catalogue fits the embedded read result bound", () => {
   assert.equal(isPlannerReadProjection(projection), true);
   const result = createPlannerToolSuccess("max-catalogue", source, 1, projection);
   assert.doesNotThrow(() => serializePlannerToolResult(result));
+});
+
+test("a maximum-legal grocery read pages exact children within the result bound", () => {
+  const source = workspace();
+  const week = source.state.weeks[0];
+  const meal = week.data.meals[0];
+  meal.title = "t".repeat(200);
+  meal.sourceRecipe = { kind: "canonical", identity: "i".repeat(200), revision: "a".repeat(64) };
+  meal.ingredients = Array.from({ length: 30 }, (_, index) => ({
+    id: `ingredient-${index}-${"i".repeat(180)}`,
+    source: "s".repeat(200),
+    amount: "a".repeat(200),
+    unit: "u".repeat(200),
+    ingredient: "g".repeat(200),
+    qualifier: "q".repeat(200),
+    conceptId: null,
+    role: "weekly_requirement",
+    canonicalIngredientId: null,
+  }));
+  week.data.groceries = meal.ingredients.map((ingredient, index) => ({
+    id: `grocery-${index}-${"g".repeat(180)}`,
+    mealId: meal.id,
+    ingredientId: ingredient.id,
+    section: "Pantry",
+    coverage: "shop",
+    checked: false,
+  }));
+  const ids = [];
+  for (let offset = 0; offset !== null;) {
+    const projection = projectPlannerRead(source, { kind: "grocery", weekId: week.id, filter: "to_buy", offset });
+    assert.equal(isPlannerReadProjection(projection), true);
+    const children = projection.grocery.sections.flatMap((section) => section.groups.flatMap((group) => group.children));
+    assert.ok(children.length <= 8);
+    ids.push(...children.map((child) => child.executionId));
+    assert.doesNotThrow(() => serializePlannerToolResult(createPlannerToolSuccess(`grocery-${offset}`, source, 1, projection)));
+    offset = projection.grocery.nextOffset;
+  }
+  assert.deepEqual([...ids].sort(), week.data.groceries.map((grocery) => grocery.id).sort());
+  assert.equal(isReadQuery({ kind: "grocery", weekId: week.id, filter: "to_buy", offset: -1 }), false);
 });
 
 test("candidate preview wire data is closed rather than object-shaped", () => {

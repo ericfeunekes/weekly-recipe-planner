@@ -868,6 +868,63 @@ test("a bulk grocery coverage change rolls back, persists, and replays after a r
   reopenedStore.close();
 });
 
+test("a grocery section change is atomic, stale-safe, undoable, and durable across restart", (t) => {
+  const filename = temporaryDatabase(t);
+  let seedIds = 0;
+  let durableIds = 0;
+  const realDependencies = (store) => ({
+    store,
+    domain: householdDomain,
+    seedFactory: () => createCanonicalSeed({
+      now: 1_800_000_000_000,
+      createId: (prefix) => `section-seed-${prefix}-${++seedIds}`,
+    }),
+    transformLegacyV2: () => { throw new Error("unused"); },
+    clock: { now: () => 1_800_000_000_000 + durableIds },
+    idFactory: { createId: (prefix) => `section-event-${prefix}-${++durableIds}` },
+  });
+  const firstStore = openPlannerStore({ filename });
+  const first = createPlannerApplicationService(realDependencies(firstStore));
+  const bootstrapped = first.bootstrap({ requestId: "section-bootstrap", mode: "seed" });
+  const week = bootstrapped.workspace.state.weeks.find((candidate) => candidate.id === bootstrapped.workspace.state.activeWeekId);
+  assert.ok(week);
+  const item = week.data.groceries.find((candidate) => candidate.section !== "Pantry");
+  assert.ok(item);
+  const request = {
+    requestId: "set-grocery-section",
+    basePlannerVersion: 0,
+    command: { type: "setGroceryItemsSection", weekId: week.id, itemIds: [item.id], section: "Pantry" },
+  };
+  const changed = first.applyCommand(request);
+  assert.equal(changed.decision.status, "accepted");
+  assert.equal(changed.workspace.events.at(-1)?.command.type, "setGroceryItemsSection");
+  assert.equal(changed.workspace.state.weeks[0].data.groceries.find((candidate) => candidate.id === item.id)?.section, "Pantry");
+  const stale = first.applyCommand({ ...request, requestId: "set-grocery-section-stale" });
+  assert.equal(stale.decision.status, "version_conflict");
+  const noOp = first.applyCommand({
+    ...request,
+    requestId: "set-grocery-section-noop",
+    basePlannerVersion: changed.workspace.plannerVersion,
+  });
+  assert.equal(noOp.decision.status, "domain_rejected");
+  const undone = first.undoLatest({
+    requestId: "undo-grocery-section",
+    basePlannerVersion: changed.workspace.plannerVersion,
+    targetEventId: changed.decision.eventId,
+  });
+  assert.equal(undone.decision.status, "accepted");
+  assert.equal(undone.workspace.state.weeks[0].data.groceries.find((candidate) => candidate.id === item.id)?.section, item.section);
+  firstStore.close();
+
+  const reopenedStore = openPlannerStore({ filename });
+  const reopened = createPlannerApplicationService(realDependencies(reopenedStore));
+  assert.equal(reopened.readWorkspace().state.weeks[0].data.groceries.find((candidate) => candidate.id === item.id)?.section, item.section);
+  const replay = reopened.applyCommand(request);
+  assert.deepEqual(replay.decision, changed.decision);
+  assert.equal(replay.workspace.events.length, 2);
+  reopenedStore.close();
+});
+
 test("every batch write failpoint rolls back the whole ordered unit", () => {
   for (const point of [
     "after_workspace_update",

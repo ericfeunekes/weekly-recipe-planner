@@ -1,6 +1,7 @@
 import {
   FEEDBACK_VALUES,
   GROCERY_SOURCES,
+  GROCERY_SECTIONS,
   LEFTOVER_QUALITIES,
   MEAL_STATUSES,
   isIsoDate,
@@ -103,6 +104,7 @@ export type HouseholdCommand =
   | ({ type: "removePrepStepsFromDate"; prepDate: IsoDate; entryIds: string[]; discardFulfillment?: boolean } & WeekScoped)
   | ({ type: "clearPrepDate"; prepDate: IsoDate; discardFulfillment?: boolean } & WeekScoped)
   | ({ type: "setGroceryItemsCoverage"; itemIds: string[]; coverage: GroceryCoverage } & WeekScoped)
+  | ({ type: "setGroceryItemsSection"; itemIds: string[]; section: GrocerySection } & WeekScoped)
   | ({ type: "setGroceryItemChecked"; itemId: string; checked: boolean } & WeekScoped)
   | ({ type: "captureFeedback"; mealId: string; value: FeedbackValue } & WeekScoped)
   | ({ type: "captureWeekLesson"; weekLesson: string } & WeekScoped)
@@ -470,6 +472,7 @@ const HOUSEHOLD_COMMAND_SCHEMAS = {
     source: { type: "string", enum: [...GROCERY_SOURCES] },
   }),
   setGroceryItemsCoverage: weekCommandSchema("setGroceryItemsCoverage", { itemIds: groceryItemIdsSchema, coverage: { type: "string", enum: ["needs_source", ...GROCERY_SOURCES] } }),
+  setGroceryItemsSection: weekCommandSchema("setGroceryItemsSection", { itemIds: groceryItemIdsSchema, section: { type: "string", enum: [...GROCERY_SECTIONS] } }),
   setGroceryItemChecked: weekCommandSchema("setGroceryItemChecked", { itemId: idSchema, checked: { type: "boolean" } }),
   captureFeedback: weekCommandSchema("captureFeedback", { mealId: idSchema, value: { type: "string", enum: [...FEEDBACK_VALUES] } }),
   captureWeekLesson: weekCommandSchema("captureWeekLesson", { weekLesson: textSchema }),
@@ -719,6 +722,7 @@ export const HOUSEHOLD_COMMAND_REGISTRY = {
   removePrepStepsFromDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.removePrepStepsFromDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["prepDate", "entryIds"], ["discardFulfillment"]) && isIsoDate(value.prepDate) && Array.isArray(value.entryIds) && value.entryIds.length >= 1 && value.entryIds.length <= MAX_PREP_ENTRIES && value.entryIds.every(isId) && new Set(value.entryIds).size === value.entryIds.length && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
   clearPrepDate: { schema: HOUSEHOLD_COMMAND_SCHEMAS.clearPrepDate, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommandWithOptional(value, ["prepDate"], ["discardFulfillment"]) && isIsoDate(value.prepDate) && (value.discardFulfillment === undefined || typeof value.discardFulfillment === "boolean") },
   setGroceryItemsCoverage: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemsCoverage, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "coverage"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && ["needs_source", ...GROCERY_SOURCES].includes(value.coverage as GroceryCoverage) },
+  setGroceryItemsSection: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemsSection, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemIds", "section"]) && Array.isArray(value.itemIds) && value.itemIds.length >= 1 && value.itemIds.length <= MAX_GROCERY_ITEMS && value.itemIds.every(isId) && new Set(value.itemIds).size === value.itemIds.length && GROCERY_SECTIONS.includes(value.section as GrocerySection) },
   setGroceryItemChecked: { schema: HOUSEHOLD_COMMAND_SCHEMAS.setGroceryItemChecked, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["itemId", "checked"]) && isId(value.itemId) && typeof value.checked === "boolean" },
   captureFeedback: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureFeedback, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["mealId", "value"]) && isId(value.mealId) && FEEDBACK_VALUES.includes(value.value as FeedbackValue) },
   captureWeekLesson: { schema: HOUSEHOLD_COMMAND_SCHEMAS.captureWeekLesson, scope: "week", exposure: "ordinary", validate: (value) => isWeekCommand(value, ["weekLesson"]) && isText(value.weekLesson) },

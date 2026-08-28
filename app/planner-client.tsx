@@ -144,6 +144,7 @@ import { RecipeIngredientList, RecipeInstructionContent, RecipeProvenance } from
 import { PrepView } from "@/components/planner-ui/prep-view";
 import { CloseoutView } from "@/components/planner-ui/closeout-view";
 import { GroceryView } from "@/components/planner-ui/grocery-view";
+import { projectGroceryRequirements } from "@/lib/grocery-projection";
 import { SegmentedControl } from "@/components/planner-ui/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -341,6 +342,7 @@ const PLANNER_ACTION_LABELS = {
   removePrepStepsFromDate: "Remove prep steps from date",
   clearPrepDate: "Clear prep date",
   setGroceryItemsCoverage: "Set grocery coverage",
+  setGroceryItemsSection: "Set grocery section",
   setGroceryItemChecked: "Change grocery item completion",
   captureFeedback: "Save dinner feedback",
   captureWeekLesson: "Save week lesson",
@@ -1820,9 +1822,15 @@ function PlannerAppContent() {
               ) : resolvedLocation.kind === "closeout" ? (
                   <CloseoutView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} formatCalendarDate={formatCalendarDate} />
                 ) : resolvedLocation.kind === "groceries" ? (
-                  <GroceryView key={week.id} week={week} disabled={isReadOnly} mutate={mutate} onOpenRecipe={openRecipeSummary} />
+                  <GroceryView key={week.id} week={week} ingredientCatalogue={initialized.state.ingredientCatalogue} disabled={isReadOnly} mutate={mutate} onOpenRecipe={openRecipeSummary} />
                 ) : currentView === "week" ? (
-                  <WeekView week={week} today={today} onOpenRecipeSummary={openRecipeSummary} onNavigate={navigate} />
+                  <WeekView
+                    week={week}
+                    today={today}
+                    ingredientCatalogue={initialized.state.ingredientCatalogue}
+                    onOpenRecipeSummary={openRecipeSummary}
+                    onNavigate={navigate}
+                  />
                 ) : currentView === "prep" ? (
                   <PrepView
                     key={week.id}
@@ -1948,9 +1956,10 @@ function MealEditorTrigger({
   return <PlannerActionButton className={className} tone={tone} type="button" onClick={(event) => onOpenMeal(mealId, event.currentTarget)}>{children}</PlannerActionButton>;
 }
 
-function WeekView({ week, today, onOpenRecipeSummary, onNavigate }: {
+function WeekView({ week, today, ingredientCatalogue, onOpenRecipeSummary, onNavigate }: {
   week: WeekPlan;
   today: IsoDate;
+  ingredientCatalogue: import("@/lib/household-contract").IngredientCatalogue;
   onOpenRecipeSummary: (id: string, trigger: HTMLElement) => void;
   onNavigate: (view: PlannerView) => void;
 }) {
@@ -1959,6 +1968,11 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate }: {
   const [windowStart, setWindowStart] = useState(0);
   const maxWindowStart = dates.length - visibleDayCount;
   const visibleDates = dates.slice(windowStart, windowStart + visibleDayCount);
+  const groceryCue = projectGroceryRequirements(week, ingredientCatalogue, "all").sections.flatMap((section) => section.groups.flatMap((group) => group.children)).reduce((counts, child) => {
+    const key = child.coverage === "shop" ? child.checked ? "Bought" : "To buy" : child.coverage === "farm_box" ? "Farm box" : child.coverage === "on_hand" ? "On hand" : "Needs source";
+    counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  }, {} as Record<string, number>);
 
   const changeVisibleDayCount = (nextCount: 1 | 3 | 5 | 7) => {
     setVisibleDayCount(nextCount);
@@ -2019,7 +2033,7 @@ function WeekView({ week, today, onOpenRecipeSummary, onNavigate }: {
         })}
       </div>
       <div className="mobile-pressure-strip">
-        <button type="button" onClick={() => onNavigate("groceries")}><ShoppingBasket size={15} /> Groceries <strong>{week.data.groceries.filter((item) => item.checked).length}/{week.data.groceries.length}</strong></button>
+        <button type="button" onClick={() => onNavigate("groceries")}><ShoppingBasket size={15} /> Groceries <strong>{["To buy", "Bought", "Farm box", "On hand", "Needs source"].filter((key) => groceryCue[key]).map((key) => `${key}: ${groceryCue[key]}`).join(" · ") || "None"}</strong></button>
       </div>
     </div>
   );
