@@ -111,7 +111,9 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
             concept: { id: group.conceptId!, label: group.label },
             execution: { id: child.executionId, section, coverage: child.coverage, checked: child.checked },
           })))[0]?.quantities ?? [];
-          return subtotal;
+          return subtotal.map((part) => part.kind === "quantity" && qualifier
+            ? { ...part, display: `${part.display} ${qualifier}` }
+            : part);
         })
       : group.quantities;
     sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId, quantities, provenanceCount: children.length, children });
@@ -131,8 +133,7 @@ export function pageGroceryProjection(
     groups: section.groups.flatMap((group) => {
       const pageChildren = group.children.filter((child) => selected.has(child.executionId));
       if (!pageChildren.length) return [];
-      const completeGroup = pageChildren.length === group.children.length;
-      return [{ ...group, children: pageChildren, provenanceCount: pageChildren.length, quantities: completeGroup ? group.quantities : [] }];
+      return [{ ...group, children: pageChildren, provenanceCount: group.provenanceCount, quantities: group.quantities }];
     }),
   })).filter((section) => section.groups.length);
   const nextOffset = offset + limit < children.length ? offset + limit : null;

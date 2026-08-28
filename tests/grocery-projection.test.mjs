@@ -19,7 +19,7 @@ test("grocery projection filters children before grouping and preserves units, l
   const all = projectGroceryRequirements(week(), catalogue, "all");
   const produce = all.sections.find((section) => section.section === "Produce");
   assert.equal(produce.groups.length, 1);
-  assert.deepEqual(produce.groups[0].quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["1 cup", "1 bunch trimmed green onion"]);
+  assert.deepEqual(produce.groups[0].quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["1 cup sliced", "1 bunch trimmed green onion"]);
   assert.equal(produce.groups[0].children[0].amount.unit, "cup");
   assert.equal(produce.groups[0].children[0].sourceRecipe, null);
   const pantry = all.sections.find((section) => section.section === "Pantry");
@@ -35,7 +35,7 @@ test("shopping-relevant qualifiers remain separate even when the concept and uni
   state.data.meals[1].ingredients[0] = ingredient("b", "1", "cup", "whole");
   const groups = projectGroceryRequirements(state, catalogue, "all").sections.find((section) => section.section === "Produce").groups;
   assert.equal(groups.length, 1);
-  assert.deepEqual(groups[0].quantities.map((part) => part.display), ["1 cup", "1 cup"]);
+  assert.deepEqual(groups[0].quantities.map((part) => part.display), ["1 cup sliced", "1 cup whole"]);
 });
 
 test("grocery projection totals only compatible children while retaining package, form, and unresolved literals", () => {
@@ -54,7 +54,7 @@ test("grocery projection totals only compatible children while retaining package
   const all = projectGroceryRequirements(state, catalogue, "all");
   const produce = all.sections.find((section) => section.section === "Produce");
   const sliced = produce.groups.find((group) => group.label === "Green onion");
-  assert.deepEqual(sliced.quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["3 cup", "1 package sliced green onion", "1 bunch trimmed green onion"]);
+  assert.deepEqual(sliced.quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["3 cup sliced", "1 package sliced green onion", "1 bunch trimmed green onion"]);
   assert.deepEqual(sliced.children.map((child) => child.executionId), ["g-a", "g-d", "g-e", "g-b"]);
   const unclassified = all.sections.find((section) => section.section === "Pantry").groups[0];
   assert.equal(unclassified.label, "Unclassified");

@@ -294,6 +294,9 @@ test("grocery read projections reject malformed quantity and literal parts", () 
     },
   };
   assert.equal(isPlannerReadProjection(grocery), true);
+  const belowChildren = structuredClone(grocery);
+  belowChildren.grocery.sections[0].groups[0].provenanceCount = 0;
+  assert.equal(isPlannerReadProjection(belowChildren), false);
   for (const badPart of [
     { ...grocery.grocery.sections[0].groups[0].quantities[0], dimension: "bogus" },
     { ...grocery.grocery.sections[0].groups[0].quantities[0], quantity: { numerator: "1", denominator: 1 } },
