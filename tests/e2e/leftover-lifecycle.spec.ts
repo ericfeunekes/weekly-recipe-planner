@@ -88,35 +88,43 @@ test("assigned leftovers survive shared-client readback and authority restart be
   await resetPlanner(page);
   const initial = await workspace(page);
   const week = initial.state.weeks.find(({ id }) => id === initial.state.activeWeekId)!;
-  const targetDate = addDays(week.id, 6);
+  const targetMeal = week.data.meals.find((meal) => meal.title === "Miso salmon rice bowls")!;
+  const targetDate = targetMeal.date;
   const source = week.data.meals.find((meal) => meal.leftoverNote && meal.date < targetDate)!;
   expect(source).toBeTruthy();
   const displacedMeals = week.data.meals
     .filter((meal) => meal.date === targetDate)
     .map(({ id, status }) => ({ id, status }));
+  expect(displacedMeals).toContainEqual({ id: targetMeal.id, status: targetMeal.status });
 
-  const cookedVersion = await command(page, initial.plannerVersion, {
-    type: "updateMealStatus",
-    weekId: week.id,
-    mealId: source.id,
-    status: "cooked",
+  await page.goto(recipePath(week.id, source.id));
+  const cookedResponse = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/api/commands") || response.request().method() !== "POST") return false;
+    return (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "updateMealStatus";
   });
+  await page.getByRole("radiogroup", { name: `Status for ${source.title}`, exact: true }).getByRole("radio", { name: "cooked", exact: true }).click();
+  expect((await cookedResponse).status()).toBe(200);
+  await page.getByRole("button", { name: "Close out", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Close out", exact: true })).toBeVisible();
   const cookedReadback = await workspace(page);
   const leftoverId = cookedReadback.state.weeks.find(({ id }) => id === week.id)!.data.leftovers
     .find(({ sourceMealId, state }) => sourceMealId === source.id && state === "available")?.id;
   expect(leftoverId).toEqual(expect.any(String));
   if (!leftoverId) throw new Error("Cooking the source meal did not create an available leftover.");
-  await command(page, cookedVersion, {
-    type: "assignLeftover",
-    weekId: week.id,
-    leftoverId,
-    targetDate,
+  await page.getByLabel(`Assign ${source.title} leftovers to dinner date`).selectOption(targetDate);
+  const assignedResponse = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/api/commands") || response.request().method() !== "POST") return false;
+    return (response.request().postDataJSON() as { command?: { type?: string } }).command?.type === "assignLeftover";
   });
+  await page.getByRole("button", { name: "Assign to dinner", exact: true }).click();
+  expect((await assignedResponse).status()).toBe(200);
   const localAssignedReadback = await workspace(page);
   const assignedMealId = localAssignedReadback.state.weeks.find(({ id }) => id === week.id)!.data.leftovers
     .find(({ id }) => id === leftoverId)?.assignedMealId;
   expect(assignedMealId).toEqual(expect.any(String));
   if (!assignedMealId) throw new Error("Assigning the leftover did not create a destination meal.");
+  await page.getByRole("button", { name: "Week", exact: true }).click();
+  await expect(page.locator(`[data-meal-id="${assignedMealId}"]`)).toContainText(source.title);
 
   const peerContext = await browser.newContext();
   const peer = await peerContext.newPage();
