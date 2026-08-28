@@ -4,7 +4,7 @@ import { Archive, Check, CheckCircle2, StickyNote } from "lucide-react";
 import { useState } from "react";
 
 import { MAX_COMMAND_TEXT_LENGTH, type HouseholdCommand } from "@/lib/household-command-contract";
-import { FEEDBACK_VALUES, LEFTOVER_QUALITIES, type Meal, type WeekPlan } from "@/lib/household-contract";
+import { FEEDBACK_VALUES, LEFTOVER_QUALITIES, type IsoDate, type Meal, type WeekPlan } from "@/lib/household-contract";
 import { useVersionedDraft } from "@/app/versioned-draft";
 import { PlannerActionButton } from "@/components/planner-ui/action-button";
 import { SegmentedControl } from "@/components/planner-ui/segmented-control";
@@ -17,7 +17,39 @@ type CloseoutMutateOptions = {
 };
 type CloseoutMutate = (command: HouseholdCommand, options?: CloseoutMutateOptions) => Promise<boolean>;
 
-function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled: boolean; mutate: CloseoutMutate }) {
+function laterWeekDates(week: WeekPlan, sourceMealId: string): IsoDate[] {
+  const sourceDate = week.data.meals.find((meal) => meal.id === sourceMealId)?.date;
+  if (!sourceDate) return [];
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(`${week.id}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + index);
+    return date.toISOString().slice(0, 10) as IsoDate;
+  }).filter((date) => date > sourceDate);
+}
+
+function AvailableLeftoverAssignment({
+  leftover,
+  week,
+  disabled,
+  mutate,
+  formatCalendarDate,
+}: {
+  leftover: WeekPlan["data"]["leftovers"][number];
+  week: WeekPlan;
+  disabled: boolean;
+  mutate: CloseoutMutate;
+  formatCalendarDate: (value: string, options: Intl.DateTimeFormatOptions) => string;
+}) {
+  const dates = laterWeekDates(week, leftover.sourceMealId);
+  const [targetDate, setTargetDate] = useState<IsoDate | "">(dates[0] ?? "");
+  if (!dates.length) return null;
+  return <div className="inline-control-row">
+    <label><span className="sr-only">Assign {leftover.label} leftovers to dinner date</span><select aria-label={`Assign ${leftover.label} leftovers to dinner date`} disabled={disabled} value={targetDate} onChange={(event) => setTargetDate(event.target.value as IsoDate)}>{dates.map((date) => <option key={date} value={date}>{formatCalendarDate(date, { weekday: "long", month: "short", day: "numeric" })}</option>)}</select></label>
+    <PlannerActionButton tone="secondary" type="button" disabled={disabled || !targetDate} onClick={() => { if (targetDate) void mutate({ type: "assignLeftover", weekId: week.id, leftoverId: leftover.id, targetDate }); }}>Assign to dinner</PlannerActionButton>
+  </div>;
+}
+
+function LeftoverControls({ week, disabled, mutate, formatCalendarDate }: { week: WeekPlan; disabled: boolean; mutate: CloseoutMutate; formatCalendarDate: (value: string, options: Intl.DateTimeFormatOptions) => string }) {
   return (
     <div className="leftover-feedback">
       {week.data.leftovers.map((leftover) => (
@@ -30,6 +62,7 @@ function LeftoverControls({ week, disabled, mutate }: { week: WeekPlan; disabled
             value={leftover.quality}
             onChange={(quality) => void mutate({ type: "captureLeftoverQuality", weekId: week.id, leftoverId: leftover.id, quality })}
           />
+          {leftover.state === "available" ? <AvailableLeftoverAssignment leftover={leftover} week={week} disabled={disabled} mutate={mutate} formatCalendarDate={formatCalendarDate} /> : null}
           {leftover.state === "assigned" ? <PlannerActionButton tone="secondary" type="button" aria-label={`Mark ${leftover.label} leftovers eaten`} disabled={disabled} onClick={() => void mutate({ type: "consumeLeftover", weekId: week.id, leftoverId: leftover.id })}><Check size={15} /> Mark eaten</PlannerActionButton> : null}
         </div>
       ))}
@@ -67,7 +100,7 @@ export function CloseoutView({ week, disabled, mutate, formatCalendarDate }: { w
       {!feedbackMeals.length ? <p className="empty-copy">Cook a meal first, then capture the signal worth carrying into the next plan.</p> : null}
     </div>
     <aside className="closeout-notes">
-      <section className="closeout-note-section"><span className="field-label">Leftovers</span><LeftoverControls week={week} disabled={disabled} mutate={mutate} /></section>
+      <section className="closeout-note-section"><span className="field-label">Leftovers</span><LeftoverControls week={week} disabled={disabled} mutate={mutate} formatCalendarDate={formatCalendarDate} /></section>
       <section className="closeout-note-section">
         <label><span>What should next week remember?</span><textarea maxLength={MAX_COMMAND_TEXT_LENGTH} value={draftLesson} onChange={(event) => { lessonDraft.begin(); setLesson(event.target.value); }} placeholder="A short planning lesson" /><small className="field-limit">{draftLesson.length.toLocaleString("en-CA")}/{MAX_COMMAND_TEXT_LENGTH.toLocaleString("en-CA")}</small></label>
         <PlannerActionButton tone="secondary" type="button" disabled={disabled || draftLesson === week.data.weekLesson} onClick={() => void mutate({ type: "captureWeekLesson", weekId: week.id, weekLesson: draftLesson }, lessonDraft.mutationOptions())}><StickyNote size={15} /> Save lesson</PlannerActionButton>
