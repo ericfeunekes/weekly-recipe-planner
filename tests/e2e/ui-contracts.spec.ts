@@ -571,6 +571,7 @@ test("grouped D4 groceries keep child quantities, filters, and Recipe identity u
     }).first();
     await expect(rowWithUnit).toBeVisible();
     await expect(rowWithUnit.locator(".grocery-detail")).toContainText(/\b(cup|cups|lb|lbs|oz|ounces)\b/iu);
+    await expect(rowWithUnit.locator(".grocery-select-target")).toHaveAttribute("title", /.+/u);
     await expectNoHorizontalContentEscape(page, rowWithUnit);
     await page.getByRole("radio", { name: "Farm box", exact: true }).click();
     await expect(page.locator(".grocery-row").filter({ hasText: /red peppers/i })).toBeVisible();
