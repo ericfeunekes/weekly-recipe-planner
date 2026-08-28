@@ -96,7 +96,23 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
     }
     const qualifiers = new Set(children.map((child) => child.qualifier ?? ""));
     const quantities = qualifiers.size > 1
-      ? children.map((child) => ({ kind: "literal" as const, literal: child.amount.source ?? [child.amount.amount, child.amount.unit].filter(Boolean).join(" "), reason: "incompatible" as const }))
+      ? [...new Map(children.map((child) => [child.qualifier ?? "", child])).keys()].flatMap((qualifier) => {
+          const subset = children.filter((child) => (child.qualifier ?? "") === qualifier);
+          const subtotal = projectWeeklyGroceryRequirements(subset.map((child) => ({
+            occurrenceId: child.occurrenceId,
+            mealId: child.mealId,
+            mealTitle: child.mealTitle,
+            ingredient: child.ingredient,
+            qualifier: child.qualifier,
+            amount: child.amount.amount,
+            unit: child.amount.unit,
+            source: child.amount.source ?? null,
+            role: "weekly_requirement" as const,
+            concept: { id: group.conceptId!, label: group.label },
+            execution: { id: child.executionId, section, coverage: child.coverage, checked: child.checked },
+          })))[0]?.quantities ?? [];
+          return subtotal;
+        })
       : group.quantities;
     sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId, quantities, provenanceCount: children.length, children });
   }
