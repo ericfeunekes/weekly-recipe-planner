@@ -115,7 +115,9 @@ export function projectGroceryRequirements(week: WeekPlan, catalogue: Ingredient
             ? { ...part, display: `${part.display} ${qualifier}` }
             : part);
         })
-      : group.quantities;
+      : group.quantities.map((part) => part.kind === "quantity" && qualifiers.values().next().value
+        ? { ...part, display: `${part.display} ${qualifiers.values().next().value}` }
+        : part);
     sections.get(section)!.push({ key: group.key, label: group.label, conceptId: group.conceptId, quantities, provenanceCount: children.length, children });
   }
   return { filter, sections: SECTIONS.map((section) => ({ section, groups: sections.get(section)! })).filter((section) => section.groups.length) };

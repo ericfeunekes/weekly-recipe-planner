@@ -38,6 +38,13 @@ test("shopping-relevant qualifiers remain separate even when the concept and uni
   assert.deepEqual(groups[0].quantities.map((part) => part.display), ["1 cup sliced", "1 cup whole"]);
 });
 
+test("a homogeneous qualifier remains visible on its compatible subtotal", () => {
+  const state = week();
+  state.data.meals[1].ingredients[0] = ingredient("b", "1", "cup", "sliced");
+  const group = projectGroceryRequirements(state, catalogue, "all").sections.find((section) => section.section === "Produce").groups[0];
+  assert.deepEqual(group.quantities.map((part) => part.kind === "quantity" ? part.display : part.literal), ["2 cup sliced"]);
+});
+
 test("grocery projection totals only compatible children while retaining package, form, and unresolved literals", () => {
   const state = week();
   state.data.meals[0].ingredients.push(
