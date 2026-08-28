@@ -133,7 +133,13 @@ export function pageGroceryProjection(
     groups: section.groups.flatMap((group) => {
       const pageChildren = group.children.filter((child) => selected.has(child.executionId));
       if (!pageChildren.length) return [];
-      return [{ ...group, children: pageChildren, provenanceCount: group.provenanceCount, quantities: group.quantities }];
+      const completeGroup = pageChildren.length === group.children.length;
+      const quantities = completeGroup ? group.quantities : pageChildren.map((child) => ({
+        kind: "literal" as const,
+        literal: child.amount.source ?? [child.amount.amount, child.amount.unit].filter(Boolean).join(" "),
+        reason: "incompatible" as const,
+      }));
+      return [{ ...group, children: pageChildren, provenanceCount: group.provenanceCount, quantities }];
     }),
   })).filter((section) => section.groups.length);
   const nextOffset = offset + limit < children.length ? offset + limit : null;
