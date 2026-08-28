@@ -197,8 +197,8 @@ function processIsAlive(pid) {
   }
 }
 
-async function managedProcessIsCurrent(paths, pid) {
-  const child = spawn("/bin/ps", ["-o", "command=", "-p", String(pid)], {
+async function readPs(argumentsList) {
+  const child = spawn("/bin/ps", argumentsList, {
     stdio: ["ignore", "pipe", "ignore"],
   });
   const exited = new Promise((resolveExit, rejectExit) => {
@@ -208,16 +208,41 @@ async function managedProcessIsCurrent(paths, pid) {
   let output = "";
   for await (const chunk of child.stdout) output += chunk;
   const result = await exited;
-  if (result !== 0) return false;
+  return result === 0 ? output : null;
+}
+
+async function managedProcessIsCurrent(paths, pid) {
+  const output = await readPs(["-o", "command=", "-p", String(pid)]);
+  if (output === null) return false;
   return output.includes(join(paths.root, "node_modules", ".bin", "portless"));
 }
 
-function processGroupIsAlive(pid) {
+export function processGroupHasLiveMember(statuses) {
+  return statuses.some((status) => !status.startsWith("Z"));
+}
+
+async function processGroupHasLiveMemberAfterEperm(pid, error) {
+  try {
+    const output = await readPs(["-axo", "pgid=,stat="]);
+    if (output === null) throw error;
+    const statuses = output
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/u))
+      .filter(([group]) => group === String(pid))
+      .map(([, status]) => status);
+    return processGroupHasLiveMember(statuses);
+  } catch { throw error; }
+}
+
+export async function processGroupIsAlive(pid) {
   try {
     process.kill(-pid, 0);
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") {
+      return processGroupHasLiveMemberAfterEperm(pid, error);
+    }
     throw error;
   }
 }
@@ -227,24 +252,26 @@ async function terminateProcessGroup(pid, timeoutMs = STOP_TIMEOUT_MS) {
     process.kill(-pid, "SIGTERM");
   } catch (error) {
     if (error?.code === "ESRCH") return;
+    if (error?.code === "EPERM" && !(await processGroupHasLiveMemberAfterEperm(pid, error))) return;
     throw error;
   }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!processGroupIsAlive(pid)) return;
+    if (!(await processGroupIsAlive(pid))) return;
     await sleep(POLL_INTERVAL_MS);
   }
   try {
     process.kill(-pid, "SIGKILL");
   } catch (error) {
+    if (error?.code === "EPERM" && !(await processGroupHasLiveMemberAfterEperm(pid, error))) return;
     if (error?.code !== "ESRCH") throw error;
   }
   const killDeadline = Date.now() + timeoutMs;
   while (Date.now() < killDeadline) {
-    if (!processGroupIsAlive(pid)) return;
+    if (!(await processGroupIsAlive(pid))) return;
     await sleep(POLL_INTERVAL_MS);
   }
-  if (processGroupIsAlive(pid)) throw new Error("The QA deployment process group did not stop.");
+  if (await processGroupIsAlive(pid)) throw new Error("The QA deployment process group did not stop.");
 }
 
 export async function stop(paths, { quiet = false, timeoutMs, expectedPid, beforeCleanup } = {}) {
