@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,8 @@ import test from "node:test";
 
 import {
   parseState,
+  processGroupHasLiveMember,
+  processGroupIsAlive,
   readOriginHandoff,
   start,
   stop,
@@ -130,6 +132,32 @@ test("QA deployment state supports a stoppable starting state", () => {
     () => parseState('{"pid":123}'),
     /malformed/u,
   );
+});
+
+test("a process group with only zombies is stopped", () => {
+  assert.equal(processGroupHasLiveMember([]), false);
+  assert.equal(processGroupHasLiveMember(["Z", "Z+"]), false);
+  assert.equal(processGroupHasLiveMember(["Z", "S+"]), true);
+});
+
+test("an EPERM process-group probe keeps a live member fatal", async (t) => {
+  const group = await new Promise((resolveGroup, rejectGroup) => {
+    execFile("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], (error, stdout) => {
+      if (error) rejectGroup(error);
+      else resolveGroup(Number(stdout.trim()));
+    });
+  });
+  assert.ok(Number.isSafeInteger(group));
+  const originalKill = process.kill;
+  process.kill = (target, signal) => {
+    assert.equal(target, -group);
+    assert.equal(signal, 0);
+    const error = new Error("operation not permitted");
+    error.code = "EPERM";
+    throw error;
+  };
+  t.after(() => { process.kill = originalKill; });
+  assert.equal(await processGroupIsAlive(group), true);
 });
 
 test("runtime writer hands off an effective origin that manager consumes and deletes", async (t) => {
