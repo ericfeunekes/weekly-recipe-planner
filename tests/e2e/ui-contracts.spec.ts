@@ -659,6 +659,7 @@ test("selected groceries move atomically without expanding the grocery list", as
   await clickGroceryCard(chicken);
   await clickGroceryCard(whiteMiso, ["Control"]);
   await expect(bulkActions.getByText("2 items selected", { exact: true })).toBeVisible();
+  await expectNoHorizontalContentEscape(page, bulkActions);
   await clickGroceryCard(salmon, ["Meta"]);
   await expect(bulkActions.getByText("3 items selected", { exact: true })).toBeVisible();
   await clickGroceryCard(salmon, ["Meta"]);

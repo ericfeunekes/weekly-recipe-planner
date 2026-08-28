@@ -2337,17 +2337,12 @@ svg {
 }
 
 .grocery-source-badge {
-  align-items: center;
   background: var(--green-soft);
   border-radius: 999px;
-  box-sizing: border-box;
   color: var(--green-dark);
-  display: inline-flex;
   flex: 0 0 auto;
   font-size: 9px;
   font-weight: 700;
-  height: 24px;
-  line-height: 14px;
   max-width: 100%;
   min-height: 24px;
   min-width: 0;
